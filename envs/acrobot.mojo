@@ -104,7 +104,7 @@ fn wrap(x: Float64, m: Float64, M: Float64) -> Float64:
         M: Maximum possible value in range.
 
     Returns:
-        x wrapped to [m, M].
+        X wrapped to [m, M].
     """
     var diff = M - m
     var result = x
@@ -124,7 +124,7 @@ fn bound(x: Float64, m: Float64, M: Float64) -> Float64:
         M: Upper bound.
 
     Returns:
-        x clamped between m and M.
+        X clamped between m and M.
     """
     if x < m:
         return m
@@ -133,7 +133,9 @@ fn bound(x: Float64, m: Float64, M: Float64) -> Float64:
     return x
 
 
-struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
+struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
+    BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
+):
     """Native Mojo Acrobot environment with integrated SDL2 rendering.
 
     State: [theta1, theta2, theta1_dot, theta2_dot] (internal).
@@ -271,6 +273,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](BoxDiscreteActio
 
         Args:
             action: AcrobotAction with torque_idx (0=-1, 1=0, 2=+1).
+            verbose: Whether to print verbose output (default: False).
 
         Physics uses 4th-order Runge-Kutta integration (same as Gymnasium).
         """

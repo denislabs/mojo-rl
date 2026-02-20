@@ -168,6 +168,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymCartPoleState
     comptime ActionType = GymCartPoleAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -210,10 +211,10 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         try:
             var result = self.env.reset()
             var obs = result[0]
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
-            self.current_obs[2] = Float64(obs[2])
-            self.current_obs[3] = Float64(obs[3])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
+            self.current_obs[2] = Float64(py=obs[2])
+            self.current_obs[3] = Float64(py=obs[3])
         except:
             self.current_obs = SIMD[DType.float64, 4](0.0)
 
@@ -223,21 +224,21 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return GymCartPoleState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: GymCartPoleAction
+        mut self, action: GymCartPoleAction, verbose: Bool = False
     ) -> Tuple[GymCartPoleState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.direction)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
-            self.current_obs[2] = Float64(obs[2])
-            self.current_obs[3] = Float64(obs[3])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
+            self.current_obs[2] = Float64(py=obs[2])
+            self.current_obs[3] = Float64(py=obs[3])
 
             self.done = terminated or truncated
         except:
@@ -381,7 +382,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[DType.float64]:
         """Create tile coding configured for CartPole environment."""
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)
@@ -409,7 +410,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[DType.float64]:
         """Create polynomial features for CartPole (4D state) with normalization.
         """
         var state_low = List[Float64]()
@@ -461,6 +462,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymMountainCarState
     comptime ActionType = GymMountainCarAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -505,8 +507,8 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         try:
             var result = self.env.reset()
             var obs = result[0]
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
         except:
             self.current_obs = SIMD[DType.float64, 4](0.0)
 
@@ -516,19 +518,19 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return GymMountainCarState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: GymMountainCarAction
+        mut self, action: GymMountainCarAction, verbose: Bool = False
     ) -> Tuple[GymMountainCarState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.direction)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
 
             self.done = terminated or truncated
         except:
@@ -642,7 +644,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[DType.float64]:
         """Create tile coding configured for MountainCar environment."""
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)
@@ -664,7 +666,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 3) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 3) -> PolynomialFeatures[DType.float64]:
         """Create polynomial features for MountainCar (2D state)."""
         var state_low = List[Float64]()
         state_low.append(-1.2)
@@ -709,6 +711,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymAcrobotState
     comptime ActionType = GymAcrobotAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -756,7 +759,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
             var result = self.env.reset()
             var obs = result[0]
             for i in range(6):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             # Copy first 4 to 4d version for trait
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
@@ -770,19 +773,19 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return GymAcrobotState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: GymAcrobotAction
+        mut self, action: GymAcrobotAction, verbose: Bool = False
     ) -> Tuple[GymAcrobotState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.torque)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
             for i in range(6):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
 
@@ -960,6 +963,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
     # Type aliases for trait conformance
     comptime StateType = GymPendulumState
     comptime ActionType = GymPendulumAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -997,9 +1001,9 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         try:
             var result = self.env.reset()
             var obs = result[0]
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
-            self.current_obs[2] = Float64(obs[2])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
+            self.current_obs[2] = Float64(py=obs[2])
             self.current_obs[3] = 0.0
         except:
             self.current_obs = SIMD[DType.float64, 4](0.0)
@@ -1010,7 +1014,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         return GymPendulumState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: GymPendulumAction
+        mut self, action: GymPendulumAction, verbose: Bool = False
     ) -> Tuple[GymPendulumState, Float64, Bool]:
         """Take continuous action and return (state, reward, done)."""
         var reward: Float64 = 0.0
@@ -1022,13 +1026,13 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
 
             var result = self.env.step(np_action)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
-            self.current_obs[0] = Float64(obs[0])
-            self.current_obs[1] = Float64(obs[1])
-            self.current_obs[2] = Float64(obs[2])
+            self.current_obs[0] = Float64(py=obs[0])
+            self.current_obs[1] = Float64(py=obs[1])
+            self.current_obs[2] = Float64(py=obs[2])
 
             self.done = terminated or truncated
         except:

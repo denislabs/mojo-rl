@@ -109,9 +109,9 @@ fn main() raises:
 
     var start_time = perf_counter_ns()
 
-    # Use the evaluate_renderable method that leverages RenderableEnv trait
+    # Use the evaluate method that leverages RenderableEnv trait
     # The environment handles its own 3D renderer internally
-    var avg_reward = agent.evaluate_renderable(
+    var avg_reward = agent.evaluate(
         env,
         num_episodes=NUM_EPISODES,
         max_steps=MAX_STEPS,

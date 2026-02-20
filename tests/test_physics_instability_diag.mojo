@@ -77,8 +77,17 @@ fn main() raises:
     _ = env.reset()
 
     print("dt =", Float64(env.model.timestep))
-    print("solref_contact =", env.model.solref_contact[0], env.model.solref_contact[1])
-    print("solimp_contact =", env.model.solimp_contact[0], env.model.solimp_contact[1], env.model.solimp_contact[2])
+    print(
+        "solref_contact =",
+        env.model.solref_contact[0],
+        env.model.solref_contact[1],
+    )
+    print(
+        "solimp_contact =",
+        env.model.solimp_contact[0],
+        env.model.solimp_contact[1],
+        env.model.solimp_contact[2],
+    )
     print()
 
     # Build initial obs
@@ -99,7 +108,7 @@ fn main() raises:
         var action_result = agent.select_action(obs, training=False)
         var actions = action_result[0].copy()
 
-        # Scale and clip actions (same as evaluate_renderable)
+        # Scale and clip actions (same as evaluate)
         var action_list = List[Scalar[dtype]]()
         for j in range(ACTION_DIM):
             var action_val = Float64(actions[j])
@@ -160,14 +169,22 @@ fn main() raises:
         # Print summary every 25 steps
         if (step + 1) % 25 == 0:
             print(
-                "  step", step + 1,
-                ": rootz=", rootz,
-                " vz=", vz,
-                " pitch=", pitch,
-                " contacts=", nc,
-                " max_pen=", max_pen,
-                " max_vel=", max_vel,
-                " reward=", Float64(reward),
+                "  step",
+                step + 1,
+                ": rootz=",
+                rootz,
+                " vz=",
+                vz,
+                " pitch=",
+                pitch,
+                " contacts=",
+                nc,
+                " max_pen=",
+                max_pen,
+                " max_vel=",
+                max_vel,
+                " reward=",
+                Float64(reward),
             )
 
         # Detect anomaly
@@ -197,7 +214,11 @@ fn main() raises:
                 print()
                 print("  rootz=", rootz, " vz=", vz, " pitch=", pitch)
                 print(
-                    "  contacts=", nc, " max_pen=", max_pen, " max_vel=",
+                    "  contacts=",
+                    nc,
+                    " max_pen=",
+                    max_pen,
+                    " max_vel=",
                     max_vel,
                 )
                 print("  qpos:", end="")

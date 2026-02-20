@@ -1,8 +1,6 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, TrainingMetrics
-from render import Renderer2D
-from memory import UnsafePointer
+from core import TabularAgent, DiscreteEnv, RenderableEnv, TrainingMetrics
 
 
 struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
@@ -277,35 +275,38 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         return metrics^
 
     fn evaluate[
-        E: DiscreteEnv
+        E: DiscreteEnv & RenderableEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
             env: The discrete environment to evaluate on.
             num_episodes: Number of evaluation episodes.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
             var state = env.reset()
             var episode_reward: Float64 = 0.0
 
             for _ in range(1000):
-                if renderer:
-                    env.render(renderer[])
-
                 var state_idx = env.state_to_index(state)
                 var action_idx = self.get_best_action(state_idx)
                 var action = env.action_from_index(action_idx)
@@ -315,6 +316,13 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 state = next_state
 
@@ -322,5 +330,8 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

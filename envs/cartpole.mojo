@@ -221,6 +221,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         Args:
             action: CartPoleAction (direction 0=left, 1=right).
+            verbose: Whether to print verbose output (default: False).
 
         Physics uses Euler integration (same as Gymnasium).
         """
@@ -691,11 +692,11 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
 
         Args:
-            num_tilings: Number of tilings (default 8)
-            tiles_per_dim: Tiles per dimension (default 8)
+            num_tilings: Number of tilings (default 8).
+            tiles_per_dim: Tiles per dimension (default 8).
 
         Returns:
-            TileCoding configured for CartPole state space
+            TileCoding configured for CartPole state space.
         """
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)
@@ -730,10 +731,10 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
 
         Args:
-            degree: Maximum polynomial degree (keep low for 4D to avoid explosion)
+            degree: Maximum polynomial degree (keep low for 4D to avoid explosion).
 
         Returns:
-            PolynomialFeatures extractor configured for CartPole with normalization
+            PolynomialFeatures extractor configured for CartPole with normalization.
         """
         var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-2.4)  # cart position

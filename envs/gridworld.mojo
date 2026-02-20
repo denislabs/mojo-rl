@@ -1,5 +1,4 @@
 from core import State, Action, Env, DiscreteEnv, RenderableEnv
-from render import Renderer2D
 
 
 @fieldwise_init
@@ -136,22 +135,6 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Print the grid with agent position (text-based, renderer argument ignored).
-        """
-        _ = renderer
-        for y in range(self.height - 1, -1, -1):
-            var row = String("")
-            for x in range(self.width):
-                if self.state.x == x and self.state.y == y:
-                    row += "A "  # Agent
-                elif self.goal.x == x and self.goal.y == y:
-                    row += "G "  # Goal
-                else:
-                    row += ". "  # Empty
-            print(row)
-        print("")
-
     fn close(mut self):
         """No resources to clean up."""
         pass
@@ -165,7 +148,19 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
         return True
 
     fn render_frame(mut self) raises -> None:
-        pass
+        """Print the grid with agent position (text-based, renderer argument ignored).
+        """
+        for y in range(self.height - 1, -1, -1):
+            var row = String("")
+            for x in range(self.width):
+                if self.state.x == x and self.state.y == y:
+                    row += "A "  # Agent
+                elif self.goal.x == x and self.goal.y == y:
+                    row += "G "  # Goal
+                else:
+                    row += ". "  # Empty
+            print(row)
+        print("")
 
     fn close_renderer(mut self) raises -> None:
         self._renderer_initialized = False

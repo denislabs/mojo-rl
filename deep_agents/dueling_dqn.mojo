@@ -44,9 +44,7 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
-from core import TrainingMetrics, BoxDiscreteActionEnv
-from render import Renderer2D
-from memory import UnsafePointer
+from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
 # =============================================================================
@@ -765,17 +763,16 @@ struct DuelingDQNAgent[
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent using greedy policy (no exploration).
 
         Args:
@@ -783,14 +780,22 @@ struct DuelingDQNAgent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for episode in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = self._list_to_inline(obs_list)
             var episode_reward: Float64 = 0.0
@@ -806,8 +811,12 @@ struct DuelingDQNAgent[
                 var reward = result[1]
                 var done = result[2]
 
-                if renderer:
-                    env.render(renderer[])
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
 
                 episode_reward += reward
                 obs = self._list_to_inline(next_obs_list)
@@ -827,5 +836,8 @@ struct DuelingDQNAgent[
                     "| Steps:",
                     episode_steps,
                 )
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

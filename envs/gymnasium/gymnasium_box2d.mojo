@@ -173,6 +173,7 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymLunarLanderState
     comptime ActionType = GymLunarLanderAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -220,7 +221,7 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
             var result = self.env.reset()
             var obs = result[0]
             for i in range(8):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
         except:
@@ -240,12 +241,12 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
         try:
             var result = self.env.step(action.action)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
             for i in range(8):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
 
@@ -419,6 +420,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
     # Type aliases for trait conformance
     comptime StateType = GymBipedalWalkerState
     comptime ActionType = GymBipedalWalkerAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -471,7 +473,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
             var result = self.env.reset()
             var obs = result[0]
             for i in range(24):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
         except:
@@ -597,12 +599,12 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
             var action = self.np.array(py_list)
             var result = self.env.step(action)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
             for i in range(24):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             for i in range(4):
                 self.current_obs_4d[i] = self.current_obs[i]
 
@@ -854,7 +856,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
             var action = self.np.array(py_list)
             var result = self.env.step(action)
             obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
             self.done = terminated or truncated
@@ -875,7 +877,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
         try:
             var result = self.env.step(action)
             obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
             self.done = terminated or truncated

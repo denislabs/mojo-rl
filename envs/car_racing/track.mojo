@@ -78,7 +78,7 @@ struct TrackRNG:
 # =============================================================================
 
 
-struct TrackPoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
     """A point on the track centerline with direction."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center (for lap tracking)
@@ -116,7 +116,7 @@ struct TrackPoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
 # =============================================================================
 
 
-struct Checkpoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
     """A checkpoint on the track."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center
@@ -144,7 +144,7 @@ struct Checkpoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.y = other.y
 
 
-struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
     """A single track tile with quad vertices and friction.
 
     The tile is stored as 4 vertices in CCW order forming a convex quad.
@@ -240,7 +240,7 @@ struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         tiles[idx, TILE_FRICTION] = Scalar[dtype](self.friction)
 
 
-struct TrackGenerator[DTYPE: DType](Copyable, Movable):
+struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Movable):
     """Procedural track generator for CarRacing.
 
     Generates a closed-loop track around random checkpoints.

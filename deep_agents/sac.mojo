@@ -53,9 +53,7 @@ from deep_rl.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from core import TrainingMetrics, BoxContinuousActionEnv
-from render import Renderer2D
-from memory import UnsafePointer
+from core import TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
 
 
 # =============================================================================
@@ -1180,32 +1178,42 @@ struct DeepSACAgent[
         return metrics^
 
     fn evaluate[
-        E: BoxContinuousActionEnv
+        E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 200,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent using deterministic policy.
 
         Args:
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps: Maximum steps per episode (default: 200).
-            renderer: Optional pointer to renderer for visualization.
+            verbose: Whether to print per-episode results.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for episode in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = self._list_to_simd(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
+            var episode_steps = 0
 
             for step in range(max_steps):
                 # Deterministic action
@@ -1222,16 +1230,34 @@ struct DeepSACAgent[
                 var reward = result[1]
                 var done = result[2]
 
-                if renderer:
-                    env.render(renderer[])
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
 
                 episode_reward += reward
                 obs = self._list_to_simd(env.get_obs_list())
+                episode_steps += 1
 
                 if done:
                     break
 
             total_reward += episode_reward
+
+            if verbose:
+                print(
+                    "Eval Episode",
+                    episode + 1,
+                    "| Reward:",
+                    String(episode_reward)[:10],
+                    "| Steps:",
+                    episode_steps,
+                )
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 

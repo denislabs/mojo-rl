@@ -297,6 +297,8 @@ struct DeepPPOContinuousAgent[
             action_bias: Bias for actions (default: 0.0).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
+            normalize_rewards: Whether to normalize rewards (default: True).
+            action_mean_biases: Per-action mean biases for policy initialization (optional).
             obs_noise_std: Std dev of Gaussian noise added to observations (default: 0.0).
         """
         self.actor = Self.ActorNetwork(
@@ -589,99 +591,6 @@ struct DeepPPOContinuousAgent[
     # =========================================================================
 
     fn evaluate[
-        E: BoxContinuousActionEnv
-    ](
-        self,
-        mut env: E,
-        num_episodes: Int = 10,
-        max_steps: Int = 1000,
-        verbose: Bool = False,
-        stochastic: Bool = True,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
-        """Evaluate the agent (CPU with optional rendering).
-
-        Uses unbounded Gaussian policy (CleanRL-style). Actions are clipped
-        to [-1, 1] at the environment boundary.
-
-        Args:
-            env: The environment to evaluate on.
-            num_episodes: Number of evaluation episodes.
-            max_steps: Maximum steps per episode.
-            verbose: Whether to print per-episode results.
-            stochastic: If True (default), sample from policy; if False, use mean.
-            renderer: Optional pointer to renderer for visualization.
-
-        Returns:
-            Average reward over evaluation episodes.
-        """
-        var total_reward: Float64 = 0.0
-
-        for episode in range(num_episodes):
-            var obs_list = env.reset_obs_list()
-            var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-            for i in range(Self.OBS):
-                obs[i] = Scalar[dtype](obs_list[i])
-
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps):
-                # stochastic=True samples from policy, False uses mean
-                var action_result = self.select_action(obs, training=stochastic)
-                var actions = action_result[0].copy()
-
-                # Convert actions to List for environment
-                # Apply action scaling and clip to environment bounds
-                var action_list = List[Scalar[dtype]]()
-                for j in range(Self.ACTIONS):
-                    var action_val = Float64(actions[j])
-                    action_val = (
-                        action_val * self.action_scale + self.action_bias
-                    )
-                    # Clip to [-1, 1] for environment (unbounded Gaussian may exceed)
-                    if action_val > 1.0:
-                        action_val = 1.0
-                    elif action_val < -1.0:
-                        action_val = -1.0
-                    action_list.append(Scalar[dtype](action_val))
-
-                # Step environment with multi-dimensional actions
-                var result = env.step_continuous_vec[dtype](action_list)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
-                var done = result[2]
-
-                if renderer:
-                    env.render(renderer[])
-
-                episode_reward += Float64(reward)
-                episode_steps += 1
-
-                # Update observation
-                for i in range(Self.OBS):
-                    obs[i] = next_obs_list[i]
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
-                )
-
-        return total_reward / Float64(num_episodes)
-
-    fn evaluate_renderable[
         E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,

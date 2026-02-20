@@ -47,10 +47,8 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
-from core import BoxDiscreteActionEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 from core.utils.softmax import softmax, sample_from_probs, argmax_probs
-from render import Renderer2D
-from memory import UnsafePointer
 
 
 struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -358,17 +356,16 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding[E.dtype],
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -376,22 +373,27 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
@@ -401,6 +403,13 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += Float64(reward)
                 obs = next_obs
 
@@ -408,6 +417,9 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -770,17 +782,16 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding[E.dtype],
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -788,22 +799,27 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
@@ -813,6 +829,13 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = Float64(result[1])
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs
 
@@ -820,6 +843,9 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -1213,17 +1239,16 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding[E.dtype],
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -1231,22 +1256,27 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
@@ -1256,6 +1286,13 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += Float64(reward)
                 obs = next_obs
 
@@ -1263,6 +1300,9 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 

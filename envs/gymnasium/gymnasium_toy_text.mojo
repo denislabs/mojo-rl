@@ -242,6 +242,7 @@ struct GymFrozenLakeEnv(DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymFrozenLakeState
     comptime ActionType = GymFrozenLakeAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -300,7 +301,7 @@ struct GymFrozenLakeEnv(DiscreteEnv):
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
-            self.current_state = Int(result[0])
+            self.current_state = Int(py=result[0])
         except:
             self.current_state = 0
 
@@ -316,8 +317,8 @@ struct GymFrozenLakeEnv(DiscreteEnv):
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.direction)
-            self.current_state = Int(result[0])
-            reward = Float64(result[1])
+            self.current_state = Int(py=result[0])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
             self.done = terminated or truncated
@@ -403,6 +404,7 @@ struct GymTaxiEnv(DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymTaxiState
     comptime ActionType = GymTaxiAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -439,7 +441,7 @@ struct GymTaxiEnv(DiscreteEnv):
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
-            self.current_state = Int(result[0])
+            self.current_state = Int(py=result[0])
         except:
             self.current_state = 0
 
@@ -455,8 +457,8 @@ struct GymTaxiEnv(DiscreteEnv):
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.action)
-            self.current_state = Int(result[0])
-            reward = Float64(result[1])
+            self.current_state = Int(py=result[0])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
             self.done = terminated or truncated
@@ -541,6 +543,7 @@ struct GymBlackjackEnv(DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymBlackjackState
     comptime ActionType = GymBlackjackAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -596,8 +599,8 @@ struct GymBlackjackEnv(DiscreteEnv):
         try:
             var result = self.env.reset()
             var obs = result[0]
-            self.player_sum = Int(obs[0])
-            self.dealer_card = Int(obs[1])
+            self.player_sum = Int(py=obs[0])
+            self.dealer_card = Int(py=obs[1])
             self.usable_ace = obs[2].__bool__()
         except:
             self.player_sum = 4
@@ -617,12 +620,12 @@ struct GymBlackjackEnv(DiscreteEnv):
         try:
             var result = self.env.step(action.action)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
-            self.player_sum = Int(obs[0])
-            self.dealer_card = Int(obs[1])
+            self.player_sum = Int(py=obs[0])
+            self.dealer_card = Int(py=obs[1])
             self.usable_ace = obs[2].__bool__()
             self.done = terminated or truncated
         except:
@@ -722,6 +725,7 @@ struct GymCliffWalkingEnv(DiscreteEnv):
     # Type aliases for trait conformance
     comptime StateType = GymCliffWalkingState
     comptime ActionType = GymCliffWalkingAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -758,7 +762,7 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
-            self.current_state = Int(result[0])
+            self.current_state = Int(py=result[0])
         except:
             self.current_state = 36  # Bottom-left start position
 
@@ -774,8 +778,8 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         var reward: Float64 = 0.0
         try:
             var result = self.env.step(action.direction)
-            self.current_state = Int(result[0])
-            reward = Float64(result[1])
+            self.current_state = Int(py=result[0])
+            reward = Float64(py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
             self.done = terminated or truncated

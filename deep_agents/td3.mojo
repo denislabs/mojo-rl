@@ -51,9 +51,7 @@ from deep_rl.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from core import TrainingMetrics, BoxContinuousActionEnv
-from render import Renderer2D
-from memory import UnsafePointer
+from core import TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
 
 
 # =============================================================================
@@ -896,17 +894,16 @@ struct DeepTD3Agent[
         return metrics^
 
     fn evaluate[
-        E: BoxContinuousActionEnv
+        E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 200,
         verbose: Bool = False,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent using deterministic policy (no noise).
 
         Args:
@@ -914,14 +911,22 @@ struct DeepTD3Agent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for episode in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = self._list_to_simd(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
@@ -940,8 +945,12 @@ struct DeepTD3Agent[
                 var reward = result[1]
                 var done = result[2]
 
-                if renderer:
-                    env.render(renderer[])
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
 
                 episode_reward += reward
                 obs = self._list_to_simd(result[0])
@@ -961,6 +970,9 @@ struct DeepTD3Agent[
                     "| Steps:",
                     episode_steps,
                 )
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 

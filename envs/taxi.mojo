@@ -1,5 +1,4 @@
 from core import State, Action, Env, DiscreteEnv, RenderableEnv
-from render import Renderer2D
 
 
 @fieldwise_init
@@ -260,9 +259,21 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self, mut renderer: Renderer2D):
+    fn close(mut self):
+        """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
         """Print the taxi grid (text-based, renderer argument ignored)."""
-        _ = renderer
+
         var loc_chars = List[String]()
         loc_chars.append("R")
         loc_chars.append("G")
@@ -313,21 +324,6 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
             loc_chars[self.state.destination],
         )
         print("")
-
-    fn close(mut self):
-        """No resources to clean up."""
-        pass
-
-    # =========================================================================
-    # RenderableEnv Trait Implementation (text-only stubs)
-    # =========================================================================
-
-    fn init_renderer(mut self) raises -> Bool:
-        self._renderer_initialized = True
-        return True
-
-    fn render_frame(mut self) raises -> None:
-        pass
 
     fn close_renderer(mut self) raises -> None:
         self._renderer_initialized = False

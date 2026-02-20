@@ -123,7 +123,7 @@ from render import (
 
 
 struct LunarLander[
-    DTYPE: DType,
+    DTYPE: DType where DTYPE.is_floating_point(),
     ENABLE_WIND: Bool = False,
     WIND_POWER: Float64 = 15.0,
     TURBULENCE_POWER: Float64 = 1.5,

@@ -88,7 +88,7 @@ from physics2d.car.layout import (
 # =============================================================================
 
 
-struct CarRacing[DTYPE: DType](
+struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     BoxContinuousActionEnv, Copyable, GPUContinuousEnv, Movable, RenderableEnv
 ):
     """CarRacing environment with GPU-accelerated physics.

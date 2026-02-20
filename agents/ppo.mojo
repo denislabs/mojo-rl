@@ -48,7 +48,7 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
-from core import BoxDiscreteActionEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 from core.utils.gae import compute_gae, compute_returns_from_advantages
 from core.utils.softmax import softmax, sample_from_probs, argmax_probs
 from core.utils.normalization import normalize
@@ -568,14 +568,16 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding,
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the PPO agent using greedy policy.
 
         Args:
@@ -583,13 +585,22 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
@@ -602,12 +613,22 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
                 if done:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -1060,14 +1081,16 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding,
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the PPO agent using greedy policy.
 
         Args:
@@ -1075,13 +1098,22 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
@@ -1094,11 +1126,21 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
                 if done:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

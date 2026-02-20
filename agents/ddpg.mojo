@@ -53,11 +53,13 @@ from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
-from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
+from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
 from deep_rl.gpu.random import gaussian_noise
 
 
-struct DDPGAgent(Copyable, Movable):
+struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
+    Copyable, Movable
+):
     """DDPG agent with linear function approximation.
 
     Actor: Deterministic policy μ(s) = tanh(w_actor · φ(s)) * action_scale
@@ -65,6 +67,8 @@ struct DDPGAgent(Copyable, Movable):
 
     Uses target networks for stability and Gaussian noise for exploration.
     """
+
+    comptime dtype: DType = Self.DTYPE
 
     # Actor weights: w_actor[feature] -> scalar output
     var actor_weights: List[Float64]
@@ -684,14 +688,16 @@ struct DDPGAgent(Copyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxContinuousActionEnv
+        E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
-        features: PolynomialFeatures,
+        features: PolynomialFeatures[E.dtype],
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the trained DDPG agent using deterministic policy.
 
         Args:
@@ -699,13 +705,22 @@ struct DDPGAgent(Copyable, Movable):
             features: PolynomialFeatures extractor for state representation.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
@@ -722,6 +737,13 @@ struct DDPGAgent(Copyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs
 
@@ -729,6 +751,9 @@ struct DDPGAgent(Copyable, Movable):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -750,7 +775,7 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
 
     Pads with zeros if the list has fewer than 4 elements.
     """
-    var result = SIMD[DType.float64, 4](0.0)
+    var result = SIMD[DTYPE, 4](0.0)
     var n = min(len(obs), 4)
     for i in range(n):
         result[i] = obs[i]

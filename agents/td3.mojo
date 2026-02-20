@@ -51,10 +51,8 @@ from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
-from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
+from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
 from deep_rl.gpu.random import gaussian_noise
-from render import Renderer2D
-from memory import UnsafePointer
 
 
 struct TD3Agent(Copyable, Movable):
@@ -825,17 +823,16 @@ struct TD3Agent(Copyable, Movable):
         return metrics^
 
     fn evaluate[
-        E: BoxContinuousActionEnv
+        E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         features: PolynomialFeatures,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the trained TD3 agent using deterministic policy.
 
         Args:
@@ -843,22 +840,27 @@ struct TD3Agent(Copyable, Movable):
             features: PolynomialFeatures extractor for state representation.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                if renderer:
-                    env.render(renderer[])
-
                 var state_features = features.get_features_simd4(obs)
 
                 # Use deterministic action (no noise)
@@ -870,6 +872,13 @@ struct TD3Agent(Copyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs
 
@@ -877,6 +886,9 @@ struct TD3Agent(Copyable, Movable):
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 

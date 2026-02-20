@@ -40,7 +40,7 @@ References:
 
 from random import random_float64, random_si64
 from core.linear_fa import LinearWeights
-from core import BoxDiscreteActionEnv, TrainingMetrics, FeatureExtractor
+from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics, FeatureExtractor
 
 
 struct LinearQLearningAgent:
@@ -254,14 +254,16 @@ struct LinearQLearningAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv, F: FeatureExtractor
+        E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
         mut env: E,
         features: F,
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the linear Q-learning agent using greedy policy.
 
         Args:
@@ -269,13 +271,22 @@ struct LinearQLearningAgent:
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
@@ -288,12 +299,22 @@ struct LinearQLearningAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
                 if done:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -460,14 +481,16 @@ struct LinearSARSAAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv, F: FeatureExtractor
+        E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
         mut env: E,
         features: F,
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the linear SARSA agent using greedy policy.
 
         Args:
@@ -475,13 +498,22 @@ struct LinearSARSAAgent:
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
@@ -494,12 +526,22 @@ struct LinearSARSAAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
                 if done:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -712,14 +754,16 @@ struct LinearSARSALambdaAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv, F: FeatureExtractor
+        E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
         mut env: E,
         features: F,
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the linear SARSA(λ) agent using greedy policy.
 
         Args:
@@ -727,13 +771,22 @@ struct LinearSARSALambdaAgent:
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
@@ -746,11 +799,21 @@ struct LinearSARSALambdaAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
                 if done:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

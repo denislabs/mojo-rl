@@ -45,9 +45,7 @@ from deep_rl.checkpoint import (
     split_lines,
     find_section_start,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv
-from render import Renderer2D
-from memory import UnsafePointer
+from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 from core.utils.gae import compute_gae_inline
 from core.utils.softmax import (
     softmax_inline,
@@ -679,17 +677,16 @@ struct DeepA2CAgent[
             line_idx += 1
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent using greedy policy.
 
         Args:
@@ -697,14 +694,22 @@ struct DeepA2CAgent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment (default: False).
+            frame_delay_ms: Delay between frames in milliseconds (default: 16).
 
         Returns:
             Average reward over evaluation episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for episode in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs_list = env.reset_obs_list()
             var obs = self._list_to_inline(obs_list)
             var episode_reward: Float64 = 0.0
@@ -721,8 +726,12 @@ struct DeepA2CAgent[
                 var reward = result[1]
                 var done = result[2]
 
-                if renderer:
-                    env.render(renderer[])
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
 
                 episode_reward += reward
                 obs = self._list_to_inline(next_obs_list)
@@ -742,5 +751,8 @@ struct DeepA2CAgent[
                     "| Steps:",
                     episode_steps,
                 )
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

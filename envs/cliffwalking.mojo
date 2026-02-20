@@ -1,5 +1,4 @@
 from core import State, Action, Env, DiscreteEnv, RenderableEnv
-from render import Renderer2D
 
 
 @fieldwise_init
@@ -155,10 +154,19 @@ struct CliffWalkingEnv(DiscreteEnv, RenderableEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Print the grid with agent position (text-based, renderer argument ignored).
-        """
-        _ = renderer
+    fn close(mut self):
+        """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
         for y in range(self.height - 1, -1, -1):
             var row = String("")
             for x in range(self.width):
@@ -174,21 +182,6 @@ struct CliffWalkingEnv(DiscreteEnv, RenderableEnv):
                     row += ". "  # Safe
             print(row)
         print("")
-
-    fn close(mut self):
-        """No resources to clean up."""
-        pass
-
-    # =========================================================================
-    # RenderableEnv Trait Implementation (text-only stubs)
-    # =========================================================================
-
-    fn init_renderer(mut self) raises -> Bool:
-        self._renderer_initialized = True
-        return True
-
-    fn render_frame(mut self) raises -> None:
-        pass
 
     fn close_renderer(mut self) raises -> None:
         self._renderer_initialized = False

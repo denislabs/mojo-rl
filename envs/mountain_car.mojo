@@ -15,7 +15,14 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 from math import cos, sin
 from random import random_float64
 from memory import alloc
-from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv, RenderableEnv
+from core import (
+    State,
+    Action,
+    DiscreteEnv,
+    TileCoding,
+    BoxDiscreteActionEnv,
+    RenderableEnv,
+)
 from render import (
     Renderer2D,
     SDL_Color,
@@ -81,7 +88,9 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=2)
 
 
-struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
+struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
+    BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
+):
     """Native Mojo MountainCar environment with integrated SDL3 rendering.
 
     State: [position, velocity] (2D).
@@ -182,7 +191,8 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & Rendera
         """Take action and return (state, reward, done).
 
         Args:
-            action: MountainCarAction (direction 0=left, 1=no push, 2=right)
+            action: MountainCarAction (direction 0=left, 1=no push, 2=right).
+            verbose: Whether to print verbose output (default: False).
 
         Physics:
             velocity(t+1) = velocity(t) + (action - 1) * force - cos(3 * position(t)) * gravity
@@ -198,7 +208,8 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & Rendera
         self.velocity = (
             self.velocity
             + force_direction * self.force
-            - Scalar[Self.dtype](cos(3.0 * Float64(self.position))) * self.gravity
+            - Scalar[Self.dtype](cos(3.0 * Float64(self.position)))
+            * self.gravity
         )
 
         # Clip velocity
@@ -263,8 +274,12 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & Rendera
                 normalized = 1.0
             return Int(normalized * Float64(bins - 1))
 
-        var b0 = bin_value(Float64(self.position), pos_low, pos_high, self.num_bins)
-        var b1 = bin_value(Float64(self.velocity), vel_low, vel_high, self.num_bins)
+        var b0 = bin_value(
+            Float64(self.position), pos_low, pos_high, self.num_bins
+        )
+        var b1 = bin_value(
+            Float64(self.velocity), vel_low, vel_high, self.num_bins
+        )
 
         return b0 * self.num_bins + b1
 
@@ -359,9 +374,9 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & Rendera
 
     fn _height(self, position: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Get terrain height at a given position."""
-        return Scalar[Self.dtype](sin(3.0 * Float64(position))) * Scalar[Self.dtype](
-            0.45
-        ) + Scalar[Self.dtype](0.55)
+        return Scalar[Self.dtype](sin(3.0 * Float64(position))) * Scalar[
+            Self.dtype
+        ](0.45) + Scalar[Self.dtype](0.55)
 
     fn render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.

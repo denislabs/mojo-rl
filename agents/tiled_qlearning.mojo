@@ -30,9 +30,7 @@ Example usage:
 
 from random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
-from core import BoxDiscreteActionEnv, TrainingMetrics
-from render import Renderer2D
-from memory import UnsafePointer
+from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 
 
 struct TiledQLearningAgent:
@@ -249,17 +247,16 @@ struct TiledQLearningAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -267,21 +264,26 @@ struct TiledQLearningAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
@@ -290,6 +292,13 @@ struct TiledQLearningAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
 
@@ -297,6 +306,9 @@ struct TiledQLearningAgent:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -466,17 +478,16 @@ struct TiledSARSAAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -484,21 +495,26 @@ struct TiledSARSAAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
@@ -507,6 +523,13 @@ struct TiledSARSAAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
 
@@ -514,6 +537,9 @@ struct TiledSARSAAgent:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)
 
@@ -730,17 +756,16 @@ struct TiledSARSALambdaAgent:
         return metrics^
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
         mut env: E,
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
-            Renderer2D, MutAnyOrigin
-        ](),
-    ) -> Float64:
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
@@ -748,21 +773,26 @@ struct TiledSARSALambdaAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            renderer: Optional pointer to renderer for visualization.
+            render: Whether to render the environment visually.
+            frame_delay_ms: Delay in milliseconds between frames when rendering.
 
         Returns:
             Average reward across episodes.
         """
         var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
 
         for _ in range(num_episodes):
+            if quit_requested:
+                break
+
             var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if renderer:
-                    env.render(renderer[])
-
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
@@ -771,6 +801,13 @@ struct TiledSARSALambdaAgent:
                 var reward = result[1]
                 var done = result[2]
 
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
                 episode_reward += reward
                 obs = next_obs^
 
@@ -778,5 +815,8 @@ struct TiledSARSALambdaAgent:
                     break
 
             total_reward += episode_reward
+
+        if render:
+            env.close_renderer()
 
         return total_reward / Float64(num_episodes)

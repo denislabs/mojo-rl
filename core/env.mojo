@@ -1,6 +1,5 @@
 from .state import State
 from .action import Action
-from render import Renderer2D
 
 
 trait Env:
@@ -29,13 +28,6 @@ trait Env:
 
     fn get_state(self) -> Self.StateType:
         """Return current state representation."""
-        ...
-
-    fn render(
-        mut self,
-        mut renderer: Renderer2D,
-    ):
-        """Render the environment (optional)."""
         ...
 
     fn close(mut self):

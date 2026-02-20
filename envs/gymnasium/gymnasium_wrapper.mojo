@@ -5,7 +5,6 @@ handling the Python-Mojo type conversions automatically.
 """
 
 from python import Python, PythonObject
-from render import Renderer2D
 
 
 struct GymnasiumEnv:
@@ -36,8 +35,8 @@ struct GymnasiumEnv:
         """Initialize a Gymnasium environment.
 
         Args:
-            env_name: Name of the environment (e.g., "CartPole-v1", "LunarLander-v3")
-            render_mode: "human" for visual rendering, "" for no rendering
+            env_name: Name of the environment (e.g., "CartPole-v1", "LunarLander-v3").
+            render_mode: "human" for visual rendering, "" for no rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -64,13 +63,13 @@ struct GymnasiumEnv:
         ):
             self.is_discrete_obs = True
             self.obs_dim = 1
-            self.obs_shape.append(Int(obs_space.n))
+            self.obs_shape.append(Int(py=obs_space.n))
         else:
             # Box or MultiDiscrete - get shape
             var shape = obs_space.shape
             self.obs_dim = 1
-            for i in range(Int(Python.import_module("builtins").len(shape))):
-                var dim = Int(shape[i])
+            for i in range(Int(py=Python.import_module("builtins").len(shape))):
+                var dim = Int(py=shape[i])
                 self.obs_shape.append(dim)
                 self.obs_dim *= dim
 
@@ -82,13 +81,13 @@ struct GymnasiumEnv:
             .__bool__()
         ):
             self.is_discrete_action = True
-            self.action_dim = Int(act_space.n)
+            self.action_dim = Int(py=act_space.n)
         else:
             self.is_discrete_action = False
             var act_shape = act_space.shape
             self.action_dim = (
-                Int(act_shape[0]) if Int(
-                    Python.import_module("builtins").len(act_shape)
+                Int(py=act_shape[0]) if Int(
+                    py=Python.import_module("builtins").len(act_shape)
                 )
                 > 0 else 1
             )
@@ -114,11 +113,12 @@ struct GymnasiumEnv:
         """Take action and return (observation, reward, done).
 
         Args:
-            action: Action to take (int for discrete, numpy array for continuous)
+            action: Action to take (int for discrete, numpy array for continuous).
+            verbose: Whether to print verbose output (default: False).
         """
         var result = self.env.step(action)
         var obs = result[0]
-        var reward = Float64(result[1])
+        var reward = Float64(py=result[1])
         var terminated = result[2].__bool__()
         var truncated = result[3].__bool__()
 
@@ -143,17 +143,16 @@ struct GymnasiumEnv:
         var flat = self.np.asarray(obs).flatten()
         var result = List[Float64]()
         for i in range(self.obs_dim):
-            result.append(Float64(flat[i]))
+            result.append(Float64(py=flat[i]))
         return result^
 
     fn close(mut self) raises:
         """Close the environment."""
         _ = self.env.close()
 
-    fn render(mut self, mut renderer: Renderer2D) raises:
+    fn render(mut self) raises:
         """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
         """
-        _ = renderer
         _ = self.env.render()
 
     fn get_info(self) -> String:

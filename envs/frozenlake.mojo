@@ -1,5 +1,4 @@
 from core import State, Action, Env, DiscreteEnv, RenderableEnv
-from render import Renderer2D
 from random import random_float64
 
 
@@ -176,9 +175,19 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Print the grid (text-based, renderer argument ignored)."""
-        _ = renderer
+    fn close(mut self):
+        """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
         for row in range(self.size):
             var line = String("")
             for col in range(self.size):
@@ -195,21 +204,6 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
                     line += "F "  # Frozen
             print(line)
         print("")
-
-    fn close(mut self):
-        """No resources to clean up."""
-        pass
-
-    # =========================================================================
-    # RenderableEnv Trait Implementation (text-only stubs)
-    # =========================================================================
-
-    fn init_renderer(mut self) raises -> Bool:
-        self._renderer_initialized = True
-        return True
-
-    fn render_frame(mut self) raises -> None:
-        pass
 
     fn close_renderer(mut self) raises -> None:
         self._renderer_initialized = False

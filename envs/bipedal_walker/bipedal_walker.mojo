@@ -103,7 +103,7 @@ from physics2d import (
 
 
 struct BipedalWalker[
-    DTYPE: DType,
+    DTYPE: DType where DTYPE.is_floating_point(),
 ](
     BoxContinuousActionEnv,
     Copyable,
