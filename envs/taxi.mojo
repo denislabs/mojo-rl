@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv
+from core import State, Action, Env, DiscreteEnv, RenderableEnv
 from render import Renderer2D
 
 
@@ -73,7 +73,7 @@ struct TaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(action=5)
 
 
-struct TaxiEnv(DiscreteEnv):
+struct TaxiEnv(DiscreteEnv, RenderableEnv):
     """Taxi environment.
 
     A 5x5 grid with 4 designated locations (R, G, Y, B).
@@ -118,11 +118,13 @@ struct TaxiEnv(DiscreteEnv):
     # Location coordinates: R=(0,0), G=(0,4), Y=(4,0), B=(4,3)
     var loc_rows: List[Int]
     var loc_cols: List[Int]
+    var _renderer_initialized: Bool
 
     fn __init__(out self):
         # Initialize locations
         self.loc_rows = List[Int]()
         self.loc_cols = List[Int]()
+        self._renderer_initialized = False
         # R = 0
         self.loc_rows.append(0)
         self.loc_cols.append(0)
@@ -314,4 +316,27 @@ struct TaxiEnv(DiscreteEnv):
 
     fn close(mut self):
         """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        pass
+
+    fn close_renderer(mut self) raises -> None:
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        return False
+
+    fn check_renderer_quit(mut self) -> Bool:
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
         pass

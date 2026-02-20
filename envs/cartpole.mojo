@@ -18,6 +18,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
+from memory import alloc
 from core import (
     State,
     Action,
@@ -26,6 +27,7 @@ from core import (
     BoxDiscreteActionEnv,
     PolynomialFeatures,
     GPUDiscreteEnv,
+    RenderableEnv,
 )
 from render import (
     Renderer2D,
@@ -117,8 +119,8 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=1)
 
 
-struct CartPoleEnv[DTYPE: DType](
-    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv
+struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
+    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
@@ -167,6 +169,10 @@ struct CartPoleEnv[DTYPE: DType](
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __init__(out self, num_bins: Int = 10):
         """Initialize CartPole environment."""
         # State
@@ -182,6 +188,10 @@ struct CartPoleEnv[DTYPE: DType](
 
         # Discretization settings
         self.num_bins = num_bins
+
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -220,8 +230,8 @@ struct CartPoleEnv[DTYPE: DType](
         ) if action.direction == 1 else Scalar[Self.dtype](-FORCE_MAG)
 
         # Physics calculations
-        var costheta = cos(self.theta)
-        var sintheta = sin(self.theta)
+        var costheta = Scalar[Self.dtype](cos(Float64(self.theta)))
+        var sintheta = Scalar[Self.dtype](sin(Float64(self.theta)))
 
         # Equations of motion (derived from Lagrangian mechanics)
         var temp = (
@@ -297,10 +307,10 @@ struct CartPoleEnv[DTYPE: DType](
     fn _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation."""
         var obs = SIMD[DType.float64, 4]()
-        obs[0] = self.x
-        obs[1] = self.x_dot
-        obs[2] = self.theta
-        obs[3] = self.theta_dot
+        obs[0] = Float64(self.x)
+        obs[1] = Float64(self.x_dot)
+        obs[2] = Float64(self.theta)
+        obs[3] = Float64(self.theta_dot)
         return obs
 
     @always_inline
@@ -309,7 +319,7 @@ struct CartPoleEnv[DTYPE: DType](
         """
         # Inline bin calculation for each dimension
         # Cart position: [-2.4, 2.4]
-        var n0 = (self.x + 2.4) / 4.8
+        var n0 = (Float64(self.x) + 2.4) / 4.8
         if n0 < 0.0:
             n0 = 0.0
         elif n0 > 1.0:
@@ -317,7 +327,7 @@ struct CartPoleEnv[DTYPE: DType](
         var b0 = Int(n0 * Float64(self.num_bins - 1))
 
         # Cart velocity: [-3.0, 3.0]
-        var n1 = (self.x_dot + 3.0) / 6.0
+        var n1 = (Float64(self.x_dot) + 3.0) / 6.0
         if n1 < 0.0:
             n1 = 0.0
         elif n1 > 1.0:
@@ -325,7 +335,7 @@ struct CartPoleEnv[DTYPE: DType](
         var b1 = Int(n1 * Float64(self.num_bins - 1))
 
         # Pole angle: [-0.21, 0.21]
-        var n2 = (self.theta + 0.21) / 0.42
+        var n2 = (Float64(self.theta) + 0.21) / 0.42
         if n2 < 0.0:
             n2 = 0.0
         elif n2 > 1.0:
@@ -333,7 +343,7 @@ struct CartPoleEnv[DTYPE: DType](
         var b2 = Int(n2 * Float64(self.num_bins - 1))
 
         # Pole angular velocity: [-3.0, 3.0]
-        var n3 = (self.theta_dot + 3.0) / 6.0
+        var n3 = (Float64(self.theta_dot) + 3.0) / 6.0
         if n3 < 0.0:
             n3 = 0.0
         elif n3 > 1.0:
@@ -462,7 +472,9 @@ struct CartPoleEnv[DTYPE: DType](
         var truncated = self.steps >= MAX_STEPS
         self.done = terminated or truncated
 
-        var reward: Scalar[Self.dtype] = 1.0 if not terminated else 0.0
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
+            1.0
+        ) if not terminated else Scalar[Self.dtype](0.0)
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
@@ -558,8 +570,50 @@ struct CartPoleEnv[DTYPE: DType](
         renderer.flip()
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)
 
     @always_inline
     fn is_done(self) -> Bool:
@@ -631,7 +685,7 @@ struct CartPoleEnv[DTYPE: DType](
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[Self.dtype]:
         """Create tile coding configured for CartPole environment.
 
         CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
@@ -650,19 +704,19 @@ struct CartPoleEnv[DTYPE: DType](
         tiles.append(tiles_per_dim)
 
         # CartPole state bounds (slightly expanded for safety)
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-2.5)  # cart position
         state_low.append(-3.5)  # cart velocity
         state_low.append(-0.25)  # pole angle (radians)
         state_low.append(-3.5)  # pole angular velocity
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(2.5)
         state_high.append(3.5)
         state_high.append(0.25)
         state_high.append(3.5)
 
-        return TileCoding(
+        return TileCoding[Self.dtype](
             num_tilings=num_tilings,
             tiles_per_dim=tiles^,
             state_low=state_low^,
@@ -670,7 +724,7 @@ struct CartPoleEnv[DTYPE: DType](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for CartPole (4D state) with normalization.
 
         CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
@@ -681,19 +735,19 @@ struct CartPoleEnv[DTYPE: DType](
         Returns:
             PolynomialFeatures extractor configured for CartPole with normalization
         """
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-2.4)  # cart position
         state_low.append(-3.0)  # cart velocity
         state_low.append(-0.21)  # pole angle (radians)
         state_low.append(-3.0)  # pole angular velocity
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(2.4)
         state_high.append(3.0)
         state_high.append(0.21)
         state_high.append(3.0)
 
-        return PolynomialFeatures(
+        return PolynomialFeatures[Self.dtype](
             state_dim=4,
             degree=degree,
             include_bias=True,
@@ -945,6 +999,7 @@ struct CartPoleEnv[DTYPE: DType](
             dones_buf: Dones buffer [BATCH_SIZE] (written).
             obs_buf: Observations buffer [BATCH_SIZE * OBS_DIM] (written).
             rng_seed: Random seed (unused in CartPole, for trait compatibility).
+            workspace_ptr: Optional workspace pointer (unused for CartPole).
         """
         # Create tensor views from buffers
         var states = LayoutTensor[

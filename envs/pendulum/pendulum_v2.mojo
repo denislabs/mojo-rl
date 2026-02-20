@@ -21,6 +21,7 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from random import random_float64
 from random.philox import Random as PhiloxRandom
+from memory import alloc
 
 from core import (
     BoxContinuousActionEnv,
@@ -29,6 +30,7 @@ from core import (
     DiscreteEnv,
     TileCoding,
     PolynomialFeatures,
+    RenderableEnv,
 )
 from render import (
     Renderer2D,
@@ -54,13 +56,14 @@ from physics2d import dtype, TPB
 # =============================================================================
 
 
-struct PendulumV2[DTYPE: DType](
+struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     BoxContinuousActionEnv,
     BoxDiscreteActionEnv,
     Copyable,
     DiscreteEnv,
     GPUContinuousEnv,
     Movable,
+    RenderableEnv,
 ):
     """Pendulum environment with GPU-accelerated batched simulation.
 
@@ -126,6 +129,10 @@ struct PendulumV2[DTYPE: DType](
     var num_bins_angle: Int
     var num_bins_velocity: Int
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     # =========================================================================
     # Constructors
     # =========================================================================
@@ -162,6 +169,10 @@ struct PendulumV2[DTYPE: DType](
         self.num_bins_angle = num_bins_angle
         self.num_bins_velocity = num_bins_velocity
 
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
+
     fn __copyinit__(out self, existing: Self):
         """Copy constructor."""
         self.max_speed = existing.max_speed
@@ -179,6 +190,9 @@ struct PendulumV2[DTYPE: DType](
         self.last_torque = existing.last_torque
         self.num_bins_angle = existing.num_bins_angle
         self.num_bins_velocity = existing.num_bins_velocity
+        # Do not copy renderer — reset to null
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     fn __moveinit__(out self, deinit existing: Self):
         """Move constructor."""
@@ -197,6 +211,9 @@ struct PendulumV2[DTYPE: DType](
         self.last_torque = existing.last_torque
         self.num_bins_angle = existing.num_bins_angle
         self.num_bins_velocity = existing.num_bins_velocity
+        # Transfer renderer ownership
+        self._renderer = existing._renderer
+        self._renderer_initialized = existing._renderer_initialized
 
     # =========================================================================
     # GPU Batch Operations (Static Methods) - GPUContinuousEnv Trait
@@ -236,6 +253,8 @@ struct PendulumV2[DTYPE: DType](
             dones: Done flags buffer (output) [BATCH_SIZE].
             obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed (unused for deterministic physics).
+            curriculum_values: Optional curriculum values (unused for Pendulum).
+            workspace_ptr: Optional workspace pointer (unused for Pendulum).
         """
         # Create tensor views
         var states_tensor = LayoutTensor[
@@ -984,8 +1003,11 @@ struct PendulumV2[DTYPE: DType](
         renderer.flip()
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     # =========================================================================
     # Static Factory Methods
@@ -1040,20 +1062,65 @@ struct PendulumV2[DTYPE: DType](
         Returns:
             PolynomialFeatures[Self.dtype] extractor configured for Pendulum.
         """
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(θ)
         state_low.append(-1.0)  # sin(θ)
         state_low.append(-8.0)  # θ_dot
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)  # cos(θ)
         state_high.append(1.0)  # sin(θ)
         state_high.append(8.0)  # θ_dot
 
-        return PolynomialFeatures(
+        return PolynomialFeatures[Self.dtype](
             state_dim=3,
             degree=degree,
             include_bias=True,
             state_low=state_low^,
             state_high=state_high^,
         )
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)

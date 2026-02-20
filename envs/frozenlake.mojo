@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv
+from core import State, Action, Env, DiscreteEnv, RenderableEnv
 from render import Renderer2D
 from random import random_float64
 
@@ -48,7 +48,7 @@ struct FrozenAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=3)
 
 
-struct FrozenLakeEnv(DiscreteEnv):
+struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
     """FrozenLake environment.
 
     The agent navigates a frozen lake grid to reach a goal while avoiding holes.
@@ -72,12 +72,14 @@ struct FrozenLakeEnv(DiscreteEnv):
     var holes: List[Int]  # Positions of holes
     var goal: Int  # Position of goal
     var is_slippery: Bool
+    var _renderer_initialized: Bool
 
     fn __init__(out self, size: Int = 4, is_slippery: Bool = True):
         self.size = size
         self.state = FrozenState(0)  # Start at top-left
         self.goal = size * size - 1  # Goal at bottom-right
         self.is_slippery = is_slippery
+        self._renderer_initialized = False
 
         # Default 4x4 layout holes: positions 5, 7, 11, 12
         self.holes = List[Int]()
@@ -196,4 +198,27 @@ struct FrozenLakeEnv(DiscreteEnv):
 
     fn close(mut self):
         """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        pass
+
+    fn close_renderer(mut self) raises -> None:
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        return False
+
+    fn check_renderer_quit(mut self) -> Bool:
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
         pass

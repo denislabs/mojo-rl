@@ -14,7 +14,8 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
-from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv
+from memory import alloc
+from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv, RenderableEnv
 from render import (
     Renderer2D,
     SDL_Color,
@@ -80,8 +81,8 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=2)
 
 
-struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
-    """Native Mojo MountainCar environment with integrated SDL2 rendering.
+struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
+    """Native Mojo MountainCar environment with integrated SDL3 rendering.
 
     State: [position, velocity] (2D).
     Actions: 0 (push left), 1 (no push), 2 (push right).
@@ -121,6 +122,10 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __init__(out self, num_bins: Int = 20):
         """Initialize MountainCar with default physics parameters."""
         # Physics constants from Gymnasium
@@ -145,6 +150,10 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         # Discretization settings
         self.num_bins = num_bins
 
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
+
     # ========================================================================
     # DiscreteEnv trait methods
     # ========================================================================
@@ -158,7 +167,7 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         Returns MountainCarState with discretized state index.
         """
         # Random initial position in [-0.6, -0.4]
-        self.position = -0.6 + random_float64() * 0.2
+        self.position = Scalar[Self.dtype](-0.6 + random_float64() * 0.2)
         self.velocity = 0.0
 
         self.steps = 0
@@ -189,7 +198,7 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         self.velocity = (
             self.velocity
             + force_direction * self.force
-            - cos(Scalar[Self.dtype](3.0) * self.position) * self.gravity
+            - Scalar[Self.dtype](cos(3.0 * Float64(self.position))) * self.gravity
         )
 
         # Clip velocity
@@ -230,8 +239,8 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     fn _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current observation."""
         var obs = SIMD[DType.float64, 4]()
-        obs[0] = self.position
-        obs[1] = self.velocity
+        obs[0] = Float64(self.position)
+        obs[1] = Float64(self.velocity)
         obs[2] = 0.0
         obs[3] = 0.0
         return obs
@@ -254,8 +263,8 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
                 normalized = 1.0
             return Int(normalized * Float64(bins - 1))
 
-        var b0 = bin_value(self.position, pos_low, pos_high, self.num_bins)
-        var b1 = bin_value(self.velocity, vel_low, vel_high, self.num_bins)
+        var b0 = bin_value(Float64(self.position), pos_low, pos_high, self.num_bins)
+        var b1 = bin_value(Float64(self.velocity), vel_low, vel_high, self.num_bins)
 
         return b0 * self.num_bins + b1
 
@@ -350,7 +359,7 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
 
     fn _height(self, position: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Get terrain height at a given position."""
-        return sin(Scalar[Self.dtype](3.0) * position) * Scalar[Self.dtype](
+        return Scalar[Self.dtype](sin(3.0 * Float64(position))) * Scalar[Self.dtype](
             0.45
         ) + Scalar[Self.dtype](0.55)
 
@@ -534,8 +543,11 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         renderer.flip()
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     fn is_done(self) -> Bool:
         """Check if episode is done."""
@@ -604,7 +616,7 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[Self.dtype]:
         """Create tile coding configured for MountainCar environment.
 
         MountainCar state: [position, velocity]
@@ -621,17 +633,62 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         tiles.append(tiles_per_dim)
 
         # MountainCar state bounds (slightly expanded for safety)
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.2)  # position min
         state_low.append(-0.07)  # velocity min
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(0.6)  # position max
         state_high.append(0.07)  # velocity max
 
-        return TileCoding(
+        return TileCoding[Self.dtype](
             num_tilings=num_tilings,
             tiles_per_dim=tiles^,
             state_low=state_low^,
             state_high=state_high^,
         )
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)

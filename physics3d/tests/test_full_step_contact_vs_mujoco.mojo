@@ -6,6 +6,8 @@ the heavily-generic constraint solver code.
 
 Tests scenarios where the robot makes ground contact, exercising the
 full constraint solver pipeline (contact detection + Jacobians + solver).
+Includes multi-step and high-velocity impact tests to diagnose solver
+accuracy under fast foot strikes.
 
 Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_full_step_contact_vs_mujoco.mojo
@@ -46,9 +48,16 @@ comptime QPOS_REL_TOL: Float64 = 2e-4
 comptime QVEL_ABS_TOL: Float64 = 2e-4
 comptime QVEL_REL_TOL: Float64 = 2e-4
 
+# Looser tolerances for multi-step tests — errors accumulate over steps.
+# These are diagnostic (we want to SEE how errors grow, not hide them).
+comptime MULTI_QPOS_ABS_TOL: Float64 = 5e-3
+comptime MULTI_QPOS_REL_TOL: Float64 = 5e-3
+comptime MULTI_QVEL_ABS_TOL: Float64 = 5e-3
+comptime MULTI_QVEL_REL_TOL: Float64 = 5e-3
+
 
 # =============================================================================
-# Comparison helper
+# Comparison helpers
 # =============================================================================
 
 
@@ -395,26 +404,124 @@ fn test_ground_contact_with_action() raises -> Bool:
     return compare_step("Ground contact with action", qpos, qvel, actions)
 
 
+# Multi-step tests — call compare_step multiple times from the same initial
+# conditions. Each call re-runs from scratch to N steps and prints final
+# error. Calling in sequence shows how error grows with step count.
+# (Avoids creating a second Model+Data on the same stack frame.)
+
+
+fn test_multi_step_accumulation() raises -> Bool:
+    """Error growth: run 1,5,10,50 steps from the same start state."""
+    print("--- Test: Multi-step error accumulation ---")
+    print("  Same initial conditions, increasing number of steps")
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.45
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[0] = 0.8
+    actions[1] = -0.5
+    actions[2] = 0.3
+    actions[3] = 0.8
+    actions[4] = -0.5
+    actions[5] = 0.3
+    # Each call re-runs from the same qpos/qvel, increasing num_steps
+    var p1 = compare_step("  N=1 ", qpos, qvel, actions, 1)
+    var p5 = compare_step("  N=5 ", qpos, qvel, actions, 5)
+    var p10 = compare_step("  N=10", qpos, qvel, actions, 10)
+    var p50 = compare_step("  N=50", qpos, qvel, actions, 50)
+    return p1 and p5 and p10 and p50
+
+
+fn test_fast_downward_impact() raises -> Bool:
+    """Robot falling fast (qvel[1]=-3 m/s) — high-velocity impact at 1 step."""
+    print("--- Test: Fast downward impact (v_z=-3 m/s) ---")
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.35  # rootz — feet very close to ground
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[1] = -3.0   # 3 m/s downward
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    var p1 = compare_step("  v_z=-3 N=1 ", qpos, qvel, actions, 1)
+    var p5 = compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5)
+    var p10 = compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10)
+    return p1 and p5 and p10
+
+
+fn test_very_fast_impact() raises -> Bool:
+    """Very high velocity impact (qvel[1]=-6 m/s) — worst-case penetration."""
+    print("--- Test: Very fast impact (v_z=-6 m/s) ---")
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.3   # rootz — feet near ground
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[1] = -6.0   # 6 m/s downward
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    var p1 = compare_step("  v_z=-6 N=1 ", qpos, qvel, actions, 1)
+    var p5 = compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5)
+    var p10 = compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10)
+    return p1 and p5 and p10
+
+
+fn test_running_gait_impact() raises -> Bool:
+    """Running gait velocities — forward motion + downward foot strike."""
+    print("--- Test: Running gait impact (v_forward=3, v_z=-2) ---")
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.35
+    qpos[2] = -0.2    # rooty: slight forward lean
+    qpos[3] = 0.4     # bthigh
+    qpos[4] = -0.7    # bshin
+    qpos[6] = -0.3    # fthigh
+    qpos[7] = 0.6     # fshin
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 3.0     # rootx: 3 m/s forward
+    qvel[1] = -2.0    # rootz: 2 m/s downward
+    qvel[3] = 5.0     # bthigh angular velocity
+    qvel[4] = -8.0    # bshin
+    qvel[6] = -4.0    # fthigh
+    qvel[7] = 7.0     # fshin
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[0] = 0.8
+    actions[1] = -0.8
+    actions[3] = 0.8
+    actions[4] = -0.8
+    var p1 = compare_step("  running N=1 ", qpos, qvel, actions, 1)
+    var p5 = compare_step("  running N=5 ", qpos, qvel, actions, 5)
+    var p20 = compare_step("  running N=20", qpos, qvel, actions, 20)
+    return p1 and p5 and p20
+
+
 # =============================================================================
 # Main
 # =============================================================================
 
 
 fn main() raises:
-    print("=" * 60)
+    print("=" * 70)
     print("Full Step with Contacts: Mojo Engine vs MuJoCo Reference")
-    print("=" * 60)
+    print("=" * 70)
     print("Model: HalfCheetah (NQ=9, NV=9)")
     print("Integrator: Euler (MuJoCo default)")
-    print("Solver: PGS")
+    print("Solver: Newton")
     print("Cone: pyramidal (both engines)")
     print("Precision: float64")
-    print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
-    print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
+    print(
+        "Single-step tolerances: qpos/qvel abs=",
+        QPOS_ABS_TOL,
+        " rel=",
+        QPOS_REL_TOL,
+    )
+    print(
+        "Multi-step  tolerances: qpos/qvel abs=",
+        MULTI_QPOS_ABS_TOL,
+        " rel=",
+        MULTI_QPOS_REL_TOL,
+    )
     print()
 
     var num_pass = 0
     var num_fail = 0
+
+    # --- Original single-step tests ---
+    print("### Single-step baseline tests ###")
+    print()
 
     if test_ground_contact():
         num_pass += 1
@@ -428,7 +535,39 @@ fn main() raises:
         num_fail += 1
     print()
 
-    print("=" * 60)
+    # --- Multi-step accumulation tests ---
+    print("### Multi-step error accumulation (same start, more steps) ###")
+    print()
+
+    if test_multi_step_accumulation():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    # --- High-velocity impact tests ---
+    print("### High-velocity impact tests ###")
+    print()
+
+    if test_fast_downward_impact():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    if test_very_fast_impact():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    if test_running_gait_impact():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    print("=" * 70)
     print(
         "Results:",
         num_pass,
@@ -440,5 +579,5 @@ fn main() raises:
     if num_fail == 0:
         print("ALL TESTS PASSED")
     else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+        print("SOME TESTS FAILED — check error magnitudes above for solver quality")
+    print("=" * 70)

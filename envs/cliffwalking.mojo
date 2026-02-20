@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv
+from core import State, Action, Env, DiscreteEnv, RenderableEnv
 from render import Renderer2D
 
 
@@ -50,7 +50,7 @@ struct CliffAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=3)
 
 
-struct CliffWalkingEnv(DiscreteEnv):
+struct CliffWalkingEnv(DiscreteEnv, RenderableEnv):
     """CliffWalking environment.
 
     The agent must navigate from the start to the goal along the bottom edge
@@ -80,6 +80,7 @@ struct CliffWalkingEnv(DiscreteEnv):
     var state: CliffState
     var start: CliffState
     var goal: CliffState
+    var _renderer_initialized: Bool
 
     fn __init__(out self, width: Int = 12, height: Int = 4):
         self.width = width
@@ -87,6 +88,7 @@ struct CliffWalkingEnv(DiscreteEnv):
         self.start = CliffState(0, 0)
         self.goal = CliffState(width - 1, 0)
         self.state = CliffState(0, 0)
+        self._renderer_initialized = False
 
     fn state_to_index(self, state: CliffState) -> Int:
         """Convert a CliffState to a flat index."""
@@ -175,4 +177,27 @@ struct CliffWalkingEnv(DiscreteEnv):
 
     fn close(mut self):
         """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        pass
+
+    fn close_renderer(mut self) raises -> None:
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        return False
+
+    fn check_renderer_quit(mut self) -> Bool:
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
         pass

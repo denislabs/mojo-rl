@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv
+from core import State, Action, Env, DiscreteEnv, RenderableEnv
 from render import Renderer2D
 
 
@@ -64,7 +64,7 @@ struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return "GridAction(UNKNOWN)"
 
 
-struct GridWorldEnv(DiscreteEnv):
+struct GridWorldEnv(DiscreteEnv, RenderableEnv):
     """A simple grid world environment.
 
     Agent starts at (0, 0) and must reach the goal at (width-1, height-1).
@@ -79,12 +79,14 @@ struct GridWorldEnv(DiscreteEnv):
     var height: Int
     var state: GridState
     var goal: GridState
+    var _renderer_initialized: Bool
 
     fn __init__(out self, width: Int = 5, height: Int = 5):
         self.width = width
         self.height = height
         self.state = GridState(0, 0)
         self.goal = GridState(width - 1, height - 1)
+        self._renderer_initialized = False
 
     fn state_to_index(self, state: GridState) -> Int:
         """Convert a GridState to a flat index."""
@@ -152,4 +154,27 @@ struct GridWorldEnv(DiscreteEnv):
 
     fn close(mut self):
         """No resources to clean up."""
+        pass
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation (text-only stubs)
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        pass
+
+    fn close_renderer(mut self) raises -> None:
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        return False
+
+    fn check_renderer_quit(mut self) -> Bool:
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
         pass

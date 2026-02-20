@@ -13,6 +13,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin, pi
 from random import random_float64
+from memory import alloc
 from core import (
     State,
     Action,
@@ -21,6 +22,7 @@ from core import (
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
     PolynomialFeatures,
+    RenderableEnv,
 )
 from render import (
     Renderer2D,
@@ -97,12 +99,13 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Float64(self.direction - 1) * 2.0
 
 
-struct PendulumEnv[DTYPE: DType](
+struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     BoxDiscreteActionEnv
     & DiscreteEnv
     & BoxContinuousActionEnv
     & Copyable
     & Movable
+    & RenderableEnv
 ):
     """Native Mojo Pendulum environment with integrated SDL2 rendering.
 
@@ -149,6 +152,10 @@ struct PendulumEnv[DTYPE: DType](
     var num_bins_angle: Int
     var num_bins_velocity: Int
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __copyinit__(out self, existing: Self):
         """Copy constructor."""
         self.max_speed = existing.max_speed
@@ -166,6 +173,9 @@ struct PendulumEnv[DTYPE: DType](
         self.last_torque = existing.last_torque
         self.num_bins_angle = existing.num_bins_angle
         self.num_bins_velocity = existing.num_bins_velocity
+        # Do not copy renderer — reset to null
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     fn __moveinit__(out self, deinit existing: Self):
         """Move constructor."""
@@ -184,6 +194,9 @@ struct PendulumEnv[DTYPE: DType](
         self.last_torque = existing.last_torque
         self.num_bins_angle = existing.num_bins_angle
         self.num_bins_velocity = existing.num_bins_velocity
+        # Transfer renderer ownership
+        self._renderer = existing._renderer
+        self._renderer_initialized = existing._renderer_initialized
 
     fn __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
@@ -216,6 +229,10 @@ struct PendulumEnv[DTYPE: DType](
         # Discretization settings
         self.num_bins_angle = num_bins_angle
         self.num_bins_velocity = num_bins_velocity
+
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -600,8 +617,11 @@ struct PendulumEnv[DTYPE: DType](
         renderer.flip()
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     fn is_done(self) -> Bool:
         """Check if episode is done."""
@@ -686,7 +706,7 @@ struct PendulumEnv[DTYPE: DType](
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[Self.dtype]:
         """Create tile coding configured for Pendulum environment.
 
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
@@ -696,7 +716,7 @@ struct PendulumEnv[DTYPE: DType](
             tiles_per_dim: Tiles per dimension (default 8)
 
         Returns:
-            TileCoding configured for Pendulum observation space
+            TileCoding[Self.dtype] configured for Pendulum observation space
         """
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)  # cos(θ)
@@ -704,17 +724,17 @@ struct PendulumEnv[DTYPE: DType](
         tiles.append(tiles_per_dim)  # θ_dot
 
         # Observation bounds
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(θ) min
         state_low.append(-1.0)  # sin(θ) min
         state_low.append(-8.0)  # θ_dot min
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)  # cos(θ) max
         state_high.append(1.0)  # sin(θ) max
         state_high.append(8.0)  # θ_dot max
 
-        return TileCoding(
+        return TileCoding[Self.dtype](
             num_tilings=num_tilings,
             tiles_per_dim=tiles^,
             state_low=state_low^,
@@ -722,7 +742,7 @@ struct PendulumEnv[DTYPE: DType](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Pendulum (3D observation) with normalization.
 
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
@@ -731,22 +751,67 @@ struct PendulumEnv[DTYPE: DType](
             degree: Maximum polynomial degree (keep low for 3D to avoid explosion)
 
         Returns:
-            PolynomialFeatures extractor configured for Pendulum with normalization
+            PolynomialFeatures[Self.dtype] extractor configured for Pendulum with normalization
         """
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(θ)
         state_low.append(-1.0)  # sin(θ)
         state_low.append(-8.0)  # θ_dot
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)  # cos(θ)
         state_high.append(1.0)  # sin(θ)
         state_high.append(8.0)  # θ_dot
 
-        return PolynomialFeatures(
+        return PolynomialFeatures[Self.dtype](
             state_dim=3,
             degree=degree,
             include_bias=True,
             state_low=state_low^,
             state_high=state_high^,
         )
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)

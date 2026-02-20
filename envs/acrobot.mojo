@@ -14,6 +14,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin, pi
 from random import random_float64
+from memory import alloc
 from core import (
     State,
     Action,
@@ -21,6 +22,7 @@ from core import (
     TileCoding,
     BoxDiscreteActionEnv,
     PolynomialFeatures,
+    RenderableEnv,
 )
 from render import (
     Renderer2D,
@@ -131,7 +133,7 @@ fn bound(x: Float64, m: Float64, M: Float64) -> Float64:
     return x
 
 
-struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
+struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     """Native Mojo Acrobot environment with integrated SDL2 rendering.
 
     State: [theta1, theta2, theta1_dot, theta2_dot] (internal).
@@ -190,6 +192,10 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     # Book or NIPS dynamics
     var use_book_dynamics: Bool
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
         """Initialize Acrobot with default physics parameters.
 
@@ -232,6 +238,10 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
 
         # Dynamics mode
         self.use_book_dynamics = use_book_dynamics
+
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -739,8 +749,11 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         renderer.flip()
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     @always_inline
     fn is_done(self) -> Bool:
@@ -810,7 +823,7 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[Self.dtype]:
         """Create tile coding configured for Acrobot environment.
 
         Acrobot observation: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot].
@@ -820,7 +833,7 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             tiles_per_dim: Tiles per dimension (default 8).
 
         Returns:
-            TileCoding configured for Acrobot observation space.
+            TileCoding[Self.dtype] configured for Acrobot observation space.
         """
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)
@@ -831,23 +844,23 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         tiles.append(tiles_per_dim)
 
         # Acrobot observation bounds
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(theta1)
         state_low.append(-1.0)  # sin(theta1)
         state_low.append(-1.0)  # cos(theta2)
         state_low.append(-1.0)  # sin(theta2)
-        state_low.append(-4.0 * pi)  # theta1_dot
-        state_low.append(-9.0 * pi)  # theta2_dot
+        state_low.append(Scalar[Self.dtype](-4.0 * pi))  # theta1_dot
+        state_low.append(Scalar[Self.dtype](-9.0 * pi))  # theta2_dot
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)
         state_high.append(1.0)
         state_high.append(1.0)
         state_high.append(1.0)
-        state_high.append(4.0 * pi)
-        state_high.append(9.0 * pi)
+        state_high.append(Scalar[Self.dtype](4.0 * pi))
+        state_high.append(Scalar[Self.dtype](9.0 * pi))
 
-        return TileCoding(
+        return TileCoding[Self.dtype](
             num_tilings=num_tilings,
             tiles_per_dim=tiles^,
             state_low=state_low^,
@@ -855,7 +868,7 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Acrobot (6D observation) with normalization.
 
         Acrobot observation: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot].
@@ -864,28 +877,73 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             degree: Maximum polynomial degree (keep low for 6D to avoid explosion).
 
         Returns:
-            PolynomialFeatures extractor configured for Acrobot with normalization.
+            PolynomialFeatures[Self.dtype] extractor configured for Acrobot with normalization.
         """
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(theta1)
         state_low.append(-1.0)  # sin(theta1)
         state_low.append(-1.0)  # cos(theta2)
         state_low.append(-1.0)  # sin(theta2)
-        state_low.append(-4.0 * pi)  # theta1_dot
-        state_low.append(-9.0 * pi)  # theta2_dot
+        state_low.append(Scalar[Self.dtype](-4.0 * pi))  # theta1_dot
+        state_low.append(Scalar[Self.dtype](-9.0 * pi))  # theta2_dot
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)
         state_high.append(1.0)
         state_high.append(1.0)
         state_high.append(1.0)
-        state_high.append(4.0 * pi)
-        state_high.append(9.0 * pi)
+        state_high.append(Scalar[Self.dtype](4.0 * pi))
+        state_high.append(Scalar[Self.dtype](9.0 * pi))
 
-        return PolynomialFeatures(
+        return PolynomialFeatures[Self.dtype](
             state_dim=6,
             degree=degree,
             include_bias=True,
             state_low=state_low^,
             state_high=state_high^,
         )
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)

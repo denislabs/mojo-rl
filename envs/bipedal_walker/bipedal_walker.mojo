@@ -11,6 +11,7 @@ All physics data is packed per-environment for efficient GPU access.
 """
 
 from math import sqrt, cos, sin, pi, tanh
+from memory import alloc
 from layout import Layout, LayoutTensor
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
@@ -20,6 +21,7 @@ from core import (
     GPUContinuousEnv,
     BoxContinuousActionEnv,
     Action,
+    RenderableEnv,
 )
 from render import (
     Renderer2D,
@@ -107,6 +109,7 @@ struct BipedalWalker[
     Copyable,
     GPUContinuousEnv,
     Movable,
+    RenderableEnv,
 ):
     """BipedalWalker  environment with GPU-compatible physics.
 
@@ -172,6 +175,10 @@ struct BipedalWalker[
     # Cached state for immutable get_state() access
     var cached_state: BipedalWalkerState[Self.dtype]
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -228,6 +235,10 @@ struct BipedalWalker[
         # Initialize cached state
         self.cached_state = BipedalWalkerState[Self.dtype]()
 
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
+
         # Initialize physics shapes
         self._init_physics_shapes()
 
@@ -272,6 +283,9 @@ struct BipedalWalker[
         self.terrain_y = List[Scalar[Self.dtype]](other.terrain_y)
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = other.cached_state
+        # Do not copy renderer — reset to null
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
         self._init_physics_shapes()
         self._reset_cpu()
 
@@ -313,6 +327,9 @@ struct BipedalWalker[
         self.terrain_y = other.terrain_y^
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = other.cached_state
+        # Transfer renderer ownership
+        self._renderer = other._renderer
+        self._renderer_initialized = other._renderer_initialized
         self._init_physics_shapes()
         self._reset_cpu()
 
@@ -1182,8 +1199,56 @@ struct BipedalWalker[
         self._render_internal(renderer)
 
     fn close(mut self):
-        """Clean up resources (no-op since renderer is external)."""
-        pass
+        """Clean up resources."""
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)
 
     # =========================================================================
     # Rendering Methods

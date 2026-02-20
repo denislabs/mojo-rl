@@ -305,6 +305,11 @@ struct Phyics3dEnv[
             # Enforce joint limits after each physics step
             Self.MODEL_DEF.enforce_limits(self.data)
 
+        # Run FK after integration so data.xpos matches the new qpos.
+        # Without this, rendering shows the position from the START of the
+        # last substep, not the corrected position after all integrations.
+        forward_kinematics(self.model, self.data)
+
         self.current_step += 1
 
         # Compute reward and termination via config (full state access)

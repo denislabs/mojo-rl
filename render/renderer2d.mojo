@@ -43,7 +43,7 @@ from .sdl import (
 )
 
 
-struct Renderer2D:
+struct Renderer2D(Movable):
     """Native SDL3 renderer with common functionality.
 
     Uses SDL3 for hardware-accelerated 2D rendering.
@@ -103,6 +103,21 @@ struct Renderer2D:
         self.initialized = False
         self.should_quit = False
         self.last_frame_time = 0
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.window = existing.window
+        self.sdl_renderer = existing.sdl_renderer
+        self.screen_width = existing.screen_width
+        self.screen_height = existing.screen_height
+        self.fps = existing.fps
+        self.title = existing.title^
+        self.frame_delay = existing.frame_delay
+        self.white = existing.white
+        self.black = existing.black
+        self.background_color = existing.background_color
+        self.initialized = existing.initialized
+        self.should_quit = existing.should_quit
+        self.last_frame_time = existing.last_frame_time
 
     fn make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
         """Create an SDL color.
@@ -1397,6 +1412,15 @@ struct Renderer2D:
             self.screen_width,
             self.screen_height,
         )
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for the given number of milliseconds (for frame rate control)."""
+        if ms <= 0:
+            return
+        try:
+            delay(UInt32(ms))
+        except:
+            pass
 
     fn make_rotating_camera_offset(
         self,

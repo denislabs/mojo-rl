@@ -18,7 +18,8 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from random.philox import Random as PhiloxRandom
 
-from core import BoxContinuousActionEnv, GPUContinuousEnv, Action
+from memory import alloc
+from core import BoxContinuousActionEnv, GPUContinuousEnv, Action, RenderableEnv
 from render import (
     Renderer2D,
     RotatingCamera,
@@ -88,7 +89,7 @@ from physics2d.car.layout import (
 
 
 struct CarRacing[DTYPE: DType](
-    BoxContinuousActionEnv, Copyable, GPUContinuousEnv, Movable
+    BoxContinuousActionEnv, Copyable, GPUContinuousEnv, Movable, RenderableEnv
 ):
     """CarRacing environment with GPU-accelerated physics.
 
@@ -145,6 +146,10 @@ struct CarRacing[DTYPE: DType](
     # Cached state
     var cached_state: CarRacingState[Self.dtype]
 
+    # Renderer (RenderableEnv)
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -191,6 +196,10 @@ struct CarRacing[DTYPE: DType](
         # Cached state
         self.cached_state = CarRacingState[Self.dtype]()
 
+        # Renderer
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
+
     fn __copyinit__(out self, other: Self):
         self.track = TrackGenerator[DType.float64]()
         self.track.track = other.track.track.copy()
@@ -206,6 +215,9 @@ struct CarRacing[DTYPE: DType](
         self.lap_complete_percent = other.lap_complete_percent
         self.domain_randomize = other.domain_randomize
         self.cached_state = other.cached_state
+        # Do not copy renderer — reset to null
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     fn __moveinit__(out self, deinit other: Self):
         self.track = other.track^
@@ -220,6 +232,9 @@ struct CarRacing[DTYPE: DType](
         self.lap_complete_percent = other.lap_complete_percent
         self.domain_randomize = other.domain_randomize
         self.cached_state = other.cached_state^
+        # Transfer renderer ownership
+        self._renderer = other._renderer
+        self._renderer_initialized = other._renderer_initialized
 
     # =========================================================================
     # Env Trait Methods
@@ -624,7 +639,55 @@ struct CarRacing[DTYPE: DType](
 
     fn close(mut self):
         """Clean up resources."""
-        pass
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the SDL2 renderer."""
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current frame using the internal renderer."""
+        if not self._renderer_initialized:
+            return
+        self.render(self._renderer[])
+
+    fn close_renderer(mut self) raises -> None:
+        """Close and free the SDL2 renderer."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if the renderer window is open."""
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Return True if the renderer has received a quit event."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for frame rate control."""
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)
 
     # =========================================================================
     # BoxContinuousActionEnv Trait Methods
