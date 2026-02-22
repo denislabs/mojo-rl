@@ -51,6 +51,8 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime GEOM_SOLIMP_0: Float64
     comptime GEOM_SOLIMP_1: Float64
     comptime GEOM_SOLIMP_2: Float64
+    comptime GEOM_SOLIMP_3: Float64
+    comptime GEOM_SOLIMP_4: Float64
     comptime GEOM_MARGIN: Float64
     comptime JOINT_ARMATURE: Float64
     comptime JOINT_DAMPING: Float64
@@ -61,6 +63,8 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime JOINT_SOLIMP_LIMIT_0: Float64
     comptime JOINT_SOLIMP_LIMIT_1: Float64
     comptime JOINT_SOLIMP_LIMIT_2: Float64
+    comptime JOINT_SOLIMP_LIMIT_3: Float64
+    comptime JOINT_SOLIMP_LIMIT_4: Float64
     comptime IMPRATIO: Float64
     # Geom density default (kg/m³)
     comptime GEOM_DENSITY: Float64
@@ -89,6 +93,8 @@ struct ModelDefaults[
     geom_solimp_0: Float64 = 0.0,
     geom_solimp_1: Float64 = 0.8,
     geom_solimp_2: Float64 = 0.01,
+    geom_solimp_3: Float64 = 0.5,
+    geom_solimp_4: Float64 = 2.0,
     geom_margin: Float64 = 0.0,
     # Joint defaults (MuJoCo <default><joint .../>)
     joint_armature: Float64 = 0.1,
@@ -100,6 +106,8 @@ struct ModelDefaults[
     joint_solimp_limit_0: Float64 = 0.0,
     joint_solimp_limit_1: Float64 = 0.8,
     joint_solimp_limit_2: Float64 = 0.03,
+    joint_solimp_limit_3: Float64 = 0.5,
+    joint_solimp_limit_4: Float64 = 2.0,
     # Motor defaults (MuJoCo <default><motor .../>)
     motor_ctrl_min: Float64 = -1.0,
     motor_ctrl_max: Float64 = 1.0,
@@ -136,6 +144,8 @@ struct ModelDefaults[
     comptime GEOM_SOLIMP_0: Float64 = Self.geom_solimp_0
     comptime GEOM_SOLIMP_1: Float64 = Self.geom_solimp_1
     comptime GEOM_SOLIMP_2: Float64 = Self.geom_solimp_2
+    comptime GEOM_SOLIMP_3: Float64 = Self.geom_solimp_3
+    comptime GEOM_SOLIMP_4: Float64 = Self.geom_solimp_4
     comptime GEOM_MARGIN: Float64 = Self.geom_margin
     comptime JOINT_ARMATURE: Float64 = Self.joint_armature
     comptime JOINT_DAMPING: Float64 = Self.joint_damping
@@ -146,6 +156,8 @@ struct ModelDefaults[
     comptime JOINT_SOLIMP_LIMIT_0: Float64 = Self.joint_solimp_limit_0
     comptime JOINT_SOLIMP_LIMIT_1: Float64 = Self.joint_solimp_limit_1
     comptime JOINT_SOLIMP_LIMIT_2: Float64 = Self.joint_solimp_limit_2
+    comptime JOINT_SOLIMP_LIMIT_3: Float64 = Self.joint_solimp_limit_3
+    comptime JOINT_SOLIMP_LIMIT_4: Float64 = Self.joint_solimp_limit_4
     comptime IMPRATIO: Float64 = Self.impratio
     comptime GEOM_DENSITY: Float64 = Self.geom_density
     comptime INERTIAFROMGEOM: Bool = Self.inertiafromgeom

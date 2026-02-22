@@ -36,6 +36,8 @@ trait TendonSpec:
     comptime SOLIMP_0: Float64  # dmin
     comptime SOLIMP_1: Float64  # dmax
     comptime SOLIMP_2: Float64  # width
+    comptime SOLIMP_3: Float64  # midpoint
+    comptime SOLIMP_4: Float64  # power
 
 
 @fieldwise_init
@@ -55,6 +57,8 @@ struct FixedTendon[
     solimp_0: Float64 = 0.9,
     solimp_1: Float64 = 0.95,
     solimp_2: Float64 = 0.001,
+    solimp_3: Float64 = 0.5,
+    solimp_4: Float64 = 2.0,
 ](TendonSpec):
     """Fixed tendon — 1 bilateral constraint row."""
 
@@ -73,6 +77,8 @@ struct FixedTendon[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
 
 
 # =============================================================================
@@ -138,5 +144,7 @@ struct Tendons[*T: TendonSpec]:
                 solimp_0=Scalar[DTYPE](T_item.SOLIMP_0),
                 solimp_1=Scalar[DTYPE](T_item.SOLIMP_1),
                 solimp_2=Scalar[DTYPE](T_item.SOLIMP_2),
+                solimp_3=Scalar[DTYPE](T_item.SOLIMP_3),
+                solimp_4=Scalar[DTYPE](T_item.SOLIMP_4),
             )
         model.num_tendons = Self.N

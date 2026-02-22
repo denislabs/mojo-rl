@@ -65,6 +65,8 @@ from ..gpu.constants import (
     GEOM_IDX_SOLIMP_0 as _GEOM_IDX_SOLIMP_0,
     GEOM_IDX_SOLIMP_1 as _GEOM_IDX_SOLIMP_1,
     GEOM_IDX_SOLIMP_2 as _GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_SOLIMP_3 as _GEOM_IDX_SOLIMP_3,
+    GEOM_IDX_SOLIMP_4 as _GEOM_IDX_SOLIMP_4,
     GEOM_IDX_MARGIN as _GEOM_IDX_MARGIN,
     model_geom_offset,
 )
@@ -226,6 +228,8 @@ trait GeomSpec:
     comptime SOLIMP_0: Float64  # dmin
     comptime SOLIMP_1: Float64  # dmax
     comptime SOLIMP_2: Float64  # width
+    comptime SOLIMP_3: Float64  # midpoint
+    comptime SOLIMP_4: Float64  # power
     # Contact margin (MuJoCo-style: contacts activate when dist < margin)
     comptime MARGIN: Float64
     # Mass/density (-1.0 = use model default density)
@@ -260,6 +264,8 @@ struct Plane[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     size_x: Float64 = 40.0,
     size_y: Float64 = 40.0,
@@ -302,6 +308,8 @@ struct Plane[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = 0.0  # Planes have no mass
     comptime GEOM_MASS: Float64 = 0.0  # Planes have no mass
@@ -335,6 +343,8 @@ struct Sphere[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -379,6 +389,8 @@ struct Sphere[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -417,6 +429,8 @@ struct Capsule[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -463,6 +477,8 @@ struct Capsule[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -499,6 +515,8 @@ struct FromToCapsule[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -587,6 +605,8 @@ struct FromToCapsule[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -626,6 +646,8 @@ struct Box[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -670,6 +692,8 @@ struct Box[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -708,6 +732,8 @@ struct Cylinder[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -754,6 +780,8 @@ struct Cylinder[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -790,6 +818,8 @@ struct FromToCylinder[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    solimp_3: Float64 = _UNSET_F64,
+    solimp_4: Float64 = _UNSET_F64,
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
@@ -872,6 +902,8 @@ struct FromToCylinder[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
@@ -1143,14 +1175,20 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             model.geom_solref[i * 2 + 1] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLREF_1, Defaults.GEOM_SOLREF_1]()
             )
-            model.geom_solimp[i * 3 + 0] = Scalar[DTYPE](
+            model.geom_solimp[i * 5 + 0] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLIMP_0, Defaults.GEOM_SOLIMP_0]()
             )
-            model.geom_solimp[i * 3 + 1] = Scalar[DTYPE](
+            model.geom_solimp[i * 5 + 1] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLIMP_1, Defaults.GEOM_SOLIMP_1]()
             )
-            model.geom_solimp[i * 3 + 2] = Scalar[DTYPE](
+            model.geom_solimp[i * 5 + 2] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
+            model.geom_solimp[i * 5 + 3] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_3, Defaults.GEOM_SOLIMP_3]()
+            )
+            model.geom_solimp[i * 5 + 4] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_4, Defaults.GEOM_SOLIMP_4]()
             )
 
             # Contact margin (resolved from defaults)
@@ -1290,6 +1328,12 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             )
             buffer[off + _GEOM_IDX_SOLIMP_2] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
+            buffer[off + _GEOM_IDX_SOLIMP_3] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_3, Defaults.GEOM_SOLIMP_3]()
+            )
+            buffer[off + _GEOM_IDX_SOLIMP_4] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_4, Defaults.GEOM_SOLIMP_4]()
             )
             buffer[off + _GEOM_IDX_MARGIN] = Scalar[DTYPE](
                 _resolve_f64[G_item.MARGIN, Defaults.GEOM_MARGIN]()

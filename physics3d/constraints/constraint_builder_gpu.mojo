@@ -22,7 +22,7 @@ Common normal workspace block layout (at solver_idx):
   COMMON_NORMAL_SIZE = 13*MC + 2*MC*NV
 """
 
-from math import sqrt
+from math import sqrt, pow
 from layout import LayoutTensor, Layout
 from ..types import _max_one, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
@@ -60,6 +60,8 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
     JOINT_IDX_TYPE,
@@ -86,6 +88,8 @@ from ..gpu.constants import (
     EQ_IDX_SOLIMP_0,
     EQ_IDX_SOLIMP_1,
     EQ_IDX_SOLIMP_2,
+    EQ_IDX_SOLIMP_3,
+    EQ_IDX_SOLIMP_4,
     model_equality_offset,
     model_body_invweight0_offset,
     model_dof_invweight0_offset,
@@ -105,6 +109,8 @@ from ..gpu.constants import (
     TENDON_IDX_SOLIMP_0,
     TENDON_IDX_SOLIMP_1,
     TENDON_IDX_SOLIMP_2,
+    TENDON_IDX_SOLIMP_3,
+    TENDON_IDX_SOLIMP_4,
     model_tendon_offset,
 )
 
@@ -198,6 +204,8 @@ fn precompute_contact_normal_gpu[
     si_dmin: Scalar[DTYPE],
     si_dmax: Scalar[DTYPE],
     si_width: Scalar[DTYPE],
+    si_midpoint: Scalar[DTYPE],
+    si_power: Scalar[DTYPE],
 ):
     """Precompute one contact's normal constraint data (parallel, one thread per contact).
 
@@ -313,14 +321,27 @@ fn precompute_contact_normal_gpu[
                 k = Scalar[DTYPE](1e-10)
             workspace[env, ws_K_n + c] = k
 
-            # Acceleration-level aref: Hermite smoothstep impedance
+            # Acceleration-level aref: MuJoCo piecewise power impedance
             var penetration = -dist
-            var x = penetration / si_width
-            if x > Scalar[DTYPE](1.0):
-                x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (
-                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-            ) * (si_dmax - si_dmin)
+            var imp: Scalar[DTYPE]
+            if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+                imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+            else:
+                var x = penetration / si_width
+                var y: Scalar[DTYPE]
+                if x <= Scalar[DTYPE](0):
+                    y = Scalar[DTYPE](0)
+                elif x >= Scalar[DTYPE](1):
+                    y = Scalar[DTYPE](1)
+                elif si_power == Scalar[DTYPE](1):
+                    y = x
+                elif x <= si_midpoint:
+                    var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                    y = a * pow(x, si_power)
+                else:
+                    var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+                    y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                imp = si_dmin + y * (si_dmax - si_dmin)
             # Impedance floor prevents zero-force contacts at surface
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
@@ -574,6 +595,12 @@ fn detect_and_solve_limits_gpu[
     var li_width = rebind[Scalar[DTYPE]](
         model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2]
     )
+    var li_midpoint = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_3]
+    )
+    var li_power = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_4]
+    )
     if li_width < Scalar[DTYPE](1e-6):
         li_width = Scalar[DTYPE](1e-6)
     if li_dmax < Scalar[DTYPE](1e-4):
@@ -596,13 +623,25 @@ fn detect_and_solve_limits_gpu[
         var penetration = -limit_dist_arr[l]
         if penetration < Scalar[DTYPE](0):
             penetration = Scalar[DTYPE](0)
-        var x_lim = penetration / li_width
-        if x_lim > Scalar[DTYPE](1.0):
-            x_lim = Scalar[DTYPE](1.0)
-        var imp_lim = li_dmin + (
-            Scalar[DTYPE](3.0) * x_lim * x_lim
-            - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
-        ) * (li_dmax - li_dmin)
+        var imp_lim: Scalar[DTYPE]
+        if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+            imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+        else:
+            var x_lim = penetration / li_width
+            var y_lim: Scalar[DTYPE]
+            if x_lim <= Scalar[DTYPE](0):
+                y_lim = Scalar[DTYPE](0)
+            elif x_lim >= Scalar[DTYPE](1):
+                y_lim = Scalar[DTYPE](1)
+            elif li_power == Scalar[DTYPE](1):
+                y_lim = x_lim
+            elif x_lim <= li_midpoint:
+                var a = Scalar[DTYPE](1) / pow(li_midpoint, li_power - Scalar[DTYPE](1))
+                y_lim = a * pow(x_lim, li_power)
+            else:
+                var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - li_midpoint, li_power - Scalar[DTYPE](1))
+                y_lim = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x_lim, li_power)
+            imp_lim = li_dmin + y_lim * (li_dmax - li_dmin)
         # MuJoCo uses mjMINIMP ~1e-6
         if imp_lim < Scalar[DTYPE](1e-6):
             imp_lim = Scalar[DTYPE](1e-6)
@@ -764,6 +803,10 @@ fn build_and_solve_equality_gpu[
         var si_dmin = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_0])
         var si_dmax = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_1])
         var si_width = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_2])
+        var si_midpoint = rebind[Scalar[DTYPE]](
+            model[0, eq_off + EQ_IDX_SOLIMP_3]
+        )
+        var si_power = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_4])
         if si_width < Scalar[DTYPE](1e-6):
             si_width = Scalar[DTYPE](1e-6)
         if si_dmax < Scalar[DTYPE](1e-4):
@@ -921,15 +964,28 @@ fn build_and_solve_equality_gpu[
                 k = Scalar[DTYPE](1e-10)
             eq_K[num_eq_rows] = k
 
-            # Impedance
+            # Impedance: MuJoCo piecewise power formula
             var err_d = pos_errs[d]
             var penetration = abs(err_d)
-            var x = penetration / si_width
-            if x > Scalar[DTYPE](1.0):
-                x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (
-                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-            ) * (si_dmax - si_dmin)
+            var imp: Scalar[DTYPE]
+            if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+                imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+            else:
+                var x = penetration / si_width
+                var y: Scalar[DTYPE]
+                if x <= Scalar[DTYPE](0):
+                    y = Scalar[DTYPE](0)
+                elif x >= Scalar[DTYPE](1):
+                    y = Scalar[DTYPE](1)
+                elif si_power == Scalar[DTYPE](1):
+                    y = x
+                elif x <= si_midpoint:
+                    var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                    y = a * pow(x, si_power)
+                else:
+                    var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+                    y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                imp = si_dmin + y * (si_dmax - si_dmin)
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
@@ -1076,15 +1132,28 @@ fn build_and_solve_equality_gpu[
                     k = Scalar[DTYPE](1e-10)
                 eq_K[num_eq_rows] = k
 
-                # Impedance for orientation
+                # Impedance for orientation: MuJoCo piecewise power formula
                 var err_d = rot_errs[d]
                 var penetration = abs(err_d)
-                var x = penetration / si_width
-                if x > Scalar[DTYPE](1.0):
-                    x = Scalar[DTYPE](1.0)
-                var imp = si_dmin + (
-                    Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-                ) * (si_dmax - si_dmin)
+                var imp: Scalar[DTYPE]
+                if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+                    imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+                else:
+                    var x = penetration / si_width
+                    var y: Scalar[DTYPE]
+                    if x <= Scalar[DTYPE](0):
+                        y = Scalar[DTYPE](0)
+                    elif x >= Scalar[DTYPE](1):
+                        y = Scalar[DTYPE](1)
+                    elif si_power == Scalar[DTYPE](1):
+                        y = x
+                    elif x <= si_midpoint:
+                        var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                        y = a * pow(x, si_power)
+                    else:
+                        var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+                        y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                    imp = si_dmin + y * (si_dmax - si_dmin)
                 if imp < Scalar[DTYPE](1e-6):
                     imp = Scalar[DTYPE](1e-6)
 
@@ -1329,6 +1398,12 @@ fn build_and_solve_tendon_gpu[
         var si_width = rebind[Scalar[DTYPE]](
             model[0, t_off + TENDON_IDX_SOLIMP_2]
         )
+        var si_midpoint = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_SOLIMP_3]
+        )
+        var si_power = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_SOLIMP_4]
+        )
         if si_width < Scalar[DTYPE](1e-6):
             si_width = Scalar[DTYPE](1e-6)
         if si_dmax < Scalar[DTYPE](1e-4):
@@ -1338,14 +1413,27 @@ fn build_and_solve_tendon_gpu[
         )
         var t_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
-        # Impedance: smoothstep on |pos_err|
+        # Impedance: MuJoCo piecewise power formula on |pos_err|
         var penetration = abs(pos_err)
-        var x = penetration / si_width
-        if x > Scalar[DTYPE](1.0):
-            x = Scalar[DTYPE](1.0)
-        var imp = si_dmin + (
-            Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-        ) * (si_dmax - si_dmin)
+        var imp: Scalar[DTYPE]
+        if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+            imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+        else:
+            var x = penetration / si_width
+            var y: Scalar[DTYPE]
+            if x <= Scalar[DTYPE](0):
+                y = Scalar[DTYPE](0)
+            elif x >= Scalar[DTYPE](1):
+                y = Scalar[DTYPE](1)
+            elif si_power == Scalar[DTYPE](1):
+                y = x
+            elif x <= si_midpoint:
+                var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                y = a * pow(x, si_power)
+            else:
+                var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+                y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+            imp = si_dmin + y * (si_dmax - si_dmin)
         if imp < Scalar[DTYPE](1e-6):
             imp = Scalar[DTYPE](1e-6)
 

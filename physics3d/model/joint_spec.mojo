@@ -42,6 +42,8 @@ from ..gpu.constants import (
     JOINT_IDX_SOLIMP_LIMIT_0,
     JOINT_IDX_SOLIMP_LIMIT_1,
     JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
     JOINT_IDX_QPOS0,
     model_joint_offset,
 )
@@ -110,6 +112,8 @@ trait JointSpec(TrivialRegisterPassable):
     comptime SOLIMP_LIMIT_0: Float64  # dmin
     comptime SOLIMP_LIMIT_1: Float64  # dmax
     comptime SOLIMP_LIMIT_2: Float64  # width
+    comptime SOLIMP_LIMIT_3: Float64  # midpoint
+    comptime SOLIMP_LIMIT_4: Float64  # power
 
 
 # =============================================================================
@@ -144,6 +148,8 @@ struct HingeJoint[
     solimp_limit_0: Float64 = _UNSET_F64,
     solimp_limit_1: Float64 = _UNSET_F64,
     solimp_limit_2: Float64 = _UNSET_F64,
+    solimp_limit_3: Float64 = _UNSET_F64,
+    solimp_limit_4: Float64 = _UNSET_F64,
 ](JointSpec):
     """Revolute (hinge) joint: 1 DOF rotation around axis.
 
@@ -182,6 +188,8 @@ struct HingeJoint[
     comptime SOLIMP_LIMIT_0: Float64 = Self.solimp_limit_0
     comptime SOLIMP_LIMIT_1: Float64 = Self.solimp_limit_1
     comptime SOLIMP_LIMIT_2: Float64 = Self.solimp_limit_2
+    comptime SOLIMP_LIMIT_3: Float64 = Self.solimp_limit_3
+    comptime SOLIMP_LIMIT_4: Float64 = Self.solimp_limit_4
 
 
 # =============================================================================
@@ -216,6 +224,8 @@ struct SlideJoint[
     solimp_limit_0: Float64 = _UNSET_F64,
     solimp_limit_1: Float64 = _UNSET_F64,
     solimp_limit_2: Float64 = _UNSET_F64,
+    solimp_limit_3: Float64 = _UNSET_F64,
+    solimp_limit_4: Float64 = _UNSET_F64,
 ](JointSpec):
     """Prismatic (slide) joint: 1 DOF translation along axis.
 
@@ -254,6 +264,8 @@ struct SlideJoint[
     comptime SOLIMP_LIMIT_0: Float64 = Self.solimp_limit_0
     comptime SOLIMP_LIMIT_1: Float64 = Self.solimp_limit_1
     comptime SOLIMP_LIMIT_2: Float64 = Self.solimp_limit_2
+    comptime SOLIMP_LIMIT_3: Float64 = Self.solimp_limit_3
+    comptime SOLIMP_LIMIT_4: Float64 = Self.solimp_limit_4
 
 
 # =============================================================================
@@ -313,6 +325,8 @@ struct FreeJoint[
     comptime SOLIMP_LIMIT_0: Float64 = _UNSET_F64
     comptime SOLIMP_LIMIT_1: Float64 = _UNSET_F64
     comptime SOLIMP_LIMIT_2: Float64 = _UNSET_F64
+    comptime SOLIMP_LIMIT_3: Float64 = _UNSET_F64
+    comptime SOLIMP_LIMIT_4: Float64 = _UNSET_F64
 
     # Free joint-specific fields
     comptime INIT_POS_X: Float64 = Self.init_pos_x
@@ -1358,14 +1372,20 @@ struct Joints[*J: JointSpec](JointsLike):
             model.joint_solref_limit[i * 2 + 1] = Scalar[DTYPE](
                 _resolve_f64[J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1]()
             )
-            model.joint_solimp_limit[i * 3 + 0] = Scalar[DTYPE](
+            model.joint_solimp_limit[i * 5 + 0] = Scalar[DTYPE](
                 _resolve_f64[J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0]()
             )
-            model.joint_solimp_limit[i * 3 + 1] = Scalar[DTYPE](
+            model.joint_solimp_limit[i * 5 + 1] = Scalar[DTYPE](
                 _resolve_f64[J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1]()
             )
-            model.joint_solimp_limit[i * 3 + 2] = Scalar[DTYPE](
+            model.joint_solimp_limit[i * 5 + 2] = Scalar[DTYPE](
                 _resolve_f64[J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2]()
+            )
+            model.joint_solimp_limit[i * 5 + 3] = Scalar[DTYPE](
+                _resolve_f64[J.SOLIMP_LIMIT_3, Defaults.JOINT_SOLIMP_LIMIT_3]()
+            )
+            model.joint_solimp_limit[i * 5 + 4] = Scalar[DTYPE](
+                _resolve_f64[J.SOLIMP_LIMIT_4, Defaults.JOINT_SOLIMP_LIMIT_4]()
             )
 
             # Set qpos0 (MuJoCo ref / initial position)
@@ -1456,6 +1476,16 @@ struct Joints[*J: JointSpec](JointsLike):
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
                 _resolve_f64[
                     J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLIMP_LIMIT_3] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_3, Defaults.JOINT_SOLIMP_LIMIT_3
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLIMP_LIMIT_4] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_4, Defaults.JOINT_SOLIMP_LIMIT_4
                 ]()
             )
 

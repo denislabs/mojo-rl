@@ -90,11 +90,15 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLIMP_CONTACT_3,
+    MODEL_META_IDX_SOLIMP_CONTACT_4,
     MODEL_META_IDX_SOLREF_LIMIT_0,
     MODEL_META_IDX_SOLREF_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
@@ -491,6 +495,8 @@ struct ModelDef[
         model.solimp_contact[0] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_0)
         model.solimp_contact[1] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_1)
         model.solimp_contact[2] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_2)
+        model.solimp_contact[3] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_3)
+        model.solimp_contact[4] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_4)
         model.solref_limit[0] = Scalar[DTYPE](
             Self.Defaults.JOINT_SOLREF_LIMIT_0
         )
@@ -505,6 +511,12 @@ struct ModelDef[
         )
         model.solimp_limit[2] = Scalar[DTYPE](
             Self.Defaults.JOINT_SOLIMP_LIMIT_2
+        )
+        model.solimp_limit[3] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_3
+        )
+        model.solimp_limit[4] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_4
         )
         model.impratio = Scalar[DTYPE](Self.Defaults.IMPRATIO)
         model.gravity = SIMD[DTYPE, 4](
@@ -703,6 +715,12 @@ struct ModelDef[
         buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_2] = Scalar[DTYPE](
             Self.Defaults.GEOM_SOLIMP_2
         )
+        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_3] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLIMP_3
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_4] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLIMP_4
+        )
         buffer[off + MODEL_META_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
             Self.Defaults.JOINT_SOLREF_LIMIT_0
         )
@@ -717,6 +735,12 @@ struct ModelDef[
         )
         buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
             Self.Defaults.JOINT_SOLIMP_LIMIT_2
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_3] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_3
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_4] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_4
         )
         buffer[off + MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](
             Self.Defaults.IMPRATIO

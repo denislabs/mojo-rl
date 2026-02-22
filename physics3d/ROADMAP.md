@@ -57,7 +57,7 @@ Reference material:
   - [6.2 inertiafromgeom from Child Geoms — DONE](#62-inertiafromgeom-from-child-geoms--done)
   - [6.3 fromto Capsule Specification — DONE](#63-fromto-capsule-specification--done)
   - [6.4 Contact Margin](#64-contact-margin)
-  - [6.5 Full solimp (5 params)](#65-full-solimp-5-params)
+  - [6.5 Full solimp (5 params) — DONE](#65-full-solimp-5-params--done)
   - [6.6 Cylinder Geom Collision](#66-cylinder-geom-collision)
   - [6.7 Geom Density (mass from density) — DONE](#67-geom-density-mass-from-density--done)
   - [6.8 Site Elements](#68-site-elements)
@@ -1557,7 +1557,7 @@ Sprint 6 (Humanoid):
 
 Sprint 7 (Specialized):
   6.9 Fluid dynamics            <- Swimmer only
-  6.5 Full solimp (5 params)    <- non-default impedance curves
+  6.5 Full solimp (5 params)    DONE (piecewise power formula, all 14 files updated, tests pass)
   6.8 Site elements             <- InvertedDoublePendulum
   5.2 Solver islands            <- multi-agent parallelism
   4.2 Broadphase (AABB/SAP)     <- large scenes
@@ -1919,10 +1919,10 @@ before adjustment. Margin defaults to 0.0 (fully backward compatible).
 
 ---
 
-### 6.5 Full solimp (5 params)
+### 6.5 Full solimp (5 params) — DONE
 
-**Status**: PARTIAL. Currently storing `solimp[0..2]` = `[dmin, dmax, width]`.
-MuJoCo uses `solimp[5]` = `[dmin, dmax, width, midpoint, power]`.
+**Status**: DONE. All solimp arrays expanded from 3 to 5 params `[dmin, dmax, width, midpoint, power]`.
+MuJoCo's piecewise power formula replaces the old cubic Hermite `3x²-2x³`.
 
 **Used by**: All environments (but midpoint=0.5, power=2.0 are the defaults that
 99% of models use).

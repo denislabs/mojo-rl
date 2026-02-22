@@ -12,14 +12,15 @@ State buffer layout per environment:
 Model buffer (static, same for all environments):
   Per body (MODEL_BODY_SIZE=23): [mass, inv_mass, inertia(3), inv_inertia(3),
     pos(3), quat(4), parent, ipos(3), iquat(4)]
-  Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
-    pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality, ntendon]
+  Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
+    pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
+    solref_limit(2), solimp_limit(5), qpos0]
+  Metadata (MODEL_META_SIZE=25): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+    solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality, ntendon]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
-  Per geom (MODEL_GEOM_SIZE=27): [type, body, pos(3), quat(4), radius, half_length,
+  Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
-    rbound, solref(2), solimp(3), margin]
+    rbound, solref(2), solimp(5), margin]
 """
 
 # =============================================================================
@@ -227,7 +228,7 @@ fn model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime MODEL_JOINT_SIZE: Int = 24  # +5 for per-joint solref/solimp limits + qpos0
+comptime MODEL_JOINT_SIZE: Int = 26  # +7 for per-joint solref/solimp limits (5 params) + qpos0
 
 comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime JOINT_IDX_BODY_ID: Int = 1
@@ -252,7 +253,9 @@ comptime JOINT_IDX_SOLREF_LIMIT_1: Int = 19  # Per-joint limit solref dampratio
 comptime JOINT_IDX_SOLIMP_LIMIT_0: Int = 20  # Per-joint limit solimp dmin
 comptime JOINT_IDX_SOLIMP_LIMIT_1: Int = 21  # Per-joint limit solimp dmax
 comptime JOINT_IDX_SOLIMP_LIMIT_2: Int = 22  # Per-joint limit solimp width
-comptime JOINT_IDX_QPOS0: Int = 23  # Joint reference position (MuJoCo qpos0 / ref)
+comptime JOINT_IDX_SOLIMP_LIMIT_3: Int = 23  # Per-joint limit solimp midpoint
+comptime JOINT_IDX_SOLIMP_LIMIT_4: Int = 24  # Per-joint limit solimp power
+comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / ref)
 
 
 fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
@@ -264,7 +267,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 21
+comptime MODEL_META_SIZE: Int = 25
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -278,18 +281,22 @@ comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9  # dampratio
 comptime MODEL_META_IDX_SOLIMP_CONTACT_0: Int = 10  # dmin
 comptime MODEL_META_IDX_SOLIMP_CONTACT_1: Int = 11  # dmax
 comptime MODEL_META_IDX_SOLIMP_CONTACT_2: Int = 12  # width
+comptime MODEL_META_IDX_SOLIMP_CONTACT_3: Int = 13  # midpoint
+comptime MODEL_META_IDX_SOLIMP_CONTACT_4: Int = 14  # power
 # solref/solimp limit parameters (MuJoCo impedance model)
-comptime MODEL_META_IDX_SOLREF_LIMIT_0: Int = 13  # timeconst
-comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14  # dampratio
-comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15  # dmin
-comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16  # dmax
-comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17  # width
+comptime MODEL_META_IDX_SOLREF_LIMIT_0: Int = 15  # timeconst
+comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 16  # dampratio
+comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 17  # dmin
+comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 18  # dmax
+comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 19  # width
+comptime MODEL_META_IDX_SOLIMP_LIMIT_3: Int = 20  # midpoint
+comptime MODEL_META_IDX_SOLIMP_LIMIT_4: Int = 21  # power
 # Friction cone model
-comptime MODEL_META_IDX_IMPRATIO: Int = 18  # MuJoCo impratio
+comptime MODEL_META_IDX_IMPRATIO: Int = 22  # MuJoCo impratio
 # Equality constraints
-comptime MODEL_META_IDX_NEQUALITY: Int = 19  # Number of equality constraints
+comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons
-comptime MODEL_META_IDX_NTENDON: Int = 20  # Number of fixed tendons
+comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -301,7 +308,7 @@ fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 27  # Per unified geom (+5 for solref/solimp +1 for margin)
+comptime MODEL_GEOM_SIZE: Int = 29  # Per unified geom (+7 for solref/solimp(5) +1 for margin)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -329,7 +336,9 @@ comptime GEOM_IDX_SOLREF_1: Int = 22  # Per-geom solref dampratio
 comptime GEOM_IDX_SOLIMP_0: Int = 23  # Per-geom solimp dmin
 comptime GEOM_IDX_SOLIMP_1: Int = 24  # Per-geom solimp dmax
 comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
-comptime GEOM_IDX_MARGIN: Int = 26  # Per-geom contact margin
+comptime GEOM_IDX_SOLIMP_3: Int = 26  # Per-geom solimp midpoint
+comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
+comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
 
 
 fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
@@ -351,7 +360,7 @@ fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
 # Model Buffer Layout - Equality Constraints
 # =============================================================================
 
-comptime MODEL_EQ_SIZE: Int = 18  # Per equality constraint
+comptime MODEL_EQ_SIZE: Int = 20  # Per equality constraint
 
 comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0 or EQ_WELD=1
 comptime EQ_IDX_BODY_A: Int = 1
@@ -371,6 +380,8 @@ comptime EQ_IDX_SOLREF_1: Int = 14
 comptime EQ_IDX_SOLIMP_0: Int = 15
 comptime EQ_IDX_SOLIMP_1: Int = 16
 comptime EQ_IDX_SOLIMP_2: Int = 17
+comptime EQ_IDX_SOLIMP_3: Int = 18  # solimp midpoint
+comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 
 
 fn model_equality_offset[
@@ -395,7 +406,7 @@ fn model_equality_offset[
 # Model Buffer Layout - Fixed Tendons
 # =============================================================================
 
-comptime MODEL_TENDON_SIZE: Int = 15  # Per fixed tendon
+comptime MODEL_TENDON_SIZE: Int = 17  # Per fixed tendon
 
 comptime TENDON_IDX_NUM_JOINTS: Int = 0
 comptime TENDON_IDX_JOINT_0: Int = 1
@@ -412,6 +423,8 @@ comptime TENDON_IDX_SOLREF_1: Int = 11
 comptime TENDON_IDX_SOLIMP_0: Int = 12
 comptime TENDON_IDX_SOLIMP_1: Int = 13
 comptime TENDON_IDX_SOLIMP_2: Int = 14
+comptime TENDON_IDX_SOLIMP_3: Int = 15  # solimp midpoint
+comptime TENDON_IDX_SOLIMP_4: Int = 16  # solimp power
 
 
 fn model_tendon_offset[

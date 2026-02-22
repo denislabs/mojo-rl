@@ -72,6 +72,8 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLIMP_CONTACT_3,
+    MODEL_META_IDX_SOLIMP_CONTACT_4,
 )
 
 from ..constraints.constraint_builder_gpu import (
@@ -503,6 +505,8 @@ struct CGSolver(ConstraintSolver):
         var si_dmin: Scalar[DTYPE] = 0
         var si_dmax: Scalar[DTYPE] = 0
         var si_width: Scalar[DTYPE] = 1
+        var si_midpoint: Scalar[DTYPE] = Scalar[DTYPE](0.5)
+        var si_power: Scalar[DTYPE] = Scalar[DTYPE](2.0)
 
         if valid_env:
             dt = rebind[Scalar[DTYPE]](
@@ -538,6 +542,16 @@ struct CGSolver(ConstraintSolver):
             si_width = rebind[Scalar[DTYPE]](
                 model[
                     0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2
+                ]
+            )
+            si_midpoint = rebind[Scalar[DTYPE]](
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3
+                ]
+            )
+            si_power = rebind[Scalar[DTYPE]](
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4
                 ]
             )
             if si_width < Scalar[DTYPE](1e-6):
@@ -579,6 +593,8 @@ struct CGSolver(ConstraintSolver):
                 si_dmin,
                 si_dmax,
                 si_width,
+                si_midpoint,
+                si_power,
             )
 
         barrier()

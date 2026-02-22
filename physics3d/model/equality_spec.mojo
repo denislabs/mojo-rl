@@ -42,6 +42,8 @@ trait EqualitySpec:
     comptime SOLIMP_0: Float64  # dmin
     comptime SOLIMP_1: Float64  # dmax
     comptime SOLIMP_2: Float64  # width
+    comptime SOLIMP_3: Float64  # midpoint
+    comptime SOLIMP_4: Float64  # power
     # Number of constraint rows (3 for connect, 6 for weld)
     comptime NUM_ROWS: Int
 
@@ -61,6 +63,8 @@ struct ConnectConstraint[
     solimp_0: Float64 = 0.9,
     solimp_1: Float64 = 0.95,
     solimp_2: Float64 = 0.001,
+    solimp_3: Float64 = 0.5,
+    solimp_4: Float64 = 2.0,
 ](EqualitySpec):
     """Connect (ball joint) equality constraint — 3 position rows."""
 
@@ -82,6 +86,8 @@ struct ConnectConstraint[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime NUM_ROWS: Int = 3
 
 
@@ -104,6 +110,8 @@ struct WeldConstraint[
     solimp_0: Float64 = 0.9,
     solimp_1: Float64 = 0.95,
     solimp_2: Float64 = 0.001,
+    solimp_3: Float64 = 0.5,
+    solimp_4: Float64 = 2.0,
 ](EqualitySpec):
     """Weld (rigid attachment) equality constraint — 6 rows (3 position + 3 orientation).
     """
@@ -126,6 +134,8 @@ struct WeldConstraint[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime SOLIMP_3: Float64 = Self.solimp_3
+    comptime SOLIMP_4: Float64 = Self.solimp_4
     comptime NUM_ROWS: Int = 6
 
 
@@ -206,5 +216,7 @@ struct Equalities[*E: EqualitySpec]:
                 solimp_0=Scalar[DTYPE](E_item.SOLIMP_0),
                 solimp_1=Scalar[DTYPE](E_item.SOLIMP_1),
                 solimp_2=Scalar[DTYPE](E_item.SOLIMP_2),
+                solimp_3=Scalar[DTYPE](E_item.SOLIMP_3),
+                solimp_4=Scalar[DTYPE](E_item.SOLIMP_4),
             )
         model.num_equality = Self.N

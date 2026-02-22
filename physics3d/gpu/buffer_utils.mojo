@@ -76,6 +76,8 @@ from .constants import (
     JOINT_IDX_SOLIMP_LIMIT_0,
     JOINT_IDX_SOLIMP_LIMIT_1,
     JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
     JOINT_IDX_QPOS0,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
@@ -88,11 +90,15 @@ from .constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLIMP_CONTACT_3,
+    MODEL_META_IDX_SOLIMP_CONTACT_4,
     MODEL_META_IDX_SOLREF_LIMIT_0,
     MODEL_META_IDX_SOLREF_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
@@ -120,6 +126,8 @@ from .constants import (
     GEOM_IDX_SOLIMP_0,
     GEOM_IDX_SOLIMP_1,
     GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_SOLIMP_3,
+    GEOM_IDX_SOLIMP_4,
     GEOM_IDX_MARGIN,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
@@ -144,6 +152,8 @@ from .constants import (
     EQ_IDX_SOLIMP_0,
     EQ_IDX_SOLIMP_1,
     EQ_IDX_SOLIMP_2,
+    EQ_IDX_SOLIMP_3,
+    EQ_IDX_SOLIMP_4,
     model_equality_offset,
     model_body_invweight0_offset,
     model_dof_invweight0_offset,
@@ -163,6 +173,8 @@ from .constants import (
     TENDON_IDX_SOLIMP_0,
     TENDON_IDX_SOLIMP_1,
     TENDON_IDX_SOLIMP_2,
+    TENDON_IDX_SOLIMP_3,
+    TENDON_IDX_SOLIMP_4,
     model_tendon_offset,
 )
 from ..types import Model, Data, ConeType
@@ -326,13 +338,19 @@ fn copy_model_to_buffer[
             j * 2 + 1
         ]
         buffer[offset + JOINT_IDX_SOLIMP_LIMIT_0] = model.joint_solimp_limit[
-            j * 3 + 0
+            j * 5 + 0
         ]
         buffer[offset + JOINT_IDX_SOLIMP_LIMIT_1] = model.joint_solimp_limit[
-            j * 3 + 1
+            j * 5 + 1
         ]
         buffer[offset + JOINT_IDX_SOLIMP_LIMIT_2] = model.joint_solimp_limit[
-            j * 3 + 2
+            j * 5 + 2
+        ]
+        buffer[offset + JOINT_IDX_SOLIMP_LIMIT_3] = model.joint_solimp_limit[
+            j * 5 + 3
+        ]
+        buffer[offset + JOINT_IDX_SOLIMP_LIMIT_4] = model.joint_solimp_limit[
+            j * 5 + 4
         ]
         buffer[offset + JOINT_IDX_QPOS0] = model.qpos0[joint.qpos_adr]
 
@@ -362,12 +380,20 @@ fn copy_model_to_buffer[
     buffer[
         meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_2
     ] = model.solimp_contact[2]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_3
+    ] = model.solimp_contact[3]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_4
+    ] = model.solimp_contact[4]
     # solref/solimp limit
     buffer[meta_offset + MODEL_META_IDX_SOLREF_LIMIT_0] = model.solref_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLREF_LIMIT_1] = model.solref_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_0] = model.solimp_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
+    buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_3] = model.solimp_limit[3]
+    buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_4] = model.solimp_limit[4]
     # Friction cone model
     buffer[meta_offset + MODEL_META_IDX_IMPRATIO] = model.impratio
     # Equality constraints
@@ -489,9 +515,11 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_RBOUND] = model.geom_rbound[g]
         buffer[offset + GEOM_IDX_SOLREF_0] = model.geom_solref[g * 2 + 0]
         buffer[offset + GEOM_IDX_SOLREF_1] = model.geom_solref[g * 2 + 1]
-        buffer[offset + GEOM_IDX_SOLIMP_0] = model.geom_solimp[g * 3 + 0]
-        buffer[offset + GEOM_IDX_SOLIMP_1] = model.geom_solimp[g * 3 + 1]
-        buffer[offset + GEOM_IDX_SOLIMP_2] = model.geom_solimp[g * 3 + 2]
+        buffer[offset + GEOM_IDX_SOLIMP_0] = model.geom_solimp[g * 5 + 0]
+        buffer[offset + GEOM_IDX_SOLIMP_1] = model.geom_solimp[g * 5 + 1]
+        buffer[offset + GEOM_IDX_SOLIMP_2] = model.geom_solimp[g * 5 + 2]
+        buffer[offset + GEOM_IDX_SOLIMP_3] = model.geom_solimp[g * 5 + 3]
+        buffer[offset + GEOM_IDX_SOLIMP_4] = model.geom_solimp[g * 5 + 4]
         buffer[offset + GEOM_IDX_MARGIN] = model.geom_margin[g]
 
 
@@ -537,6 +565,8 @@ fn copy_equality_to_buffer[
         buffer[offset + EQ_IDX_SOLIMP_0] = eq.solimp_0
         buffer[offset + EQ_IDX_SOLIMP_1] = eq.solimp_1
         buffer[offset + EQ_IDX_SOLIMP_2] = eq.solimp_2
+        buffer[offset + EQ_IDX_SOLIMP_3] = eq.solimp_3
+        buffer[offset + EQ_IDX_SOLIMP_4] = eq.solimp_4
 
 
 fn copy_tendons_to_buffer[
@@ -589,6 +619,8 @@ fn copy_tendons_to_buffer[
         buffer[offset + TENDON_IDX_SOLIMP_0] = ten.solimp_0
         buffer[offset + TENDON_IDX_SOLIMP_1] = ten.solimp_1
         buffer[offset + TENDON_IDX_SOLIMP_2] = ten.solimp_2
+        buffer[offset + TENDON_IDX_SOLIMP_3] = ten.solimp_3
+        buffer[offset + TENDON_IDX_SOLIMP_4] = ten.solimp_4
 
 
 # =============================================================================

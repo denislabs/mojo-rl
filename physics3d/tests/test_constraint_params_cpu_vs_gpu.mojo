@@ -81,6 +81,8 @@ from physics3d.gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLIMP_CONTACT_3,
+    MODEL_META_IDX_SOLIMP_CONTACT_4,
     JOINT_IDX_TYPE,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_QPOS_ADR,
@@ -385,6 +387,12 @@ fn constraint_params_kernel[
     var si_width = rebind[Scalar[DTYPE]](
         model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
     )
+    var si_midpoint = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3]
+    )
+    var si_power = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4]
+    )
     if si_width < Scalar[DTYPE](1e-6):
         si_width = Scalar[DTYPE](1e-6)
     if si_dmax < Scalar[DTYPE](1e-4):
@@ -407,7 +415,7 @@ fn constraint_params_kernel[
             STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE, NGEOM,
         ](
             env, c, nc, state, model, workspace,
-            K_spring, B_damp, si_dmin, si_dmax, si_width,
+            K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint, si_power,
         )
 
     # 16. Read results into result buffer

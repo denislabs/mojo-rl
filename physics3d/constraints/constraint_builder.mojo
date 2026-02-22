@@ -7,7 +7,7 @@ iterative algorithms consuming pre-built ConstraintData.
 This consolidates code previously duplicated across PGS, CG, and Newton solvers.
 """
 
-from math import sqrt
+from math import sqrt, pow
 from ..types import Model, Data, EQ_CONNECT, EQ_WELD, _max_one, ConeType, TendonDef
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..dynamics.jacobian import compute_contact_jacobian_row
@@ -35,6 +35,8 @@ fn _compute_aref[
     si_dmin: Scalar[DTYPE],
     si_dmax: Scalar[DTYPE],
     si_width: Scalar[DTYPE],
+    si_midpoint: Scalar[DTYPE],
+    si_power: Scalar[DTYPE],
     K_spring: Scalar[DTYPE],
     B_damp: Scalar[DTYPE],
     v_n: Scalar[DTYPE],
@@ -46,19 +48,33 @@ fn _compute_aref[
     Returns (bias, inv_K_imp, imp) where:
     - bias = -aref (negated for solver: residual = a + bias + R*lambda)
     - inv_K_imp = 1/(K + R) where R = (1-imp)/imp * diagApprox (MuJoCo body_invweight0)
-    - imp = impedance from solimp smoothstep
+    - imp = impedance from solimp piecewise power formula
 
     MuJoCo formula: aref = -B*vel - K*imp*pos = K*imp*pen - B*v_n
     Our solver uses: residual = J*qacc + bias + R*lambda (= 0 at convergence)
     MuJoCo uses: R = (1-imp)/imp * diagApprox, D = imp/((1-imp)*diagApprox)
     So: bias = -aref = -K*imp*pen + B*v_n
     """
-    var x = penetration / si_width
-    if x > Scalar[DTYPE](1.0):
-        x = Scalar[DTYPE](1.0)
-    var imp = si_dmin + (
-        Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-    ) * (si_dmax - si_dmin)
+    # MuJoCo piecewise power impedance formula
+    var imp: Scalar[DTYPE]
+    if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+        imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+    else:
+        var x = penetration / si_width
+        var y: Scalar[DTYPE]
+        if x <= Scalar[DTYPE](0):
+            y = Scalar[DTYPE](0)
+        elif x >= Scalar[DTYPE](1):
+            y = Scalar[DTYPE](1)
+        elif si_power == Scalar[DTYPE](1):
+            y = x
+        elif x <= si_midpoint:
+            var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+            y = a * pow(x, si_power)
+        else:
+            var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+            y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+        imp = si_dmin + y * (si_dmax - si_dmin)
     # MuJoCo uses mjMINIMP ~1e-6 (only prevents division by zero)
     if imp < Scalar[DTYPE](1e-6):
         imp = Scalar[DTYPE](1e-6)
@@ -249,6 +265,8 @@ fn build_constraints[
     var si_dmin = model.solimp_contact[0]
     var si_dmax = model.solimp_contact[1]
     var si_width = model.solimp_contact[2]
+    var si_midpoint = model.solimp_contact[3]
+    var si_power = model.solimp_contact[4]
     if si_width < Scalar[DTYPE](1e-6):
         si_width = Scalar[DTYPE](1e-6)
     if si_dmax < Scalar[DTYPE](1e-4):
@@ -338,6 +356,8 @@ fn build_constraints[
                 si_dmin,
                 si_dmax,
                 si_width,
+                si_midpoint,
+                si_power,
                 K_spring,
                 B_damp,
                 v_n,
@@ -708,6 +728,8 @@ fn build_constraints[
                 si_dmin,
                 si_dmax,
                 si_width,
+                si_midpoint,
+                si_power,
                 K_spring,
                 B_damp,
                 v_n,
@@ -1146,6 +1168,8 @@ fn build_constraints[
     var li_dmin_default = model.solimp_limit[0]
     var li_dmax_default = model.solimp_limit[1]
     var li_width_default = model.solimp_limit[2]
+    var li_midpoint_default = model.solimp_limit[3]
+    var li_power_default = model.solimp_limit[4]
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -1165,15 +1189,19 @@ fn build_constraints[
             lr_tc = lr_tc_default
         if lr_dr <= Scalar[DTYPE](0):
             lr_dr = lr_dr_default
-        var li_dmin = model.joint_solimp_limit[j * 3]
-        var li_dmax = model.joint_solimp_limit[j * 3 + 1]
-        var li_width = model.joint_solimp_limit[j * 3 + 2]
+        var li_dmin = model.joint_solimp_limit[j * 5]
+        var li_dmax = model.joint_solimp_limit[j * 5 + 1]
+        var li_width = model.joint_solimp_limit[j * 5 + 2]
+        var li_midpoint = model.joint_solimp_limit[j * 5 + 3]
+        var li_power = model.joint_solimp_limit[j * 5 + 4]
         # solimp dmin can legitimately be 0, so check if ALL three are 0
         # (unset) to fall back to defaults
         if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
             li_dmin = li_dmin_default
             li_dmax = li_dmax_default
             li_width = li_width_default
+            li_midpoint = li_midpoint_default
+            li_power = li_power_default
         if li_width < Scalar[DTYPE](1e-6):
             li_width = Scalar[DTYPE](1e-6)
         if li_dmax < Scalar[DTYPE](1e-4):
@@ -1221,6 +1249,8 @@ fn build_constraints[
                 li_dmin,
                 li_dmax,
                 li_width,
+                li_midpoint,
+                li_power,
                 l_K_spring,
                 l_B_damp,
                 v_lim,
@@ -1271,6 +1301,8 @@ fn build_constraints[
                 li_dmin,
                 li_dmax,
                 li_width,
+                li_midpoint,
+                li_power,
                 l_K_spring,
                 l_B_damp,
                 v_lim,
@@ -1317,6 +1349,8 @@ fn build_constraints[
             var eq_si_dmin = eq.solimp_0
             var eq_si_dmax = eq.solimp_1
             var eq_si_width = eq.solimp_2
+            var eq_si_midpoint = eq.solimp_3
+            var eq_si_power = eq.solimp_4
             if eq_si_width < Scalar[DTYPE](1e-6):
                 eq_si_width = Scalar[DTYPE](1e-6)
             if eq_si_dmax < Scalar[DTYPE](1e-4):
@@ -1452,6 +1486,8 @@ fn build_constraints[
                     eq_si_dmin,
                     eq_si_dmax,
                     eq_si_width,
+                    eq_si_midpoint,
+                    eq_si_power,
                     eq_K_spring,
                     eq_B_damp,
                     v_eq,
@@ -1596,6 +1632,8 @@ fn build_constraints[
                         eq_si_dmin,
                         eq_si_dmax,
                         eq_si_width,
+                        eq_si_midpoint,
+                        eq_si_power,
                         eq_K_spring,
                         eq_B_damp,
                         v_rot,
@@ -1644,6 +1682,8 @@ fn build_constraints[
             var ten_si_dmin = ten.solimp_0
             var ten_si_dmax = ten.solimp_1
             var ten_si_width = ten.solimp_2
+            var ten_si_midpoint = ten.solimp_3
+            var ten_si_power = ten.solimp_4
             if ten_si_width < Scalar[DTYPE](1e-6):
                 ten_si_width = Scalar[DTYPE](1e-6)
             if ten_si_dmax < Scalar[DTYPE](1e-4):
@@ -1731,6 +1771,8 @@ fn build_constraints[
                 ten_si_dmin,
                 ten_si_dmax,
                 ten_si_width,
+                ten_si_midpoint,
+                ten_si_power,
                 ten_K_spring,
                 ten_B_damp,
                 ten_vel,

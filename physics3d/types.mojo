@@ -87,6 +87,8 @@ struct EqualityConstraintDef[DTYPE: DType](
     var solimp_0: Scalar[Self.DTYPE]  # dmin
     var solimp_1: Scalar[Self.DTYPE]  # dmax
     var solimp_2: Scalar[Self.DTYPE]  # width
+    var solimp_3: Scalar[Self.DTYPE]  # midpoint
+    var solimp_4: Scalar[Self.DTYPE]  # power
 
     @staticmethod
     fn empty() -> Self:
@@ -110,6 +112,8 @@ struct EqualityConstraintDef[DTYPE: DType](
             solimp_0=Scalar[Self.DTYPE](0.9),
             solimp_1=Scalar[Self.DTYPE](0.95),
             solimp_2=Scalar[Self.DTYPE](0.001),
+            solimp_3=Scalar[Self.DTYPE](0.5),
+            solimp_4=Scalar[Self.DTYPE](2.0),
         )
 
 
@@ -145,6 +149,8 @@ struct TendonDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     var solimp_0: Scalar[Self.DTYPE]  # dmin
     var solimp_1: Scalar[Self.DTYPE]  # dmax
     var solimp_2: Scalar[Self.DTYPE]  # width
+    var solimp_3: Scalar[Self.DTYPE]  # midpoint
+    var solimp_4: Scalar[Self.DTYPE]  # power
 
     @staticmethod
     fn empty() -> Self:
@@ -165,6 +171,8 @@ struct TendonDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
             solimp_0=Scalar[Self.DTYPE](0.9),
             solimp_1=Scalar[Self.DTYPE](0.95),
             solimp_2=Scalar[Self.DTYPE](0.001),
+            solimp_3=Scalar[Self.DTYPE](0.5),
+            solimp_4=Scalar[Self.DTYPE](2.0),
         )
 
 
@@ -347,13 +355,13 @@ struct Model[
         Scalar[Self.DTYPE], 2
     ]  # [timeconst, dampratio]
     var solimp_contact: InlineArray[
-        Scalar[Self.DTYPE], 3
-    ]  # [dmin, dmax, width]
+        Scalar[Self.DTYPE], 5
+    ]  # [dmin, dmax, width, midpoint, power]
     # MuJoCo solref/solimp impedance parameters (joint limits)
     var solref_limit: InlineArray[
         Scalar[Self.DTYPE], 2
     ]  # [timeconst, dampratio]
-    var solimp_limit: InlineArray[Scalar[Self.DTYPE], 3]  # [dmin, dmax, width]
+    var solimp_limit: InlineArray[Scalar[Self.DTYPE], 5]  # [dmin, dmax, width, midpoint, power]
 
     # Per-body properties
     var body_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
@@ -414,7 +422,7 @@ struct Model[
 
     # Per-geom solref/solimp (MuJoCo-style per-geom impedance overrides)
     var geom_solref: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()]
-    var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
+    var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 5]()]
 
     # Per-geom contact margin (MuJoCo-style: contacts activate when dist < margin)
     var geom_margin: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
@@ -427,7 +435,7 @@ struct Model[
         Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
     ]
     var joint_solimp_limit: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()
+        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 5]()
     ]
 
     # Friction cone model
@@ -454,7 +462,7 @@ struct Model[
         self.gravity = SIMD[Self.DTYPE, 4](0, 0, -9.81, 0)
         self.timestep = Scalar[Self.DTYPE](0.01)
 
-        # MuJoCo geom defaults: solref=[0.02, 1.0], solimp=[0.0, 0.8, 0.01]
+        # MuJoCo geom defaults: solref=[0.02, 1.0], solimp=[0.0, 0.8, 0.01, 0.5, 2.0]
         # Note: solimp defaults are MuJoCo's built-in geom defaults, NOT the
         # solver-level defaults [0.9, 0.95, 0.001]. Contacts use per-geom solimp
         # combined via max(), and geom defaults are [0.0, 0.8, 0.01, 0.5, 2.0].
@@ -463,23 +471,27 @@ struct Model[
         )
         self.solref_contact[0] = Scalar[Self.DTYPE](0.02)
         self.solref_contact[1] = Scalar[Self.DTYPE](1.0)
-        self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 3](
+        self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 5](
             uninitialized=True
         )
         self.solimp_contact[0] = Scalar[Self.DTYPE](0.0)
         self.solimp_contact[1] = Scalar[Self.DTYPE](0.8)
         self.solimp_contact[2] = Scalar[Self.DTYPE](0.01)
+        self.solimp_contact[3] = Scalar[Self.DTYPE](0.5)
+        self.solimp_contact[4] = Scalar[Self.DTYPE](2.0)
         self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](
             uninitialized=True
         )
         self.solref_limit[0] = Scalar[Self.DTYPE](0.02)
         self.solref_limit[1] = Scalar[Self.DTYPE](1.0)
-        self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 3](
+        self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 5](
             uninitialized=True
         )
         self.solimp_limit[0] = Scalar[Self.DTYPE](0.0)
         self.solimp_limit[1] = Scalar[Self.DTYPE](0.8)
         self.solimp_limit[2] = Scalar[Self.DTYPE](0.01)
+        self.solimp_limit[3] = Scalar[Self.DTYPE](0.5)
+        self.solimp_limit[4] = Scalar[Self.DTYPE](2.0)
 
         # Initialize body arrays
         self.body_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
@@ -571,7 +583,7 @@ struct Model[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()
         ](fill=Scalar[Self.DTYPE](0))
         self.geom_solimp = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 5]()
         ](fill=Scalar[Self.DTYPE](0))
         self.geom_margin = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
@@ -583,7 +595,7 @@ struct Model[
             Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
         ](fill=Scalar[Self.DTYPE](0))
         self.joint_solimp_limit = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()
+            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 5]()
         ](fill=Scalar[Self.DTYPE](0))
         self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
@@ -969,6 +981,8 @@ struct Model[
             solimp_0=solimp[0],
             solimp_1=solimp[1],
             solimp_2=solimp[2],
+            solimp_3=Scalar[Self.DTYPE](0.5),
+            solimp_4=Scalar[Self.DTYPE](2.0),
         )
         self.num_equality += 1
         return idx
@@ -1042,6 +1056,8 @@ struct Model[
             solimp_0=solimp[0],
             solimp_1=solimp[1],
             solimp_2=solimp[2],
+            solimp_3=Scalar[Self.DTYPE](0.5),
+            solimp_4=Scalar[Self.DTYPE](2.0),
         )
         self.num_equality += 1
         return idx
@@ -1096,6 +1112,8 @@ struct Model[
             solimp_0=solimp[0],
             solimp_1=solimp[1],
             solimp_2=solimp[2],
+            solimp_3=Scalar[Self.DTYPE](0.5),
+            solimp_4=Scalar[Self.DTYPE](2.0),
         )
         self.num_tendons += 1
         return idx
