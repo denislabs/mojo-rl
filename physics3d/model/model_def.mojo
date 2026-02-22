@@ -102,6 +102,8 @@ from ..gpu.constants import (
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
+    MODEL_META_IDX_DENSITY,
+    MODEL_META_IDX_VISCOSITY,
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
     BODY_IDX_IXX,
@@ -526,6 +528,8 @@ struct ModelDef[
             Scalar[DTYPE](0),
         )
         model.timestep = Scalar[DTYPE](Self.Defaults.TIMESTEP)
+        model.opt_density = Scalar[DTYPE](Self.Defaults.OPT_DENSITY)
+        model.opt_viscosity = Scalar[DTYPE](Self.Defaults.OPT_VISCOSITY)
 
     @staticmethod
     fn finalize[
@@ -749,6 +753,12 @@ struct ModelDef[
             Self.MAX_EQUALITY
         )
         buffer[off + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](Self.MAX_TENDON)
+        buffer[off + MODEL_META_IDX_DENSITY] = Scalar[DTYPE](
+            Self.Defaults.OPT_DENSITY
+        )
+        buffer[off + MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](
+            Self.Defaults.OPT_VISCOSITY
+        )
 
     @staticmethod
     fn _settotalmass_buffer[

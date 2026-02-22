@@ -61,7 +61,7 @@ Reference material:
   - [6.6 Cylinder Geom Collision](#66-cylinder-geom-collision)
   - [6.7 Geom Density (mass from density) — DONE](#67-geom-density-mass-from-density--done)
   - [6.8 Site Elements](#68-site-elements)
-  - [6.9 Fluid Dynamics (density/viscosity)](#69-fluid-dynamics-densityviscosity)
+  - [6.9 Fluid Dynamics (density/viscosity) — DONE](#69-fluid-dynamics-densityviscosity)
   - [6.10 cfrc_ext (Contact Forces per Body)](#610-cfrc_ext-contact-forces-per-body)
   - [6.11 Runtime Solver Selection from XML](#611-runtime-solver-selection-from-xml)
 
@@ -119,7 +119,7 @@ Reference material:
 | ~~No `density` on geoms (mass from density)~~ | ~~Low~~ | ~~6~~ DONE |
 | No `<site>` elements | Low — massless reference points for observations | 6 |
 | ~~No `<tendon><fixed>` joint coupling~~ | ~~Medium — Humanoid hip-knee coupling~~ | ~~5~~ DONE |
-| No fluid dynamics (`density`/`viscosity` option) | Low — Swimmer only | 6 |
+| ~~No fluid dynamics (`density`/`viscosity` option)~~ | ~~Low — Swimmer only~~ | ~~6~~ DONE |
 | ~~No `cfrc_ext` (contact forces per body)~~ | ~~Medium — Humanoid observations~~ | ~~6~~ DONE |
 | No runtime solver/iterations selection from XML | Low — Humanoid requests PGS+50 iter | 6 |
 | ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
@@ -1556,7 +1556,7 @@ Sprint 6 (Humanoid):
   6.2 inertiafromgeom           <- DONE
 
 Sprint 7 (Specialized):
-  6.9 Fluid dynamics            <- Swimmer only
+  6.9 Fluid dynamics            DONE (inertia-box model, CPU + GPU, ModelDefaults.OPT_DENSITY/OPT_VISCOSITY)
   6.5 Full solimp (5 params)    DONE (piecewise power formula, all 14 files updated, tests pass)
   6.8 Site elements             <- InvertedDoublePendulum
   5.2 Solver islands            <- multi-agent parallelism
@@ -2007,22 +2007,38 @@ in FK (get world position/orientation) but not dynamics. Used for:
 
 ### 6.9 Fluid Dynamics (density/viscosity)
 
-**Status**: NOT STARTED.
+**Status**: DONE.
 **Used by**: Swimmer only (`density=4000`, `viscosity=0.1`).
 **Impact**: Low — specialized feature.
 
-MuJoCo applies drag and buoyancy forces when `option.density > 0`:
-```
-For each geom:
-    F_drag = -0.5 * density * Cd * A * |v| * v  (quadratic drag)
-    F_viscous = -viscosity * 6π * r * v          (Stokes drag)
-    F_buoyancy = density * volume * g             (Archimedes)
-```
+Implements MuJoCo's **inertia-box fluid model** (`mj_inertiaBoxFluidModel`,
+`engine_passive.c` lines 701–757). For each body, derives an equivalent box from
+the diagonal inertia tensor and computes:
 
-MuJoCo reference: `engine_passive.c` (`mj_passive`, fluid model).
+- **Viscous drag** (Stokes, linear): `F = -3π·diam·μ·v`, `T = -π·diam³·μ·ω`
+- **Pressure drag** (quadratic): `F_x = -0.5·ρ·(by·bz)·|vx|·vx` per axis,
+  `T_x = -ρ·bx·(by⁴+bz⁴)·|ωx|·ωx/64` per axis
 
-**Recommendation**: Implement only when adding Swimmer environment. Self-contained
-addition to the force pipeline.
+Forces are computed in the body's local frame (using body orientation `xquat`),
+rotated back to world frame, then applied via the Jacobian transpose (kinematic
+tree walk using `cdof`).
+
+**Implementation**:
+- `physics3d/dynamics/fluid_forces.mojo` — `compute_fluid_forces()` (CPU)
+- `Model.opt_density`, `Model.opt_viscosity` — runtime fields (default 0)
+- `ModelDefaultsLike.OPT_DENSITY`, `OPT_VISCOSITY` — compile-time defaults
+- GPU: inline in `EulerIntegrator.step_kernel` after passive joint forces
+- `MODEL_META_IDX_DENSITY=6`, `MODEL_META_IDX_VISCOSITY=7` in GPU metadata
+- Zero-cost when both are 0 (early-out guard)
+
+**Usage** (for Swimmer environment):
+```mojo
+comptime SwimmerDefaults = ModelDefaults[
+    ...
+    opt_density=4000.0,    # kg/m³ (MuJoCo Swimmer XML)
+    opt_viscosity=0.1,     # Pa·s
+]
+```
 
 ---
 

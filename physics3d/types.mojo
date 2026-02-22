@@ -350,6 +350,11 @@ struct Model[
     var gravity: SIMD[Self.DTYPE, 4]  # (gx, gy, gz, 0)
     var timestep: Scalar[Self.DTYPE]
 
+    # Fluid dynamics options (MuJoCo option.density / option.viscosity)
+    # Set to 0 (default) to disable fluid forces.
+    var opt_density: Scalar[Self.DTYPE]    # Fluid mass density (kg/m³)
+    var opt_viscosity: Scalar[Self.DTYPE]  # Fluid dynamic viscosity (Pa·s)
+
     # MuJoCo solref/solimp impedance parameters (contact)
     var solref_contact: InlineArray[
         Scalar[Self.DTYPE], 2
@@ -461,6 +466,10 @@ struct Model[
         """Initialize model with default values."""
         self.gravity = SIMD[Self.DTYPE, 4](0, 0, -9.81, 0)
         self.timestep = Scalar[Self.DTYPE](0.01)
+
+        # Fluid dynamics disabled by default
+        self.opt_density = Scalar[Self.DTYPE](0)
+        self.opt_viscosity = Scalar[Self.DTYPE](0)
 
         # MuJoCo geom defaults: solref=[0.02, 1.0], solimp=[0.0, 0.8, 0.01, 0.5, 2.0]
         # Note: solimp defaults are MuJoCo's built-in geom defaults, NOT the

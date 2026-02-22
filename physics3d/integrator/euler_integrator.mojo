@@ -24,7 +24,7 @@ This produces bounded, physically correct contact forces instead of
 unbounded spring forces that can launch bodies into the sky.
 """
 
-from math import sqrt
+from math import sqrt, abs
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
@@ -38,6 +38,7 @@ from ..kinematics.forward_kinematics import (
     compute_body_velocities_gpu,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate, quat_rotate
+from ..kinematics.quat_math import gpu_quat_rotate
 from ..dynamics.mass_matrix import (
     compute_mass_matrix,
     compute_mass_matrix_full,
@@ -75,6 +76,7 @@ from ..constraints.constraint_builder import (
     writeback_forces,
 )
 from ..dynamics.cfrc_ext import compute_cfrc_ext
+from ..dynamics.fluid_forces import compute_fluid_forces
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (
@@ -84,10 +86,15 @@ from ..gpu.constants import (
     model_size_with_invweight,
     model_metadata_offset,
     model_joint_offset,
+    model_body_offset,
     qpos_offset,
     qvel_offset,
     qacc_offset,
     qfrc_offset,
+    xquat_offset,
+    xvel_offset,
+    xangvel_offset,
+    xipos_offset,
     qpos_offset,
     qvel_offset,
     qacc_offset,
@@ -100,9 +107,19 @@ from ..gpu.constants import (
     JOINT_IDX_DAMPING,
     JOINT_IDX_SPRINGREF,
     JOINT_IDX_FRICTIONLOSS,
+    JOINT_IDX_BODY_ID,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_PARENT,
+    MODEL_BODY_SIZE,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_NJOINT,
+    MODEL_META_IDX_DENSITY,
+    MODEL_META_IDX_VISCOSITY,
     integrator_workspace_size,
+    ws_cdof_offset,
     ws_M_offset,
     ws_bias_offset,
     ws_fnet_offset,
@@ -305,6 +322,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         f_net[dof_adr] = f_net[dof_adr] - floss
                     elif v < -VEL_THRESH:
                         f_net[dof_adr] = f_net[dof_adr] + floss
+
+        # 6c. Fluid forces: viscous + pressure drag (disabled when density=viscosity=0)
+        compute_fluid_forces[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+        ](model, data, cdof, f_net)
 
         # qacc = M^-1 * f_net via LDL solve
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -831,6 +853,144 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         workspace[env, fnet_idx + dof_adr] = cur - floss
                     elif v < -VEL_THRESH:
                         workspace[env, fnet_idx + dof_adr] = cur + floss
+
+        # 8c. Fluid forces: inertia-box viscous + pressure drag (GPU)
+        # Enabled when density > 0 or viscosity > 0 (stored in model metadata).
+        var model_meta_off_fl = model_metadata_offset[NBODY, NJOINT]()
+        var rho_fl = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off_fl + MODEL_META_IDX_DENSITY]
+        )
+        var mu_fl = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off_fl + MODEL_META_IDX_VISCOSITY]
+        )
+        if rho_fl > Scalar[DTYPE](0) or mu_fl > Scalar[DTYPE](0):
+            comptime PI_FL: Scalar[DTYPE] = 3.14159265358979323846
+            comptime xquat_off = xquat_offset[NQ, NV, NBODY]()
+            comptime xvel_off = xvel_offset[NQ, NV, NBODY]()
+            comptime xangvel_off = xangvel_offset[NQ, NV, NBODY]()
+            comptime xipos_off = xipos_offset[NQ, NV, NBODY]()
+            comptime cdof_off = ws_cdof_offset()
+
+            for b in range(1, NBODY):
+                var body_off_b = model_body_offset(b)
+                var mass_b = rebind[Scalar[DTYPE]](
+                    model[0, body_off_b + BODY_IDX_MASS]
+                )
+                if mass_b <= Scalar[DTYPE](1e-10):
+                    continue
+
+                # Box from diagonal inertia
+                var Ixx = rebind[Scalar[DTYPE]](
+                    model[0, body_off_b + BODY_IDX_IXX]
+                )
+                var Iyy = rebind[Scalar[DTYPE]](
+                    model[0, body_off_b + BODY_IDX_IYY]
+                )
+                var Izz = rebind[Scalar[DTYPE]](
+                    model[0, body_off_b + BODY_IDX_IZZ]
+                )
+                var bx2 = Scalar[DTYPE](6) * (Iyy + Izz - Ixx) / mass_b
+                var by2 = Scalar[DTYPE](6) * (Ixx + Izz - Iyy) / mass_b
+                var bz2 = Scalar[DTYPE](6) * (Ixx + Iyy - Izz) / mass_b
+                var bx = sqrt(max(bx2, Scalar[DTYPE](0)))
+                var by = sqrt(max(by2, Scalar[DTYPE](0)))
+                var bz = sqrt(max(bz2, Scalar[DTYPE](0)))
+
+                # World-frame body velocity (at body origin)
+                var vx_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 0])
+                var vy_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 1])
+                var vz_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 2])
+                var wx_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 0])
+                var wy_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 1])
+                var wz_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 2])
+
+                # Rotate to body local frame (conjugate of xquat)
+                var qx_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+                var qy_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+                var qz_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+                var qw_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+
+                var vloc_b = gpu_quat_rotate[DTYPE](-qx_b, -qy_b, -qz_b, qw_b, vx_w, vy_w, vz_w)
+                var wloc_b = gpu_quat_rotate[DTYPE](-qx_b, -qy_b, -qz_b, qw_b, wx_w, wy_w, wz_w)
+                var vx = vloc_b[0]; var vy = vloc_b[1]; var vz = vloc_b[2]
+                var wx = wloc_b[0]; var wy = wloc_b[1]; var wz = wloc_b[2]
+
+                var diam = (bx + by + bz) / Scalar[DTYPE](3)
+
+                var lfx = Scalar[DTYPE](0)
+                var lfy = Scalar[DTYPE](0)
+                var lfz = Scalar[DTYPE](0)
+                var ltx = Scalar[DTYPE](0)
+                var lty = Scalar[DTYPE](0)
+                var ltz = Scalar[DTYPE](0)
+
+                if mu_fl > Scalar[DTYPE](0):
+                    var visc_lin = Scalar[DTYPE](3) * PI_FL * diam * mu_fl
+                    lfx = lfx - visc_lin * vx
+                    lfy = lfy - visc_lin * vy
+                    lfz = lfz - visc_lin * vz
+                    var d3 = diam * diam * diam
+                    var visc_ang = PI_FL * d3 * mu_fl
+                    ltx = ltx - visc_ang * wx
+                    lty = lty - visc_ang * wy
+                    ltz = ltz - visc_ang * wz
+
+                if rho_fl > Scalar[DTYPE](0):
+                    var half_rho = Scalar[DTYPE](0.5) * rho_fl
+                    lfx = lfx - half_rho * by * bz * abs(vx) * vx
+                    lfy = lfy - half_rho * bx * bz * abs(vy) * vy
+                    lfz = lfz - half_rho * bx * by * abs(vz) * vz
+                    var bx4 = bx * bx * bx * bx
+                    var by4 = by * by * by * by
+                    var bz4 = bz * bz * bz * bz
+                    ltx = ltx - rho_fl * bx * (by4 + bz4) * abs(wx) * wx / Scalar[DTYPE](64)
+                    lty = lty - rho_fl * by * (bx4 + bz4) * abs(wy) * wy / Scalar[DTYPE](64)
+                    ltz = ltz - rho_fl * bz * (bx4 + by4) * abs(wz) * wz / Scalar[DTYPE](64)
+
+                # Rotate forces to world frame
+                var fw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, lfx, lfy, lfz)
+                var tw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, ltx, lty, ltz)
+                var fx_w = fw_b[0]; var fy_w = fw_b[1]; var fz_w = fw_b[2]
+                var tx_w = tw_b[0]; var ty_w = tw_b[1]; var tz_w = tw_b[2]
+
+                # Apply wrench at xipos via Jacobian transpose (kinematic tree walk)
+                var px_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 0])
+                var py_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 1])
+                var pz_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 2])
+                var tau_ox = tx_w + py_b * fz_w - pz_b * fy_w
+                var tau_oy = ty_w + pz_b * fx_w - px_b * fz_w
+                var tau_oz = tz_w + px_b * fy_w - py_b * fx_w
+
+                var anc = b
+                while anc > 0:
+                    for j2 in range(NJOINT):
+                        var jo2 = model_joint_offset[NBODY](j2)
+                        var bid2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_BODY_ID]))
+                        if bid2 != anc:
+                            continue
+                        var jt2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_TYPE]))
+                        var da2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_DOF_ADR]))
+                        var nd2 = 1
+                        if jt2 == JNT_FREE:
+                            nd2 = 6
+                        elif jt2 == JNT_BALL:
+                            nd2 = 3
+                        for d2 in range(nd2):
+                            var di2 = da2 + d2
+                            var ca0 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 0])
+                            var ca1 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 1])
+                            var ca2 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 2])
+                            var cl0 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 3])
+                            var cl1 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 4])
+                            var cl2 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 5])
+                            var cur2 = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + di2])
+                            workspace[env, fnet_idx + di2] = (
+                                cur2
+                                + cl0 * fx_w + cl1 * fy_w + cl2 * fz_w
+                                + ca0 * tau_ox + ca1 * tau_oy + ca2 * tau_oz
+                            )
+                    var anc_off = model_body_offset(anc)
+                    anc = Int(rebind[Scalar[DTYPE]](model[0, anc_off + BODY_IDX_PARENT]))
 
         # LDL solve: reads L, D, f_net from workspace, writes qacc to workspace
         ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](

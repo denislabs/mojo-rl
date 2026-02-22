@@ -132,6 +132,8 @@ from .constants import (
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
+    MODEL_META_IDX_DENSITY,
+    MODEL_META_IDX_VISCOSITY,
     model_geom_offset,
     MODEL_EQ_SIZE,
     EQ_IDX_TYPE,
@@ -364,6 +366,9 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_GRAVITY_Y] = model.gravity[1]
     buffer[meta_offset + MODEL_META_IDX_GRAVITY_Z] = model.gravity[2]
     buffer[meta_offset + MODEL_META_IDX_TIMESTEP] = model.timestep
+    # Fluid dynamics options (density=0 / viscosity=0 disables fluid forces)
+    buffer[meta_offset + MODEL_META_IDX_DENSITY] = model.opt_density
+    buffer[meta_offset + MODEL_META_IDX_VISCOSITY] = model.opt_viscosity
     # solref/solimp contact
     buffer[
         meta_offset + MODEL_META_IDX_SOLREF_CONTACT_0

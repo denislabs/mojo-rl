@@ -275,6 +275,10 @@ comptime MODEL_META_IDX_GRAVITY_X: Int = 2
 comptime MODEL_META_IDX_GRAVITY_Y: Int = 3
 comptime MODEL_META_IDX_GRAVITY_Z: Int = 4
 comptime MODEL_META_IDX_TIMESTEP: Int = 5
+# Fluid dynamics parameters (MuJoCo option.density / option.viscosity)
+# These occupy the previously-reserved slots 6 and 7.
+comptime MODEL_META_IDX_DENSITY: Int = 6    # Fluid mass density (kg/m³), 0 = disabled
+comptime MODEL_META_IDX_VISCOSITY: Int = 7  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 # solref/solimp contact parameters (MuJoCo impedance model)
 comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8  # timeconst
 comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9  # dampratio

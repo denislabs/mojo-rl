@@ -77,6 +77,9 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime TIMESTEP: Float64
     # MuJoCo <compiler> block
     comptime SETTOTALMASS: Float64
+    # MuJoCo <option> fluid parameters
+    comptime OPT_DENSITY: Float64    # Fluid density (kg/m³), 0 = disabled
+    comptime OPT_VISCOSITY: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 
 
 @fieldwise_init
@@ -123,6 +126,9 @@ struct ModelDefaults[
     timestep: Float64 = 0.01,
     # Compiler directive (MuJoCo <compiler>)
     settotalmass: Float64 = -1.0,
+    # Fluid dynamics options (MuJoCo <option density="..." viscosity="..."/>)
+    opt_density: Float64 = 0.0,
+    opt_viscosity: Float64 = 0.0,
 ](ModelDefaultsLike):
     """MuJoCo-style model defaults block.
 
@@ -166,3 +172,5 @@ struct ModelDefaults[
     comptime GRAVITY_Z: Float64 = Self.gravity_z
     comptime TIMESTEP: Float64 = Self.timestep
     comptime SETTOTALMASS: Float64 = Self.settotalmass
+    comptime OPT_DENSITY: Float64 = Self.opt_density
+    comptime OPT_VISCOSITY: Float64 = Self.opt_viscosity
