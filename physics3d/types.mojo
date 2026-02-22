@@ -1165,6 +1165,12 @@ struct Data[
     var contacts: List[ContactInfo[Self.DTYPE]]
     var num_contacts: Int
 
+    # External contact forces per body in subtree CoM-based world-oriented frame.
+    # cfrc_ext[body * 6 + 0..5] = [torque_x, torque_y, torque_z, force_x, force_y, force_z]
+    # Computed after constraint solving by compute_cfrc_ext().
+    # Matches MuJoCo's d.cfrc_ext (mj_rnePostConstraint, contact section).
+    var cfrc_ext: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 6]
+
     fn __init__(out self):
         """Initialize with zero state."""
         # Initialize qpos to zero (neutral position for all joints)
@@ -1247,6 +1253,13 @@ struct Data[
         for _ in range(_max_one[Self.MAX_CONTACTS]()):
             self.contacts.append(ContactInfo[Self.DTYPE].empty())
         self.num_contacts = 0
+
+        # Initialize cfrc_ext to zero
+        self.cfrc_ext = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 6](
+            uninitialized=True
+        )
+        for i in range(Self.NBODY * 6):
+            self.cfrc_ext[i] = Scalar[Self.DTYPE](0)
 
     fn get_body_position(
         self, body_id: Int

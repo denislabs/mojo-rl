@@ -72,6 +72,7 @@ from ..constraints.constraint_builder import (
     build_constraints,
     writeback_forces,
 )
+from ..dynamics.cfrc_ext import compute_cfrc_ext
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (
@@ -562,6 +563,11 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_CONTACTS,
             MAX_ROWS,
         ](constraints, data)
+
+        # Compute cfrc_ext: contact forces per body in subtree CoM frame
+        compute_cfrc_ext[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+        ](model, data)
 
         # 9. Post-constraint re-solve with M_hat = M + arm + dt*D
         # MuJoCo pattern: constraint solver uses M+arm, then the integrator

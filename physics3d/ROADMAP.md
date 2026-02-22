@@ -120,7 +120,7 @@ Reference material:
 | No `<site>` elements | Low — massless reference points for observations | 6 |
 | ~~No `<tendon><fixed>` joint coupling~~ | ~~Medium — Humanoid hip-knee coupling~~ | ~~5~~ DONE |
 | No fluid dynamics (`density`/`viscosity` option) | Low — Swimmer only | 6 |
-| No `cfrc_ext` (contact forces per body) | Medium — Humanoid observations | 6 |
+| ~~No `cfrc_ext` (contact forces per body)~~ | ~~Medium — Humanoid observations~~ | ~~6~~ DONE |
 | No runtime solver/iterations selection from XML | Low — Humanoid requests PGS+50 iter | 6 |
 | ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
 | ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
@@ -1551,7 +1551,7 @@ Sprint 5 (Next environments — Walker2d, Ant):
 
 Sprint 6 (Humanoid):
   5.5 Fixed tendons             DONE
-  6.10 cfrc_ext                 <- Humanoid observations
+  6.10 cfrc_ext                 DONE (compute_cfrc_ext, validated vs MuJoCo)
   6.6 Cylinder geom             DONE (Cylinder struct, cylinder_plane, cylinder_sphere, CPU + GPU)
   6.2 inertiafromgeom           <- DONE
 
@@ -2028,7 +2028,7 @@ addition to the force pipeline.
 
 ### 6.10 cfrc_ext (Contact Forces per Body)
 
-**Status**: NOT STARTED.
+**Status**: DONE.
 **Used by**: Humanoid (external contact forces as part of observation).
 **Impact**: Medium — needed for Humanoid observations.
 
@@ -2042,9 +2042,11 @@ For each contact:
 ```
 
 **Implementation**:
-1. Add `cfrc_ext[NBODY*6]` to `Data`
-2. After solver, accumulate contact forces per body using contact Jacobians
-3. Transform to body-local frame if needed (MuJoCo stores in subtree CoM frame)
+1. Added `cfrc_ext[NBODY*6]` to `Data` (zeroed in `__init__`)
+2. Created `physics3d/dynamics/cfrc_ext.mojo` — `compute_cfrc_ext()` called after `writeback_forces` in all 4 integrators
+3. Computes: (a) subtree_com via backward tree pass, (b) body_rootid chain, (c) world-frame force/torque from contact frame, (d) spatial transform from contact point to subtree_com[rootid]
+4. Sign convention: body_a (robot body = MuJoCo geom[1]) gets +cfrc, body_b (ground = MuJoCo geom[0]) gets -cfrc
+5. Validated: `physics3d/tests/test_cfrc_ext_vs_mujoco.mojo` — tests 1-3 pass exactly; test 4 (compressed low pose) minor solver-level friction diff on leg contact
 
 ---
 

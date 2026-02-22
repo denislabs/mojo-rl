@@ -62,6 +62,7 @@ from ..collision.contact_detection import (
 )
 from ..constraints.constraint_data import ConstraintData
 from ..constraints.constraint_builder import build_constraints, writeback_forces
+from ..dynamics.cfrc_ext import compute_cfrc_ext
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (
@@ -861,6 +862,12 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # Normalize quaternions
         normalize_qpos_quaternions(model, data)
+
+        # Compute cfrc_ext: contact forces per body in subtree CoM frame
+        # Uses forces from the last stage (stage 3) written back above.
+        compute_cfrc_ext[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+        ](model, data)
 
     @staticmethod
     fn simulate[
