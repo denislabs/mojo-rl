@@ -27,7 +27,6 @@ struct HopperConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         HopperModel.NQ, HopperModel.NV
     ]()  # RK4 needs NQ + 7*NV extra workspace
-    comptime GPU_ENFORCE_LIMITS: Bool = False
 
     # === CPU: Integrator step ===
     @staticmethod

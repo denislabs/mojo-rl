@@ -501,6 +501,36 @@ fn test_running_gait_impact() raises -> Bool:
     return p1 and p5 and p20
 
 
+fn test_fthigh_at_limit_impact() raises -> Bool:
+    """fthigh at upper limit (0.7) + fast downward impact.
+
+    This reproduces the policy rollout bug: fthigh pinned at range_max=0.7
+    while the foot strikes the ground at high velocity.  Previously,
+    enforce_limits zeroed qvel_fthigh, which destroyed the B*v_n damping
+    term in the constraint bias and corrupted contact force computation
+    through M^{-1} coupling.
+    """
+    print("--- Test: fthigh at limit (0.7) + fast downward impact ---")
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.35  # rootz — feet close to ground
+    qpos[6] = 0.7    # fthigh at upper range_max limit
+    qpos[7] = 0.4    # fshin bent
+    qpos[8] = -0.2   # ffoot
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[1] = -3.0   # 3 m/s downward (foot strike)
+    qvel[6] = 2.0    # fthigh velocity pushing toward limit
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[3] = 1.0  # fthigh: max torque toward limit
+    actions[4] = -0.5
+    actions[5] = 0.3
+    var p1 = compare_step("  fthigh_lim N=1 ", qpos, qvel, actions, 1)
+    var p5 = compare_step("  fthigh_lim N=5 ", qpos, qvel, actions, 5,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p10 = compare_step("  fthigh_lim N=10", qpos, qvel, actions, 10,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    return p1 and p5 and p10
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -575,6 +605,16 @@ fn main() raises:
     print()
 
     if test_running_gait_impact():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    # --- Joint-limit + contact coupling test ---
+    print("### Joint limit + contact coupling test ###")
+    print()
+
+    if test_fthigh_at_limit_impact():
         num_pass += 1
     else:
         num_fail += 1

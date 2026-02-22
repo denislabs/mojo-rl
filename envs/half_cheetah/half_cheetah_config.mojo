@@ -4,7 +4,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
-from physics3d.integrator import ImplicitFastIntegrator
+from physics3d.integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     implicit_extra_workspace_size,
@@ -25,7 +25,6 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = implicit_extra_workspace_size[9, 8]()
-    comptime GPU_ENFORCE_LIMITS: Bool = True
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -63,9 +62,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        ImplicitFastIntegrator[SOLVER=NewtonSolver].step(
-            model, data, verbose=verbose
-        )
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data, verbose=verbose)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -156,7 +153,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,

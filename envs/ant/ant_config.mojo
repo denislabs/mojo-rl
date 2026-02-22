@@ -27,7 +27,6 @@ struct AntConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         AntModel.NQ, AntModel.NV
     ]()  # RK4 needs NQ + 7*NV extra workspace
-    comptime GPU_ENFORCE_LIMITS: Bool = True
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -53,7 +52,7 @@ struct AntConfig(Phyics3dEnvConfig):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
+            MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,

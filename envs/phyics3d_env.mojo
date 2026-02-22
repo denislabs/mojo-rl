@@ -191,7 +191,9 @@ struct Phyics3dEnv[
         ]()
 
         # Renderer not initialized
-        self._renderer = UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]()
+        self._renderer = UnsafePointer[
+            ModelRenderer[Self.MODEL_DEF], MutAnyOrigin
+        ]()
         self._renderer_initialized = False
 
         # Delegate full setup to config
@@ -300,10 +302,11 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.apply_actions(self.data, clamped_action.to_list())
 
         # Physics step (with frame skip)
+        # Note: joint limits are handled by the soft constraint solver (same as
+        # MuJoCo). Hard clamping qpos/qvel would corrupt the B*v_n damping term
+        # in the limit constraint bias, causing incorrect contact dynamics.
         for _ in range(self.frame_skip):
             Self.CONFIG.physics_substep(self.model, self.data, verbose)
-            # Enforce joint limits after each physics step
-            Self.MODEL_DEF.enforce_limits(self.data)
 
         # Run FK after integration so data.xpos matches the new qpos.
         # Without this, rendering shows the position from the START of the
@@ -478,12 +481,6 @@ struct Phyics3dEnv[
                 Self.MAX_TENDON,
             ](ctx, states_buf, model_buf, workspace_buf)
 
-            @parameter
-            if Self.CONFIG.GPU_ENFORCE_LIMITS:
-                Self.MODEL_DEF.enforce_limits_kernel_gpu[
-                    gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL
-                ](ctx, states_buf)
-
         # Extract observations, compute rewards, check termination
         Self._extract_obs_rewards_dones_gpu[
             BATCH_SIZE,
@@ -565,9 +562,7 @@ struct Phyics3dEnv[
                 BATCH_SIZE,
             ](i, states, model)
 
-        ctx.enqueue_function[
-            reset_with_fk_wrapper, reset_with_fk_wrapper
-        ](
+        ctx.enqueue_function[reset_with_fk_wrapper, reset_with_fk_wrapper](
             states,
             model,
             Int(rng_seed),

@@ -20,7 +20,6 @@ trait Phyics3dEnvConfig:
     comptime FRAME_SKIP: Int
     comptime MAX_STEPS: Int
     comptime INTEGRATOR_WS_EXTRA: Int  # 0 for RK4/Euler, >0 for ImplicitFast
-    comptime GPU_ENFORCE_LIMITS: Bool  # True for HalfCheetah, False for Hopper
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -46,7 +45,7 @@ trait Phyics3dEnvConfig:
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
+            MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
