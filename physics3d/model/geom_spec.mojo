@@ -948,6 +948,7 @@ trait GeomsLike:
         CONE_TYPE: Int,
         MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -960,6 +961,7 @@ trait GeomsLike:
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         ...
@@ -1018,6 +1020,7 @@ struct _EmptyGeoms(GeomsLike):
         CONE_TYPE: Int,
         MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -1030,6 +1033,7 @@ struct _EmptyGeoms(GeomsLike):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         pass
@@ -1103,6 +1107,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         Defaults: ModelDefaultsLike = ModelDefaults[],
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -1115,6 +1120,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         """Populate model geom arrays from compile-time GeomSpec list.

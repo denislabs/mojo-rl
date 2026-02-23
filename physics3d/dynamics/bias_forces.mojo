@@ -107,11 +107,17 @@ fn compute_bias_forces[
     V_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
     """Compute bias forces b(q, qvel) = C(q, qvel) + g(q).
@@ -338,9 +344,15 @@ fn _is_descendant[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
     ],
     body: Int,
     ancestor: Int,
@@ -368,11 +380,17 @@ fn compute_coriolis_forces[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut coriolis: InlineArray[Scalar[DTYPE], NV],
 ):
     """Compute Coriolis and centrifugal forces.
@@ -677,6 +695,7 @@ fn compute_bias_forces_rne[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -689,8 +708,9 @@ fn compute_bias_forces_rne[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):

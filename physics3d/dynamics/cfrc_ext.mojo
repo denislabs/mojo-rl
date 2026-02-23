@@ -29,6 +29,7 @@ fn compute_cfrc_ext[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -41,8 +42,9 @@ fn compute_cfrc_ext[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ) where DTYPE.is_floating_point():
     """Compute cfrc_ext: contact forces per body in subtree CoM-based frame.
 

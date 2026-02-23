@@ -287,8 +287,9 @@ trait ActuatorsLike:
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         actions: List[Float64],
     ):
         ...
@@ -374,8 +375,9 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         actions: List[Float64],
     ):
         """Apply actions through actuators to produce joint forces.
@@ -658,8 +660,9 @@ struct _EmptyActuators(ActuatorsLike):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         actions: List[Float64],
     ):
         pass

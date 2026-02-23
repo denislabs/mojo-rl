@@ -99,6 +99,7 @@ fn _compute_angular_jacobian_row[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -111,8 +112,9 @@ fn _compute_angular_jacobian_row[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
     contact_body_b: Int,
@@ -175,6 +177,7 @@ fn _joint_affects_body[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -187,6 +190,7 @@ fn _joint_affects_body[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
     joint_idx: Int,
     body_idx: Int,
@@ -219,6 +223,7 @@ fn build_constraints[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -231,8 +236,9 @@ fn build_constraints[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
     qvel: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -1814,9 +1820,10 @@ fn writeback_forces[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     MAX_ROWS: Int,
+    NSITE: Int = 0,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
     """Write solved constraint forces back to data.contacts for warm-starting.
 

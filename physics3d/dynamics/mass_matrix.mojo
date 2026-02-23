@@ -84,6 +84,7 @@ fn _is_descendant[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -96,6 +97,7 @@ fn _is_descendant[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
     body: Int,
     ancestor: Int,
@@ -127,11 +129,17 @@ fn compute_mass_matrix[
     M_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
 ):
     """Compute the joint-space mass matrix M(q).
@@ -367,6 +375,7 @@ fn compute_mass_matrix_full[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -379,8 +388,9 @@ fn compute_mass_matrix_full[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -665,6 +675,7 @@ fn compute_body_invweight0[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     mut model: Model[
         DTYPE,
@@ -677,8 +688,9 @@ fn compute_body_invweight0[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
     """Compute body_invweight0 from mass matrix and body CoM Jacobians.
 
@@ -710,6 +722,7 @@ fn compute_body_invweight0[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE,
         CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ](model, data, cdof, crb, M)
 
     # Add armature to diagonal before factoring

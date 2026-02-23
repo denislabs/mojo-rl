@@ -42,6 +42,7 @@ fn compute_fluid_forces[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -54,8 +55,9 @@ fn compute_fluid_forces[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], _max_one[NV * 6]()],
     mut f_net: InlineArray[Scalar[DTYPE], _max_one[NV]()],
 ) where DTYPE.is_floating_point():

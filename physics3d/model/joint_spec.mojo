@@ -365,6 +365,7 @@ trait JointsLike:
         CONE_TYPE: Int,
         MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -377,6 +378,7 @@ trait JointsLike:
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         ...
@@ -388,7 +390,8 @@ trait JointsLike:
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         ...
 
     @staticmethod
@@ -398,8 +401,9 @@ trait JointsLike:
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE],
         mut obs: List[Scalar[DTYPE]],
     ):
         ...
@@ -411,7 +415,8 @@ trait JointsLike:
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         ...
 
     # GPU kernel launchers
@@ -500,6 +505,7 @@ struct _EmptyJoints(JointsLike):
         CONE_TYPE: Int,
         MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -512,6 +518,7 @@ struct _EmptyJoints(JointsLike):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         pass
@@ -523,7 +530,8 @@ struct _EmptyJoints(JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         pass
 
     @staticmethod
@@ -533,8 +541,9 @@ struct _EmptyJoints(JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE],
         mut obs: List[Scalar[DTYPE]],
     ):
         pass
@@ -546,7 +555,8 @@ struct _EmptyJoints(JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         pass
 
     @staticmethod
@@ -671,7 +681,8 @@ struct Joints[*J: JointSpec](JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         """Reset qpos to initial joint positions (qpos0), zero qvel/qacc/qfrc.
 
         Sets each joint's qpos to its INIT_QPOS value and zeros all velocity,
@@ -766,8 +777,9 @@ struct Joints[*J: JointSpec](JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE],
         mut obs: List[Scalar[DTYPE]],
     ):
         """Extract observation from physics data into a list.
@@ -809,7 +821,7 @@ struct Joints[*J: JointSpec](JointsLike):
         NBODY: Int,
         MAX_CONTACTS: Int,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE],
         actions: List[Float64],
     ):
         """Apply normalized actions to actuated joints.
@@ -845,7 +857,8 @@ struct Joints[*J: JointSpec](JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        NSITE: Int = 0,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         """Enforce joint position limits. Zeros velocity at limits."""
 
         @parameter
@@ -1263,6 +1276,7 @@ struct Joints[*J: JointSpec](JointsLike):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         Defaults: ModelDefaultsLike = ModelDefaults[],
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -1275,6 +1289,7 @@ struct Joints[*J: JointSpec](JointsLike):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ]
     ):
         """Populate model joints from compile-time JointSpec list.

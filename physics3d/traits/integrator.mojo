@@ -39,7 +39,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -51,9 +52,10 @@ trait Integrator(Movable & ImplicitlyCopyable):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
+            MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Perform one physics simulation step on CPU.
@@ -76,7 +78,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -88,9 +91,10 @@ trait Integrator(Movable & ImplicitlyCopyable):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
+            MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU.
@@ -119,6 +123,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -152,6 +157,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

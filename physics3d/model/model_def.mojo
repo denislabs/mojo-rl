@@ -170,6 +170,7 @@ from ..model.light_spec import LightsLike, _EmptyLights
 from ..model.texture_spec import TexturesLike, _EmptyTextures
 from ..model.material_spec import MaterialsLike, _EmptyMaterials
 from ..model.camera_spec import CamerasLike, _EmptyCameras
+from ..model.site_spec import SitesLike, _EmptySites
 
 
 comptime _RVec3 = _Vec3G[DType.float64]
@@ -189,6 +190,7 @@ trait ModelDefLike:
     comptime CONE_TYPE: Int
     comptime MAX_CONTACTS: Int
     comptime MAX_TENDON: Int
+    comptime NSITE: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
 
@@ -219,6 +221,7 @@ trait ModelDefLike:
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ],
         mut data: Data[
             DTYPE,
@@ -227,6 +230,7 @@ trait ModelDefLike:
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         ...
@@ -243,6 +247,7 @@ trait ModelDefLike:
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         ...
@@ -258,6 +263,7 @@ trait ModelDefLike:
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
         mut obs: List[Scalar[DTYPE]],
     ):
@@ -274,6 +280,7 @@ trait ModelDefLike:
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         ...
@@ -289,6 +296,7 @@ trait ModelDefLike:
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
         actions: List[Float64],
     ):
@@ -423,6 +431,7 @@ struct ModelDef[
     Textures: TexturesLike = _EmptyTextures,
     Materials: MaterialsLike = _EmptyMaterials,
     Cameras: CamerasLike = _EmptyCameras,
+    Sites: SitesLike = _EmptySites,
     max_equality: Int = 0,
     max_contacts: Int = 0,
     cone_type: Int = ConeType.ELLIPTIC,
@@ -450,6 +459,7 @@ struct ModelDef[
     comptime CONE_TYPE: Int = Self.cone_type
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
+    comptime NSITE: Int = Self.Sites.N
 
     # Derived from components (only meaningful when J is not _EmptyJoints)
     comptime OBS_DIM: Int = Self.Joints.OBS_DIM
@@ -485,6 +495,7 @@ struct ModelDef[
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ],
     ):
         """Set all solver impedance params on a Model from ModelDefaults.
@@ -547,6 +558,7 @@ struct ModelDef[
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ],
         mut data: Data[
             DTYPE,
@@ -555,6 +567,7 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             MAX_CONTACTS,
+            Self.NSITE,
         ],
     ) where DTYPE.is_floating_point():
         """Run FK + compute_body_invweight0 in the correct order.
@@ -611,6 +624,7 @@ struct ModelDef[
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ],
         mut data: Data[
             DTYPE,
@@ -619,12 +633,14 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         Self.setup_solver_params(model)
         Self.Bodies.setup_model(model)
         Self.Joints.setup_model[Defaults = Self.Defaults](model)
         Self.Geoms.setup_model[Defaults = Self.Defaults](model)
+        Self.Sites.setup_model(model)
         Self.Joints.reset_data(data)
         Self.finalize(model, data)
 
@@ -646,6 +662,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
+            Self.NSITE,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         # Zero-initialize
@@ -661,6 +678,12 @@ struct ModelDef[
         if Self.NGEOM > 0:
             Self.Geoms.write_to_buffer[
                 DTYPE, Self.NBODY, Self.NJOINT, Defaults = Self.Defaults
+            ](host_buf)
+        @parameter
+        if Self.NSITE > 0:
+            Self.Sites.write_to_buffer[
+                DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM,
+                Self.MAX_EQUALITY, Self.MAX_TENDON,
             ](host_buf)
         Self._write_metadata_to_buffer[DTYPE](host_buf)
 
@@ -799,7 +822,7 @@ struct ModelDef[
         ]()
         comptime MODEL_SIZE = model_size_with_invweight[
             Self.NBODY, Self.NJOINT, Self.NV, Self.NGEOM,
-            Self.MAX_EQUALITY, Self.MAX_TENDON,
+            Self.MAX_EQUALITY, Self.MAX_TENDON, Self.NSITE,
         ]()
         comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
 
@@ -894,10 +917,12 @@ struct ModelDef[
             var bw_off = model_body_invweight0_offset[
                 Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
                 Self.MAX_TENDON,
+                Self.NSITE,
             ]()
             var dw_off = model_dof_invweight0_offset[
                 Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
                 Self.MAX_TENDON,
+                Self.NSITE,
             ]()
 
             # World body: zero weights
@@ -1092,6 +1117,7 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         Self.Joints.reset_data(data)
@@ -1107,6 +1133,7 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
         mut obs: List[Scalar[DTYPE]],
     ):
@@ -1123,6 +1150,7 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
     ):
         Self.Joints.enforce_limits(data)
@@ -1138,6 +1166,7 @@ struct ModelDef[
             Self.NBODY,
             Self.NJOINT,
             Self.MAX_CONTACTS,
+            Self.NSITE,
         ],
         actions: List[Float64],
     ):
@@ -1240,6 +1269,7 @@ struct ModelDef[
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ],
     ) raises -> HostBuffer[DTYPE]:
         """Create a GPU host buffer from a fully-configured model.
@@ -1255,6 +1285,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
+            Self.NSITE,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         for i in range(BUF_SIZE):

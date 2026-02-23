@@ -165,6 +165,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -177,8 +178,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Execute one simulation step with full implicit integration.
@@ -536,6 +538,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -548,8 +551,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+        NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
@@ -565,6 +569,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](model, data)
 
     # =========================================================================
@@ -588,6 +593,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1033,6 +1039,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1040,7 +1047,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
         """Perform one full implicit physics step on GPU."""
-        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
             NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
@@ -1117,6 +1124,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
         MAX_TENDON,
+        NSITE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1161,6 +1169,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1182,6 +1191,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](
                 ctx,
                 state_buf,

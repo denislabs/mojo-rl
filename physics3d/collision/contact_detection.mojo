@@ -100,6 +100,7 @@ fn normalize_qpos_quaternions[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -112,8 +113,9 @@ fn normalize_qpos_quaternions[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ) where DTYPE.is_floating_point():
     """Normalize quaternions in qpos for BALL and FREE joints."""
     for j in range(model.num_joints):
@@ -221,6 +223,7 @@ fn _geom_world_pos[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -233,8 +236,9 @@ fn _geom_world_pos[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     g: Int,
 ) -> Tuple[
     Scalar[DTYPE],
@@ -297,6 +301,7 @@ fn detect_contacts[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -309,8 +314,9 @@ fn detect_contacts[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
     """Unified contact detection using geom arrays."""
     data.num_contacts = 0

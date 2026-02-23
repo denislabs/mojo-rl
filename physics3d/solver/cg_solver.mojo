@@ -132,6 +132,7 @@ struct CGSolver(ConstraintSolver):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -144,8 +145,9 @@ struct CGSolver(ConstraintSolver):
             MAX_EQUALITY,
             CONE_TYPE,
         MAX_TENDON,
+        NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
         mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -447,6 +449,7 @@ struct CGSolver(ConstraintSolver):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -716,6 +719,7 @@ struct CGSolver(ConstraintSolver):
             FRICTION_WS_OFFSET,
             CONE_TYPE,
         MAX_TENDON,
+        NSITE,
         ](
             env,
             state,

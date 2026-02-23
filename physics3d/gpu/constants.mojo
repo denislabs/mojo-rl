@@ -169,7 +169,15 @@ fn metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # =============================================================================
 
 
-fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+fn site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+    """Offset to site_xpos array (site world positions).
+
+    Placed after metadata at end of state buffer.
+    """
+    return metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]() + METADATA_SIZE
+
+
+fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0]() -> Int:
     """Compute total state buffer size per environment.
 
     Returns:
@@ -185,6 +193,7 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
         + NBODY * 3  # xangvel
         + MAX_CONTACTS * CONTACT_SIZE
         + METADATA_SIZE
+        + NSITE * 3  # site_xpos (site world positions)
     )
 
 
@@ -473,13 +482,27 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
 
 
-fn model_size[
+# =============================================================================
+# Model Buffer Layout - Sites
+# =============================================================================
+
+# Site layout: [body_idx, pos_x, pos_y, pos_z]
+comptime MODEL_SITE_SIZE: Int = 4  # Per site: body + pos(3)
+
+comptime SITE_IDX_BODY: Int = 0   # Body index the site is attached to
+comptime SITE_IDX_POS_X: Int = 1  # Local position in body frame
+comptime SITE_IDX_POS_Y: Int = 2
+comptime SITE_IDX_POS_Z: Int = 3
+
+
+fn model_site_offset[
     NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
     NTENDON: Int = 0,
-]() -> Int:
-    """Total model buffer size (without invweight0 arrays).
+](site_idx: Int) -> Int:
+    """Offset to a specific site in model buffer.
 
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons]
+    Sites are stored AFTER tendons.
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites]
     """
     return (
         NBODY * MODEL_BODY_SIZE
@@ -489,44 +512,65 @@ fn model_size[
         + NGEOM * MODEL_GEOM_SIZE
         + NEQUALITY * MODEL_EQ_SIZE
         + NTENDON * MODEL_TENDON_SIZE
+        + site_idx * MODEL_SITE_SIZE
+    )
+
+
+fn model_size[
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+    NTENDON: Int = 0, NSITE: Int = 0,
+]() -> Int:
+    """Total model buffer size (without invweight0 arrays).
+
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites]
+    """
+    return (
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
+        + NGEOM * MODEL_GEOM_SIZE
+        + NEQUALITY * MODEL_EQ_SIZE
+        + NTENDON * MODEL_TENDON_SIZE
+        + NSITE * MODEL_SITE_SIZE
     )
 
 
 fn model_body_invweight0_offset[
     NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
+    NTENDON: Int = 0, NSITE: Int = 0,
 ]() -> Int:
     """Offset to body_invweight0[NBODY*2] in model buffer.
 
-    Appended after geoms/equality/tendons section.
+    Appended after geoms/equality/tendons/sites section.
     """
-    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]()
+    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]()
 
 
 fn model_dof_invweight0_offset[
     NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
+    NTENDON: Int = 0, NSITE: Int = 0,
 ]() -> Int:
     """Offset to dof_invweight0[NV] in model buffer.
 
     Appended after body_invweight0[NBODY*2].
     """
     return (
-        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]()
+        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]()
         + NBODY * 2
     )
 
 
 fn model_size_with_invweight[
     NBODY: Int, NJOINT: Int, NV: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
+    NTENDON: Int = 0, NSITE: Int = 0,
 ]() -> Int:
     """Total model buffer size including invweight0 arrays.
 
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons |
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
              body_invweight0(NBODY*2) | dof_invweight0(NV)]
     """
-    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]() + NV
+    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]() + NV
 
 
 # =============================================================================

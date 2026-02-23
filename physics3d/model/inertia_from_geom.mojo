@@ -548,9 +548,10 @@ fn compute_inertia_from_geoms[
     MAX_EQUALITY: Int,
     CONE_TYPE: Int,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     mut model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON,
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
     ],
 ):
     """Compute body mass/inertia/ipos/iquat from child geoms.

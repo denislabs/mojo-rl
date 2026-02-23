@@ -98,13 +98,15 @@ struct Phyics3dEnv[
     comptime MAX_EQUALITY: Int = Self.MODEL_DEF.MAX_EQUALITY
     comptime CONE_TYPE: Int = Self.MODEL_DEF.CONE_TYPE
     comptime MAX_TENDON: Int = Self.MODEL_DEF.MAX_TENDON
+    comptime NSITE: Int = Self.MODEL_DEF.NSITE
 
-    # GPU state size
+    # GPU state size (includes site_xpos when NSITE > 0)
     comptime STATE_SIZE: Int = state_size[
         Self.MODEL_DEF.NQ,
         Self.MODEL_DEF.NV,
         Self.MODEL_DEF.NBODY,
         Self.MODEL_DEF.MAX_CONTACTS,
+        Self.MODEL_DEF.NSITE,
     ]()
 
     # Pre-allocated workspace sizes for step_kernel_gpu
@@ -132,6 +134,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.CONE_TYPE,
         Self.MAX_TENDON,
+        Self.NSITE,
     ]
     var data: Data[
         Self.DTYPE,
@@ -140,6 +143,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.NBODY,
         Self.MODEL_DEF.NJOINT,
         Self.MODEL_DEF.MAX_CONTACTS,
+        Self.NSITE,
     ]
 
     # Environment parameters
@@ -180,6 +184,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.MAX_EQUALITY,
             Self.MODEL_DEF.CONE_TYPE,
             Self.MAX_TENDON,
+            Self.NSITE,
         ]()
         self.data = Data[
             Self.DTYPE,
@@ -188,6 +193,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NBODY,
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.MAX_CONTACTS,
+            Self.NSITE,
         ]()
 
         # Renderer not initialized

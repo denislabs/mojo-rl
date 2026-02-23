@@ -105,6 +105,7 @@ fn compute_cdof[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -117,8 +118,9 @@ fn compute_cdof[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
 ):
     """Compute spatial motion axis (cdof) for each DOF.
@@ -353,6 +355,7 @@ fn compute_contact_jacobian_row[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -365,8 +368,9 @@ fn compute_contact_jacobian_row[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
     contact_body_b: Int,
@@ -475,6 +479,7 @@ fn _joint_affects_body[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -487,6 +492,7 @@ fn _joint_affects_body[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
     joint_idx: Int,
     body_idx: Int,
@@ -524,6 +530,7 @@ fn compute_composite_inertia[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -536,8 +543,9 @@ fn compute_composite_inertia[
         MAX_EQUALITY,
         CONE_TYPE,
     MAX_TENDON,
+    NSITE,
     ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
 ):
     """Compute composite rigid body inertia for each body.

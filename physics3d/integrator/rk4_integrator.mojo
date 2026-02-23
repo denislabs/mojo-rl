@@ -214,6 +214,7 @@ fn _forward_dynamics[
     CRB_SIZE: Int,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -226,8 +227,9 @@ fn _forward_dynamics[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut qacc_out: InlineArray[Scalar[DTYPE], V_SIZE],
     mut cdof_out: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut M_inv_out: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -405,6 +407,7 @@ fn _solve_constraints[
     CONE_TYPE: Int,
     MAX_TENDON: Int,
     SOLVER: ConstraintSolver,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -417,8 +420,9 @@ fn _solve_constraints[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
     M: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -472,6 +476,7 @@ fn _integrate_pos[
     MAX_EQUALITY: Int,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -484,6 +489,7 @@ fn _integrate_pos[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+    NSITE,
     ],
     qpos_base: InlineArray[Scalar[DTYPE], _max_one[NQ]()],
     vel: InlineArray[Scalar[DTYPE], _max_one[NV]()],
@@ -582,6 +588,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -594,8 +601,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Execute one RK4 simulation step (MuJoCo-compatible).
@@ -881,6 +889,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -893,8 +902,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+        NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
@@ -910,6 +920,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](model, data)
 
     # =========================================================================
@@ -1441,6 +1452,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1452,7 +1464,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         Launches 9 kernels: 4 × (stage + solver) + 1 combine.
         Workspace must include RK4 extra space beyond the standard layout.
         """
-        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
             NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
@@ -1529,6 +1541,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
         MAX_TENDON,
+        NSITE,
         ]
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
             state,
@@ -1666,6 +1679,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1687,6 +1701,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](
                 ctx,
                 state_buf,

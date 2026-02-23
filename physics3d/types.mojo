@@ -324,6 +324,7 @@ struct Model[
     MAX_EQUALITY: Int = 0,  # Maximum number of equality constraints
     CONE_TYPE: Int = ConeType.ELLIPTIC,  # Cone type (0=pyramidal, 1=elliptic)
     MAX_TENDON: Int = 0,  # Maximum number of fixed tendons
+    NSITE: Int = 0,  # Number of sites (body-attached reference points)
 ]:
     """Static configuration for MuJoCo-style generalized coordinates simulation.
 
@@ -338,6 +339,7 @@ struct Model[
         MAX_EQUALITY: Maximum number of equality constraints (0 = none).
         CONE_TYPE: Cone type (0=pyramidal, 1=elliptic).
         MAX_TENDON: Maximum number of fixed tendons (0 = none).
+        NSITE: Number of sites (body-attached reference points, 0 = none).
 
     The kinematic tree is defined by body_parent array:
     - body_parent[0] = 0 (worldbody, self-referencing)
@@ -434,6 +436,12 @@ struct Model[
 
     # Per-geom mass (computed from density * volume or explicit mass)
     var geom_mass: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+
+    # Site arrays (body-attached reference points, zero mass)
+    # site_body[i]: which body site i is attached to
+    # site_pos[i*3 + 0/1/2]: local position of site i in body frame
+    var site_body: InlineArray[Int, _max_one[Self.NSITE]()]
+    var site_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()]
 
     # Per-joint solref/solimp for limits (MuJoCo-style per-joint impedance overrides)
     var joint_solref_limit: InlineArray[
@@ -600,6 +608,13 @@ struct Model[
         self.geom_mass = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
         ](fill=Scalar[Self.DTYPE](0))
+
+        # Initialize site arrays
+        self.site_body = InlineArray[Int, _max_one[Self.NSITE]()](fill=0)
+        self.site_pos = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()
+        ](fill=Scalar[Self.DTYPE](0))
+
         self.joint_solref_limit = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
         ](fill=Scalar[Self.DTYPE](0))
@@ -1144,6 +1159,7 @@ struct Data[
     NBODY: Int,  # Number of bodies
     NJOINT: Int,  # Number of joints
     MAX_CONTACTS: Int,  # Maximum number of contacts
+    NSITE: Int = 0,  # Number of sites (body-attached reference points)
 ]:
     """Mutable simulation state for MuJoCo-style generalized coordinates.
 
@@ -1197,6 +1213,11 @@ struct Data[
     # Computed after constraint solving by compute_cfrc_ext().
     # Matches MuJoCo's d.cfrc_ext (mj_rnePostConstraint, contact section).
     var cfrc_ext: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 6]
+
+    # Site world positions (computed during FK from site_body + site_pos in model)
+    # site_xpos[i*3 + 0/1/2] = world position of site i
+    # site_xpos = xpos[body] + rotate(site_pos, xquat[body])
+    var site_xpos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()]
 
     fn __init__(out self):
         """Initialize with zero state."""
@@ -1287,6 +1308,11 @@ struct Data[
         )
         for i in range(Self.NBODY * 6):
             self.cfrc_ext[i] = Scalar[Self.DTYPE](0)
+
+        # Initialize site_xpos to zero
+        self.site_xpos = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()
+        ](fill=Scalar[Self.DTYPE](0))
 
     fn get_body_position(
         self, body_id: Int

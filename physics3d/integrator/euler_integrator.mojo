@@ -162,6 +162,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -174,8 +175,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Execute one simulation step with constraint-based contacts.
@@ -484,6 +486,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -496,8 +499,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
@@ -513,6 +517,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](model, data)
 
     # =========================================================================
@@ -1200,6 +1205,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1210,7 +1216,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         Uses the parametrized SOLVER for contact constraint resolution.
         """
-        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
             NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
@@ -1280,6 +1286,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+        NSITE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1324,6 +1331,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1345,6 +1353,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
+            NSITE,
             ](
                 ctx,
                 state_buf,

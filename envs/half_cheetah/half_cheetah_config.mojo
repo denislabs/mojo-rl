@@ -39,6 +39,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -51,6 +52,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[
             DTYPE,
@@ -59,6 +61,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             NBODY,
             NJOINT,
             MAX_CONTACTS,
+            NSITE,
         ],
         verbose: Bool,
     ):
@@ -73,8 +76,9 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut prev_x: Scalar[DTYPE],
     ):
         prev_x = data.qpos[0]  # Save rootx position
@@ -88,8 +92,9 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,

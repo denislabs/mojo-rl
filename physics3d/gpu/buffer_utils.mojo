@@ -210,7 +210,7 @@ fn create_state_buffer[
     Returns:
         Pointer to allocated buffer.
     """
-    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     var total_size = STATE_SIZE * BATCH
     var buffer = ctx.enqueue_create_host_buffer[DTYPE](total_size)
 
@@ -261,6 +261,7 @@ fn copy_model_to_buffer[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -273,6 +274,7 @@ fn copy_model_to_buffer[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+        NSITE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -422,6 +424,7 @@ fn copy_invweight0_to_buffer[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -434,6 +437,7 @@ fn copy_invweight0_to_buffer[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+        NSITE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -472,6 +476,7 @@ fn copy_geoms_to_buffer[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -484,6 +489,7 @@ fn copy_geoms_to_buffer[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+        NSITE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -585,6 +591,7 @@ fn copy_tendons_to_buffer[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -597,6 +604,7 @@ fn copy_tendons_to_buffer[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
+        NSITE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -641,7 +649,7 @@ fn copy_data_to_buffer[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     buffer: HostBuffer[DTYPE],
     env_idx: Int,
 ):
@@ -652,7 +660,7 @@ fn copy_data_to_buffer[
         buffer: Destination buffer.
         env_idx: Environment index in buffer.
     """
-    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     var base = env_idx * STATE_SIZE
 
     # Copy qpos
@@ -705,7 +713,7 @@ fn copy_buffer_to_data[
     MAX_CONTACTS: Int,
 ](
     buffer: UnsafePointer[Scalar[DTYPE]],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     env_idx: Int,
 ):
     """Copy state buffer slot to Data.
@@ -715,7 +723,7 @@ fn copy_buffer_to_data[
         data: Destination data.
         env_idx: Environment index in buffer.
     """
-    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     var base = env_idx * STATE_SIZE
 
     # Copy qpos

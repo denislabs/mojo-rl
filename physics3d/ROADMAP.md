@@ -1558,7 +1558,7 @@ Sprint 6 (Humanoid):
 Sprint 7 (Specialized):
   6.9 Fluid dynamics            DONE (inertia-box model, CPU + GPU, ModelDefaults.OPT_DENSITY/OPT_VISCOSITY)
   6.5 Full solimp (5 params)    DONE (piecewise power formula, all 14 files updated, tests pass)
-  6.8 Site elements             <- InvertedDoublePendulum
+  6.8 Site elements             DONE (SiteSpec trait, Site/Sites types, NSITE param propagated to all Model/Data/FK/integrators/solvers/dynamics, CPU+GPU FK computes site_xpos)
   5.2 Solver islands            <- multi-agent parallelism
   4.2 Broadphase (AABB/SAP)     <- large scenes
   0.5 MJCF XML parser           <- automate model translation
@@ -1988,7 +1988,7 @@ Computed in `Geoms.setup_model` and stored in `model.geom_mass[NGEOM]`.
 
 ### 6.8 Site Elements
 
-**Status**: NOT STARTED.
+**Status**: DONE.
 **Used by**: InvertedDoublePendulum (tip position for reward).
 **Impact**: Low — massless reference points.
 
@@ -1999,9 +1999,15 @@ in FK (get world position/orientation) but not dynamics. Used for:
 - Reward computation
 
 **Implementation**:
-1. Add `SiteSpec` trait with `BODY_IDX`, `POS_X/Y/Z`
-2. Add `site_xpos[NSITE*3]` to `Data`, computed during FK
-3. FK: `site_xpos = body_xpos + rotate(site_pos, body_xquat)`
+1. `SiteSpec` trait with `BODY_IDX`, `POS_X/Y/Z` in `model/site_spec.mojo`
+2. `Site` struct + `Sites[*Ts]` variadic container
+3. `NSITE: Int = 0` added as new compile-time parameter to `Model` (11th param) and `Data` (7th param)
+4. `site_xpos[NSITE*3]` in `Data` (zeroed in `__init__`)
+5. CPU FK: `site_xpos = body_xpos + rotate(site_pos, body_xquat)` (guarded by `@parameter if NSITE > 0`)
+6. GPU FK: same computation in `EulerIntegrator.step_kernel_gpu`, guarded by `@parameter if NSITE > 0`
+7. NSITE propagated through all dynamics, solvers, integrators, collision, constraint files (~30 files)
+8. GPU state buffer includes `NSITE*3` floats for site_xpos
+9. Backward compatible: all existing environments use default `NSITE=0`
 
 ---
 

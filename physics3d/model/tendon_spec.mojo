@@ -108,6 +108,7 @@ struct Tendons[*T: TendonSpec]:
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -120,6 +121,7 @@ struct Tendons[*T: TendonSpec]:
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
+        NSITE,
         ]
     ):
         """Populate model tendons from compile-time specs."""

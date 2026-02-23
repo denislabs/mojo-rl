@@ -43,9 +43,11 @@ from ..gpu.constants import (
     xipos_offset,
     xvel_offset,
     xangvel_offset,
+    site_xpos_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
+    model_site_offset,
     BODY_IDX_PARENT,
     BODY_IDX_POS_X,
     BODY_IDX_POS_Y,
@@ -69,6 +71,10 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_Z,
     JOINT_IDX_QPOS0,
     MODEL_META_IDX_NJOINT,
+    SITE_IDX_BODY,
+    SITE_IDX_POS_X,
+    SITE_IDX_POS_Y,
+    SITE_IDX_POS_Z,
 )
 
 from ..joint_types import (
@@ -95,6 +101,7 @@ fn forward_kinematics[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -106,9 +113,10 @@ fn forward_kinematics[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
+        MAX_TENDON,
+        NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ) where DTYPE.is_floating_point():
     """Compute body world positions from joint positions.
 
@@ -472,6 +480,21 @@ fn forward_kinematics[
         data.xipos[body * 3 + 1] = py + rotated_ipos[1]
         data.xipos[body * 3 + 2] = pz + rotated_ipos[2]
 
+    # Compute site world positions: site_xpos = xpos[body] + rotate(site_pos, xquat[body])
+    for site_idx in range(NSITE):
+        var s_body = model.site_body[site_idx]
+        var sp_x = model.site_pos[site_idx * 3 + 0]
+        var sp_y = model.site_pos[site_idx * 3 + 1]
+        var sp_z = model.site_pos[site_idx * 3 + 2]
+        var bqx = data.xquat[s_body * 4 + 0]
+        var bqy = data.xquat[s_body * 4 + 1]
+        var bqz = data.xquat[s_body * 4 + 2]
+        var bqw = data.xquat[s_body * 4 + 3]
+        var rot = quat_rotate(bqx, bqy, bqz, bqw, sp_x, sp_y, sp_z)
+        data.site_xpos[site_idx * 3 + 0] = data.xpos[s_body * 3 + 0] + rot[0]
+        data.site_xpos[site_idx * 3 + 1] = data.xpos[s_body * 3 + 1] + rot[1]
+        data.site_xpos[site_idx * 3 + 2] = data.xpos[s_body * 3 + 2] + rot[2]
+
 
 # =============================================================================
 # Compute Body Velocities from Joint Velocities
@@ -489,6 +512,7 @@ fn compute_body_velocities[
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -500,9 +524,10 @@ fn compute_body_velocities[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
+        MAX_TENDON,
+        NSITE,
     ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
     """Compute body world velocities from joint velocities.
 
@@ -655,6 +680,10 @@ fn forward_kinematics_gpu[
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
     BATCH: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[
@@ -1136,6 +1165,25 @@ fn forward_kinematics_gpu[
             state[env, xipos_off + body * 3 + 0] = world_px + rot_ipos[0]
             state[env, xipos_off + body * 3 + 1] = world_py + rot_ipos[1]
             state[env, xipos_off + body * 3 + 2] = world_pz + rot_ipos[2]
+
+    # Compute site world positions (GPU): site_xpos = xpos[body] + rotate(site_pos, xquat[body])
+    @parameter
+    if NSITE > 0:
+        var site_xpos_off = site_xpos_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        for site_idx in range(NSITE):
+            var site_base = model_site_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON](site_idx)
+            var s_body = Int(rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_BODY]))
+            var sp_x = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_X])
+            var sp_y = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_Y])
+            var sp_z = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_Z])
+            var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 0])
+            var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 1])
+            var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 2])
+            var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 3])
+            var rot = gpu_quat_rotate(bqx, bqy, bqz, bqw, sp_x, sp_y, sp_z)
+            state[env, site_xpos_off + site_idx * 3 + 0] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 0]) + rot[0]
+            state[env, site_xpos_off + site_idx * 3 + 1] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 1]) + rot[1]
+            state[env, site_xpos_off + site_idx * 3 + 2] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 2]) + rot[2]
 
 
 # =============================================================================
