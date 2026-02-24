@@ -36,7 +36,7 @@ Reference material:
   - [3.4 Per-Contact Solver Parameters (solref/solimp)](#34-per-contact-solver-parameters-solrefsolimp)
 - [Phase 4: Collision Pipeline](#phase-4-collision-pipeline)
   - [4.1 Broadphase Collision (bounding sphere) — DONE](#41-broadphase-collision-bounding-sphere--done)
-  - [4.2 Broadphase Collision (AABB/SAP)](#42-broadphase-collision-aabbsap)
+  - [4.2 Broadphase Collision (AABB/SAP) — DONE](#42-broadphase-collision-aabbsap--done)
 - [Phase 5: Advanced Features](#phase-5-advanced-features)
   - [5.1 Solver Warmstart](#51-solver-warmstart)
   - [5.2 Solver Islands](#52-solver-islands)
@@ -1374,29 +1374,42 @@ don't overlap. Plane geoms skip the broadphase check (they're infinite).
 
 ---
 
-### 4.2 Broadphase Collision (AABB/SAP)
+### 4.2 Broadphase Collision (AABB/SAP) — DONE
 
-**Problem**: Bounding spheres are O(N^2) in pair count. For scenes with many geoms,
-sweep-and-prune (SAP) on axis-aligned bounding boxes reduces this to O(N log N).
+**Status**: COMPLETE. AABB/SAP broadphase implemented as
+`detect_contacts_sap` (CPU) and `detect_contacts_sap_gpu` (GPU) in
+`collision/broadphase_sap.mojo`. Drop-in replacement for
+`detect_contacts` / `detect_contacts_gpu`.
 
 #### Algorithm: Sweep-and-Prune
 
 ```
-1. Project each body's AABB onto the sweep axis (e.g., X axis)
-2. Sort intervals by their lower bound: O(N log N)
-3. Sweep through sorted list:
-   - Maintain active set of overlapping intervals
-   - For each new interval, check overlap with all active intervals
-   - Add overlapping pairs to candidate list
-   - Remove intervals whose upper bound is passed
-4. For candidate pairs, verify overlap on Y and Z axes
+1. Precompute world positions for all N geoms: O(N)
+2. Compute tight AABB half-extents per geom type: O(N)
+   - Sphere:   e = (r, r, r)
+   - Capsule/Cylinder: e = (|ax|*hl+r, |ay|*hl+r, |az|*hl+r)  [ax,ay,az = world axis]
+   - Box:      e[k] = Σ |R[k][j]| * half[j]  [via rotation matrix from quat]
+3. Handle plane-vs-non-plane pairs: O(P × N), P = number of planes (usually 1)
+4. For non-plane pairs — SAP on X axis:
+   a. Build index list of non-plane geoms, insertion-sort by AABB min_x: O(N log N)
+   b. Sweep: for each i, iterate j while min_x[j] <= max_x[i]  (early exit)
+   c. For X-overlap candidates: check Y and Z AABB overlap
+   d. For 3D AABB candidates: body filter → narrowphase dispatch
 ```
 
-MuJoCo uses the principal eigenvector of the geom covariance matrix as the
-sweep axis (adapts to the scene geometry).
+Sweep axis is X (fixed). MuJoCo uses the principal eigenvector of the geom
+covariance matrix for the sweep axis; X is a practical default.
 
-**Recommendation**: Implement after bounding sphere filter. Only needed for
-scenes with 50+ geoms.
+**Implementation**:
+- `collision/broadphase_sap.mojo` — `_aabb_half_extents`, `detect_contacts_sap`,
+  `detect_contacts_sap_gpu`
+- `collision/__init__.mojo` — exports `detect_contacts_sap`, `detect_contacts_sap_gpu`
+
+**Usage**: Call `detect_contacts_auto` / `detect_contacts_auto_gpu` — the
+broadphase is selected at compile time via `@parameter if NGEOM >= SAP_THRESHOLD`
+(default 16). No runtime overhead; only one code path is emitted per instantiation.
+The explicit `detect_contacts_sap` / `detect_contacts_sap_gpu` variants remain
+available for direct use.
 
 ---
 
@@ -1600,7 +1613,7 @@ Sprint 7 (Specialized):
   6.5 Full solimp (5 params)    DONE (piecewise power formula, all 14 files updated, tests pass)
   6.8 Site elements             DONE (SiteSpec trait, Site/Sites types, NSITE param propagated to all Model/Data/FK/integrators/solvers/dynamics, CPU+GPU FK computes site_xpos)
   5.2 Solver islands            <- multi-agent parallelism
-  4.2 Broadphase (AABB/SAP)     <- large scenes
+  4.2 Broadphase (AABB/SAP)     DONE (detect_contacts_sap + detect_contacts_sap_gpu, tight AABBs, insertion-sort + sweep, CPU + GPU)
   0.5 MJCF XML parser           DONE (see Sprint 0)
 
 Render Sprint (independent, can be done in parallel with any physics sprint):
@@ -1777,21 +1790,33 @@ and exponent are defined on `LightSpec` for future shader parameterization (R.6)
 **Priority**: Low — massless reference points, optional visualization.
 
 **What was done**:
+
+**Compile-time path (`ModelDef` + `Sites[*S]`)**:
 1. Added `render_sites()` static method to `SitesLike` trait, `_EmptySites` (no-op),
    and `Sites[*S]` (compile-time loop over site specs)
 2. Site world position computed as `body_pos + body_quat.rotate_vec(local_pos)`,
-   matching the FK formula in `site_xpos` computation
-3. Each site drawn as a small sphere: radius=0.01m, color=bright green (0,255,0,255)
+   matching the FK formula for `site_xpos`
+3. Each site drawn as a small sphere: radius=0.01m, color=bright green (0,255,0,255),
+   shininess=0.9, specular=0.9
 4. Added `render_sites()` to `ModelDefLike` trait and `ModelDef` struct (delegates to
    `Self.Sites.render_sites(...)`)
 5. Added `show_sites: Bool = False` field to `ModelRenderer` (constructor param +
    `__moveinit__`); render loop calls `render_sites` when `show_sites=True`
+
+**XML/parser path (`ModelDefFromXML` + `FlatModelDef`)**:
+6. Fixed `FlatModelDef.setup_model()` — was not writing site data to `model.site_body`
+   and `model.site_pos`; added loop to populate those arrays for FK computation
+7. Added `render_sites()` to `ModelDefFromXML` — parses sites via `parse_xml_full()`,
+   computes world position from body pos + quat, draws sphere using `sd.size_0` as
+   radius (the MuJoCo `<site size="..."/>` value)
 
 **Files modified**:
 - `model/site_spec.mojo` — imports, `SitesLike.render_sites`, `_EmptySites.render_sites`,
   `Sites.render_sites`
 - `model/model_def.mojo` — `ModelDefLike.render_sites`, `ModelDef.render_sites`
 - `model/model_renderer.mojo` — `show_sites` field, `__init__`, `__moveinit__`, render call
+- `parser/flat_model.mojo` — `FlatModelDef.setup_model()` now writes sites to model
+- `parser/model_def_from_xml.mojo` — `ModelDefFromXML.render_sites()`
 
 ---
 
@@ -2053,6 +2078,11 @@ in FK (get world position/orientation) but not dynamics. Used for:
 7. NSITE propagated through all dynamics, solvers, integrators, collision, constraint files (~30 files)
 8. GPU state buffer includes `NSITE*3` floats for site_xpos
 9. Backward compatible: all existing environments use default `NSITE=0`
+
+**Parser fix (R.7)**:
+`FlatModelDef.setup_model()` was not populating `model.site_body` / `model.site_pos`
+from parsed `SiteData`, so FK would not compute `site_xpos` for XML-driven models.
+Fixed in R.7 — `parser/flat_model.mojo` now writes site arrays to the Model struct.
 
 ---
 

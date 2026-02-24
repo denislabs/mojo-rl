@@ -76,10 +76,12 @@ from ..dynamics.lu_factorization import (
     compute_M_inv_from_lu_gpu,
 )
 from ..collision.contact_detection import (
-    detect_contacts,
-    detect_contacts_gpu,
     normalize_qpos_quaternions,
     normalize_qpos_quaternions_gpu,
+)
+from ..collision.broadphase_sap import (
+    detect_contacts_auto,
+    detect_contacts_auto_gpu,
 )
 from ..solver.pgs_solver import PGSSolver
 from ..constraints.constraint_data import (
@@ -204,7 +206,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts(model, data)
+        detect_contacts_auto(model, data)
 
         if verbose:
             print("  [FK] body positions:")
@@ -657,7 +659,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model)
 
         # 3. Detect contacts
-        detect_contacts_gpu[
+        detect_contacts_auto_gpu[
             DTYPE,
             NQ,
             NV,

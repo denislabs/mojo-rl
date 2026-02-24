@@ -55,10 +55,12 @@ from ..dynamics.jacobian import (
     compute_composite_inertia_gpu,
 )
 from ..collision.contact_detection import (
-    detect_contacts,
-    detect_contacts_gpu,
     normalize_qpos_quaternions,
     normalize_qpos_quaternions_gpu,
+)
+from ..collision.broadphase_sap import (
+    detect_contacts_auto,
+    detect_contacts_auto_gpu,
 )
 from ..solver.pgs_solver import PGSSolver
 from ..constraints.constraint_data import (
@@ -178,7 +180,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+        detect_contacts_auto[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
             model, data
         )
 
@@ -797,7 +799,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model)
 
         # 3. Detect contacts
-        detect_contacts_gpu[
+        detect_contacts_auto_gpu[
             DTYPE,
             NQ,
             NV,

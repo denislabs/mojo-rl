@@ -18,3 +18,10 @@ from .contact_detection import (
     normalize_qpos_quaternions,
     normalize_qpos_quaternions_gpu,
 )
+from .broadphase_sap import (
+    SAP_THRESHOLD,
+    detect_contacts_sap,
+    detect_contacts_sap_gpu,
+    detect_contacts_auto,
+    detect_contacts_auto_gpu,
+)

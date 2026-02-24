@@ -11,5 +11,5 @@ fn read_file(path: String) -> String:
 
 fn main():
     # Parse XML at comptime
-    comptime xml = read_file("envs/half_cheetah/half_cheetah.xml")
+    comptime xml = read_file("test.xml")
     print(xml)
