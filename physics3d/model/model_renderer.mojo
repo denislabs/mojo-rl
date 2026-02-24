@@ -48,6 +48,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     # Velocity arrow color
     var vel_color: Color
 
+    # Site marker visibility
+    var show_sites: Bool
+
     # HUD state
     var step_count: Int
 
@@ -62,6 +65,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         vel_color: Color = Color(0, 255, 255, 255),
         follow: Bool = True,
         show_velocity: Bool = True,
+        show_sites: Bool = False,
         title: String = String("Model Environment"),
     ) raises:
         # Setup all cameras from spec
@@ -87,6 +91,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.vel_color = vel_color
         self.follow = follow
         self.show_velocity = show_velocity
+        self.show_sites = show_sites
 
         var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
@@ -127,6 +132,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.initialized = other.initialized
         self.follow = other.follow
         self.show_velocity = other.show_velocity
+        self.show_sites = other.show_sites
         self.visual_radius_scale = other.visual_radius_scale
         self.cameras = other.cameras^
         self.camera_modes = other.camera_modes^
@@ -285,6 +291,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             )
         except:
             pass
+
+        # Render site markers (bright green spheres, optional)
+        if self.show_sites:
+            try:
+                Self.MODEL_DEF.render_sites(
+                    self.renderer, positions, quaternions
+                )
+            except:
+                pass
 
         # Velocity indicator
         if self.show_velocity:

@@ -17,6 +17,11 @@ Example (InvertedDoublePendulum tip):
 
 from std.builtin.variadics import Variadic
 from gpu.host import HostBuffer
+from render import Color, Renderer3D
+from math3d import Vec3 as _Vec3G, Quat as _QuatG
+
+comptime _RVec3 = _Vec3G[DType.float64]
+comptime _RQuat = _QuatG[DType.float64]
 
 from ..gpu.constants import (
     MODEL_SITE_SIZE,
@@ -136,6 +141,15 @@ trait SitesLike:
         """Write site data directly to GPU HostBuffer."""
         ...
 
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Draw all sites as small bright-green spheres (visual markers)."""
+        ...
+
 
 # =============================================================================
 # _EmptySites — stub for environments without sites
@@ -187,6 +201,14 @@ struct _EmptySites(SitesLike):
         NEQUALITY: Int = 0,
         NTENDON: Int = 0,
     ](buffer: HostBuffer[DTYPE]):
+        pass
+
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
         pass
 
 
@@ -268,3 +290,38 @@ struct Sites[*S: SiteSpec](SitesLike):
             buffer[base + SITE_IDX_POS_X] = Scalar[DTYPE](SS.POS_X)
             buffer[base + SITE_IDX_POS_Y] = Scalar[DTYPE](SS.POS_Y)
             buffer[base + SITE_IDX_POS_Z] = Scalar[DTYPE](SS.POS_Z)
+
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Draw all sites as small bright-green spheres (visual markers).
+
+        Site world position = body_pos + body_quat.rotate(site_local_pos).
+        Uses radius=0.01m and bright green color to distinguish from geoms.
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime SS = Self.site_types[i]
+            var body_pos = positions[SS.BODY_IDX]
+            var body_quat = quaternions[SS.BODY_IDX]
+            var site_world_pos: _RVec3
+
+            @parameter
+            if SS.POS_X == 0.0 and SS.POS_Y == 0.0 and SS.POS_Z == 0.0:
+                site_world_pos = body_pos
+            else:
+                var local_pos = _RVec3(SS.POS_X, SS.POS_Y, SS.POS_Z)
+                site_world_pos = body_pos + body_quat.rotate_vec(local_pos)
+
+            renderer.draw_sphere(
+                center=site_world_pos,
+                radius=0.01,
+                color=Color(0, 255, 0, 255),
+                shininess=Float32(0.9),
+                specular=Float32(0.9),
+                reflectance=Float32(0.0),
+            )

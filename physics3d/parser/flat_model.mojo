@@ -925,5 +925,13 @@ struct FlatModelDef[
             model.geom_margin[i] = Scalar[DTYPE](gd.margin)
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
 
+        # Sites — populate model.site_body and model.site_pos for FK
+        for i in range(Self.NSITE):
+            var sd = self.sites[i]
+            model.site_body[i] = sd.body_id
+            model.site_pos[i * 3 + 0] = Scalar[DTYPE](sd.pos_x)
+            model.site_pos[i * 3 + 1] = Scalar[DTYPE](sd.pos_y)
+            model.site_pos[i * 3 + 2] = Scalar[DTYPE](sd.pos_z)
+
         # Actuators: Model has no actuators[] array — stored only in FlatModelDef.
         # Use fmd.actuators[i] directly when constructing Actuators[...] at call site.

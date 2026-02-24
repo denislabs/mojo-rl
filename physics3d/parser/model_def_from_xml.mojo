@@ -1394,3 +1394,55 @@ struct ModelDefFromXML[
                     specular=specular,
                     reflectance=reflectance,
                 )
+
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Draw all sites as small bright-green spheres (visual markers).
+
+        Parses site positions from the embedded XML and computes world-space
+        position as body_pos + body_quat.rotate(local_pos).
+        Uses radius=0.01m and bright green color to distinguish from geoms.
+        """
+        var fmd = parse_xml_full[
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
+        ](Self.xml)
+
+        for i in range(Self.NSITE):
+            var sd = fmd.sites[i]
+            if sd.body_id <= 0 or sd.body_id >= len(positions):
+                continue
+
+            var body_pos = positions[sd.body_id]
+            var body_quat = quaternions[sd.body_id]
+            var site_world_pos: _RVec3
+
+            if sd.pos_x == 0.0 and sd.pos_y == 0.0 and sd.pos_z == 0.0:
+                site_world_pos = body_pos
+            else:
+                var local_pos = _RVec3(sd.pos_x, sd.pos_y, sd.pos_z)
+                site_world_pos = body_pos + body_quat.rotate_vec(local_pos)
+
+            # Use the site's size_0 as radius (XML default: 0.005), minimum 0.01
+            var radius = sd.size_0 if sd.size_0 > 0.0 else 0.005
+            renderer.draw_sphere(
+                center=site_world_pos,
+                radius=radius,
+                color=Color(0, 255, 0, 255),
+                shininess=Float32(0.9),
+                specular=Float32(0.9),
+                reflectance=Float32(0.0),
+            )

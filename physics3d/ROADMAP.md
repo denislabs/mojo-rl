@@ -51,7 +51,7 @@ Reference material:
   - [R.4 Camera Spec from Model](#r4-camera-spec-from-model)
   - [R.5 Lighting Model](#r5-lighting-model)
   - [R.6 Materials & Textures](#r6-materials--textures)
-  - [R.7 Site Markers (visual)](#r7-site-markers-visual)
+  - [R.7 Site Markers (visual) — DONE](#r7-site-markers-visual)
 - [Phase 6: MuJoCo XML Compatibility Gaps](#phase-6-mujoco-xml-compatibility-gaps)
   - [6.1 settotalmass Compiler Directive — DONE](#61-settotalmass-compiler-directive--done)
   - [6.2 inertiafromgeom from Child Geoms — DONE](#62-inertiafromgeom-from-child-geoms--done)
@@ -109,7 +109,7 @@ Reference material:
 | ~~Hardcoded model definitions~~ | ~~High~~ | ~~0~~ DONE |
 | ~~Separate ground/body-body detection~~ | ~~High~~ | ~~0~~ DONE |
 | ~~No collision filtering~~ | ~~Medium~~ | ~~0~~ DONE |
-| No MJCF XML parser | Medium — manual model translation | 0 |
+| ~~No MJCF XML parser~~ | ~~Medium — manual model translation~~ | ~~0~~ DONE |
 | ~~No `settotalmass` compiler directive~~ | ~~Low~~ | ~~6~~ DONE |
 | ~~No `inertiafromgeom` from child geoms~~ | ~~Medium~~ | ~~6~~ DONE |
 | No `fromto` capsule specification | Low — requires endpoint→center conversion | 6 |
@@ -319,36 +319,76 @@ compile-time iteration over `GeomSpec` types.
 
 ### 0.5 MJCF XML Parser
 
-**Status**: NOT STARTED. Currently, MuJoCo XML models are manually translated to
-compile-time trait definitions. An MJCF parser would automate this.
+**Status**: COMPLETE. A pure-Mojo, comptime-safe MJCF parser that embeds XML as
+a string literal and drives a physics environment with zero hand-coding.
 
-**Problem**: Each new MuJoCo environment requires manually translating the XML
-into `BodySpec`, `JointSpec`, and `GeomSpec` definitions. This is tedious and
-error-prone (wrong inertia values, missed parameters, etc.).
+**Approach taken**: Embedded XML string parsed at comptime (Option C — better than
+both original options):
+- Zero runtime overhead — `parse_xml()` runs at compile time, dimensions become type
+  parameters; `parse_xml_full()` populates `FlatModelDef` from the embedded string
+- No code generation step — XML lives directly in the `.mojo` source file
+- `ModelDefFromXML` implements `ModelDefLike`, making XML-defined models a drop-in
+  replacement for hand-coded `ModelDef` structs in `Phyics3dEnv`
 
-**Approach options**:
+**Files created / modified**:
+- `parser/xml_parser.mojo` — comptime string helpers (`_extract_section`, `_extract_attr`,
+  `_parse_float`, `_parse_vec3`, `_parse_quat`, `_parse_axisangle_to_quat`, `_xyaxes_to_quat`,
+  `_fromto_to_pos_quat`); `ParsedModel` with dimension counts + `ANGLE_DEG` flag;
+  `parse_xml()` entry point; comptime scalar helpers for GPU kernels
+  (`_xml_nth_motor_gear`, `_xml_nth_motor_dof_adr`, `_xml_nth_joint_range_min/max`,
+  `_xml_nth_joint_qpos_adr`, `_xml_nth_joint_limited`, `_xml_compiler_angle_is_deg`)
+- `parser/flat_model.mojo` — `BodyData`, `JointData`, `GeomData` (with rgba + material_id),
+  `ActuatorData`, `DefaultsData` (with geom_rgba), `TextureData`, `MaterialData`, `LightData`,
+  `CameraData`, `SiteData`; `FlatModelDef[NBODY,NJOINT,NQ,NV,NGEOM,NACT,NTEX,NMAT,NLIGHT,NCAM,NSITE]`
+  with `setup_model()` populating a `Model` struct
+- `parser/full_parser.mojo` — `parse_xml_full[...]()` single DFS pass over worldbody;
+  `_parse_defaults()`, `_parse_option()`, `_fill_assets()`, `_fill_model()`,
+  `_fill_actuators()`, `_resolve_geom_materials()`;
+  degree→radian conversion via `<compiler angle="degree"/>` detection
+- `parser/model_def_from_xml.mojo` — `ModelDefFromXML` struct implementing `ModelDefLike`:
+  CPU path (`setup_model_and_data`, `reset_data`, `extract_obs`, `apply_actions`,
+  `enforce_limits`), GPU path (`init_model_gpu`, `apply_actions_kernel_gpu`,
+  `enforce_limits_kernel_gpu`, `extract_obs_gpu`, `reset_env_gpu`),
+  and rendering (`setup_lights`, `setup_cameras`, `setup_camera_modes`,
+  `get_skybox_colors`, `get_checker_colors`, `render_ground_geoms`, `render_body_geoms`)
+- `parser/__init__.mojo` — exports all new structs, constants, and `ModelDefFromXML`
 
-**Option A (compile-time, recommended)**: Python script that reads MJCF XML and
-generates Mojo source code with the appropriate trait instantiations:
-```bash
-python mjcf_to_mojo.py half_cheetah.xml > envs/half_cheetah/model_def.mojo
+**Features**:
+- Parses `<worldbody>`, `<body>`, `<joint>`, `<geom>`, `<actuator>/<motor>`,
+  `<option>`, `<compiler>`, `<default>`, `<asset>/<texture>/<material>`,
+  `<light>`, `<camera>`, `<site>`
+- `<default>` inheritance for joint armature/damping/stiffness/limited/frictionloss,
+  geom friction/contype/conaffinity/condim/solref/solimp/margin/rgba, motor ctrlrange
+- `fromto` capsule → midpoint pos + quaternion; `axisangle` and `xyaxes` orientation;
+  `quat` orientation; euler angles (planned)
+- `<compiler angle="degree"/>` — full degree→radian conversion for joint ranges and
+  axisangle rotation angles, at both runtime (`parse_xml_full`) and comptime
+  (`_xml_nth_joint_range_min/max`)
+- Material resolution post-pass: `material="name"` on geoms resolved to index + rgba
+- Camera tracking: `mode="trackcom"` translated to renderer `CAM_TRACKCOM=0`
+- Skybox gradient and checker floor colors wired from `<asset><texture>` to renderer
+
+**Usage**:
+```mojo
+comptime half_cheetah_xml = """<mujoco ...>...</mujoco>"""
+comptime pm = parse_xml(half_cheetah_xml)
+
+comptime HalfCheetahXmlModel = ModelDefFromXML[
+    xml=half_cheetah_xml,
+    nbody=pm.NBODY, njoint=pm.NJOINT, nq=pm.NQ, nv=pm.NV,
+    ngeom=pm.NGEOM, nact=pm.NACT,
+    ntex=pm.NTEX, nmat=pm.NMAT, nlight=pm.NLIGHT, ncam=pm.NCAM, nsite=pm.NSITE,
+    max_contacts=10, obs_qpos_skip=1,
+]
+
+# Drop-in replacement for hand-coded ModelDef:
+comptime HalfCheetah = Phyics3dEnv[HalfCheetahXmlModel, HalfCheetahConfig]
 ```
-- Pro: Zero runtime overhead, all parameters are compile-time constants
-- Pro: Generated code is readable and can be hand-tuned
-- Con: Requires regeneration when XML changes
 
-**Option B (runtime)**: Mojo MJCF parser that builds `Model` at runtime:
-- Pro: Direct XML loading, no code generation step
-- Con: All parameters become runtime values (can't use compile-time features)
-- Con: Requires XML parsing library in Mojo (doesn't exist yet)
-
-**Scope**: Parse `<worldbody>`, `<body>`, `<joint>`, `<geom>`, `<option>`, `<compiler>`,
-`<default>` elements. Handle `<default>` class inheritance. Extract solref/solimp,
-gravity, timestep, and all joint/body/geom parameters.
-
-**Files to create**:
-- `tools/mjcf_to_mojo.py` (Python code generator)
-- Or `model/mjcf_parser.mojo` (runtime parser, if Mojo XML parsing becomes available)
+**Tests**:
+- `physics3d/tests/test_xml_full_parser.mojo` — body/joint/geom/actuator parsing + FK round-trip
+- `physics3d/tests/test_assets_parser.mojo` — texture/material/light/camera/site parsing
+- `physics3d/tests/test_model_def_from_xml.mojo` — ModelDefFromXML CPU env creation + step
 
 ---
 
@@ -1518,7 +1558,7 @@ Sprint 0 (Model definition):
   0.2 Unified contact detection DONE (single detect_contacts for all geom pairs, CPU + GPU)
   0.3 Collision filtering       DONE (contype/conaffinity per geom, MuJoCo-compatible)
   0.4 ModelRenderer             DONE (geom-based visualization with camera tracking)
-  0.5 MJCF XML parser           <- automate model translation from MuJoCo XML
+  0.5 MJCF XML parser           DONE (parse_xml+parse_xml_full+ModelDefFromXML; bodies/joints/geoms/actuators/assets/lights/cameras/sites; degree support; GPU kernels; rendering)
 
 Sprint 1 (Core correctness):
   1.1 Full mass matrix          DONE (CRBA + LDL + armature + implicit damping + stiffness)
@@ -1561,7 +1601,7 @@ Sprint 7 (Specialized):
   6.8 Site elements             DONE (SiteSpec trait, Site/Sites types, NSITE param propagated to all Model/Data/FK/integrators/solvers/dynamics, CPU+GPU FK computes site_xpos)
   5.2 Solver islands            <- multi-agent parallelism
   4.2 Broadphase (AABB/SAP)     <- large scenes
-  0.5 MJCF XML parser           <- automate model translation
+  0.5 MJCF XML parser           DONE (see Sprint 0)
 
 Render Sprint (independent, can be done in parallel with any physics sprint):
   R.1 Multi-geom-type render    <- DONE (dispatch on GEOM_TYPE + renderer factorization)
@@ -1732,21 +1772,26 @@ and exponent are defined on `LightSpec` for future shader parameterization (R.6)
 
 ### R.7 Site Markers (visual)
 
-**Status**: NOT STARTED. Depends on Phase 6.8 (site elements).
+**Status**: **DONE**.
 **Effort**: ~0.5 day (after 6.8 is done).
 **Priority**: Low — massless reference points, optional visualization.
 
-**Problem**: MuJoCo sites (e.g., `<site name='tip' pos='.15 0 .11'/>`) are useful debugging
-markers. Once `SiteSpec` exists (Phase 6.8), they should be optionally renderable.
+**What was done**:
+1. Added `render_sites()` static method to `SitesLike` trait, `_EmptySites` (no-op),
+   and `Sites[*S]` (compile-time loop over site specs)
+2. Site world position computed as `body_pos + body_quat.rotate_vec(local_pos)`,
+   matching the FK formula in `site_xpos` computation
+3. Each site drawn as a small sphere: radius=0.01m, color=bright green (0,255,0,255)
+4. Added `render_sites()` to `ModelDefLike` trait and `ModelDef` struct (delegates to
+   `Self.Sites.render_sites(...)`)
+5. Added `show_sites: Bool = False` field to `ModelRenderer` (constructor param +
+   `__moveinit__`); render loop calls `render_sites` when `show_sites=True`
 
-**What to do**:
-1. In `ModelRenderer`, optionally iterate over sites and draw small spheres or crosses
-   at their world positions
-2. Use a distinct color (e.g., bright green) and small radius (e.g., 0.01m)
-3. Gate behind a `show_sites: Bool` flag (default `False`)
-
-**Files to modify**:
-- `model/model_renderer.mojo` — optional site rendering loop
+**Files modified**:
+- `model/site_spec.mojo` — imports, `SitesLike.render_sites`, `_EmptySites.render_sites`,
+  `Sites.render_sites`
+- `model/model_def.mojo` — `ModelDefLike.render_sites`, `ModelDef.render_sites`
+- `model/model_renderer.mojo` — `show_sites` field, `__init__`, `__moveinit__`, render call
 
 ---
 
@@ -1760,12 +1805,12 @@ markers. Once `SiteSpec` exists (Phase 6.8), they should be optionally renderabl
 | R.4 Camera spec | ~0.5 day | **DONE** | None |
 | R.5 Lighting model | ~0.5 day | **DONE** | None |
 | R.6 Materials & textures | ~3-5 days | **DONE** | R.5 (for material shading) |
-| R.7 Site markers | ~0.5 day | Low | Phase 6.8 (site elements) |
+| R.7 Site markers | ~0.5 day | **DONE** | Phase 6.8 (site elements) |
 | **Total** | **~8-11 days** | | |
 
-**Recommended order**: ~~R.1~~ → ~~R.2~~ → ~~R.4~~ → ~~R.3~~ → ~~R.5~~ → ~~R.6~~ → R.7
+**Recommended order**: ~~R.1~~ → ~~R.2~~ → ~~R.4~~ → ~~R.3~~ → ~~R.5~~ → ~~R.6~~ → ~~R.7~~
 
-R.1 through R.6 are done. Only R.7 (site markers) remains, which depends on Phase 6.8.
+R.1 through R.7 are all done. The Render Sprint is complete.
 
 ---
 

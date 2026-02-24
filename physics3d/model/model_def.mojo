@@ -426,6 +426,14 @@ trait ModelDefLike:
     fn get_checker_colors() -> List[Float64]:
         ...
 
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        ...
+
 
 @fieldwise_init
 struct ModelDef[
@@ -1469,3 +1477,11 @@ struct ModelDef[
     @staticmethod
     fn get_checker_colors() -> List[Float64]:
         return Self.Textures.get_checker_colors()
+
+    @staticmethod
+    fn render_sites(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        Self.Sites.render_sites(renderer, positions, quaternions)
