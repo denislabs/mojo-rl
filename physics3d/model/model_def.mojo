@@ -151,8 +151,15 @@ from ..gpu.buffer_utils import (
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
 )
-from ..kinematics.forward_kinematics import forward_kinematics, forward_kinematics_gpu
-from ..dynamics.mass_matrix import compute_body_invweight0, ldl_factor_gpu, compute_mass_matrix_full_gpu
+from ..kinematics.forward_kinematics import (
+    forward_kinematics,
+    forward_kinematics_gpu,
+)
+from ..dynamics.mass_matrix import (
+    compute_body_invweight0,
+    ldl_factor_gpu,
+    compute_mass_matrix_full_gpu,
+)
 from ..dynamics.jacobian import compute_cdof_gpu, compute_composite_inertia_gpu
 from memory import UnsafePointer
 from .inertia_from_geom import (
@@ -671,19 +678,25 @@ struct ModelDef[
 
         # Direct writes (no Model struct)
         Self.Bodies.write_to_buffer[DTYPE, Self.NBODY](host_buf)
-        Self.Joints.write_to_buffer[DTYPE, Self.NBODY, Defaults = Self.Defaults](
-            host_buf
-        )
+        Self.Joints.write_to_buffer[
+            DTYPE, Self.NBODY, Defaults = Self.Defaults
+        ](host_buf)
+
         @parameter
         if Self.NGEOM > 0:
             Self.Geoms.write_to_buffer[
                 DTYPE, Self.NBODY, Self.NJOINT, Defaults = Self.Defaults
             ](host_buf)
+
         @parameter
         if Self.NSITE > 0:
             Self.Sites.write_to_buffer[
-                DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM,
-                Self.MAX_EQUALITY, Self.MAX_TENDON,
+                DTYPE,
+                Self.NBODY,
+                Self.NJOINT,
+                Self.NGEOM,
+                Self.MAX_EQUALITY,
+                Self.MAX_TENDON,
             ](host_buf)
         Self._write_metadata_to_buffer[DTYPE](host_buf)
 
@@ -787,7 +800,8 @@ struct ModelDef[
     fn _settotalmass_buffer[
         DTYPE: DType,
     ](buffer: HostBuffer[DTYPE]):
-        """Rescale body masses/inertias so total matches target (buffer version)."""
+        """Rescale body masses/inertias so total matches target (buffer version).
+        """
         var total_mass = Scalar[DTYPE](0)
         for i in range(1, Self.NBODY):
             var off = model_body_offset(i)
@@ -817,12 +831,15 @@ struct ModelDef[
         """
         from ..joint_types import JNT_FREE, JNT_BALL
 
-        comptime STATE_SIZE = state_size[
-            Self.NQ, Self.NV, Self.NBODY, 1
-        ]()
+        comptime STATE_SIZE = state_size[Self.NQ, Self.NV, Self.NBODY, 1]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            Self.NBODY, Self.NJOINT, Self.NV, Self.NGEOM,
-            Self.MAX_EQUALITY, Self.MAX_TENDON, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NV,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
         ]()
         comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
 
@@ -859,39 +876,78 @@ struct ModelDef[
 
             # FK
             forward_kinematics_gpu[
-                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                1, STATE_SIZE, MODEL_SIZE, 1,
+                DTYPE,
+                Self.NQ,
+                Self.NV,
+                Self.NBODY,
+                Self.NJOINT,
+                1,
+                STATE_SIZE,
+                MODEL_SIZE,
+                1,
             ](0, state, model)
 
             # cdof
             compute_cdof_gpu[
-                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+                DTYPE,
+                Self.NQ,
+                Self.NV,
+                Self.NBODY,
+                Self.NJOINT,
+                1,
+                STATE_SIZE,
+                MODEL_SIZE,
+                1,
+                WS_SIZE,
             ](0, state, model, workspace)
 
             # Composite rigid body inertia
             compute_composite_inertia_gpu[
-                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+                DTYPE,
+                Self.NQ,
+                Self.NV,
+                Self.NBODY,
+                Self.NJOINT,
+                1,
+                STATE_SIZE,
+                MODEL_SIZE,
+                1,
+                WS_SIZE,
             ](0, state, model, workspace)
 
             # Mass matrix
             compute_mass_matrix_full_gpu[
-                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+                DTYPE,
+                Self.NQ,
+                Self.NV,
+                Self.NBODY,
+                Self.NJOINT,
+                1,
+                STATE_SIZE,
+                MODEL_SIZE,
+                1,
+                WS_SIZE,
             ](0, state, model, workspace)
 
             # Add armature to M diagonal
             comptime M_idx = ws_M_offset[Self.NV, Self.NBODY]()
             var meta_off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
             var num_joints = Int(
-                rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+                rebind[Scalar[DTYPE]](
+                    model[0, meta_off + MODEL_META_IDX_NJOINT]
+                )
             )
             for j in range(num_joints):
                 var joff = model_joint_offset[Self.NBODY](j)
-                var jtype = Int(rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_TYPE]))
-                var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_DOF_ADR]))
-                var arm = rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_ARMATURE])
+                var jtype = Int(
+                    rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_TYPE])
+                )
+                var dof_adr = Int(
+                    rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_DOF_ADR])
+                )
+                var arm = rebind[Scalar[DTYPE]](
+                    model[0, joff + JOINT_IDX_ARMATURE]
+                )
                 var ndof = 1
                 if jtype == JNT_FREE:
                     ndof = 6
@@ -899,7 +955,9 @@ struct ModelDef[
                     ndof = 3
                 for d in range(ndof):
                     var idx = M_idx + (dof_adr + d) * Self.NV + (dof_adr + d)
-                    workspace[0, idx] = rebind[Scalar[DTYPE]](workspace[0, idx]) + arm
+                    workspace[0, idx] = (
+                        rebind[Scalar[DTYPE]](workspace[0, idx]) + arm
+                    )
 
             # LDL factor
             ldl_factor_gpu[DTYPE, Self.NV, Self.NBODY, 1, WS_SIZE](0, workspace)
@@ -915,12 +973,18 @@ struct ModelDef[
             var xi_off = xipos_offset[Self.NQ, Self.NV, Self.NBODY]()
 
             var bw_off = model_body_invweight0_offset[
-                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+                Self.NBODY,
+                Self.NJOINT,
+                Self.NGEOM,
+                Self.MAX_EQUALITY,
                 Self.MAX_TENDON,
                 Self.NSITE,
             ]()
             var dw_off = model_dof_invweight0_offset[
-                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+                Self.NBODY,
+                Self.NJOINT,
+                Self.NGEOM,
+                Self.MAX_EQUALITY,
                 Self.MAX_TENDON,
                 Self.NSITE,
             ]()
@@ -967,9 +1031,21 @@ struct ModelDef[
                         var dof_body = 0
                         for jj in range(num_joints):
                             var jj_off = model_joint_offset[Self.NBODY](jj)
-                            var jj_type = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_TYPE]))
-                            var jj_dof = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_DOF_ADR]))
-                            var jj_body = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_BODY_ID]))
+                            var jj_type = Int(
+                                rebind[Scalar[DTYPE]](
+                                    model[0, jj_off + JOINT_IDX_TYPE]
+                                )
+                            )
+                            var jj_dof = Int(
+                                rebind[Scalar[DTYPE]](
+                                    model[0, jj_off + JOINT_IDX_DOF_ADR]
+                                )
+                            )
+                            var jj_body = Int(
+                                rebind[Scalar[DTYPE]](
+                                    model[0, jj_off + JOINT_IDX_BODY_ID]
+                                )
+                            )
                             var jj_ndof = 1
                             if jj_type == JNT_FREE:
                                 jj_ndof = 6
@@ -987,7 +1063,11 @@ struct ModelDef[
                             var current = i
                             while current > 0:
                                 var p_off = model_body_offset(current)
-                                var parent = Int(rebind[Scalar[DTYPE]](model[0, p_off + BODY_IDX_PARENT]))
+                                var parent = Int(
+                                    rebind[Scalar[DTYPE]](
+                                        model[0, p_off + BODY_IDX_PARENT]
+                                    )
+                                )
                                 if parent == dof_body:
                                     affects = True
                                     break
@@ -996,18 +1076,36 @@ struct ModelDef[
                         if not affects:
                             continue
 
-                        var ang_x = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 0])
-                        var ang_y = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 1])
-                        var ang_z = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 2])
-                        var lin_x = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 3])
-                        var lin_y = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 4])
-                        var lin_z = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 5])
+                        var ang_x = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 0]
+                        )
+                        var ang_y = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 1]
+                        )
+                        var ang_z = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 2]
+                        )
+                        var lin_x = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 3]
+                        )
+                        var lin_y = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 4]
+                        )
+                        var lin_z = rebind[Scalar[DTYPE]](
+                            workspace[0, cdof_idx + d * 6 + 5]
+                        )
 
-                        var dx = ti_x - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 0])
-                        var dy = ti_y - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 1])
-                        var dz = ti_z - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 2])
+                        var dx = ti_x - rebind[Scalar[DTYPE]](
+                            state[0, xi_off + dof_body * 3 + 0]
+                        )
+                        var dy = ti_y - rebind[Scalar[DTYPE]](
+                            state[0, xi_off + dof_body * 3 + 1]
+                        )
+                        var dz = ti_z - rebind[Scalar[DTYPE]](
+                            state[0, xi_off + dof_body * 3 + 2]
+                        )
 
-                        var val = Scalar[DTYPE](0)
+                        var val: Scalar[DTYPE]
                         if k == 0:
                             val = lin_x + ang_y * dz - ang_z * dy
                         elif k == 1:
@@ -1025,30 +1123,53 @@ struct ModelDef[
                     # LDL solve: M*x = J_row
                     # Forward substitution: y = L^{-1} * b
                     for ii in range(Self.NV):
-                        var s = rebind[Scalar[DTYPE]](workspace[0, scratch1 + ii])
+                        var s = rebind[Scalar[DTYPE]](
+                            workspace[0, scratch1 + ii]
+                        )
                         for jj in range(ii):
-                            s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + ii * Self.NV + jj]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                            s = s - rebind[Scalar[DTYPE]](
+                                workspace[0, L_idx + ii * Self.NV + jj]
+                            ) * rebind[Scalar[DTYPE]](
+                                workspace[0, scratch2 + jj]
+                            )
                         workspace[0, scratch2 + ii] = s
 
                     # Scale: z = D^{-1} * y
                     for ii in range(Self.NV):
-                        var d_val = rebind[Scalar[DTYPE]](workspace[0, D_idx + ii])
-                        if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](-1e-14):
-                            workspace[0, scratch3 + ii] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii]) / d_val
+                        var d_val = rebind[Scalar[DTYPE]](
+                            workspace[0, D_idx + ii]
+                        )
+                        if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[
+                            DTYPE
+                        ](-1e-14):
+                            workspace[0, scratch3 + ii] = (
+                                rebind[Scalar[DTYPE]](
+                                    workspace[0, scratch2 + ii]
+                                )
+                                / d_val
+                            )
                         else:
                             workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
 
                     # Back substitution: x = L^{-T} * z
                     for ii_rev in range(Self.NV):
                         var ii = Self.NV - 1 - ii_rev
-                        var s = rebind[Scalar[DTYPE]](workspace[0, scratch3 + ii])
+                        var s = rebind[Scalar[DTYPE]](
+                            workspace[0, scratch3 + ii]
+                        )
                         for jj in range(ii + 1, Self.NV):
-                            s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + jj * Self.NV + ii]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                            s = s - rebind[Scalar[DTYPE]](
+                                workspace[0, L_idx + jj * Self.NV + ii]
+                            ) * rebind[Scalar[DTYPE]](
+                                workspace[0, scratch2 + jj]
+                            )
                         workspace[0, scratch2 + ii] = s
 
                     # dot(J_row, x)
                     for d in range(Self.NV):
-                        dot_val += rebind[Scalar[DTYPE]](workspace[0, scratch1 + d]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
+                        dot_val += rebind[Scalar[DTYPE]](
+                            workspace[0, scratch1 + d]
+                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
 
                     if k < 3:
                         A_diag_tran += dot_val
@@ -1077,13 +1198,20 @@ struct ModelDef[
                 for ii in range(Self.NV):
                     var s = rebind[Scalar[DTYPE]](workspace[0, scratch1 + ii])
                     for jj in range(ii):
-                        s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + ii * Self.NV + jj]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                        s = s - rebind[Scalar[DTYPE]](
+                            workspace[0, L_idx + ii * Self.NV + jj]
+                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
                     workspace[0, scratch2 + ii] = s
 
                 for ii in range(Self.NV):
                     var d_val = rebind[Scalar[DTYPE]](workspace[0, D_idx + ii])
-                    if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](-1e-14):
-                        workspace[0, scratch3 + ii] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii]) / d_val
+                    if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](
+                        -1e-14
+                    ):
+                        workspace[0, scratch3 + ii] = (
+                            rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii])
+                            / d_val
+                        )
                     else:
                         workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
 
@@ -1091,10 +1219,14 @@ struct ModelDef[
                     var ii = Self.NV - 1 - ii_rev
                     var s = rebind[Scalar[DTYPE]](workspace[0, scratch3 + ii])
                     for jj in range(ii + 1, Self.NV):
-                        s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + jj * Self.NV + ii]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                        s = s - rebind[Scalar[DTYPE]](
+                            workspace[0, L_idx + jj * Self.NV + ii]
+                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
                     workspace[0, scratch2 + ii] = s
 
-                model[0, dw_off + d] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
+                model[0, dw_off + d] = rebind[Scalar[DTYPE]](
+                    workspace[0, scratch2 + d]
+                )
 
         ctx.enqueue_function[invweight0_kernel, invweight0_kernel](
             state,
