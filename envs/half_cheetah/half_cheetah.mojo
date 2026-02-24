@@ -3,9 +3,11 @@
 """
 
 
-from .half_cheetah_def import (
+from .half_cheetah_xml import (
     HalfCheetahModel,
 )
+
+# from .half_cheetah_def import HalfCheetahModel
 from .half_cheetah_config import HalfCheetahConfig
 from ..phyics3d_env import Phyics3dEnv
 

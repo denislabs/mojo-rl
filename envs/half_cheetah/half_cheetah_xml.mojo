@@ -68,14 +68,19 @@ comptime half_cheetah_xml = """
 
 comptime pm = parse_xml(half_cheetah_xml)
 
-comptime XmlModel = ModelDefFromXML[
-    half_cheetah_xml,
-    pm.NBODY,
-    pm.NJOINT,
-    pm.NQ,
-    pm.NV,
-    pm.NGEOM,
-    pm.NACT,
+comptime HalfCheetahModel = ModelDefFromXML[
+    xml=half_cheetah_xml,
+    nbody = pm.NBODY,
+    njoint = pm.NJOINT,
+    nq = pm.NQ,
+    nv = pm.NV,
+    ngeom = pm.NGEOM,
+    nact = pm.NACT,
+    ntex = pm.NTEX,
+    nmat = pm.NMAT,
+    nlight = pm.NLIGHT,
+    ncam = pm.NCAM,
+    nsite = pm.NSITE,
     max_contacts=10,
     obs_qpos_skip=1,
 ]

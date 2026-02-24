@@ -49,6 +49,7 @@ struct ParsedModel:
     var NLIGHT: Int  # number of <light> entries in <worldbody>
     var NCAM: Int    # number of <camera> entries in <worldbody>
     var NSITE: Int   # number of <site> entries in <worldbody>
+    var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
 
     fn __init__(
         out self,
@@ -63,6 +64,7 @@ struct ParsedModel:
         nlight: Int = 0,
         ncam: Int = 0,
         nsite: Int = 0,
+        angle_deg: Bool = False,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -75,6 +77,7 @@ struct ParsedModel:
         self.NLIGHT = nlight
         self.NCAM = ncam
         self.NSITE = nsite
+        self.ANGLE_DEG = angle_deg
 
     fn __str__(self) -> String:
         return (
@@ -447,8 +450,12 @@ fn _axisangle_to_quat(
 
 fn _parse_axisangle_to_quat(
     s: String,
+    deg_factor: Float64 = 1.0,
 ) -> Tuple[Float64, Float64, Float64, Float64]:
-    """Parse MuJoCo axisangle="ax ay az angle_rad" → quaternion (qx,qy,qz,qw)."""
+    """Parse MuJoCo axisangle="ax ay az angle" → quaternion (qx,qy,qz,qw).
+
+    deg_factor: pass pi/180 when the model uses angle="degree", else 1.0.
+    """
     var parts = List[String]()
     _split_spaces(s, parts)
     var ax = Float64(0)
@@ -462,7 +469,7 @@ fn _parse_axisangle_to_quat(
     if len(parts) >= 3:
         az = _parse_float(parts[2])
     if len(parts) >= 4:
-        angle = _parse_float(parts[3])
+        angle = _parse_float(parts[3]) * deg_factor
     return _axisangle_to_quat(ax, ay, az, angle)
 
 
@@ -613,6 +620,19 @@ fn _count_joints_with_type(xml: String, joint_type: String) -> Int:
 # =============================================================================
 
 
+fn _xml_compiler_angle_is_deg[xml: String]() -> Bool:
+    """Return True when <compiler angle="degree"/> is present. Comptime-safe."""
+    var t = xml.find("<compiler")
+    if t == -1:
+        return False
+    var tag_end = xml.find(">", t)
+    if tag_end == -1:
+        return False
+    var tag = String(xml[t : tag_end + 1])
+    var angle_val = _extract_attr(tag, "angle")
+    return _trim(angle_val) == "degree"
+
+
 fn parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -675,7 +695,18 @@ fn parse_xml(xml: String) -> ParsedModel:
     var ncam = _count_tag(worldbody, "camera")
     var nsite = _count_tag(worldbody, "site")
 
-    return ParsedModel(nbody, njoint, nq, nv, ngeom, nact, ntex, nmat, nlight, ncam, nsite)
+    # ---- Compiler angle units -----------------------------------------------
+    var angle_deg = False
+    var compiler_t = xml.find("<compiler")
+    if compiler_t != -1:
+        var compiler_end = xml.find(">", compiler_t)
+        if compiler_end != -1:
+            var ctag = String(xml[compiler_t : compiler_end + 1])
+            var angle_val = _extract_attr(ctag, "angle")
+            if _trim(angle_val) == "degree":
+                angle_deg = True
+
+    return ParsedModel(nbody, njoint, nq, nv, ngeom, nact, ntex, nmat, nlight, ncam, nsite, angle_deg)
 
 
 # =============================================================================
@@ -893,10 +924,12 @@ fn _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
 
 
 fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
-    """Return range_min for the n-th joint in worldbody DFS order.
+    """Return range_min for the n-th joint in worldbody DFS order (radians).
 
+    Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
+    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0
@@ -926,7 +959,7 @@ fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 1:
-                return _parse_float(parts[0])
+                return _parse_float(parts[0]) * deg_factor
             return Float64(0.0)
         count += 1
         scan_pos = t + 6
@@ -934,10 +967,12 @@ fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
 
 
 fn _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
-    """Return range_max for the n-th joint in worldbody DFS order.
+    """Return range_max for the n-th joint in worldbody DFS order (radians).
 
+    Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
+    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0
@@ -967,7 +1002,7 @@ fn _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 2:
-                return _parse_float(parts[1])
+                return _parse_float(parts[1]) * deg_factor
             return Float64(0.0)
         count += 1
         scan_pos = t + 6

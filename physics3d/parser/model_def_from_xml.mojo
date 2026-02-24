@@ -111,7 +111,7 @@ struct ModelDefFromXML[
     max_equality: Int = 0,
     cone_type: Int = ConeType.ELLIPTIC,
     max_tendon: Int = 0,
-    nsite_count: Int = 0,
+    nsite: Int = 0,
     obs_qpos_skip: Int = 1,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
@@ -141,7 +141,7 @@ struct ModelDefFromXML[
         max_equality:  Maximum equality constraints (default 0).
         cone_type:     Friction cone type (default ELLIPTIC).
         max_tendon:    Maximum fixed tendons (default 0).
-        nsite_count:   Total site count (default 0).
+        nsite:   Total site count (default 0).
         obs_qpos_skip: Leading qpos DOF to exclude from obs (default 1).
     """
 
@@ -155,7 +155,7 @@ struct ModelDefFromXML[
     comptime CONE_TYPE: Int = Self.cone_type
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
-    comptime NSITE: Int = Self.nsite_count
+    comptime NSITE: Int = Self.nsite
     comptime OBS_DIM: Int = Self.nq - Self.obs_qpos_skip + Self.nv
     comptime ACTION_DIM: Int = Self.nact
 
@@ -192,8 +192,17 @@ struct ModelDefFromXML[
     ):
         """Parse XML, populate model struct, run FK and compute invweight0."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         fmd.setup_model[
             DTYPE,
@@ -269,8 +278,17 @@ struct ModelDefFromXML[
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         var qpos_adr = 0
         for j in range(Self.NJOINT):
@@ -300,8 +318,17 @@ struct ModelDefFromXML[
     ):
         """Apply actuator forces to qfrc (gear * action for each motor)."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         for i in range(Self.nact):
             if i >= len(actions):
@@ -358,7 +385,13 @@ struct ModelDefFromXML[
             Self.NSITE,
         ]()
         var data = Data[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS, Self.NSITE
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
         ]()
         Self.setup_model_and_data[DTYPE](model, data)
 
@@ -482,7 +515,9 @@ struct ModelDefFromXML[
             comptime M_idx = ws_M_offset[Self.NV, Self.NBODY]()
             var meta_off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
             var num_joints = Int(
-                rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+                rebind[Scalar[DTYPE]](
+                    model[0, meta_off + MODEL_META_IDX_NJOINT]
+                )
             )
             for j in range(num_joints):
                 var joff = model_joint_offset[Self.NBODY](j)
@@ -538,15 +573,9 @@ struct ModelDefFromXML[
             model[0, bw_off + 1] = Scalar[DTYPE](0)
 
             for i in range(Self.NBODY):
-                var ti_x = rebind[Scalar[DTYPE]](
-                    state[0, xi_off + i * 3 + 0]
-                )
-                var ti_y = rebind[Scalar[DTYPE]](
-                    state[0, xi_off + i * 3 + 1]
-                )
-                var ti_z = rebind[Scalar[DTYPE]](
-                    state[0, xi_off + i * 3 + 2]
-                )
+                var ti_x = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 0])
+                var ti_y = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 1])
+                var ti_z = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 2])
 
                 var A_diag_tran = Scalar[DTYPE](0)
                 var A_diag_rot = Scalar[DTYPE](0)
@@ -952,9 +981,7 @@ struct ModelDefFromXML[
             rand_vals[b * 4 + 3] = batch[3]
 
         for i in range(Self.NQ):
-            var noise = (
-                Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
-            )
+            var noise = Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
             states[env, qpos_base + i] = noise
 
         for i in range(Self.NV):
@@ -1005,8 +1032,17 @@ struct ModelDefFromXML[
     fn setup_lights() raises -> List[Light]:
         """Return Light objects parsed from <light> elements in <worldbody>."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         var lights = List[Light]()
         for i in range(Self.nlight):
@@ -1036,36 +1072,52 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
-        """Return Camera3D objects parsed from <camera> elements in <worldbody>."""
+        """Return Camera3D objects parsed from <camera> elements in <worldbody>.
+        """
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         var cameras = List[Camera3D]()
         for i in range(Self.ncam):
             var cd = fmd.cameras[i]
             var eye = _RVec3(cd.pos_x, cd.pos_y, cd.pos_z)
-            # Derive look direction from quaternion: rotate (0, 0, -1) into world frame
-            # quat = (qx, qy, qz, qw); rotate v: v' = q * v * q^{-1}
-            var qx = cd.quat_x
-            var qy = cd.quat_y
-            var qz = cd.quat_z
-            var qw = cd.quat_w
-            # Rotate (0, 0, -1) by quat
-            var vx = Float64(0)
-            var vy = Float64(0)
-            var vz = Float64(-1)
-            var tx = 2.0 * (qy * vz - qz * vy)
-            var ty = 2.0 * (qz * vx - qx * vz)
-            var tz = 2.0 * (qx * vy - qy * vx)
-            var look_x = vx + qw * tx + qy * tz - qz * ty
-            var look_y = vy + qw * ty + qz * tx - qx * tz
-            var look_z = vz + qw * tz + qx * ty - qy * tx
-            var target = _RVec3(
-                cd.pos_x + look_x,
-                cd.pos_y + look_y,
-                cd.pos_z + look_z,
-            )
+            var target: _RVec3
+            if cd.mode == 0 or cd.mode == 1 or cd.mode == 2:
+                # CAM_MODE_FIXED=0, CAM_MODE_TRACK=1, CAM_MODE_TRACKCOM=2:
+                # Set target at world origin (x=pos_x, y=0, z=0) so that the
+                # tracking offset preserved by the renderer is (0, pos_y, pos_z),
+                # matching the TrackCamera convention.
+                target = _RVec3(cd.pos_x, Float64(0), Float64(0))
+            else:
+                # For other modes derive look direction from quaternion
+                var qx = cd.quat_x
+                var qy = cd.quat_y
+                var qz = cd.quat_z
+                var qw = cd.quat_w
+                var vx = Float64(0)
+                var vy = Float64(0)
+                var vz = Float64(-1)
+                var tx = 2.0 * (qy * vz - qz * vy)
+                var ty = 2.0 * (qz * vx - qx * vz)
+                var tz = 2.0 * (qx * vy - qy * vx)
+                var look_x = vx + qw * tx + qy * tz - qz * ty
+                var look_y = vy + qw * ty + qz * tx - qx * tz
+                var look_z = vz + qw * tz + qx * ty - qy * tx
+                target = _RVec3(
+                    cd.pos_x + look_x,
+                    cd.pos_y + look_y,
+                    cd.pos_z + look_z,
+                )
             cameras.append(
                 Camera3D(
                     eye=eye,
@@ -1085,12 +1137,29 @@ struct ModelDefFromXML[
     fn setup_camera_modes() raises -> List[Int]:
         """Return camera modes (CAM_MODE_* constants) for each parsed camera."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
+        # Translate XML CAM_MODE_* (flat_model.mojo) to renderer CAM_* constants
+        # (camera_spec.mojo): CAM_TRACKCOM=0 for tracking modes, CAM_FIXED=1 for fixed.
+        # XML: CAM_MODE_FIXED=0, CAM_MODE_TRACK=1, CAM_MODE_TRACKCOM=2
+        # Renderer: CAM_TRACKCOM=0, CAM_FIXED=1
         var modes = List[Int]()
         for i in range(Self.ncam):
-            modes.append(fmd.cameras[i].mode)
+            var xml_mode = fmd.cameras[i].mode
+            if xml_mode == 0:
+                modes.append(1)  # CAM_MODE_FIXED → renderer CAM_FIXED=1
+            else:
+                modes.append(0)  # TRACK / TRACKCOM / TARGET* → renderer CAM_TRACKCOM=0
         return modes^
 
     @staticmethod
@@ -1098,10 +1167,20 @@ struct ModelDefFromXML[
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from the
         first skybox/gradient texture, or an empty list if none exists."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         from .flat_model import TEX_SKYBOX, TEX_BUILTIN_GRADIENT, TEX_2D
+
         for i in range(Self.ntex):
             var td = fmd.textures[i]
             if td.tex_type == TEX_SKYBOX or td.builtin == TEX_BUILTIN_GRADIENT:
@@ -1120,10 +1199,20 @@ struct ModelDefFromXML[
         """Return [r, g, b] of the checker texture's secondary (light square) colour,
         or an empty list if no checker texture is found."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         from .flat_model import TEX_BUILTIN_CHECKER
+
         for i in range(Self.ntex):
             var td = fmd.textures[i]
             if td.builtin == TEX_BUILTIN_CHECKER:
@@ -1143,10 +1232,20 @@ struct ModelDefFromXML[
     ) raises:
         """Draw plane geoms (body_id=0) as ground grids; fallback if none."""
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
         from .flat_model import _GEOM_PLANE
+
         var has_plane = False
         var max_body_radius = Float64(0.0)
         for j in range(Self.NGEOM):
@@ -1174,12 +1273,28 @@ struct ModelDefFromXML[
         quaternions: List[_RQuat],
         visual_radius_scale: Float64,
     ) raises:
-        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour."""
+        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour.
+        """
         var fmd = parse_xml_full[
-            Self.NBODY, Self.NJOINT, Self.NQ, Self.NV, Self.NGEOM, Self.nact,
-            Self.ntex, Self.nmat, Self.nlight, Self.ncam, Self.NSITE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
         ](Self.xml)
-        from .flat_model import _GEOM_CAPSULE, _GEOM_SPHERE, _GEOM_BOX, _GEOM_CYLINDER
+        from .flat_model import (
+            _GEOM_CAPSULE,
+            _GEOM_SPHERE,
+            _GEOM_BOX,
+            _GEOM_CYLINDER,
+        )
+
         for i in range(Self.NGEOM):
             var gd = fmd.geoms[i]
             if gd.body_id <= 0:
@@ -1222,7 +1337,9 @@ struct ModelDefFromXML[
                 g = Float32(md.rgba_g)
                 b = Float32(md.rgba_b)
                 a = Float32(md.rgba_a)
-            var geom_color = Color(UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), UInt8(a * 255))
+            var geom_color = Color(
+                UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), UInt8(a * 255)
+            )
 
             # Material shading properties (from material if referenced, else defaults)
             var shininess = Float32(0.5)

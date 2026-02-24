@@ -3,7 +3,7 @@
 """
 
 
-from .hopper_def import (
+from .hopper_xml import (
     HopperModel,
 )
 from .hopper_config import HopperConfig

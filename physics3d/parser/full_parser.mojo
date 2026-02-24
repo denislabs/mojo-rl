@@ -216,6 +216,14 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         if len(mg_s) > 0:
             d.geom_margin = _parse_float(mg_s)
 
+        var rgba_s = _extract_attr(gtag, "rgba")
+        if len(rgba_s) > 0:
+            var cv = _parse_rgba4(rgba_s)
+            d.geom_rgba_r = cv[0]
+            d.geom_rgba_g = cv[1]
+            d.geom_rgba_b = cv[2]
+            d.geom_rgba_a = cv[3]
+
     # Find default <motor
     var mpos = defaults_sec.find("<motor")
     if mpos != -1:
@@ -604,9 +612,13 @@ fn _fill_model[
     worldbody: String,
     defaults: DefaultsData,
     mut result: FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE],
+    deg_factor: Float64 = 1.0,
 ):
     """Single-pass DFS over worldbody XML to populate bodies, joints, geoms,
     lights, cameras, and sites.
+
+    deg_factor: 1.0 for radian models, pi/180 for degree models.
+    Applied to joint range values and axisangle rotation angles.
 
     Uses two-pointer scan: tracks `<body` and `</body>` to maintain depth/parent.
     Joints, geoms, lights, cameras, and sites encountered at each depth are
@@ -691,7 +703,7 @@ fn _fill_model[
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
                     if len(aa_s) > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s)
+                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         b.quat_x = aq[0]
                         b.quat_y = aq[1]
                         b.quat_z = aq[2]
@@ -783,12 +795,12 @@ fn _fill_model[
                     jd.axis_y = av[1]
                     jd.axis_z = av[2]
 
-                # range
+                # range (convert deg→rad when deg_factor != 1.0)
                 var range_s = _extract_attr(tag, "range")
                 if len(range_s) > 0:
                     var rv = _parse_vec3(range_s)
-                    jd.range_min = rv[0]
-                    jd.range_max = rv[1]
+                    jd.range_min = rv[0] * deg_factor
+                    jd.range_max = rv[1] * deg_factor
                     jd.is_limited = True
 
                 # limited (explicit override)
@@ -935,7 +947,7 @@ fn _fill_model[
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
                     if len(aa_s) > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s)
+                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         cd.quat_x = aq[0]
                         cd.quat_y = aq[1]
                         cd.quat_z = aq[2]
@@ -995,7 +1007,7 @@ fn _fill_model[
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
                     if len(aa_s) > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s)
+                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         sd.quat_x = aq[0]
                         sd.quat_y = aq[1]
                         sd.quat_z = aq[2]
@@ -1064,7 +1076,7 @@ fn _fill_model[
                     else:
                         var aa_s = _extract_attr(tag, "axisangle")
                         if len(aa_s) > 0:
-                            var aq = _parse_axisangle_to_quat(aa_s)
+                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                             gd.quat_x = aq[0]
                             gd.quat_y = aq[1]
                             gd.quat_z = aq[2]
@@ -1175,7 +1187,7 @@ fn _fill_model[
                 var ms_s = _extract_attr(tag, "mass")
                 gd.mass = _parse_float(ms_s) if len(ms_s) > 0 else Float64(-1)
 
-                # rgba colour (direct on geom)
+                # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
                 var rgba_s = _extract_attr(tag, "rgba")
                 if len(rgba_s) > 0:
                     var cv = _parse_rgba4(rgba_s)
@@ -1183,6 +1195,11 @@ fn _fill_model[
                     gd.rgba_g = cv[1]
                     gd.rgba_b = cv[2]
                     gd.rgba_a = cv[3]
+                elif defaults.geom_rgba_r >= Float64(0):
+                    gd.rgba_r = defaults.geom_rgba_r
+                    gd.rgba_g = defaults.geom_rgba_g
+                    gd.rgba_b = defaults.geom_rgba_b
+                    gd.rgba_a = defaults.geom_rgba_a
 
                 # material reference — stored as index into materials[]
                 # (index resolved by caller if needed; stored as -1 when absent)
@@ -1333,11 +1350,10 @@ fn _resolve_geom_materials[
         if len(mat_name) > 0:
             var mid = _find_material_index_by_name(asset_sec, mat_name)
             result.geoms[geom_idx].material_id = mid
-            # If the geom had no direct rgba, inherit material rgba
+            # Only inherit material rgba when the geom has no explicit rgba attr
+            var has_explicit_rgba = len(_extract_attr(tag, "rgba")) > 0
             if (
-                result.geoms[geom_idx].rgba_r == Float64(0.7)
-                and result.geoms[geom_idx].rgba_g == Float64(0.7)
-                and result.geoms[geom_idx].rgba_b == Float64(0.7)
+                not has_explicit_rgba
                 and mid >= 0
                 and mid < NMAT
             ):
@@ -1399,6 +1415,17 @@ fn parse_xml_full[
     # Defaults (applied when specific attrs are absent)
     var defaults = _parse_defaults(xml)
 
+    # Compiler angle units: detect degree mode and compute conversion factor
+    var deg_factor = Float64(1.0)
+    var compiler_t = xml.find("<compiler")
+    if compiler_t != -1:
+        var compiler_end = xml.find(">", compiler_t)
+        if compiler_end != -1:
+            var ctag = String(xml[compiler_t : compiler_end + 1])
+            var angle_val = _extract_attr(ctag, "angle")
+            if _trim(angle_val) == "degree":
+                deg_factor = Float64(3.141592653589793) / Float64(180.0)
+
     # Assets: textures and materials
     _fill_assets[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
         asset_sec, result
@@ -1406,7 +1433,7 @@ fn parse_xml_full[
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
-        worldbody, defaults, result
+        worldbody, defaults, result, deg_factor
     )
 
     # Actuators

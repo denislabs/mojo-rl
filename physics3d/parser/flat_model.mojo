@@ -641,6 +641,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_solimp_3: Float64
     var geom_solimp_4: Float64
     var geom_margin: Float64
+    var geom_rgba_r: Float64  # default geom colour (r, 0..1); -1.0 = not set
+    var geom_rgba_g: Float64
+    var geom_rgba_b: Float64
+    var geom_rgba_a: Float64
     var motor_ctrl_limited: Bool
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
@@ -667,6 +671,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         geom_solimp_3: Float64 = 0.5,
         geom_solimp_4: Float64 = 2.0,
         geom_margin: Float64 = 0.0,
+        geom_rgba_r: Float64 = -1.0,
+        geom_rgba_g: Float64 = -1.0,
+        geom_rgba_b: Float64 = -1.0,
+        geom_rgba_a: Float64 = -1.0,
         motor_ctrl_limited: Bool = False,
         motor_ctrl_min: Float64 = -1.0,
         motor_ctrl_max: Float64 = 1.0,
@@ -691,6 +699,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_solimp_3 = geom_solimp_3
         self.geom_solimp_4 = geom_solimp_4
         self.geom_margin = geom_margin
+        self.geom_rgba_r = geom_rgba_r
+        self.geom_rgba_g = geom_rgba_g
+        self.geom_rgba_b = geom_rgba_b
+        self.geom_rgba_a = geom_rgba_a
         self.motor_ctrl_limited = motor_ctrl_limited
         self.motor_ctrl_min = motor_ctrl_min
         self.motor_ctrl_max = motor_ctrl_max
