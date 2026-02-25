@@ -9,6 +9,9 @@ Native physics3d environments implemented:
 - **InvertedPendulum** — cart-pole balancing (Phase 1 complete)
 - **Swimmer** — 3-link planar swimmer, forward locomotion (Phase 1 complete)
 - **Walker2d** — 2D bipedal walker, forward locomotion (Phase 1 complete)
+- **InvertedDoublePendulum** — double-pole cart-pole, 9D custom obs (Phase 2 complete)
+- **Humanoid** — 3D bipedal, simplified 45D obs, init qpos z=1.4 (Phase 2 complete)
+- **HumanoidStandup** — 3D bipedal standup from lying, simplified 45D obs (Phase 2 complete)
 
 Gymnasium Python wrappers exist for all remaining envs but no native implementations.
 
@@ -24,12 +27,12 @@ Gymnasium Python wrappers exist for all remaining envs but no native implementat
 | Walker2d | 9 | 9 | 9 | 6 | 9 | 0 | 0 | 0.002 |
 | InvertedPendulum | 3 | 2 | 2 | 1 | 3 | 0 | 0 | 0.02 |
 | InvDoublePendulum | 4 | 3 | 3 | 1 | 5 | 1 | 0 | 0.01 |
-| Humanoid | 14 | 17 | 16 | 17 | 16 | 0 | 2 | 0.003 |
-| HumanoidStandup | 14 | 17 | 16 | 17 | 16 | 0 | 2 | 0.003 |
+| Humanoid | 14 | 24 | 23 | 17 | 18 | 0 | 2 | 0.003 |
+| HumanoidStandup | 14 | 24 | 23 | 17 | 18 | 0 | 2 | 0.003 |
 | Reacher | 5 | 4 | 4 | 2 | 11 | 0 | 0 | 0.01 |
 | Pusher | 12 | 11 | 11 | 7 | 26 | 0 | 0 | 0.01 |
 
-Note: Humanoid NQ=17 (free joint 7 + 10 hinges), NV=16 (free joint 6 + 10 hinges).
+Note: Humanoid NQ=24 (free joint 7 qpos + 17 hinges), NV=23 (free joint 6 qvel + 17 hinges). NGEOM=18 (floor + 3 torso + 1 lwaist + 1 pelvis/butt + 4 right leg + 4 left leg + 3 right arm + 3 left arm).
 
 ### XML Sources
 All XMLs are in `Gymnasium-main/gymnasium/envs/mujoco/assets/`:
@@ -64,8 +67,9 @@ All XMLs are in `Gymnasium-main/gymnasium/envs/mujoco/assets/`:
   - x_tip, y_tip = world position of pole2 tip (from pole2 body xpos + site offset)
   - v1=qvel[1], v2=qvel[2]
 - Termination: y_tip <= 1.0 (pole2 tip too low)
-- Obs (9 elements, CUSTOM): `[qpos[0], sin(qpos[1]), sin(qpos[2]), cos(qpos[1]), cos(qpos[2]), clip(qvel[0..2], -10, 10), pole2_tip_x, constraint_force[0]]`
-  - Note: uses `sin`/`cos` transform on hinge angles, clips velocities
+- Obs (9 elements, CUSTOM): `[qpos[0], sin(qpos[1]), sin(qpos[2]), cos(qpos[1]), cos(qpos[2]), clip(qvel[0..2], -10, 10), 0.0]`
+  - Note: uses `sin`/`cos` transform on hinge angles, clips velocities; last element is qfrc_constraint[0] (not in state buffer → 0)
+  - x_tip, z_tip computed analytically: `x_tip = cart_x + 0.6*sin(q1) + 0.6*sin(q1+q2)`, `z_tip = 0.6*cos(q1) + 0.6*cos(q1+q2)`
 - Init qpos: uniform noise, scale=0.1
 
 **Humanoid**
@@ -305,19 +309,20 @@ Files to create:
 - [x] `envs/phyics3d_env.mojo` — updated for Gap 1 (`init_qpos_gpu` call in reset), Gap 2 (offsets), Gap 3 (`custom_extract_obs_gpu` with `QVEL_OFF`)
 - [x] Update all existing configs (HalfCheetah, Hopper, Ant, InvertedPendulum, Swimmer, Walker2d) for all three gap hooks
 - [x] `envs/walker2d/walker2d_config.mojo` — rootz=1.25 handled via bounds adjustment (Gap 1 workaround)
-- [ ] `envs/inverted_double_pendulum/__init__.mojo`
-- [ ] `envs/inverted_double_pendulum/inverted_double_pendulum_xml.mojo`
-- [ ] `envs/inverted_double_pendulum/inverted_double_pendulum_config.mojo`
-- [ ] `envs/inverted_double_pendulum/inverted_double_pendulum.mojo`
-- [ ] `envs/humanoid/__init__.mojo`
-- [ ] `envs/humanoid/humanoid_xml.mojo`
-- [ ] `envs/humanoid/humanoid_config.mojo`
-- [ ] `envs/humanoid/curriculum.mojo`
-- [ ] `envs/humanoid/humanoid.mojo`
-- [ ] `envs/humanoid_standup/__init__.mojo`
-- [ ] `envs/humanoid_standup/humanoid_standup_xml.mojo`
-- [ ] `envs/humanoid_standup/humanoid_standup_config.mojo`
-- [ ] `envs/humanoid_standup/humanoid_standup.mojo`
+- [x] `physics3d/parser/model_def_from_xml.mojo` — add `obs_dim_override: Int = -1` parameter; `OBS_DIM = override if override > 0 else nq-skip+nv`
+- [x] `envs/inverted_double_pendulum/__init__.mojo`
+- [x] `envs/inverted_double_pendulum/inverted_double_pendulum_xml.mojo` — obs_dim_override=9
+- [x] `envs/inverted_double_pendulum/inverted_double_pendulum_config.mojo` — custom 9D obs (sin/cos), analytical tip reward, terminate on z_tip<=1.0
+- [x] `envs/inverted_double_pendulum/inverted_double_pendulum.mojo`
+- [x] `envs/humanoid/__init__.mojo`
+- [x] `envs/humanoid/humanoid_xml.mojo` — NQ=24, NV=23, NBODY=14, max_tendon=2, obs_qpos_skip=2
+- [x] `envs/humanoid/humanoid_config.mojo` — init_qpos (z+=1.4, quat_w+=1.0), 45D obs, healthy_reward=5.0
+- [x] `envs/humanoid/humanoid.mojo`
+- [x] `envs/humanoid_standup/__init__.mojo`
+- [x] `envs/humanoid_standup/humanoid_standup_xml.mojo` — same dims as Humanoid, torso pos="0 0 .105"
+- [x] `envs/humanoid_standup/humanoid_standup_config.mojo` — init_qpos (z+=0.105, quat_w+=1.0), uph reward, no termination
+- [x] `envs/humanoid_standup/humanoid_standup.mojo`
+- Note: curriculum.mojo skipped for Humanoid (not needed for basic training)
 
 ### Phase 3 (manipulation envs)
 - [ ] `envs/reacher/__init__.mojo`

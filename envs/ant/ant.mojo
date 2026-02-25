@@ -6,9 +6,7 @@ OBS_DIM=27 (13 qpos + 14 qvel, excluding x,y), ACTION_DIM=8.
 """
 
 
-from .ant_def import (
-    AntModel,
-)
+from .ant_xml import AntModel
 from .ant_config import AntConfig
 from ..phyics3d_env import Phyics3dEnv
 

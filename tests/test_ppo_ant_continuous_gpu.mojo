@@ -30,7 +30,7 @@ from gpu.host import DeviceContext
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.ant import (
     Ant,
-    AntParams,
+    AntConfig,
     AntCurriculum,
 )
 
@@ -40,9 +40,8 @@ from envs.ant import (
 # =============================================================================
 
 # Ant: 27D observation, 8D continuous action
-comptime C = AntParams[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 27
-comptime ACTION_DIM = C.ACTION_DIM  # 8
+comptime OBS_DIM = AntConfig.OBS_DIM  # 27
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency

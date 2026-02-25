@@ -18,7 +18,6 @@ from envs.ant import (
     Ant,
     AntModel,
     AntConfig,
-    AntParams,
 )
 from envs.phyics3d_env import Phyics3dEnv
 
@@ -26,9 +25,8 @@ from envs.phyics3d_env import Phyics3dEnv
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = AntParams[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 27
-comptime ACTION_DIM = C.ACTION_DIM  # 8
+comptime OBS_DIM = AntConfig.OBS_DIM  # 27
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512

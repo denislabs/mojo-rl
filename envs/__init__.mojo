@@ -31,5 +31,8 @@ from .car_racing import (
 from .hopper import Hopper
 from .half_cheetah import HalfCheetah
 from .inverted_pendulum import InvertedPendulum
+from .inverted_double_pendulum import InvertedDoublePendulum
 from .swimmer import Swimmer
 from .walker2d import Walker2d
+from .humanoid import Humanoid
+from .humanoid_standup import HumanoidStandup

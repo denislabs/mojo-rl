@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.ant import Ant, AntParams
+from envs.ant import Ant, AntConfig
 from deep_rl import dtype as gpu_dtype
 
 
@@ -22,9 +22,8 @@ from deep_rl import dtype as gpu_dtype
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = AntParams[gpu_dtype]
-comptime OBS_DIM = C.OBS_DIM  # 27
-comptime ACTION_DIM = C.ACTION_DIM  # 8
+comptime OBS_DIM = AntConfig.OBS_DIM  # 27
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512

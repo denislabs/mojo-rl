@@ -13,7 +13,6 @@ Usage:
     Ant.update_curriculum_gpu(ctx, model_buf, params)
 """
 
-from .ant_def import AntParams
 from core.env_traits import CurriculumScheduler
 
 

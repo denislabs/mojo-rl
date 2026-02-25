@@ -113,6 +113,7 @@ struct ModelDefFromXML[
     max_tendon: Int = 0,
     nsite: Int = 0,
     obs_qpos_skip: Int = 1,
+    obs_dim_override: Int = -1,
     timestep: Float64 = 0.01,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
@@ -144,6 +145,10 @@ struct ModelDefFromXML[
         max_tendon:    Maximum fixed tendons (default 0).
         nsite:   Total site count (default 0).
         obs_qpos_skip: Leading qpos DOF to exclude from obs (default 1).
+        obs_dim_override: Override OBS_DIM (default -1 = compute from nq-skip+nv).
+            Use when custom_extract_obs_gpu produces different dimensionality than
+            the default formula (e.g. InvertedDoublePendulum needs OBS_DIM=9 with
+            sin/cos transforms despite nq-skip+nv=6).
     """
 
     # === Dimensions required by ModelDefLike ===
@@ -157,7 +162,7 @@ struct ModelDefFromXML[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
-    comptime OBS_DIM: Int = Self.nq - Self.obs_qpos_skip + Self.nv
+    comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (Self.nq - Self.obs_qpos_skip + Self.nv)
     comptime ACTION_DIM: Int = Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
 
