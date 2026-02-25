@@ -200,6 +200,7 @@ trait ModelDefLike:
     comptime NSITE: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
+    comptime TIMESTEP: Float64
 
     # === Components ===
     # comptime BODIES: BodiesLike
@@ -475,6 +476,7 @@ struct ModelDef[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.Sites.N
+    comptime TIMESTEP: Float64 = Self.Defaults.TIMESTEP
 
     # Derived from components (only meaningful when J is not _EmptyJoints)
     comptime OBS_DIM: Int = Self.Joints.OBS_DIM

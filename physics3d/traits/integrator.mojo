@@ -41,6 +41,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -80,6 +82,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -122,8 +126,10 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -156,8 +162,10 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

@@ -113,6 +113,7 @@ struct ModelDefFromXML[
     max_tendon: Int = 0,
     nsite: Int = 0,
     obs_qpos_skip: Int = 1,
+    timestep: Float64 = 0.01,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -158,6 +159,7 @@ struct ModelDefFromXML[
     comptime NSITE: Int = Self.nsite
     comptime OBS_DIM: Int = Self.nq - Self.obs_qpos_skip + Self.nv
     comptime ACTION_DIM: Int = Self.nact
+    comptime TIMESTEP: Float64 = Self.timestep
 
     # =========================================================================
     # CPU: Model setup
@@ -1159,7 +1161,9 @@ struct ModelDefFromXML[
             if xml_mode == 0:
                 modes.append(1)  # CAM_MODE_FIXED → renderer CAM_FIXED=1
             else:
-                modes.append(0)  # TRACK / TRACKCOM / TARGET* → renderer CAM_TRACKCOM=0
+                modes.append(
+                    0
+                )  # TRACK / TRACKCOM / TARGET* → renderer CAM_TRACKCOM=0
         return modes^
 
     @staticmethod

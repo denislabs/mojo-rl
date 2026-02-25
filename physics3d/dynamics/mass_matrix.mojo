@@ -904,6 +904,594 @@ fn compute_M_inv_from_ldl[
 
 
 # =============================================================================
+# Sparse Mass Matrix (CSR format, MuJoCo-compatible)
+# =============================================================================
+
+
+struct SparseMassMatrix[
+    DTYPE: DType,
+    NV: Int,
+    NM: Int,  # Non-zeros in lower triangle (incl. diagonal). Use NV*(NV+1)/2 as
+              # safe maximum for any single kinematic chain. Smaller for branched trees.
+]:
+    """Sparse mass matrix in Compressed Sparse Row (CSR) format.
+
+    Mirrors MuJoCo's qM/M sparse storage. Only the lower triangle (including
+    diagonal) is stored. Sparsity pattern: M[i,j] != 0 (i >= j) iff dof_j's
+    body is an ancestor of (or equal to) dof_i's body in the kinematic tree.
+
+    After ldl_factor_sparse():
+    - values[off-diagonal positions]: L[i,j] factors
+    - values[diagonal positions]:     D[i] values
+    - diag_inv[i]:                    1/D[i]  (stored separately for fast solve)
+
+    Usage:
+        # Determine NM for your model (or use NV*(NV+1)/2 as safe maximum):
+        #   NM = NV * (NV + 1) / 2   # worst case: fully-connected chain
+        var sM = SparseMassMatrix[DTYPE, NV, NM]()
+        build_sparse_pattern(model, sM)                     # once at setup
+        compute_mass_matrix_sparse(model, data, cdof, crb, sM)  # each step
+        ldl_factor_sparse(sM)                               # each step
+        ldl_solve_sparse(sM, b, x)                          # each solve
+    """
+
+    # CSR sparsity structure (set once by build_sparse_pattern)
+    var row_nnz: InlineArray[Int, _ensure_positive[Self.NV]()]   # nnz per row
+    var row_adr: InlineArray[Int, _ensure_positive[Self.NV]()]   # start address in values/col_ind
+    var col_ind: InlineArray[Int, _ensure_positive[Self.NM]()]   # column indices (sorted asc per row)
+    var actual_nnz: Int                                           # actual non-zeros (may be <= NM)
+
+    # Values: M entries before factorization, LDL entries after
+    var values: InlineArray[Scalar[Self.DTYPE], _ensure_positive[Self.NM]()]
+
+    # 1/D[i] — set by ldl_factor_sparse for fast solve
+    var diag_inv: InlineArray[Scalar[Self.DTYPE], _ensure_positive[Self.NV]()]
+
+    fn __init__(out self):
+        self.row_nnz = InlineArray[Int, _ensure_positive[Self.NV]()](fill=0)
+        self.row_adr = InlineArray[Int, _ensure_positive[Self.NV]()](fill=0)
+        self.col_ind = InlineArray[Int, _ensure_positive[Self.NM]()](fill=0)
+        self.actual_nnz = 0
+        self.values = InlineArray[Scalar[Self.DTYPE], _ensure_positive[Self.NM]()](
+            fill=Scalar[Self.DTYPE](0)
+        )
+        self.diag_inv = InlineArray[Scalar[Self.DTYPE], _ensure_positive[Self.NV]()](
+            fill=Scalar[Self.DTYPE](0)
+        )
+
+    @always_inline
+    fn diag_pos(self, row: Int) -> Int:
+        """Flat index of the diagonal entry M[row, row] in values/col_ind."""
+        return self.row_adr[row] + self.row_nnz[row] - 1
+
+    @always_inline
+    fn find_col(self, row: Int, col: Int) -> Int:
+        """Return flat index of M[row, col], or -1 if not in pattern."""
+        var adr = self.row_adr[row]
+        var nnz = self.row_nnz[row]
+        for k in range(nnz):
+            var c = self.col_ind[adr + k]
+            if c == col:
+                return adr + k
+            elif c > col:
+                break
+        return -1
+
+
+fn build_sparse_pattern[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NM: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+    ],
+    mut sM: SparseMassMatrix[DTYPE, NV, NM],
+):
+    """Build the CSR sparsity pattern from the kinematic tree.
+
+    Sets row_nnz, row_adr, col_ind, actual_nnz. Call once after model joints
+    are configured (e.g., during model setup / mj_setConst equivalent).
+
+    Pattern: M[i,j] != 0 (lower triangle, i >= j) iff body(dof_j) is an
+    ancestor of (or equal to) body(dof_i). Equivalent to MuJoCo's precomputed
+    M_rownnz, M_rowadr, M_colind.
+
+    Args:
+        model: Static model configuration (joints must be set up).
+        sM:    SparseMassMatrix to fill; NM must be >= actual non-zeros.
+    """
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](fill=0)
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[joint.dof_adr + d] = joint.body_id
+
+    var total_nnz = 0
+    for i in range(NV):
+        var body_i = dof_body[i]
+        sM.row_adr[i] = total_nnz
+        var row_count = 0
+        for j in range(i + 1):  # lower triangle + diagonal (j <= i)
+            var body_j = dof_body[j]
+            # M[i,j] != 0 iff body_j is ancestor of body_i (or they are equal)
+            var connected = (body_j == body_i) or _is_descendant(
+                model, body_i, body_j
+            )
+            if connected and total_nnz < NM:
+                sM.col_ind[total_nnz] = j
+                total_nnz += 1
+                row_count += 1
+        sM.row_nnz[i] = row_count
+
+    sM.actual_nnz = total_nnz
+
+
+fn count_sparse_nnz[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+    ],
+) -> Int:
+    """Count the actual number of non-zeros in the lower triangle for this model.
+
+    Use the returned value as NM when instantiating SparseMassMatrix for
+    minimal memory usage. For a single kinematic chain, this equals NV*(NV+1)/2.
+    For branched trees, it is smaller.
+
+    Example:
+        # At compile time, use NV*(NV+1)/2 as safe upper bound:
+        comptime NM = NV * (NV + 1) / 2
+        # At runtime, you can verify: count_sparse_nnz(model) <= NM
+    """
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](fill=0)
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[joint.dof_adr + d] = joint.body_id
+
+    var total = 0
+    for i in range(NV):
+        var body_i = dof_body[i]
+        for j in range(i + 1):
+            var body_j = dof_body[j]
+            if (body_j == body_i) or _is_descendant(model, body_i, body_j):
+                total += 1
+    return total
+
+
+fn compute_mass_matrix_sparse[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NM: Int,
+    CDOF_SIZE: Int,
+    CRB_SIZE: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+    ],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+    mut sM: SparseMassMatrix[DTYPE, NV, NM],
+):
+    """Compute the sparse mass matrix M(q) using the CSR pattern in sM.
+
+    Fills sM.values with the mass matrix entries for all non-zero positions
+    defined by the sparsity pattern. build_sparse_pattern() must be called
+    first to set up row_nnz, row_adr, col_ind.
+
+    Uses the same direct spatial algebra as compute_mass_matrix_full() but
+    only stores/computes entries in the sparsity pattern — no wasted work on
+    structurally-zero off-diagonal blocks (in branched models).
+
+    Args:
+        model: Static model configuration.
+        data:  Current simulation state (xpos, xquat, xipos from FK).
+        cdof:  Spatial motion axes per DOF (6*NV), from compute_cdof().
+        crb:   Composite rigid body inertia (10*NBODY), from compute_composite_inertia().
+        sM:    SparseMassMatrix with pattern already set.
+    """
+    # Zero values
+    for k in range(sM.actual_nnz):
+        sM.values[k] = Scalar[DTYPE](0)
+
+    # Build dof_body mapping
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](fill=0)
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[joint.dof_adr + d] = joint.body_id
+
+    # Pre-compute per-body world-frame inertia tensors [xx, yy, zz, xy, xz, yz]
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var Ixx_l = model.body_inertia[b * 3 + 0]
+        var Iyy_l = model.body_inertia[b * 3 + 1]
+        var Izz_l = model.body_inertia[b * 3 + 2]
+
+        var bqx = data.xquat[b * 4 + 0]
+        var bqy = data.xquat[b * 4 + 1]
+        var bqz = data.xquat[b * 4 + 2]
+        var bqw = data.xquat[b * 4 + 3]
+        var iqx = model.body_iquat[b * 4 + 0]
+        var iqy = model.body_iquat[b * 4 + 1]
+        var iqz = model.body_iquat[b * 4 + 2]
+        var iqw = model.body_iquat[b * 4 + 3]
+        var iq = quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
+
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        I_world[b * 6 + 0] = Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        I_world[b * 6 + 1] = Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        I_world[b * 6 + 2] = Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        I_world[b * 6 + 3] = Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        I_world[b * 6 + 4] = Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        I_world[b * 6 + 5] = Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+
+    # Fill M[i,j] for each non-zero (i, j) in the sparsity pattern
+    for i in range(NV):
+        var body_i = dof_body[i]
+        var ai0 = cdof[i * 6 + 0]
+        var ai1 = cdof[i * 6 + 1]
+        var ai2 = cdof[i * 6 + 2]
+        var li0 = cdof[i * 6 + 3]
+        var li1 = cdof[i * 6 + 4]
+        var li2 = cdof[i * 6 + 5]
+
+        var adr_i = sM.row_adr[i]
+        var nnz_i = sM.row_nnz[i]
+
+        for k_idx in range(nnz_i):
+            var j = sM.col_ind[adr_i + k_idx]
+            var body_j = dof_body[j]
+            var aj0 = cdof[j * 6 + 0]
+            var aj1 = cdof[j * 6 + 1]
+            var aj2 = cdof[j * 6 + 2]
+            var lj0 = cdof[j * 6 + 3]
+            var lj1 = cdof[j * 6 + 4]
+            var lj2 = cdof[j * 6 + 5]
+
+            var mij = Scalar[DTYPE](0)
+
+            # Sum over bodies k in subtree(body_i) ∩ subtree(body_j).
+            # Since M[i,j] is non-zero, body_j is an ancestor of body_i,
+            # so the intersection is subtree(body_i).
+            for k in range(NBODY):
+                var in_subtree_i = (k == body_i) or _is_descendant(
+                    model, k, body_i
+                )
+                if not in_subtree_i:
+                    continue
+                var in_subtree_j = (k == body_j) or _is_descendant(
+                    model, k, body_j
+                )
+                if not in_subtree_j:
+                    continue
+
+                var mk = model.body_mass[k]
+                var pk0 = data.xipos[k * 3 + 0]
+                var pk1 = data.xipos[k * 3 + 1]
+                var pk2 = data.xipos[k * 3 + 2]
+
+                var di0 = pk0 - data.xipos[body_i * 3 + 0]
+                var di1 = pk1 - data.xipos[body_i * 3 + 1]
+                var di2 = pk2 - data.xipos[body_i * 3 + 2]
+                var vki0 = li0 + ai1 * di2 - ai2 * di1
+                var vki1 = li1 + ai2 * di0 - ai0 * di2
+                var vki2 = li2 + ai0 * di1 - ai1 * di0
+
+                var dj0 = pk0 - data.xipos[body_j * 3 + 0]
+                var dj1 = pk1 - data.xipos[body_j * 3 + 1]
+                var dj2 = pk2 - data.xipos[body_j * 3 + 2]
+                var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
+                var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
+                var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
+
+                mij = mij + mk * (vki0 * vkj0 + vki1 * vkj1 + vki2 * vkj2)
+
+                var Ik_xx = I_world[k * 6 + 0]
+                var Ik_yy = I_world[k * 6 + 1]
+                var Ik_zz = I_world[k * 6 + 2]
+                var Ik_xy = I_world[k * 6 + 3]
+                var Ik_xz = I_world[k * 6 + 4]
+                var Ik_yz = I_world[k * 6 + 5]
+
+                var Iaj0 = Ik_xx * aj0 + Ik_xy * aj1 + Ik_xz * aj2
+                var Iaj1 = Ik_xy * aj0 + Ik_yy * aj1 + Ik_yz * aj2
+                var Iaj2 = Ik_xz * aj0 + Ik_yz * aj1 + Ik_zz * aj2
+
+                mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
+
+            sM.values[adr_i + k_idx] = mij
+
+
+fn ldl_factor_sparse[
+    DTYPE: DType,
+    NV: Int,
+    NM: Int,
+](
+    mut sM: SparseMassMatrix[DTYPE, NV, NM],
+):
+    """In-place backward sparse LDL factorization — matches MuJoCo's mj_factorI.
+
+    Processes rows from NV-1 down to 0 (leaf-to-root in the kinematic tree).
+    This is a BACKWARD outer-product elimination that exploits the prefix-alignment
+    property of the tree-ordered CSR structure to achieve zero fill-in.
+
+    Prefix-alignment property: for any row i that appears in row k's column list
+    (i is an ancestor of k), the first rownnz[i] column indices of row k are
+    exactly row i's column indices. This holds for topologically-ordered kinematic
+    trees (parent DOFs always have lower index than child DOFs).
+
+    No fill-in guarantee: two DOFs i, j in different branches of the tree can never
+    both be ancestors of the same DOF k. So the sparse structure remains unchanged
+    throughout the factorization.
+
+    After this call:
+    - sM.values[diagonal]:    D[k]            (unchanged scaling factor)
+    - sM.values[off-diagonal]: L[k,i] / D[k]  (stored as unit lower-tri factor / D)
+    - sM.diag_inv[k]:          1 / D[k]
+
+    The paired solve is ldl_solve_sparse() which uses the same convention.
+    Equivalent to MuJoCo's mj_factorI + mj_factorM.
+    """
+    for k in range(NV - 1, -1, -1):  # backward: leaf to root
+        var adr_k = sM.row_adr[k]
+        var nnz_k = sM.row_nnz[k]
+        var diag_k = adr_k + nnz_k - 1  # diagonal is the last entry in row k
+
+        var D_k = sM.values[diag_k]
+        if D_k < Scalar[DTYPE](1e-14):
+            D_k = Scalar[DTYPE](1e-14)
+        var invD_k = Scalar[DTYPE](1) / D_k
+        sM.diag_inv[k] = invD_k
+
+        # Update all ancestor rows of k using the outer-product formula:
+        #   row_i -= mat[k,i] * invD[k] * row_k[0:rownnz[i]]
+        # where row_k[0:rownnz[i]] == row_i's columns (prefix alignment).
+        for adr_off in range(adr_k, diag_k):  # off-diagonal entries of row k
+            var i = sM.col_ind[adr_off]  # i is an ancestor of k
+            var scale = -sM.values[adr_off] * invD_k
+            var adr_i = sM.row_adr[i]
+            var nnz_i = sM.row_nnz[i]
+            # The first nnz_i entries of row k share the same column indices as row i.
+            for t in range(nnz_i):
+                sM.values[adr_i + t] += scale * sM.values[adr_k + t]
+
+        # Divide off-diagonals of row k by D[k]: store L[k,i] / D[k]
+        for adr_off in range(adr_k, diag_k):
+            sM.values[adr_off] *= invD_k
+
+
+fn ldl_solve_sparse[
+    DTYPE: DType,
+    NV: Int,
+    NM: Int,
+    V_SIZE: Int,
+](
+    sM: SparseMassMatrix[DTYPE, NV, NM],
+    b: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Solve M * x = b using the sparse LDL factorization stored in sM.
+
+    Equivalent to MuJoCo's mj_solveLD. Three phases matching the backward
+    factorization convention (off-diagonals store L[k,i]/D[k]):
+
+    Phase 1 (backward): x <- L^{-T} * b
+        For i = NV-1 down to 0:
+            x_i = x[i]
+            For each off-diagonal (i, j): x[j] -= Lbar[i,j] * x_i
+
+    Phase 2 (diagonal): x <- D^{-1} * x
+        x[i] *= diag_inv[i]
+
+    Phase 3 (forward): x <- L^{-1} * x
+        For i = 0 to NV-1:
+            For each off-diagonal (i, j): x[i] -= Lbar[i,j] * x[j]
+
+    ldl_factor_sparse() must be called before this function.
+    """
+    # Initialize x = b
+    for i in range(NV):
+        x[i] = b[i]
+
+    # --- Phase 1: Backward  x <- L^{-T} * x ---
+    for i_rev in range(NV):
+        var i = NV - 1 - i_rev
+        var x_i = x[i]
+        var adr_i = sM.row_adr[i]
+        var nnz_i = sM.row_nnz[i]
+        for t in range(nnz_i - 1):  # off-diagonal entries only (j < i)
+            var j = sM.col_ind[adr_i + t]
+            x[j] -= sM.values[adr_i + t] * x_i
+
+    # --- Phase 2: Diagonal  x <- D^{-1} * x ---
+    for i in range(NV):
+        x[i] *= sM.diag_inv[i]
+
+    # --- Phase 3: Forward  x <- L^{-1} * x ---
+    for i in range(NV):
+        var adr_i = sM.row_adr[i]
+        var nnz_i = sM.row_nnz[i]
+        for t in range(nnz_i - 1):  # off-diagonal entries only (j < i)
+            var j = sM.col_ind[adr_i + t]
+            x[i] -= sM.values[adr_i + t] * x[j]
+
+
+fn build_sparse_pattern_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NM: Int,
+    MODEL_SIZE: Int,
+](
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    mut row_nnz: InlineArray[Int, _ensure_positive[NV]()],
+    mut row_adr: InlineArray[Int, _ensure_positive[NV]()],
+    mut col_ind: InlineArray[Int, _ensure_positive[NM]()],
+) -> Int:
+    """Build sparse CSR pattern for M(q) from model buffer data.
+
+    GPU-compatible version of build_sparse_pattern: reads joint/body topology
+    from the model LayoutTensor instead of the CPU Model struct. Intended to be
+    called at the start of each GPU step kernel so the pattern is always
+    available as register-resident InlineArrays without any extra device memory.
+
+    M[i,j] != 0 (for j <= i) iff body(dof_j) is an ancestor of (or equal to)
+    body(dof_i) in the kinematic tree.
+
+    Returns:
+        actual_nnz — the number of non-zero entries stored.
+    """
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    # Build dof_body mapping
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](fill=0)
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body_id = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var ndof = 1
+        if jnt_type == JNT_FREE:
+            ndof = 6
+        elif jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body_id
+
+    # Build lower-triangle CSR: M[i,j] != 0 iff body_j is ancestor of body_i
+    var actual_nnz = 0
+    for i in range(NV):
+        row_adr[i] = actual_nnz
+        row_nnz[i] = 0
+        var body_i = dof_body[i]
+        for j in range(i + 1):  # j <= i (lower triangle including diagonal)
+            var body_j = dof_body[j]
+            # body_j is an ancestor-or-equal of body_i if body_i is in
+            # the subtree rooted at body_j
+            var connected = (body_j == body_i) or _is_descendant_gpu[
+                DTYPE, NBODY, MODEL_SIZE
+            ](model, body_i, body_j)
+            if connected:
+                col_ind[actual_nnz] = j
+                actual_nnz += 1
+                row_nnz[i] += 1
+
+    return actual_nnz
+
+
+fn sparse_to_dense[
+    DTYPE: DType,
+    NV: Int,
+    NM: Int,
+    M_SIZE: Int,
+](
+    sM: SparseMassMatrix[DTYPE, NV, NM],
+    mut M: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Expand sparse lower-triangle mass matrix to full dense NV×NV matrix.
+
+    Equivalent to MuJoCo's mj_fullM: expands qM (sparse) to a dense matrix.
+    Reads sM.values (which must contain M values, NOT LDL factors).
+
+    Args:
+        sM: SparseMassMatrix with values containing M entries (before factorization).
+        M:  Output dense NV×NV row-major matrix (M_SIZE = NV*NV).
+    """
+    for k in range(NV * NV):
+        M[k] = Scalar[DTYPE](0)
+
+    for i in range(NV):
+        var adr_i = sM.row_adr[i]
+        var nnz_i = sM.row_nnz[i]
+        for t in range(nnz_i):
+            var j = sM.col_ind[adr_i + t]
+            var val = sM.values[adr_i + t]
+            M[i * NV + j] = val
+            if i != j:
+                M[j * NV + i] = val  # symmetric fill
+
+
+# =============================================================================
 # GPU: Full Mass Matrix + LDL
 # =============================================================================
 
@@ -1324,6 +1912,460 @@ fn compute_M_inv_from_ldl_gpu[
 
         for i in range(NV):
             workspace[env, M_inv_idx + i * NV + j] = col[i]
+
+
+# =============================================================================
+# GPU: Sparse Mass Matrix + LDL (matching MuJoCo mj_factorI / mj_solveLD)
+# =============================================================================
+
+
+@always_inline
+fn compute_mass_matrix_sparse_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NM: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    row_nnz: InlineArray[Int, _ensure_positive[NV]()],
+    row_adr: InlineArray[Int, _ensure_positive[NV]()],
+    col_ind: InlineArray[Int, _ensure_positive[NM]()],
+):
+    """Compute sparse mass matrix values on GPU.
+
+    Fills the NM sparse entries of M(q) using the pre-built sparsity pattern.
+    Values are stored at ws_M_offset[NV, NBODY]() in workspace (first NM
+    of the NV*NV-allocated slot).
+
+    cdof must already be in workspace (written by compute_cdof_gpu).
+    The sparsity pattern (row_nnz, row_adr, col_ind) must be pre-built on CPU
+    via build_sparse_pattern() and passed here as InlineArrays — they are
+    identical for every environment and every timestep.
+
+    Compared to the dense compute_mass_matrix_full_gpu, this skips all
+    structurally-zero off-diagonal blocks (e.g., the cross-leg entries in
+    HalfCheetah), reducing work from O(NV²) to O(NM) where NM ≤ NV*(NV+1)/2.
+    """
+    comptime cdof_idx = ws_cdof_offset()
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    # Zero NM sparse values
+    for k in range(NM):
+        workspace[env, M_idx + k] = 0
+
+    # Build dof_body mapping
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    for i in range(NV):
+        dof_body[i] = 0
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body_id = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var ndof = 1
+        if jnt_type == JNT_FREE:
+            ndof = 6
+        elif jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body_id
+
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+
+    # Pre-compute per-body world-frame inertia tensors [xx, yy, zz, xy, xz, yz]
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var body_off = model_body_offset(b)
+        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
+
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
+
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        I_world[b * 6 + 0] = (
+            Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        )
+        I_world[b * 6 + 1] = (
+            Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        )
+        I_world[b * 6 + 2] = (
+            Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        )
+        I_world[b * 6 + 3] = (
+            Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        )
+        I_world[b * 6 + 4] = (
+            Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        )
+        I_world[b * 6 + 5] = (
+            Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+        )
+
+    # Fill M[i,j] for each non-zero (i, j) in the sparsity pattern
+    for i in range(NV):
+        var body_i = dof_body[i]
+        var ai0 = workspace[env, cdof_idx + i * 6 + 0]
+        var ai1 = workspace[env, cdof_idx + i * 6 + 1]
+        var ai2 = workspace[env, cdof_idx + i * 6 + 2]
+        var li0 = workspace[env, cdof_idx + i * 6 + 3]
+        var li1 = workspace[env, cdof_idx + i * 6 + 4]
+        var li2 = workspace[env, cdof_idx + i * 6 + 5]
+
+        var adr_i = row_adr[i]
+        var nnz_i = row_nnz[i]
+
+        for k_idx in range(nnz_i):
+            var j = col_ind[adr_i + k_idx]
+            var body_j = dof_body[j]
+            var aj0 = workspace[env, cdof_idx + j * 6 + 0]
+            var aj1 = workspace[env, cdof_idx + j * 6 + 1]
+            var aj2 = workspace[env, cdof_idx + j * 6 + 2]
+            var lj0 = workspace[env, cdof_idx + j * 6 + 3]
+            var lj1 = workspace[env, cdof_idx + j * 6 + 4]
+            var lj2 = workspace[env, cdof_idx + j * 6 + 5]
+
+            var mij: workspace.element_type = 0
+
+            for k in range(NBODY):
+                var in_subtree_i = (k == body_i) or _is_descendant_gpu[
+                    DTYPE, NBODY, MODEL_SIZE
+                ](model, k, body_i)
+                if not in_subtree_i:
+                    continue
+                var in_subtree_j = (k == body_j) or _is_descendant_gpu[
+                    DTYPE, NBODY, MODEL_SIZE
+                ](model, k, body_j)
+                if not in_subtree_j:
+                    continue
+
+                var body_off_k = model_body_offset(k)
+                var mk = rebind[Scalar[DTYPE]](
+                    model[0, body_off_k + BODY_IDX_MASS]
+                )
+                var pk0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 0]
+                )
+                var pk1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 1]
+                )
+                var pk2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 2]
+                )
+
+                var pi0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 0]
+                )
+                var pi1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 1]
+                )
+                var pi2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 2]
+                )
+                var di0 = pk0 - pi0
+                var di1 = pk1 - pi1
+                var di2 = pk2 - pi2
+                var vki0 = li0 + ai1 * di2 - ai2 * di1
+                var vki1 = li1 + ai2 * di0 - ai0 * di2
+                var vki2 = li2 + ai0 * di1 - ai1 * di0
+
+                var pj0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 0]
+                )
+                var pj1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 1]
+                )
+                var pj2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 2]
+                )
+                var dj0 = pk0 - pj0
+                var dj1 = pk1 - pj1
+                var dj2 = pk2 - pj2
+                var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
+                var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
+                var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
+
+                mij = mij + mk * (vki0 * vkj0 + vki1 * vkj1 + vki2 * vkj2)
+
+                var Ik_xx = I_world[k * 6 + 0]
+                var Ik_yy = I_world[k * 6 + 1]
+                var Ik_zz = I_world[k * 6 + 2]
+                var Ik_xy = I_world[k * 6 + 3]
+                var Ik_xz = I_world[k * 6 + 4]
+                var Ik_yz = I_world[k * 6 + 5]
+
+                var Iaj0 = Ik_xx * aj0 + Ik_xy * aj1 + Ik_xz * aj2
+                var Iaj1 = Ik_xy * aj0 + Ik_yy * aj1 + Ik_yz * aj2
+                var Iaj2 = Ik_xz * aj0 + Ik_yz * aj1 + Ik_zz * aj2
+
+                mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
+
+            workspace[env, M_idx + adr_i + k_idx] = mij
+
+
+@always_inline
+fn ldl_factor_sparse_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NM: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    row_nnz: InlineArray[Int, _ensure_positive[NV]()],
+    row_adr: InlineArray[Int, _ensure_positive[NV]()],
+    col_ind: InlineArray[Int, _ensure_positive[NM]()],
+):
+    """Backward sparse LDL factorization on GPU — matches MuJoCo's mj_factorI.
+
+    Reads NM sparse M values from ws_M_offset, factors in-place (backward
+    outer-product, leaf-to-root). Writes 1/D[k] to ws_D_offset[k].
+
+    After this call, ws_M_offset holds the factored lower triangle:
+      - diagonal entries: D[k]  (unchanged pivot)
+      - off-diagonal:     L[k,i] / D[k]
+    ws_D_offset holds diag_inv[k] = 1 / D[k].
+
+    Zero fill-in guaranteed by the prefix-alignment property of kinematic trees.
+    """
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+
+    for k in range(NV - 1, -1, -1):  # backward: leaf to root
+        var adr_k = row_adr[k]
+        var nnz_k = row_nnz[k]
+        var diag_k = adr_k + nnz_k - 1  # diagonal is the last entry in row k
+
+        var D_k = workspace[env, M_idx + diag_k]
+        if D_k < 1e-14:
+            D_k = 1e-14
+        var invD_k = Scalar[DTYPE](1) / rebind[Scalar[DTYPE]](D_k)
+        workspace[env, D_idx + k] = invD_k
+
+        # Update each ancestor row i of k: row_i -= L[k,i]*invD[k] * row_k[0:nnz_i]
+        for adr_off in range(adr_k, diag_k):
+            var i = col_ind[adr_off]
+            var scale = (
+                -rebind[Scalar[DTYPE]](workspace[env, M_idx + adr_off]) * invD_k
+            )
+            var adr_i = row_adr[i]
+            var nnz_i = row_nnz[i]
+            for t in range(nnz_i):
+                workspace[env, M_idx + adr_i + t] = (
+                    workspace[env, M_idx + adr_i + t]
+                    + scale * workspace[env, M_idx + adr_k + t]
+                )
+
+        # Divide off-diagonals of row k by D[k]: store L[k,i] / D[k]
+        for adr_off in range(adr_k, diag_k):
+            workspace[env, M_idx + adr_off] = (
+                workspace[env, M_idx + adr_off] * invD_k
+            )
+
+
+@always_inline
+fn ldl_solve_sparse_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NM: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    row_nnz: InlineArray[Int, _ensure_positive[NV]()],
+    row_adr: InlineArray[Int, _ensure_positive[NV]()],
+    col_ind: InlineArray[Int, _ensure_positive[NM]()],
+):
+    """Sparse LDL solve on GPU — matches MuJoCo's mj_solveLD.
+
+    Reads f_net (RHS) from ws_fnet_offset, writes qacc (solution) to
+    ws_qacc_ws_offset. Reads the factored sparse M from ws_M_offset and
+    diag_inv from ws_D_offset (written by ldl_factor_sparse_gpu).
+
+    Three phases (off-diagonal entries store L[k,i]/D[k]):
+      Phase 1 (backward):  x <- L^{-T} * b
+      Phase 2 (diagonal):  x <- D^{-1} * x
+      Phase 3 (forward):   x <- L^{-1} * x
+    """
+    from ..gpu.constants import ws_fnet_offset, ws_qacc_ws_offset
+
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime b_idx = ws_fnet_offset[NV, NBODY]()
+    comptime x_idx = ws_qacc_ws_offset[NV, NBODY]()
+
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var x = InlineArray[Scalar[DTYPE], NV_SAFE](uninitialized=True)
+
+    # Initialize x = b
+    for i in range(NV):
+        x[i] = rebind[Scalar[DTYPE]](workspace[env, b_idx + i])
+
+    # Phase 1: Backward  x <- L^{-T} * x
+    for i_rev in range(NV):
+        var i = NV - 1 - i_rev
+        var x_i = x[i]
+        var adr_i = row_adr[i]
+        var nnz_i = row_nnz[i]
+        for t in range(nnz_i - 1):  # off-diagonal entries only (j < i)
+            var j = col_ind[adr_i + t]
+            x[j] = (
+                x[j]
+                - rebind[Scalar[DTYPE]](workspace[env, M_idx + adr_i + t]) * x_i
+            )
+
+    # Phase 2: Diagonal  x <- D^{-1} * x
+    for i in range(NV):
+        x[i] = x[i] * rebind[Scalar[DTYPE]](workspace[env, D_idx + i])
+
+    # Phase 3: Forward  x <- L^{-1} * x
+    for i in range(NV):
+        var adr_i = row_adr[i]
+        var nnz_i = row_nnz[i]
+        for t in range(nnz_i - 1):  # off-diagonal entries only (j < i)
+            var j = col_ind[adr_i + t]
+            x[i] = (
+                x[i]
+                - rebind[Scalar[DTYPE]](workspace[env, M_idx + adr_i + t]) * x[j]
+            )
+
+    for i in range(NV):
+        workspace[env, x_idx + i] = x[i]
+
+
+@always_inline
+fn compute_M_inv_from_sparse_ldl_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NM: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    row_nnz: InlineArray[Int, _ensure_positive[NV]()],
+    row_adr: InlineArray[Int, _ensure_positive[NV]()],
+    col_ind: InlineArray[Int, _ensure_positive[NM]()],
+):
+    """Compute full NV×NV M_inv from sparse LDL factors on GPU.
+
+    Reads factored sparse M from ws_M_offset, diag_inv from ws_D_offset.
+    Writes M_inv (NV×NV) to ws_m_inv_offset.
+
+    Solves M * e_j = e_j for each basis vector j using the 3-phase sparse
+    solve, then stores the result as column j of M_inv. M_inv is dense
+    (needed for constraint-level forces that require the full inverse).
+    """
+    from ..gpu.constants import ws_m_inv_offset
+
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var x = InlineArray[Scalar[DTYPE], NV_SAFE](uninitialized=True)
+
+    for j in range(NV):
+        # Initialize x = e_j (unit vector)
+        for i in range(NV):
+            x[i] = Scalar[DTYPE](0)
+        x[j] = Scalar[DTYPE](1)
+
+        # Phase 1: Backward  x <- L^{-T} * x
+        for i_rev in range(NV):
+            var i = NV - 1 - i_rev
+            var x_i = x[i]
+            var adr_i = row_adr[i]
+            var nnz_i = row_nnz[i]
+            for t in range(nnz_i - 1):
+                var m = col_ind[adr_i + t]
+                x[m] = (
+                    x[m]
+                    - rebind[Scalar[DTYPE]](
+                        workspace[env, M_idx + adr_i + t]
+                    ) * x_i
+                )
+
+        # Phase 2: Diagonal  x <- D^{-1} * x
+        for i in range(NV):
+            x[i] = x[i] * rebind[Scalar[DTYPE]](workspace[env, D_idx + i])
+
+        # Phase 3: Forward  x <- L^{-1} * x
+        for i in range(NV):
+            var adr_i = row_adr[i]
+            var nnz_i = row_nnz[i]
+            for t in range(nnz_i - 1):
+                var m = col_ind[adr_i + t]
+                x[i] = (
+                    x[i]
+                    - rebind[Scalar[DTYPE]](
+                        workspace[env, M_idx + adr_i + t]
+                    ) * x[m]
+                )
+
+        # Store column j of M_inv
+        for i in range(NV):
+            workspace[env, M_inv_idx + i * NV + j] = x[i]
 
 
 # =============================================================================

@@ -51,6 +51,19 @@ from ..dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
     solve_linear_diagonal,
+    build_sparse_pattern,
+    compute_mass_matrix_sparse,
+    ldl_factor_sparse,
+    ldl_solve_sparse,
+    sparse_to_dense,
+    # Sparse GPU functions
+    build_sparse_pattern_gpu,
+    compute_mass_matrix_sparse_gpu,
+    ldl_factor_sparse_gpu,
+    ldl_solve_sparse_gpu,
+    compute_M_inv_from_sparse_ldl_gpu,
+    SparseMassMatrix,
+    _ensure_positive,
 )
 from ..dynamics.bias_forces import (
     compute_bias_forces,
@@ -165,6 +178,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -194,6 +209,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime V_SIZE = _max_one[NV]()
         comptime CDOF_SIZE = _max_one[NV * 6]()
         comptime CRB_SIZE = _max_one[NBODY * 10]()
+        comptime NM_SAFE = _ensure_positive[NM]()
 
         # 1. Forward kinematics
         forward_kinematics(model, data)
@@ -212,11 +228,23 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             crb[i] = Scalar[DTYPE](0)
         compute_composite_inertia(model, data, crb)
 
-        # 5. Compute full mass matrix using CRBA
+        # 5. Compute mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full(model, data, cdof, crb, M)
+        var sM = SparseMassMatrix[DTYPE, NV, NM]()
+        @parameter
+        if SPARSE:
+            build_sparse_pattern[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, sM)
+            compute_mass_matrix_sparse[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, data, cdof, crb, sM)
+        else:
+            for i in range(M_SIZE):
+                M[i] = Scalar[DTYPE](0)
+            compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Add armature to mass matrix diagonal
         # MuJoCo Euler: M_solver = M + armature (damping is purely explicit via f -= D*v)
@@ -226,23 +254,43 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var dof_adr = joint.dof_adr
             var arm = joint.armature
             var diag_add = arm
-            if joint.jnt_type == JNT_FREE:
-                for d in range(6):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
-                    )
-            elif joint.jnt_type == JNT_BALL:
-                for d in range(3):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
-                    )
+            @parameter
+            if SPARSE:
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        sM.values[sM.diag_pos(dof_adr + d)] += diag_add
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        sM.values[sM.diag_pos(dof_adr + d)] += diag_add
+                else:
+                    sM.values[sM.diag_pos(dof_adr)] += diag_add
             else:
-                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                            M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                        )
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                            M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                        )
+                else:
+                    M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+
+        # 5c. Expand sparse to dense for M_hat (must be before ldl_factor_sparse mutates sM)
+        @parameter
+        if SPARSE:
+            sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M)
 
         # 6. LDL factorize M and solve for qacc
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse(sM)
+        else:
+            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
 
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
@@ -329,20 +377,45 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 6c. Fluid forces: viscous + pressure drag (disabled when density=viscosity=0)
         compute_fluid_forces[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
         ](model, data, cdof, f_net)
 
         # qacc = M^-1 * f_net via LDL solve
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc)
+        else:
+            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
 
         # 7. Compute full M_inv from LDL factors for constraint solver
         var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M_inv[i] = Scalar[DTYPE](0)
-        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+        @parameter
+        if SPARSE:
+            # Compute M_inv column-by-column: solve M * e_j = e_j for each j
+            var e_col = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+            var col_result = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+            for col in range(NV):
+                for k in range(NV):
+                    e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](0)
+                ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
+                for row in range(NV):
+                    M_inv[row * NV + col] = col_result[row]
+        else:
+            compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY + MAX_TENDON
@@ -373,7 +446,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # Compute cfrc_ext: contact forces per body in subtree CoM frame
         compute_cfrc_ext[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
         ](model, data)
 
         # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
@@ -427,13 +509,40 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     M[dof_adr * NV + dof_adr] += dt * damp
 
         # Step 4: Re-factor M_hat via LDL
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+        @parameter
+        if SPARSE:
+            # Recompute sparse M, add armature + dt*damping to diagonal, then factor
+            compute_mass_matrix_sparse[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, data, cdof, crb, sM)
+            for j2 in range(model.num_joints):
+                var joint2 = model.joints[j2]
+                var dof2 = joint2.dof_adr
+                var arm2 = joint2.armature
+                var damp2 = joint2.damping
+                var add2 = arm2 + dt * damp2
+                if joint2.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        sM.values[sM.diag_pos(dof2 + d)] += add2
+                elif joint2.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        sM.values[sM.diag_pos(dof2 + d)] += add2
+                else:
+                    sM.values[sM.diag_pos(dof2)] += add2
+            ldl_factor_sparse(sM)
+        else:
+            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
 
         # Step 5: Solve M_hat * v_new = rhs
         var v_new = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             v_new[i] = Scalar[DTYPE](0)
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, rhs, v_new)
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, rhs, v_new)
+        else:
+            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, rhs, v_new)
 
         for i in range(NV):
             data.qvel[i] = v_new[i]
@@ -489,6 +598,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -519,7 +630,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](model, data)
 
     # =========================================================================
@@ -540,6 +653,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         WS_SIZE: Int,
         NGEOM: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -576,6 +691,19 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         comptime V_SIZE = _max_one[NV]()
         comptime M_idx = ws_M_offset[NV, NBODY]()
+
+        # Sparse pattern arrays — built once per step from model topology.
+        # When SPARSE=False these are eliminated by @parameter if dead-code removal.
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        @parameter
+        if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
         comptime bias_idx = ws_bias_offset[NV, NBODY]()
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
@@ -650,19 +778,35 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6. Compute full mass matrix using CRBA (reads cdof/crb, writes M in workspace)
-        compute_mass_matrix_full_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+        # 6. Compute mass matrix using CRBA (reads cdof/crb, writes M in workspace)
+        @parameter
+        if SPARSE:
+            compute_mass_matrix_sparse_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            compute_mass_matrix_full_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 6b. Add armature to mass matrix diagonal
         # MuJoCo Euler: M_solver = M + armature (damping is purely explicit via f -= D*v)
@@ -684,13 +828,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var idx = M_idx + dof_adr * NV + dof_adr
                 workspace[env, idx] += diag_add
 
-        # 7. LDL factorize (reads M, writes L/D in workspace)
-        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-
-        # Compute M_inv in workspace (reads L/D, writes M_inv in workspace)
-        compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # 7. LDL factorize M, compute M_inv
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+            compute_M_inv_from_sparse_ldl_gpu[
+                DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+            ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 8. Compute bias forces (reads cdof from workspace, writes bias to workspace)
         compute_bias_forces_rne_gpu[
@@ -904,23 +1055,51 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var bz = sqrt(max(bz2, Scalar[DTYPE](0)))
 
                 # World-frame body velocity (at body origin)
-                var vx_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 0])
-                var vy_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 1])
-                var vz_w = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 2])
-                var wx_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 0])
-                var wy_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 1])
-                var wz_w = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 2])
+                var vx_w = rebind[Scalar[DTYPE]](
+                    state[env, xvel_off + b * 3 + 0]
+                )
+                var vy_w = rebind[Scalar[DTYPE]](
+                    state[env, xvel_off + b * 3 + 1]
+                )
+                var vz_w = rebind[Scalar[DTYPE]](
+                    state[env, xvel_off + b * 3 + 2]
+                )
+                var wx_w = rebind[Scalar[DTYPE]](
+                    state[env, xangvel_off + b * 3 + 0]
+                )
+                var wy_w = rebind[Scalar[DTYPE]](
+                    state[env, xangvel_off + b * 3 + 1]
+                )
+                var wz_w = rebind[Scalar[DTYPE]](
+                    state[env, xangvel_off + b * 3 + 2]
+                )
 
                 # Rotate to body local frame (conjugate of xquat)
-                var qx_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
-                var qy_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
-                var qz_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
-                var qw_b = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+                var qx_b = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + b * 4 + 0]
+                )
+                var qy_b = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + b * 4 + 1]
+                )
+                var qz_b = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + b * 4 + 2]
+                )
+                var qw_b = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + b * 4 + 3]
+                )
 
-                var vloc_b = gpu_quat_rotate[DTYPE](-qx_b, -qy_b, -qz_b, qw_b, vx_w, vy_w, vz_w)
-                var wloc_b = gpu_quat_rotate[DTYPE](-qx_b, -qy_b, -qz_b, qw_b, wx_w, wy_w, wz_w)
-                var vx = vloc_b[0]; var vy = vloc_b[1]; var vz = vloc_b[2]
-                var wx = wloc_b[0]; var wy = wloc_b[1]; var wz = wloc_b[2]
+                var vloc_b = gpu_quat_rotate[DTYPE](
+                    -qx_b, -qy_b, -qz_b, qw_b, vx_w, vy_w, vz_w
+                )
+                var wloc_b = gpu_quat_rotate[DTYPE](
+                    -qx_b, -qy_b, -qz_b, qw_b, wx_w, wy_w, wz_w
+                )
+                var vx = vloc_b[0]
+                var vy = vloc_b[1]
+                var vz = vloc_b[2]
+                var wx = wloc_b[0]
+                var wy = wloc_b[1]
+                var wz = wloc_b[2]
 
                 var diam = (bx + by + bz) / Scalar[DTYPE](3)
 
@@ -950,20 +1129,40 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var bx4 = bx * bx * bx * bx
                     var by4 = by * by * by * by
                     var bz4 = bz * bz * bz * bz
-                    ltx = ltx - rho_fl * bx * (by4 + bz4) * abs(wx) * wx / Scalar[DTYPE](64)
-                    lty = lty - rho_fl * by * (bx4 + bz4) * abs(wy) * wy / Scalar[DTYPE](64)
-                    ltz = ltz - rho_fl * bz * (bx4 + by4) * abs(wz) * wz / Scalar[DTYPE](64)
+                    ltx = ltx - rho_fl * bx * (by4 + bz4) * abs(
+                        wx
+                    ) * wx / Scalar[DTYPE](64)
+                    lty = lty - rho_fl * by * (bx4 + bz4) * abs(
+                        wy
+                    ) * wy / Scalar[DTYPE](64)
+                    ltz = ltz - rho_fl * bz * (bx4 + by4) * abs(
+                        wz
+                    ) * wz / Scalar[DTYPE](64)
 
                 # Rotate forces to world frame
-                var fw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, lfx, lfy, lfz)
-                var tw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, ltx, lty, ltz)
-                var fx_w = fw_b[0]; var fy_w = fw_b[1]; var fz_w = fw_b[2]
-                var tx_w = tw_b[0]; var ty_w = tw_b[1]; var tz_w = tw_b[2]
+                var fw_b = gpu_quat_rotate[DTYPE](
+                    qx_b, qy_b, qz_b, qw_b, lfx, lfy, lfz
+                )
+                var tw_b = gpu_quat_rotate[DTYPE](
+                    qx_b, qy_b, qz_b, qw_b, ltx, lty, ltz
+                )
+                var fx_w = fw_b[0]
+                var fy_w = fw_b[1]
+                var fz_w = fw_b[2]
+                var tx_w = tw_b[0]
+                var ty_w = tw_b[1]
+                var tz_w = tw_b[2]
 
                 # Apply wrench at xipos via Jacobian transpose (kinematic tree walk)
-                var px_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 0])
-                var py_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 1])
-                var pz_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 2])
+                var px_b = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + b * 3 + 0]
+                )
+                var py_b = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + b * 3 + 1]
+                )
+                var pz_b = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + b * 3 + 2]
+                )
                 var tau_ox = tx_w + py_b * fz_w - pz_b * fy_w
                 var tau_oy = ty_w + pz_b * fx_w - px_b * fz_w
                 var tau_oz = tz_w + px_b * fy_w - py_b * fx_w
@@ -972,11 +1171,23 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 while anc > 0:
                     for j2 in range(NJOINT):
                         var jo2 = model_joint_offset[NBODY](j2)
-                        var bid2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_BODY_ID]))
+                        var bid2 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, jo2 + JOINT_IDX_BODY_ID]
+                            )
+                        )
                         if bid2 != anc:
                             continue
-                        var jt2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_TYPE]))
-                        var da2 = Int(rebind[Scalar[DTYPE]](model[0, jo2 + JOINT_IDX_DOF_ADR]))
+                        var jt2 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, jo2 + JOINT_IDX_TYPE]
+                            )
+                        )
+                        var da2 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, jo2 + JOINT_IDX_DOF_ADR]
+                            )
+                        )
                         var nd2 = 1
                         if jt2 == JNT_FREE:
                             nd2 = 6
@@ -984,25 +1195,53 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                             nd2 = 3
                         for d2 in range(nd2):
                             var di2 = da2 + d2
-                            var ca0 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 0])
-                            var ca1 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 1])
-                            var ca2 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 2])
-                            var cl0 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 3])
-                            var cl1 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 4])
-                            var cl2 = rebind[Scalar[DTYPE]](workspace[env, cdof_off + di2 * 6 + 5])
-                            var cur2 = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + di2])
+                            var ca0 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 0]
+                            )
+                            var ca1 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 1]
+                            )
+                            var ca2 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 2]
+                            )
+                            var cl0 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 3]
+                            )
+                            var cl1 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 4]
+                            )
+                            var cl2 = rebind[Scalar[DTYPE]](
+                                workspace[env, cdof_off + di2 * 6 + 5]
+                            )
+                            var cur2 = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + di2]
+                            )
                             workspace[env, fnet_idx + di2] = (
                                 cur2
-                                + cl0 * fx_w + cl1 * fy_w + cl2 * fz_w
-                                + ca0 * tau_ox + ca1 * tau_oy + ca2 * tau_oz
+                                + cl0 * fx_w
+                                + cl1 * fy_w
+                                + cl2 * fz_w
+                                + ca0 * tau_ox
+                                + ca1 * tau_oy
+                                + ca2 * tau_oz
                             )
                     var anc_off = model_body_offset(anc)
-                    anc = Int(rebind[Scalar[DTYPE]](model[0, anc_off + BODY_IDX_PARENT]))
+                    anc = Int(
+                        rebind[Scalar[DTYPE]](
+                            model[0, anc_off + BODY_IDX_PARENT]
+                        )
+                    )
 
-        # LDL solve: reads L, D, f_net from workspace, writes qacc to workspace
-        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # LDL solve: reads f_net from workspace, writes qacc to workspace
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+        else:
+            ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         for i in range(NV):
             var qacc_val = rebind[Scalar[DTYPE]](
@@ -1030,6 +1269,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MODEL_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1060,6 +1301,17 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        @parameter
+        if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
         var dt = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
@@ -1109,18 +1361,27 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var idx = M_idx + dof_adr * NV + dof_adr
                     workspace[env, idx] += dt * damp
 
-        # Step 3: Re-factor M_hat via LDL (reuses L/D workspace regions)
-        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-
-        # Step 4: qacc_final = M_hat^{-1} * rhs (reads fnet, writes qacc_ws)
-        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # Step 3: Re-factor M_hat, Step 4: solve qacc_final = M_hat^{-1} * rhs
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+            ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+        else:
+            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # Step 5: v_new = v_old + dt * qacc_final
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            var qacc_final = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+            var qacc_final = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
             state[env, qacc_off + i] = qacc_final
             state[env, qvel_off + i] = old_qvel + qacc_final * dt
 
@@ -1208,6 +1469,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1260,6 +1523,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
             WS_SIZE,
             NGEOM,
+            NM,
+            SPARSE,
         ]
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -1288,7 +1553,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1310,6 +1575,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             WS_SIZE,
+            NM,
+            SPARSE,
         ]
 
         ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
@@ -1334,6 +1601,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1355,7 +1624,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](
                 ctx,
                 state_buf,

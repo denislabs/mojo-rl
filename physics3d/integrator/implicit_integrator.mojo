@@ -168,6 +168,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -541,6 +543,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -553,7 +557,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
@@ -571,7 +575,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](model, data)
 
     # =========================================================================
@@ -1042,6 +1048,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1172,6 +1180,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1193,7 +1203,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](
                 ctx,
                 state_buf,

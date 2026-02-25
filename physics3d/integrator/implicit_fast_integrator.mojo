@@ -42,6 +42,19 @@ from ..dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
     solve_linear_diagonal,
+    build_sparse_pattern,
+    compute_mass_matrix_sparse,
+    ldl_factor_sparse,
+    ldl_solve_sparse,
+    sparse_to_dense,
+    # Sparse GPU functions
+    build_sparse_pattern_gpu,
+    compute_mass_matrix_sparse_gpu,
+    ldl_factor_sparse_gpu,
+    ldl_solve_sparse_gpu,
+    compute_M_inv_from_sparse_ldl_gpu,
+    SparseMassMatrix,
+    _ensure_positive,
 )
 from ..dynamics.bias_forces import (
     compute_bias_forces,
@@ -145,6 +158,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -174,6 +189,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime V_SIZE = _max_one[NV]()
         comptime CDOF_SIZE = _max_one[NV * 6]()
         comptime CRB_SIZE = _max_one[NBODY * 10]()
+        comptime NM_SAFE = _ensure_positive[NM]()
 
         # 1. Forward kinematics
         forward_kinematics(model, data)
@@ -255,11 +271,23 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
         ](model, data, crb)
 
-        # 5. Compute full mass matrix using CRBA
+        # 5. Compute mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full(model, data, cdof, crb, M)
+        var sM = SparseMassMatrix[DTYPE, NV, NM]()
+        @parameter
+        if SPARSE:
+            build_sparse_pattern[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, sM)
+            compute_mass_matrix_sparse[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, data, cdof, crb, sM)
+        else:
+            for i in range(M_SIZE):
+                M[i] = Scalar[DTYPE](0)
+            compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Add armature only to mass matrix diagonal
         # MuJoCo: constraint solver sees M + arm (no dt*D).
@@ -268,23 +296,43 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var arm = joint.armature
-            if joint.jnt_type == JNT_FREE:
-                for d in range(6):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                    )
-            elif joint.jnt_type == JNT_BALL:
-                for d in range(3):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                    )
+            @parameter
+            if SPARSE:
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        sM.values[sM.diag_pos(dof_adr + d)] += arm
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        sM.values[sM.diag_pos(dof_adr + d)] += arm
+                else:
+                    sM.values[sM.diag_pos(dof_adr)] += arm
             else:
-                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                            M[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                        )
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                            M[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                        )
+                else:
+                    M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
+
+        # 5c. Expand sparse to dense for M_hat (must be before ldl_factor_sparse mutates sM)
+        @parameter
+        if SPARSE:
+            sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M)
 
         # 6. LDL factorize M and solve for qacc
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse(sM)
+        else:
+            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
 
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
@@ -374,13 +422,29 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc)
+        else:
+            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
 
         # 7. Compute full M_inv from LDL factors for constraint solver
         var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M_inv[i] = Scalar[DTYPE](0)
-        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+        @parameter
+        if SPARSE:
+            # Compute M_inv column-by-column: solve M * e_j = e_j for each j
+            var e_col = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+            var col_result = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+            for col in range(NV):
+                for k in range(NV):
+                    e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](0)
+                ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
+                for row in range(NV):
+                    M_inv[row * NV + col] = col_result[row]
+        else:
+            compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
         if verbose:
             print("  [PRE-SOLVER]")
@@ -570,7 +634,16 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # Compute cfrc_ext: contact forces per body in subtree CoM frame
         compute_cfrc_ext[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
         ](model, data)
 
         # 9. Post-constraint re-solve with M_hat = M + arm + dt*D
@@ -596,25 +669,51 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             qfrc_total[i] = f_net[i] + qfrc_constraint[i]
 
         # 9c. Add dt*damping to M diagonal → M_hat = M + arm + dt*D
-        for j in range(model.num_joints):
-            var joint = model.joints[j]
-            var dof_adr = joint.dof_adr
-            var damp = joint.damping
-            if damp > Scalar[DTYPE](0):
-                if joint.jnt_type == JNT_FREE:
-                    for d in range(6):
-                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
-                elif joint.jnt_type == JNT_BALL:
-                    for d in range(3):
-                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
-                else:
-                    M[dof_adr * NV + dof_adr] += dt * damp
+        @parameter
+        if not SPARSE:
+            for j in range(model.num_joints):
+                var joint = model.joints[j]
+                var dof_adr = joint.dof_adr
+                var damp = joint.damping
+                if damp > Scalar[DTYPE](0):
+                    if joint.jnt_type == JNT_FREE:
+                        for d in range(6):
+                            M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                    elif joint.jnt_type == JNT_BALL:
+                        for d in range(3):
+                            M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                    else:
+                        M[dof_adr * NV + dof_adr] += dt * damp
 
         # 9d. Re-factor M_hat and solve qacc = M_hat^{-1} * qfrc_total
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, qfrc_total, qacc)
+        @parameter
+        if SPARSE:
+            # Recompute sparse M, add armature + dt*damping to diagonal, then factor
+            compute_mass_matrix_sparse[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](model, data, cdof, crb, sM)
+            for j2 in range(model.num_joints):
+                var joint2 = model.joints[j2]
+                var dof2 = joint2.dof_adr
+                var arm2 = joint2.armature
+                var damp2 = joint2.damping
+                var add2 = arm2 + dt * damp2
+                if joint2.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        sM.values[sM.diag_pos(dof2 + d)] += add2
+                elif joint2.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        sM.values[sM.diag_pos(dof2 + d)] += add2
+                else:
+                    sM.values[sM.diag_pos(dof2)] += add2
+            ldl_factor_sparse(sM)
+            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, qfrc_total, qacc)
+        else:
+            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, qfrc_total, qacc)
 
         # 9e. Integrate: qvel += dt * qacc, qpos += dt * qvel
         for i in range(NV):
@@ -630,8 +729,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             if joint.jnt_type == JNT_FREE:
                 for d in range(3):
                     data.qpos[qpos_adr + d] = (
-                        data.qpos[qpos_adr + d]
-                        + data.qvel[dof_adr + d] * dt
+                        data.qpos[qpos_adr + d] + data.qvel[dof_adr + d] * dt
                     )
                 var qx = data.qpos[qpos_adr + 3]
                 var qy = data.qpos[qpos_adr + 4]
@@ -640,9 +738,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var wx = data.qvel[dof_adr + 3]
                 var wy = data.qvel[dof_adr + 4]
                 var wz = data.qvel[dof_adr + 5]
-                var result = quat_integrate(
-                    qx, qy, qz, qw, wx, wy, wz, dt
-                )
+                var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
                 var norm = quat_normalize(
                     result[0], result[1], result[2], result[3]
                 )
@@ -686,6 +782,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -698,7 +796,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
@@ -716,7 +814,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](model, data)
 
     # =========================================================================
@@ -741,6 +841,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -771,6 +873,16 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        @parameter
+        if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
 
         # 1. Forward kinematics
         forward_kinematics_gpu[
@@ -840,19 +952,35 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6. Compute full mass matrix using CRBA (reads cdof/crb, writes M in workspace)
-        compute_mass_matrix_full_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+        # 6. Compute mass matrix using CRBA (reads cdof/crb, writes M in workspace)
+        @parameter
+        if SPARSE:
+            compute_mass_matrix_sparse_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            compute_mass_matrix_full_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 6b. Add armature only to mass matrix diagonal
         # MuJoCo: constraint solver sees M + arm (no dt*D).
@@ -878,13 +1006,20 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var idx = M_idx + dof_adr * NV + dof_adr
                 workspace[env, idx] += arm
 
-        # 7. LDL factorize (reads M, writes L/D in workspace)
-        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-
-        # Compute M_inv in workspace (reads L/D, writes M_inv in workspace)
-        compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # 7. LDL factorize M, compute M_inv
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+            compute_M_inv_from_sparse_ldl_gpu[
+                DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+            ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 8. Compute bias forces (reads cdof from workspace, writes bias to workspace)
         compute_bias_forces_rne_gpu[
@@ -1052,26 +1187,38 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     elif v < -VEL_THRESH:
                         workspace[env, fnet_idx + dof_adr] = cur + floss
 
-        # LDL solve: reads L, D, f_net from workspace, writes qacc to workspace
-        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # LDL solve: reads f_net from workspace, writes qacc to workspace
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+        else:
+            ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 10. Warm-start: use previous step's constrained qacc if nonzero.
         # state[env, qacc_off + i] still holds prev step's constrained qacc here
         # (written by step_finalize_kernel). Must read BEFORE overwriting below.
         var has_warmstart = False
         for i in range(NV):
-            if rebind[Scalar[DTYPE]](state[env, qacc_off + i]) != Scalar[DTYPE](0):
+            if rebind[Scalar[DTYPE]](state[env, qacc_off + i]) != Scalar[DTYPE](
+                0
+            ):
                 has_warmstart = True
                 break
 
         if has_warmstart:
             for i in range(NV):
-                workspace[env, qacc_constrained_idx + i] = state[env, qacc_off + i]
+                workspace[env, qacc_constrained_idx + i] = state[
+                    env, qacc_off + i
+                ]
         else:
             for i in range(NV):
-                workspace[env, qacc_constrained_idx + i] = workspace[env, qacc_ws_idx + i]
+                workspace[env, qacc_constrained_idx + i] = workspace[
+                    env, qacc_ws_idx + i
+                ]
 
         # Write unconstrained qacc to state (overwrites previous warmstart slot)
         for i in range(NV):
@@ -1093,6 +1240,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         MODEL_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1132,6 +1281,16 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         comptime M_idx = ws_M_offset[NV, NBODY]()
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        @parameter
+        if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
 
         # 9a. Compute qfrc_total = M * qacc_constrained (store in fnet workspace)
         for i in range(NV):
@@ -1174,11 +1333,20 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var cur = rebind[Scalar[DTYPE]](workspace[env, idx])
                     workspace[env, idx] = cur + dt * damp
 
-        # 9c. Re-factor M_hat and solve qacc_final = M_hat^{-1} * qfrc_total
-        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # 9c. Re-factor M_hat, solve qacc_final = M_hat^{-1} * qfrc_total
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+            ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+        else:
+            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 9d. Read re-solved qacc from workspace and integrate
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
@@ -1277,6 +1445,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1329,6 +1499,12 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
             WS_SIZE,
             NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+            NM,
+            SPARSE,
         ]
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -1357,7 +1533,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1379,6 +1555,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             WS_SIZE,
+            NM,
+            SPARSE,
         ]
 
         ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
@@ -1403,6 +1581,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1424,7 +1604,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](
                 ctx,
                 state_buf,

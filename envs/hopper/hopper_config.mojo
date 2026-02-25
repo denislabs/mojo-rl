@@ -13,8 +13,9 @@ from physics3d.gpu.constants import (
     rk4_extra_workspace_size,
 )
 
+from .hopper_xml import HopperModel
+
 from .hopper_def import (
-    HopperModel,
     HopperParams,
 )
 from ..phyics3d_env_config import Phyics3dEnvConfig
@@ -140,7 +141,7 @@ struct HopperConfig(Phyics3dEnvConfig):
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(HopperModel.Defaults.TIMESTEP)
+        return Float64(HopperModel.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:

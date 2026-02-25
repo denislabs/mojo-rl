@@ -43,6 +43,19 @@ from ..dynamics.mass_matrix import (
     ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
+    build_sparse_pattern,
+    compute_mass_matrix_sparse,
+    ldl_factor_sparse,
+    ldl_solve_sparse,
+    sparse_to_dense,
+    # Sparse GPU functions
+    build_sparse_pattern_gpu,
+    compute_mass_matrix_sparse_gpu,
+    ldl_factor_sparse_gpu,
+    ldl_solve_sparse_gpu,
+    compute_M_inv_from_sparse_ldl_gpu,
+    SparseMassMatrix,
+    _ensure_positive,
 )
 from ..dynamics.bias_forces import (
     compute_bias_forces_rne,
@@ -195,9 +208,7 @@ fn _integrate_pos_gpu[
             var q0_val = rebind[Scalar[DTYPE]](
                 workspace[env, q0_idx + qpos_adr]
             )
-            var v_val = rebind[Scalar[DTYPE]](
-                workspace[env, vel_idx + dof_adr]
-            )
+            var v_val = rebind[Scalar[DTYPE]](workspace[env, vel_idx + dof_adr])
             state[env, qpos_off + qpos_adr] = q0_val + v_val * dt
 
 
@@ -217,6 +228,8 @@ fn _forward_dynamics[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_TENDON: Int = 0,
     NSITE: Int = 0,
+    NM: Int = 0,
+    SPARSE: Bool = False,
 ](
     model: Model[
         DTYPE,
@@ -229,7 +242,7 @@ fn _forward_dynamics[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
-    NSITE,
+        NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut qacc_out: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -266,43 +279,77 @@ fn _forward_dynamics[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
     ](model, data, crb)
 
+    comptime NM_SAFE = _ensure_positive[NM]()
+
     # 5. Full mass matrix
-    for i in range(M_SIZE):
-        M_out[i] = Scalar[DTYPE](0)
-    compute_mass_matrix_full[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        M_SIZE,
-        CDOF_SIZE,
-        CRB_SIZE,
-    ](model, data, cdof_out, crb, M_out)
+    var sM = SparseMassMatrix[DTYPE, NV, NM]()
+    @parameter
+    if SPARSE:
+        build_sparse_pattern[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        ](model, sM)
+        compute_mass_matrix_sparse[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+            CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        ](model, data, cdof_out, crb, sM)
+    else:
+        for i in range(M_SIZE):
+            M_out[i] = Scalar[DTYPE](0)
+        compute_mass_matrix_full[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
+        ](model, data, cdof_out, crb, M_out)
 
     # 5b. Armature only (no implicit damping for RK4 — damping is explicit)
     for j in range(model.num_joints):
         var joint = model.joints[j]
         var dof_adr = joint.dof_adr
         var arm = joint.armature
-        if joint.jnt_type == JNT_FREE:
-            for d in range(6):
-                M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
-                    M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                )
-        elif joint.jnt_type == JNT_BALL:
-            for d in range(3):
-                M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
-                    M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                )
+        @parameter
+        if SPARSE:
+            if joint.jnt_type == JNT_FREE:
+                for d in range(6):
+                    sM.values[sM.diag_pos(dof_adr + d)] += arm
+            elif joint.jnt_type == JNT_BALL:
+                for d in range(3):
+                    sM.values[sM.diag_pos(dof_adr + d)] += arm
+            else:
+                sM.values[sM.diag_pos(dof_adr)] += arm
         else:
-            M_out[dof_adr * NV + dof_adr] = M_out[dof_adr * NV + dof_adr] + arm
+            if joint.jnt_type == JNT_FREE:
+                for d in range(6):
+                    M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
+                        M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                    )
+            elif joint.jnt_type == JNT_BALL:
+                for d in range(3):
+                    M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
+                        M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                    )
+            else:
+                M_out[dof_adr * NV + dof_adr] = M_out[dof_adr * NV + dof_adr] + arm
+
+    # 5c. Expand sparse to dense for M_out (must be before ldl_factor_sparse mutates sM)
+    @parameter
+    if SPARSE:
+        sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_out)
 
     # 6. LDL factorize
     var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
     var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_out, L, D)
+    @parameter
+    if SPARSE:
+        ldl_factor_sparse(sM)
+    else:
+        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_out, L, D)
 
     # 7. Bias forces
     var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -386,12 +433,28 @@ fn _forward_dynamics[
     # 9. qacc = M^-1 * f_net
     for i in range(NV):
         qacc_out[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc_out)
+    @parameter
+    if SPARSE:
+        ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc_out)
+    else:
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc_out)
 
     # 10. M_inv for constraint solver
     for i in range(M_SIZE):
         M_inv_out[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv_out)
+    @parameter
+    if SPARSE:
+        # Compute M_inv column-by-column: solve M * e_j = e_j for each j
+        var e_col = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        var col_result = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        for col in range(NV):
+            for k in range(NV):
+                e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](0)
+            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
+            for row in range(NV):
+                M_inv_out[row * NV + col] = col_result[row]
+    else:
+        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv_out)
 
 
 fn _solve_constraints[
@@ -422,7 +485,7 @@ fn _solve_constraints[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
-    NSITE,
+        NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -491,7 +554,7 @@ fn _integrate_pos[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
-    NSITE,
+        NSITE,
     ],
     qpos_base: InlineArray[Scalar[DTYPE], _max_one[NQ]()],
     vel: InlineArray[Scalar[DTYPE], _max_one[NV]()],
@@ -591,6 +654,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -659,6 +724,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             M_SIZE,
             CDOF_SIZE,
             CRB_SIZE,
+            NM=NM,
+            SPARSE=SPARSE,
         ](model, data, a0, cdof, M_inv, M)
 
         _solve_constraints[
@@ -705,6 +772,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             M_SIZE,
             CDOF_SIZE,
             CRB_SIZE,
+            NM=NM,
+            SPARSE=SPARSE,
         ](model, data, a1, cdof, M_inv, M)
 
         _solve_constraints[
@@ -755,6 +824,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             M_SIZE,
             CDOF_SIZE,
             CRB_SIZE,
+            NM=NM,
+            SPARSE=SPARSE,
         ](model, data, a2, cdof, M_inv, M)
 
         _solve_constraints[
@@ -805,6 +876,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             M_SIZE,
             CDOF_SIZE,
             CRB_SIZE,
+            NM=NM,
+            SPARSE=SPARSE,
         ](model, data, a3, cdof, M_inv, M)
 
         _solve_constraints[
@@ -876,7 +949,16 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Compute cfrc_ext: contact forces per body in subtree CoM frame
         # Uses forces from the last stage (stage 3) written back above.
         compute_cfrc_ext[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
         ](model, data)
 
     @staticmethod
@@ -892,6 +974,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         model: Model[
             DTYPE,
@@ -904,7 +988,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
@@ -922,7 +1006,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](model, data)
 
     # =========================================================================
@@ -945,6 +1031,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int,
         SOLVER_WS_SIZE: Int,
         STAGE: Int,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -975,6 +1063,16 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        @parameter
+        if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
 
         # RK4 workspace offsets
         comptime q0_idx = ws_rk4_q0_offset[NV, NBODY](SOLVER_WS_SIZE)
@@ -1013,8 +1111,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
             # qvel = v0 + dt/2 * A[0]
             _integrate_pos_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
-                BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace, q0_idx, v0_idx, half_dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
@@ -1034,8 +1139,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             # Set intermediate state: qpos = q0 + dt/2 * C[1]
             # qvel = v0 + dt/2 * A[1]
             _integrate_pos_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
-                BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace, q0_idx, c1_idx, half_dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
@@ -1055,8 +1167,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             # Set intermediate state: qpos = q0 + dt * C[2]
             # qvel = v0 + dt * A[2]
             _integrate_pos_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
-                BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace, q0_idx, c2_idx, dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
@@ -1134,18 +1253,34 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model, workspace)
 
         # 6. Full mass matrix
-        compute_mass_matrix_full_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+        @parameter
+        if SPARSE:
+            compute_mass_matrix_sparse_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            compute_mass_matrix_full_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 6b. Armature only (no implicit damping for RK4)
         for j in range(NJOINT):
@@ -1165,11 +1300,20 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 var idx = M_idx + dof_adr * NV + dof_adr
                 workspace[env, idx] += arm
 
-        # 7. LDL factorize + M_inv
-        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-        compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        # 7. LDL factorize M, compute M_inv
+        @parameter
+        if SPARSE:
+            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+            compute_M_inv_from_sparse_ldl_gpu[
+                DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+            ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+        else:
+            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 8. Bias forces
         compute_bias_forces_rne_gpu[
@@ -1325,9 +1469,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                         workspace[env, fnet_idx + dof_adr] = cur + floss
 
         # 10. LDL solve: f_net → qacc
-        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        @parameter
+        if SPARSE:
+            ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+            )
+        else:
+            ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # Write qacc to state and qacc_constrained for solver
         for i in range(NV):
@@ -1437,8 +1587,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Second pass: integrate position using v_combined (quaternion-aware).
         # v_combined is stored in A0_idx workspace.
         _integrate_pos_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
-            BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace, q0_idx, A0_idx, dt)
 
     @staticmethod
@@ -1455,6 +1612,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1518,6 +1677,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             SOLVER_WS,
             0,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage0_kernel, stage0_kernel](
             state,
@@ -1542,8 +1703,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
             state,
@@ -1568,6 +1729,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             SOLVER_WS,
             1,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage1_kernel, stage1_kernel](
             state,
@@ -1599,6 +1762,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             SOLVER_WS,
             2,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage2_kernel, stage2_kernel](
             state,
@@ -1630,6 +1795,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             SOLVER_WS,
             3,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage3_kernel, stage3_kernel](
             state,
@@ -1682,6 +1849,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         CONE_TYPE: Int = ConeType.ELLIPTIC,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1703,7 +1872,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MAX_EQUALITY,
                 CONE_TYPE,
                 MAX_TENDON,
-            NSITE,
+                NSITE,
+                NM,
+                SPARSE,
             ](
                 ctx,
                 state_buf,

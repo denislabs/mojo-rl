@@ -68,4 +68,5 @@ comptime HopperModel = ModelDefFromXML[
     nsite = pm.NSITE,
     obs_qpos_skip=1,
     max_contacts=20,
+    timestep = pm.TIMESTEP,
 ]

@@ -83,4 +83,5 @@ comptime HalfCheetahModel = ModelDefFromXML[
     nsite = pm.NSITE,
     max_contacts=10,
     obs_qpos_skip=1,
+    timestep = pm.TIMESTEP,
 ]

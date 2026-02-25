@@ -13,8 +13,9 @@ from physics3d.gpu.constants import (
     model_curriculum_offset,
 )
 
+from .half_cheetah_xml import HalfCheetahModel
+
 from .half_cheetah_def import (
-    HalfCheetahModel,
     HalfCheetahParams,
 )
 from ..phyics3d_env_config import Phyics3dEnvConfig
@@ -132,7 +133,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(HalfCheetahModel.Defaults.TIMESTEP)
+        return Float64(HalfCheetahModel.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:

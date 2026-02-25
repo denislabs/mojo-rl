@@ -38,18 +38,19 @@ struct ParsedModel:
         # m.NBODY is now a comptime Int — can drive type parameters
     """
 
-    var NBODY: Int   # total bodies including worldbody (= counted bodies + 1)
+    var NBODY: Int  # total bodies including worldbody (= counted bodies + 1)
     var NJOINT: Int  # number of joints
-    var NQ: Int      # total position DOFs
-    var NV: Int      # total velocity DOFs
-    var NGEOM: Int   # total geoms (floor + body geoms)
-    var NACT: Int    # number of actuators
-    var NTEX: Int    # number of <texture> entries in <asset>
-    var NMAT: Int    # number of <material> entries in <asset>
+    var NQ: Int  # total position DOFs
+    var NV: Int  # total velocity DOFs
+    var NGEOM: Int  # total geoms (floor + body geoms)
+    var NACT: Int  # number of actuators
+    var NTEX: Int  # number of <texture> entries in <asset>
+    var NMAT: Int  # number of <material> entries in <asset>
     var NLIGHT: Int  # number of <light> entries in <worldbody>
-    var NCAM: Int    # number of <camera> entries in <worldbody>
-    var NSITE: Int   # number of <site> entries in <worldbody>
+    var NCAM: Int  # number of <camera> entries in <worldbody>
+    var NSITE: Int  # number of <site> entries in <worldbody>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
+    var TIMESTEP: Float64  # <option timestep="..."/>
 
     fn __init__(
         out self,
@@ -65,6 +66,7 @@ struct ParsedModel:
         ncam: Int = 0,
         nsite: Int = 0,
         angle_deg: Bool = False,
+        timestep: Float64 = 0.01,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -78,6 +80,7 @@ struct ParsedModel:
         self.NCAM = ncam
         self.NSITE = nsite
         self.ANGLE_DEG = angle_deg
+        self.TIMESTEP = timestep
 
     fn __str__(self) -> String:
         return (
@@ -104,6 +107,8 @@ struct ParsedModel:
             + String(self.NCAM)
             + ", NSITE="
             + String(self.NSITE)
+            + ", TIMESTEP="
+            + String(self.TIMESTEP)
             + ")"
         )
 
@@ -165,7 +170,8 @@ fn _extract_section(xml: String, tag: String) -> String:
 
 
 fn _trim(s: String) -> String:
-    """Trim leading/trailing whitespace (space, tab, newline, carriage return)."""
+    """Trim leading/trailing whitespace (space, tab, newline, carriage return).
+    """
     var start = 0
     var end = len(s)
     while start < end:
@@ -527,7 +533,17 @@ fn _fromto_to_pos_quat(
     var half_length = length * Float64(0.5)
 
     if length < Float64(1e-10):
-        return (mx, my, mz, Float64(0), Float64(0), Float64(0), Float64(1), half_length, Float64(0))
+        return (
+            mx,
+            my,
+            mz,
+            Float64(0),
+            Float64(0),
+            Float64(0),
+            Float64(1),
+            half_length,
+            Float64(0),
+        )
 
     var ndx = dx / length
     var ndy = dy / length
@@ -571,7 +587,8 @@ fn _fromto_to_pos_quat(
 
 
 fn _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
-    """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1."""
+    """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1.
+    """
     var search_name = 'name="' + joint_name + '"'
     var count = 0
     var scan_pos = 0
@@ -706,7 +723,32 @@ fn parse_xml(xml: String) -> ParsedModel:
             if _trim(angle_val) == "degree":
                 angle_deg = True
 
-    return ParsedModel(nbody, njoint, nq, nv, ngeom, nact, ntex, nmat, nlight, ncam, nsite, angle_deg)
+    # ---- Timestep (<option timestep="..."/>) --------------------------------
+    var timestep = Float64(0.002)  # MuJoCo default
+    var option_t = xml.find("<option")
+    if option_t != -1:
+        var option_end = xml.find(">", option_t)
+        if option_end != -1:
+            var otag = String(xml[option_t : option_end + 1])
+            var ts_val = _extract_attr(otag, "timestep")
+            if len(_trim(ts_val)) > 0:
+                timestep = _parse_float(ts_val)
+
+    return ParsedModel(
+        nbody,
+        njoint,
+        nq,
+        nv,
+        ngeom,
+        nact,
+        ntex,
+        nmat,
+        nlight,
+        ncam,
+        nsite,
+        angle_deg,
+        timestep,
+    )
 
 
 # =============================================================================
@@ -929,7 +971,9 @@ fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
-    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
+    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[
+        xml
+    ]() else 1.0
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0
@@ -972,7 +1016,9 @@ fn _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
     Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
-    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
+    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[
+        xml
+    ]() else 1.0
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0
