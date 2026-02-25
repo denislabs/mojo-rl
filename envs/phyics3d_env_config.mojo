@@ -189,6 +189,10 @@ trait Phyics3dEnvConfig:
         ],
         env: Int,
         qpos_off: Int,
+        xpos_off: Int,
+        xipos_off: Int,
+        cfrc_ext_off: Int,
+        cvel_off: Int,
         meta_offset: Int,
         curriculum_offset: Int,
         step_count: Int,
@@ -203,6 +207,10 @@ trait Phyics3dEnvConfig:
             actions: Action buffer.
             env: Environment index.
             qpos_off: Offset to qpos in state buffer.
+            xpos_off: Offset to xpos (body world positions) in state buffer.
+            xipos_off: Offset to xipos (body CoM world positions) in state buffer.
+            cfrc_ext_off: Offset to cfrc_ext (contact forces per body) in state buffer.
+            cvel_off: Offset to cvel (body CoM spatial velocities) in state buffer.
             meta_offset: Offset to metadata in state buffer.
             curriculum_offset: Offset to curriculum params in model buffer.
             step_count: Current step count.
@@ -211,5 +219,68 @@ trait Phyics3dEnvConfig:
 
         Returns:
             (reward, terminated).
+        """
+        ...
+
+    # === GPU inline: Non-zero qpos init after reset ===
+    @always_inline
+    @staticmethod
+    fn init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+    ):
+        """Apply non-zero initial qpos offsets after noise (default: no-op).
+
+        Override for envs whose initial qpos is non-zero (e.g., Humanoid
+        z=1.4 / quat_w=1.0, HumanoidStandup z=0.105). Called by
+        _reset_env_gpu after noise has been applied around zero.
+        """
+        ...
+
+    # === GPU inline: Custom observation extraction ===
+    @always_inline
+    @staticmethod
+    fn custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        qvel_off: Int,
+        xpos_off: Int,
+    ) -> Bool:
+        """Custom observation extraction (default: False = use model default).
+
+        Override for envs that need non-standard observations (sin/cos
+        transforms, body COM positions, etc.).  Return True and write the
+        full observation into obs[env, :] to bypass the default
+        qpos[obs_qpos_skip:] + qvel[:] extraction.
+
+        Args:
+            states: Full GPU state buffer.
+            obs: Output observation buffer to write into.
+            env: Environment index.
+            qpos_off: Offset to qpos in state buffer.
+            qvel_off: Offset to qvel in state buffer.
+            xpos_off: Offset to xpos (body world positions) in state buffer.
+
+        Returns:
+            True if custom extraction was performed (skip model default).
+            False to fall back to model's default extraction.
         """
         ...

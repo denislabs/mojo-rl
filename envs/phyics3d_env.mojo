@@ -41,6 +41,8 @@ from physics3d.gpu.constants import (
     state_size,
     qpos_offset,
     qvel_offset,
+    xpos_offset,
+    xipos_offset,
     metadata_offset,
     model_size,
     model_size_with_invweight,
@@ -49,7 +51,10 @@ from physics3d.gpu.constants import (
     META_IDX_PREV_X,
     model_curriculum_offset,
     MODEL_CURRICULUM_SIZE,
+    cfrc_ext_offset,
+    cvel_offset,
 )
+from physics3d.gpu import compute_cfrc_ext_gpu, compute_cvel_gpu
 
 from physics3d.model.model_renderer import ModelRenderer
 
@@ -487,6 +492,30 @@ struct Phyics3dEnv[
                 Self.MAX_TENDON,
             ](ctx, states_buf, model_buf, workspace_buf)
 
+        # Compute post-substep derived quantities: cfrc_ext, cvel
+        compute_cfrc_ext_gpu[
+            gpu_dtype,
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            MODEL_SIZE,
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+            Self.MODEL_DEF.NSITE,
+        ](ctx, states_buf, model_buf)
+
+        compute_cvel_gpu[
+            gpu_dtype,
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+            Self.MODEL_DEF.NSITE,
+        ](ctx, states_buf)
+
         # Extract observations, compute rewards, check termination
         Self._extract_obs_rewards_dones_gpu[
             BATCH_SIZE,
@@ -828,6 +857,13 @@ struct Phyics3dEnv[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        comptime QVEL_OFF = qvel_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        comptime XPOS_OFF = xpos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+        ]()
+        comptime XIPOS_OFF = xipos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+        ]()
         comptime META_OFF = metadata_offset[
             Self.MODEL_DEF.NQ,
             Self.MODEL_DEF.NV,
@@ -836,6 +872,20 @@ struct Phyics3dEnv[
         ]()
         comptime CURRICULUM_OFF = model_curriculum_offset[
             Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT
+        ]()
+        comptime CFRC_EXT_OFF = cfrc_ext_offset[
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+            Self.MODEL_DEF.NSITE,
+        ]()
+        comptime CVEL_OFF = cvel_offset[
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+            Self.MODEL_DEF.NSITE,
         ]()
 
         @always_inline
@@ -880,10 +930,14 @@ struct Phyics3dEnv[
                 step_count
             )
 
-            # Extract observations via model delegate
-            Self.MODEL_DEF.extract_obs_gpu[
+            # Extract observations: try config's custom extraction first,
+            # fall back to model's default qpos[skip:]+qvel extraction.
+            if not Self.CONFIG.custom_extract_obs_gpu[
                 gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
-            ](states, obs, env)
+            ](states, obs, env, QPOS_OFF, QVEL_OFF, XPOS_OFF):
+                Self.MODEL_DEF.extract_obs_gpu[
+                    gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
+                ](states, obs, env)
 
             # Compute reward and termination via config (full state access)
             var result = Self.CONFIG.compute_reward_and_done_gpu[
@@ -898,6 +952,10 @@ struct Phyics3dEnv[
                 actions,
                 env,
                 QPOS_OFF,
+                XPOS_OFF,
+                XIPOS_OFF,
+                CFRC_EXT_OFF,
+                CVEL_OFF,
                 META_OFF,
                 CURRICULUM_OFF,
                 step_count,
@@ -949,6 +1007,12 @@ struct Phyics3dEnv[
         # Use model's Joints reset delegate
         Self.MODEL_DEF.reset_env_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
             states, env, RESET_NOISE, seed
+        )
+
+        # Apply non-zero qpos offsets (e.g., Humanoid z=1.4, quat_w=1.0)
+        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        Self.CONFIG.init_qpos_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
+            states, env, QPOS_OFF
         )
 
         # Reset step counter and prev_x via config's pre_step hook

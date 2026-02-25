@@ -1,4 +1,4 @@
-"""Ant environment configuration for generic Phyics3dEnv."""
+"""Swimmer environment configuration for generic Phyics3dEnv."""
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -9,24 +9,25 @@ from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
-    model_curriculum_offset,
     rk4_extra_workspace_size,
 )
 
-from .ant_def import (
-    AntModel,
-    AntParams,
-)
+from .swimmer_xml import SwimmerModel
+
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct AntConfig(Phyics3dEnvConfig):
+struct SwimmerConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 5
+    comptime FRAME_SKIP: Int = 4
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        AntModel.NQ, AntModel.NV
-    ]()  # RK4 needs NQ + 7*NV extra workspace
+        SwimmerModel.NQ, SwimmerModel.NV
+    ]()
+
+    # Reward weights
+    comptime FORWARD_REWARD_WEIGHT = 1.0
+    comptime CTRL_COST_WEIGHT = 0.0001  # much smaller than other MuJoCo envs
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -83,7 +84,7 @@ struct AntConfig(Phyics3dEnvConfig):
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save free joint x position
+        prev_x = data.qpos[0]  # Save slider1 (x position)
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -102,56 +103,28 @@ struct AntConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        comptime P = AntParams[DType.float64]
-
-        # Compute x velocity from position change
+        # x velocity from position change
         var x_after = data.qpos[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
-        # Forward reward
-        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+        var forward_reward = Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
 
         # Control cost
-        var ctrl_cost_sum = Scalar[DTYPE](0.0)
+        var ctrl_cost = Scalar[DTYPE](0.0)
         for i in range(len(actions)):
-            ctrl_cost_sum += Scalar[DTYPE](actions[i] * actions[i])
-        var ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost_sum
+            ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
+        ctrl_cost = Scalar[DTYPE](Self.CTRL_COST_WEIGHT) * ctrl_cost
 
-        # Health check — z height from free joint qpos[2]
-        var z_height = data.qpos[2]
-        var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
-        var max_height = Scalar[DTYPE](P.MAX_HEIGHT)
-        var is_healthy = z_height >= min_height and z_height <= max_height
+        var reward = forward_reward - ctrl_cost
 
-        # Check for NaN/Inf in state
-        if is_healthy:
-            for i in range(NQ):
-                var q = data.qpos[i]
-                if q != q:  # NaN check
-                    is_healthy = False
-                    break
-            if is_healthy:
-                for i in range(NV):
-                    var v = data.qvel[i]
-                    if v != v:  # NaN check
-                        is_healthy = False
-                        break
-
-        # Healthy reward
-        var healthy_reward = Scalar[DTYPE](0.0)
-        if is_healthy:
-            healthy_reward = Scalar[DTYPE](P.HEALTHY_REWARD)
-
-        var reward = forward_reward + healthy_reward - ctrl_cost
-        var terminated = not is_healthy
-
-        return (reward, terminated)
+        # Swimmer never terminates
+        return (reward, False)
 
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(AntModel.Defaults.TIMESTEP)
+        return Float64(SwimmerModel.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:
@@ -202,8 +175,8 @@ struct AntConfig(Phyics3dEnvConfig):
         env: Int,
         meta_offset: Int,
     ):
-        # Save free joint x position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[AntModel.NQ, AntModel.NV]()
+        # Save slider1 (x position) into META_IDX_PREV_X
+        comptime QPOS_OFF = qpos_offset[SwimmerModel.NQ, SwimmerModel.NV]()
         states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
     # === GPU inline: Reward + termination ===
@@ -237,13 +210,15 @@ struct AntConfig(Phyics3dEnvConfig):
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        # Compute x velocity from position change
+        # x velocity from position change
         var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
         var prev_x = rebind[Scalar[DTYPE]](
             states[env, meta_offset + META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
+
+        var forward_reward = Scalar[DTYPE](1.0) * x_velocity
 
         # Control cost (clamp actions)
         var ctrl_cost_sum = Scalar[DTYPE](0.0)
@@ -254,30 +229,14 @@ struct AntConfig(Phyics3dEnvConfig):
             elif a < Scalar[DTYPE](-1.0):
                 a = Scalar[DTYPE](-1.0)
             ctrl_cost_sum += a * a
-        var ctrl_cost = Scalar[DTYPE](0.5) * ctrl_cost_sum
+        var ctrl_cost = Scalar[DTYPE](0.0001) * ctrl_cost_sum
 
-        # Health check — read curriculum parameters (min_height, max_height)
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
-        var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var reward = forward_reward - ctrl_cost
 
-        var is_healthy = True
-        if z_height < min_height or z_height > max_height:
-            is_healthy = False
+        # Swimmer never terminates
+        return (reward, False)
 
-        # NaN check on z_height
-        if z_height != z_height:
-            is_healthy = False
-
-        # Healthy reward
-        var healthy_reward = Scalar[DTYPE](1.0)
-        if not is_healthy:
-            healthy_reward = Scalar[DTYPE](0.0)
-
-        var reward = x_velocity + healthy_reward - ctrl_cost
-        return (reward, not is_healthy)
-
-    # === GPU inline: Non-zero qpos init (no-op for Ant) ===
+    # === GPU inline: Non-zero qpos init (no-op for Swimmer) ===
     @always_inline
     @staticmethod
     fn init_qpos_gpu[

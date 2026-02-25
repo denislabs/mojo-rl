@@ -7,7 +7,9 @@ State buffer layout per environment:
   [qpos: NQ | qvel: NV | qacc: NV | qfrc: NV |
    xpos: NBODY*3 | xquat: NBODY*4 | xipos: NBODY*3 |
    xvel: NBODY*3 | xangvel: NBODY*3 |
-   contacts: MAX_CONTACTS*CONTACT_SIZE | metadata: METADATA_SIZE]
+   contacts: MAX_CONTACTS*CONTACT_SIZE | metadata: METADATA_SIZE |
+   site_xpos: NSITE*3 |
+   cfrc_ext: NBODY*6 | cvel: NBODY*6 | cinert: NBODY*10 | qfrc_actuator: NV]
 
 Model buffer (static, same for all environments):
   Per body (MODEL_BODY_SIZE=23): [mass, inv_mass, inertia(3), inv_inertia(3),
@@ -156,7 +158,7 @@ comptime METADATA_SIZE: Int = 4
 comptime META_IDX_NUM_CONTACTS: Int = 0
 comptime META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
 comptime META_IDX_PREV_X: Int = 2  # Previous x position for velocity computation
-comptime META_IDX_PADDING_3: Int = 3
+comptime META_IDX_PREV_COM_X: Int = 3  # Reserved for prev CoM x (unused with cvel approach)
 
 
 fn metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
@@ -177,6 +179,50 @@ fn site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     return metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]() + METADATA_SIZE
 
 
+fn cfrc_ext_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to cfrc_ext array (external contact forces per body).
+
+    Layout: [torque_x, torque_y, torque_z, force_x, force_y, force_z] per body.
+    Placed after site_xpos.
+    """
+    return site_xpos_offset[NQ, NV, NBODY, MAX_CONTACTS]() + NSITE * 3
+
+
+fn cvel_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to cvel array (body CoM spatial velocities).
+
+    Layout: [omega_x, omega_y, omega_z, v_x, v_y, v_z] per body.
+    Placed after cfrc_ext.
+    """
+    return cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
+
+
+fn cinert_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to cinert array (composite rigid body inertia).
+
+    Layout: [m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz] per body.
+    Placed after cvel.
+    """
+    return cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
+
+
+fn qfrc_actuator_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to qfrc_actuator array (actuator force per DOF).
+
+    Captures gear * clamped_force before constraint solving.
+    Placed after cinert.
+    """
+    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
+
+
 fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0]() -> Int:
     """Compute total state buffer size per environment.
 
@@ -194,6 +240,10 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0]()
         + MAX_CONTACTS * CONTACT_SIZE
         + METADATA_SIZE
         + NSITE * 3  # site_xpos (site world positions)
+        + NBODY * 6  # cfrc_ext
+        + NBODY * 6  # cvel
+        + NBODY * 10  # cinert
+        + NV  # qfrc_actuator
     )
 
 

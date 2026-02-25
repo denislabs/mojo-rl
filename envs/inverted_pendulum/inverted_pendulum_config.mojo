@@ -1,4 +1,4 @@
-"""Ant environment configuration for generic Phyics3dEnv."""
+"""InvertedPendulum environment configuration for generic Phyics3dEnv."""
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -9,24 +9,25 @@ from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
-    model_curriculum_offset,
     rk4_extra_workspace_size,
 )
 
-from .ant_def import (
-    AntModel,
-    AntParams,
-)
+from .inverted_pendulum_xml import InvertedPendulumModel
+
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct AntConfig(Phyics3dEnvConfig):
+struct InvertedPendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 5
+    comptime FRAME_SKIP: Int = 2
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        AntModel.NQ, AntModel.NV
-    ]()  # RK4 needs NQ + 7*NV extra workspace
+        InvertedPendulumModel.NQ, InvertedPendulumModel.NV
+    ]()
+
+    # Termination bounds
+    comptime MAX_CART_POS = 1.0   # slider range is ±1
+    comptime MAX_POLE_ANGLE = 0.2  # radians (~11.5 deg)
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -83,7 +84,8 @@ struct AntConfig(Phyics3dEnvConfig):
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save free joint x position
+        # Save cart position (unused in reward, but required by trait)
+        prev_x = data.qpos[0]
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -102,60 +104,31 @@ struct AntConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        comptime P = AntParams[DType.float64]
+        var cart_pos = data.qpos[0]
+        var pole_angle = data.qpos[1]
 
-        # Compute x velocity from position change
-        var x_after = data.qpos[0]
-        var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
-        var x_velocity = (x_after - prev_x) / dt
+        var max_cart = Scalar[DTYPE](Self.MAX_CART_POS)
+        var max_angle = Scalar[DTYPE](Self.MAX_POLE_ANGLE)
 
-        # Forward reward
-        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+        var cart_ok = cart_pos > -max_cart and cart_pos < max_cart
+        var pole_ok = pole_angle > -max_angle and pole_angle < max_angle
+        var terminated = not (cart_ok and pole_ok)
 
-        # Control cost
-        var ctrl_cost_sum = Scalar[DTYPE](0.0)
-        for i in range(len(actions)):
-            ctrl_cost_sum += Scalar[DTYPE](actions[i] * actions[i])
-        var ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost_sum
-
-        # Health check — z height from free joint qpos[2]
-        var z_height = data.qpos[2]
-        var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
-        var max_height = Scalar[DTYPE](P.MAX_HEIGHT)
-        var is_healthy = z_height >= min_height and z_height <= max_height
-
-        # Check for NaN/Inf in state
-        if is_healthy:
-            for i in range(NQ):
-                var q = data.qpos[i]
-                if q != q:  # NaN check
-                    is_healthy = False
-                    break
-            if is_healthy:
-                for i in range(NV):
-                    var v = data.qvel[i]
-                    if v != v:  # NaN check
-                        is_healthy = False
-                        break
-
-        # Healthy reward
-        var healthy_reward = Scalar[DTYPE](0.0)
-        if is_healthy:
-            healthy_reward = Scalar[DTYPE](P.HEALTHY_REWARD)
-
-        var reward = forward_reward + healthy_reward - ctrl_cost
-        var terminated = not is_healthy
+        # +1 reward for every surviving step
+        var reward = Scalar[DTYPE](0.0)
+        if not terminated:
+            reward = Scalar[DTYPE](1.0)
 
         return (reward, terminated)
 
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(AntModel.Defaults.TIMESTEP)
+        return Float64(InvertedPendulumModel.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:
-        return 0.1
+        return 0.01
 
     # === GPU: Integrator step ===
     @staticmethod
@@ -202,8 +175,10 @@ struct AntConfig(Phyics3dEnvConfig):
         env: Int,
         meta_offset: Int,
     ):
-        # Save free joint x position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[AntModel.NQ, AntModel.NV]()
+        # Save cart position (unused in reward)
+        comptime QPOS_OFF = qpos_offset[
+            InvertedPendulumModel.NQ, InvertedPendulumModel.NV
+        ]()
         states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
     # === GPU inline: Reward + termination ===
@@ -237,47 +212,23 @@ struct AntConfig(Phyics3dEnvConfig):
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        # Compute x velocity from position change
-        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
-        var prev_x = rebind[Scalar[DTYPE]](
-            states[env, meta_offset + META_IDX_PREV_X]
-        )
-        var effective_dt = timestep * Scalar[DTYPE](frame_skip)
-        var x_velocity = (x_after - prev_x) / effective_dt
+        var cart_pos = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var pole_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
 
-        # Control cost (clamp actions)
-        var ctrl_cost_sum = Scalar[DTYPE](0.0)
-        for a_idx in range(ACTION_DIM):
-            var a = rebind[Scalar[DTYPE]](actions[env, a_idx])
-            if a > Scalar[DTYPE](1.0):
-                a = Scalar[DTYPE](1.0)
-            elif a < Scalar[DTYPE](-1.0):
-                a = Scalar[DTYPE](-1.0)
-            ctrl_cost_sum += a * a
-        var ctrl_cost = Scalar[DTYPE](0.5) * ctrl_cost_sum
+        var max_cart = Scalar[DTYPE](1.0)
+        var max_angle = Scalar[DTYPE](0.2)
 
-        # Health check — read curriculum parameters (min_height, max_height)
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
-        var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var cart_ok = cart_pos > -max_cart and cart_pos < max_cart
+        var pole_ok = pole_angle > -max_angle and pole_angle < max_angle
+        var terminated = not (cart_ok and pole_ok)
 
-        var is_healthy = True
-        if z_height < min_height or z_height > max_height:
-            is_healthy = False
+        var reward = Scalar[DTYPE](0.0)
+        if not terminated:
+            reward = Scalar[DTYPE](1.0)
 
-        # NaN check on z_height
-        if z_height != z_height:
-            is_healthy = False
+        return (reward, terminated)
 
-        # Healthy reward
-        var healthy_reward = Scalar[DTYPE](1.0)
-        if not is_healthy:
-            healthy_reward = Scalar[DTYPE](0.0)
-
-        var reward = x_velocity + healthy_reward - ctrl_cost
-        return (reward, not is_healthy)
-
-    # === GPU inline: Non-zero qpos init (no-op for Ant) ===
+    # === GPU inline: Non-zero qpos init (no-op for InvertedPendulum) ===
     @always_inline
     @staticmethod
     fn init_qpos_gpu[

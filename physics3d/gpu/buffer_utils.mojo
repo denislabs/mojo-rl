@@ -53,6 +53,10 @@ from .constants import (
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
     xipos_offset,
+    cfrc_ext_offset,
+    cvel_offset,
+    cinert_offset,
+    qfrc_actuator_offset,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -703,6 +707,24 @@ fn copy_data_to_buffer[
     var meta_offset = base + metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
     buffer[meta_offset] = Scalar[DTYPE](data.num_contacts)
 
+    # Copy cfrc_ext (from Data.cfrc_ext)
+    comptime CFRC_OFF = cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    for i in range(NBODY * 6):
+        buffer[base + CFRC_OFF + i] = data.cfrc_ext[i]
+
+    # Zero cvel, cinert, qfrc_actuator (GPU-computed; cleared on copy-in)
+    comptime CVEL_OFF = cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    for i in range(NBODY * 6):
+        buffer[base + CVEL_OFF + i] = Scalar[DTYPE](0)
+
+    comptime CINERT_OFF = cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    for i in range(NBODY * 10):
+        buffer[base + CINERT_OFF + i] = Scalar[DTYPE](0)
+
+    comptime QFRC_ACT_OFF = qfrc_actuator_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    for i in range(NV):
+        buffer[base + QFRC_ACT_OFF + i] = Scalar[DTYPE](0)
+
 
 fn copy_buffer_to_data[
     DTYPE: DType,
@@ -765,3 +787,9 @@ fn copy_buffer_to_data[
     # Copy metadata
     var meta_offset = base + metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
     data.num_contacts = Int(buffer[meta_offset])
+
+    # Copy cfrc_ext back to Data
+    comptime CFRC_OFF = cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    for i in range(NBODY * 6):
+        data.cfrc_ext[i] = buffer[base + CFRC_OFF + i]
+    # Note: cvel, cinert, qfrc_actuator are GPU-only fields; no corresponding Data fields

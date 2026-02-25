@@ -15,9 +15,6 @@ from physics3d.gpu.constants import (
 
 from .half_cheetah_xml import HalfCheetahModel
 
-from .half_cheetah_def import (
-    HalfCheetahParams,
-)
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -26,6 +23,14 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = implicit_extra_workspace_size[9, 8]()
+
+    # Reward
+    comptime FORWARD_REWARD_WEIGHT = 1.0
+    comptime CTRL_COST_WEIGHT = 0.1
+    comptime ANGLE_PENALTY_WEIGHT = 0.5
+
+    # Termination
+    comptime MAX_PITCH = 1.0  # ~57 deg
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -101,31 +106,31 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        comptime P = HalfCheetahParams[DType.float64]
-
         # Compute x velocity from position change
         var x_after = data.qpos[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
         # Forward reward
-        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+        var forward_reward = (
+            Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        )
 
         # Control cost
         var ctrl_cost = Scalar[DTYPE](0.0)
         for i in range(len(actions)):
             ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
-        ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost
+        ctrl_cost = Scalar[DTYPE](Self.CTRL_COST_WEIGHT) * ctrl_cost
 
         # Angle penalty
         var y_angle = data.qpos[2]  # rooty
         var abs_angle = y_angle if y_angle >= Scalar[DTYPE](0.0) else -y_angle
-        var angle_penalty = Scalar[DTYPE](P.ANGLE_PENALTY_WEIGHT) * abs_angle
+        var angle_penalty = Scalar[DTYPE](Self.ANGLE_PENALTY_WEIGHT) * abs_angle
 
         var reward = forward_reward - ctrl_cost - angle_penalty
 
         # Health check — HalfCheetah only checks pitch
-        var max_pitch = Scalar[DTYPE](P.MAX_PITCH)
+        var max_pitch = Scalar[DTYPE](Self.MAX_PITCH)
         var terminated = y_angle > max_pitch or y_angle < -max_pitch
 
         return (reward, terminated)
@@ -211,6 +216,10 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         ],
         env: Int,
         qpos_off: Int,
+        xpos_off: Int,
+        xipos_off: Int,
+        cfrc_ext_off: Int,
+        cvel_off: Int,
         meta_offset: Int,
         curriculum_offset: Int,
         step_count: Int,
@@ -253,3 +262,41 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         var terminated = y_angle > max_pitch or y_angle < -max_pitch
 
         return (reward, terminated)
+
+    # === GPU inline: Non-zero qpos init (no-op for HalfCheetah) ===
+    @always_inline
+    @staticmethod
+    fn init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+    ):
+        pass
+
+    # === GPU inline: Custom obs extraction (none, use model default) ===
+    @always_inline
+    @staticmethod
+    fn custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        qvel_off: Int,
+        xpos_off: Int,
+    ) -> Bool:
+        return False

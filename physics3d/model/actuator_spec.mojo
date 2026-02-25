@@ -539,9 +539,13 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
                 force = Scalar[GDTYPE](A_item.FORCE_MIN)
 
             # Write to qfrc (gear * force) at compile-time DOF address
-            states[env, QFRC_OFF + dof_adr] = (
-                Scalar[GDTYPE](A_item.GEAR) * force
-            )
+            var gear_force = Scalar[GDTYPE](A_item.GEAR) * force
+            states[env, QFRC_OFF + dof_adr] = gear_force
+
+            # Also capture to qfrc_actuator region (last NV elements of state buffer).
+            # qfrc_actuator is always the last NV elements: offset = STATE_SIZE - NV.
+            comptime QFRC_ACT_OFF = STATE_SIZE - NV
+            states[env, QFRC_ACT_OFF + dof_adr] = gear_force
 
     @staticmethod
     fn compute_qderiv_contribution[

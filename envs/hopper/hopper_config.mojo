@@ -217,6 +217,10 @@ struct HopperConfig(Phyics3dEnvConfig):
         ],
         env: Int,
         qpos_off: Int,
+        xpos_off: Int,
+        xipos_off: Int,
+        cfrc_ext_off: Int,
+        cvel_off: Int,
         meta_offset: Int,
         curriculum_offset: Int,
         step_count: Int,
@@ -261,3 +265,41 @@ struct HopperConfig(Phyics3dEnvConfig):
 
         var reward = x_velocity + healthy_reward - ctrl_cost
         return (reward, not is_healthy)
+
+    # === GPU inline: Non-zero qpos init (no-op for Hopper) ===
+    @always_inline
+    @staticmethod
+    fn init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+    ):
+        pass
+
+    # === GPU inline: Custom obs extraction (none, use model default) ===
+    @always_inline
+    @staticmethod
+    fn custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        qvel_off: Int,
+        xpos_off: Int,
+    ) -> Bool:
+        return False

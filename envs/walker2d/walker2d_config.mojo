@@ -1,4 +1,4 @@
-"""Ant environment configuration for generic Phyics3dEnv."""
+"""Walker2d environment configuration for generic Phyics3dEnv."""
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -9,24 +9,34 @@ from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
-    model_curriculum_offset,
     rk4_extra_workspace_size,
 )
 
-from .ant_def import (
-    AntModel,
-    AntParams,
-)
+from .walker2d_xml import Walker2dModel
+
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct AntConfig(Phyics3dEnvConfig):
+struct Walker2dConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 5
+    comptime FRAME_SKIP: Int = 4
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        AntModel.NQ, AntModel.NV
-    ]()  # RK4 needs NQ + 7*NV extra workspace
+        Walker2dModel.NQ, Walker2dModel.NV
+    ]()
+
+    # Reward weights
+    comptime FORWARD_REWARD_WEIGHT = 1.0
+    comptime CTRL_COST_WEIGHT = 0.001
+    comptime HEALTHY_REWARD = 1.0
+
+    # Health bounds (adjusted for zero-init qpos).
+    # Gymnasium checks world_z ∈ [0.8, 2.0], where world_z = torso_pos_z(1.25) + qpos[rootz].
+    # Since we reset qpos[rootz]=0, world_z ≈ 1.25 at reset.
+    # Equivalent qpos[1] bounds: (-0.45, 0.75).
+    comptime MIN_Z = -0.45   # qpos[1] lower bound (world_z ≥ 0.8)
+    comptime MAX_Z = 0.75    # qpos[1] upper bound (world_z ≤ 2.0)
+    comptime MAX_ANGLE = 1.0  # |qpos[2]| (rooty) upper bound
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -83,7 +93,7 @@ struct AntConfig(Phyics3dEnvConfig):
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save free joint x position
+        prev_x = data.qpos[0]  # Save rootx position
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -102,60 +112,45 @@ struct AntConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        comptime P = AntParams[DType.float64]
-
-        # Compute x velocity from position change
+        # x velocity from position change
         var x_after = data.qpos[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
-        # Forward reward
-        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+        # Health check: qpos[1]=rootz, qpos[2]=rooty
+        var z = data.qpos[1]
+        var angle = data.qpos[2]
+        var abs_angle = angle if angle >= Scalar[DTYPE](0.0) else -angle
+        var is_healthy = (
+            z > Scalar[DTYPE](Self.MIN_Z)
+            and z < Scalar[DTYPE](Self.MAX_Z)
+            and abs_angle < Scalar[DTYPE](Self.MAX_ANGLE)
+        )
 
         # Control cost
-        var ctrl_cost_sum = Scalar[DTYPE](0.0)
+        var ctrl_cost = Scalar[DTYPE](0.0)
         for i in range(len(actions)):
-            ctrl_cost_sum += Scalar[DTYPE](actions[i] * actions[i])
-        var ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost_sum
-
-        # Health check — z height from free joint qpos[2]
-        var z_height = data.qpos[2]
-        var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
-        var max_height = Scalar[DTYPE](P.MAX_HEIGHT)
-        var is_healthy = z_height >= min_height and z_height <= max_height
-
-        # Check for NaN/Inf in state
-        if is_healthy:
-            for i in range(NQ):
-                var q = data.qpos[i]
-                if q != q:  # NaN check
-                    is_healthy = False
-                    break
-            if is_healthy:
-                for i in range(NV):
-                    var v = data.qvel[i]
-                    if v != v:  # NaN check
-                        is_healthy = False
-                        break
+            ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
+        ctrl_cost = Scalar[DTYPE](Self.CTRL_COST_WEIGHT) * ctrl_cost
 
         # Healthy reward
         var healthy_reward = Scalar[DTYPE](0.0)
         if is_healthy:
-            healthy_reward = Scalar[DTYPE](P.HEALTHY_REWARD)
+            healthy_reward = Scalar[DTYPE](Self.HEALTHY_REWARD)
 
+        var forward_reward = Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
         var reward = forward_reward + healthy_reward - ctrl_cost
-        var terminated = not is_healthy
 
-        return (reward, terminated)
+        return (reward, not is_healthy)
 
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(AntModel.Defaults.TIMESTEP)
+        return Float64(Walker2dModel.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:
-        return 0.1
+        return 0.005
 
     # === GPU: Integrator step ===
     @staticmethod
@@ -202,8 +197,8 @@ struct AntConfig(Phyics3dEnvConfig):
         env: Int,
         meta_offset: Int,
     ):
-        # Save free joint x position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[AntModel.NQ, AntModel.NV]()
+        # Save rootx position into META_IDX_PREV_X
+        comptime QPOS_OFF = qpos_offset[Walker2dModel.NQ, Walker2dModel.NV]()
         states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
     # === GPU inline: Reward + termination ===
@@ -237,13 +232,26 @@ struct AntConfig(Phyics3dEnvConfig):
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        # Compute x velocity from position change
+        # x velocity from position change
         var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
         var prev_x = rebind[Scalar[DTYPE]](
             states[env, meta_offset + META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
+
+        # Health check: qpos[1]=rootz, qpos[2]=rooty
+        var z = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
+        var angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var abs_angle = angle
+        if abs_angle < Scalar[DTYPE](0.0):
+            abs_angle = -abs_angle
+
+        var is_healthy = (
+            z > Scalar[DTYPE](-0.45)
+            and z < Scalar[DTYPE](0.75)
+            and abs_angle < Scalar[DTYPE](1.0)
+        )
 
         # Control cost (clamp actions)
         var ctrl_cost_sum = Scalar[DTYPE](0.0)
@@ -254,30 +262,17 @@ struct AntConfig(Phyics3dEnvConfig):
             elif a < Scalar[DTYPE](-1.0):
                 a = Scalar[DTYPE](-1.0)
             ctrl_cost_sum += a * a
-        var ctrl_cost = Scalar[DTYPE](0.5) * ctrl_cost_sum
+        var ctrl_cost = Scalar[DTYPE](0.001) * ctrl_cost_sum
 
-        # Health check — read curriculum parameters (min_height, max_height)
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
-        var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
-
-        var is_healthy = True
-        if z_height < min_height or z_height > max_height:
-            is_healthy = False
-
-        # NaN check on z_height
-        if z_height != z_height:
-            is_healthy = False
-
-        # Healthy reward
         var healthy_reward = Scalar[DTYPE](1.0)
         if not is_healthy:
             healthy_reward = Scalar[DTYPE](0.0)
 
         var reward = x_velocity + healthy_reward - ctrl_cost
+
         return (reward, not is_healthy)
 
-    # === GPU inline: Non-zero qpos init (no-op for Ant) ===
+    # === GPU inline: Non-zero qpos init (no-op for Walker2d) ===
     @always_inline
     @staticmethod
     fn init_qpos_gpu[
@@ -291,6 +286,8 @@ struct AntConfig(Phyics3dEnvConfig):
         env: Int,
         qpos_off: Int,
     ):
+        # rootz joint ref=1.25 in MJCF, so world-z is already correct at qpos=0.
+        # Health bounds are adjusted accordingly (see MIN_Z / MAX_Z constants).
         pass
 
     # === GPU inline: Custom obs extraction (none, use model default) ===

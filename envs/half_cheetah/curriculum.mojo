@@ -13,7 +13,6 @@ Usage:
     HalfCheetah.init_model_gpu_with_curriculum(ctx, model_buf, params[1])
 """
 
-from .half_cheetah_def import HalfCheetahParams
 from core.env_traits import CurriculumScheduler
 
 
@@ -61,7 +60,8 @@ struct HalfCheetahCurriculum(CurriculumScheduler):
         # Index 1: max_pitch - linear interpolation
         params.append(
             Scalar[DTYPE](Self.initial_max_pitch)
-            + p * (
+            + p
+            * (
                 Scalar[DTYPE](Self.final_max_pitch)
                 - Scalar[DTYPE](Self.initial_max_pitch)
             )

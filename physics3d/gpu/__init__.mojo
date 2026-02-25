@@ -62,6 +62,12 @@ from .constants import (
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
     model_geom_offset,
+    # New phase-2 state buffer fields
+    site_xpos_offset,
+    cfrc_ext_offset,
+    cvel_offset,
+    cinert_offset,
+    qfrc_actuator_offset,
 )
 
 # Buffer utilities
@@ -95,3 +101,7 @@ from ..dynamics.mass_matrix import (
 )
 from ..dynamics.bias_forces import compute_bias_forces_gpu
 from ..dynamics.jacobian import compute_composite_inertia_gpu
+
+# Phase-2 post-substep GPU kernels
+from .cfrc_ext_gpu import compute_cfrc_ext_gpu
+from .cvel_gpu import compute_cvel_gpu
