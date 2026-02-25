@@ -1437,29 +1437,78 @@ buffer (GPU) for use in the next timestep.
 
 ---
 
-### 5.2 Solver Islands
+### 5.2 Solver Islands — DONE
 
-**Problem**: In scenes with multiple disconnected contact groups, solving all
-constraints together wastes computation. Islands identify independent subproblems.
+**Status**: COMPLETE. Union-find island detection, `IslandData` struct, and
+island-aware PGS with per-island early termination.  7 unit tests pass.
 
-#### Algorithm
+#### Problem
+
+In scenes with multiple disconnected contact groups (multi-agent, stacked
+objects that separate, etc.) solving all constraints together wastes
+computation.  Islands identify independent sub-problems.
+
+#### Algorithm (implemented)
 
 ```
-1. Build constraint graph:
-   - Nodes = bodies
-   - Edges = contacts and joints connecting bodies
-2. Find connected components (BFS/DFS or union-find)
-3. Each component = one island
-4. Solve each island independently (potentially in parallel)
+1. Build DOF coupling graph from constraint Jacobian J:
+   - Node = DOF index d (0..NV-1)
+   - Edge = two DOFs d1, d2 appear together in the same constraint row
+             (i.e. |J[r,d1]| > eps AND |J[r,d2]| > eps for some r)
+2. Union-Find (path-halving) over DOFs:
+   - For each row r: find all non-zero DOF columns; union them all together
+3. Assign sequential island IDs to distinct roots
+4. Map each constraint row to the island of its first non-zero DOF
+5. Per-island early termination in PGS:
+   - Track max |Δλ| per island each iteration
+   - Once max_delta < ISLAND_CONVERGE_EPS, freeze that island's rows
+   - Stop when all islands converge (or PGS_ITERATIONS reached)
 ```
 
 **Benefits**:
-- Unconstrained bodies (flying in air) cost zero solver time
-- Multiple contact groups solve in parallel
-- Smaller systems converge faster
+- Unconstrained DOFs (bodies in free flight) cost zero solver time
+- Each island converges independently — fast sub-problems terminate early
+- Groundwork for future parallel island solving on multi-core CPU/GPU
 
-**Recommendation**: Implement after the unified constraint system (Phase 3.1).
-Most useful for multi-agent scenarios.
+#### Implementation
+
+- `solver/island_detection.mojo` — `IslandData[MAX_ROWS, NV]` struct +
+  `detect_islands()` function.  Fields:
+  - `num_islands`: number of detected islands
+  - `dof_island[d]`: island id for DOF d (−1 = unconstrained)
+  - `row_island[r]`: island id for constraint row r
+  - `island_num_dofs[i]`, `island_num_rows[i]`: per-island counts
+- `solver/island_solver.mojo` — `solve_with_islands()`:
+  - Detects islands, delegates to `PGSSolver.solve` for ≤1 island (zero overhead)
+  - Multi-island path: standard PGS update loop with per-island `max_delta`
+    tracking; islands are frozen once converged (`ISLAND_CONVERGE_EPS = 1e-6`)
+- `solver/__init__.mojo` — exports `detect_islands`, `IslandData`,
+  `MAX_ISLANDS`, `ISLAND_J_THRESH`, `solve_with_islands`, `ISLAND_CONVERGE_EPS`
+- `tests/test_island_detection.mojo` — 7 tests:
+  no constraints, single island, two disjoint groups, three groups,
+  chain merging (transitivity), unconstrained DOFs, negative J values
+
+#### Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_ISLANDS` | 64 | Soft cap on islands; excess merges into slot 63 |
+| `ISLAND_J_THRESH` | 1e-15 | Jacobian entry magnitude threshold for "non-zero" |
+| `ISLAND_CONVERGE_EPS` | 1e-6 | Per-island Δλ convergence threshold |
+
+#### Usage
+
+```mojo
+from physics3d.solver import detect_islands, solve_with_islands
+
+# Detection only (inspect island structure)
+var islands = detect_islands(constraints)
+print("num_islands:", islands.num_islands)
+
+# Island-aware PGS solve (drop-in replacement for PGSSolver.solve)
+solve_with_islands[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
+                   V_SIZE, M_SIZE](model, data, M_inv, constraints, qacc, dt)
+```
 
 ---
 
@@ -1612,7 +1661,7 @@ Sprint 7 (Specialized):
   6.9 Fluid dynamics            DONE (inertia-box model, CPU + GPU, ModelDefaults.OPT_DENSITY/OPT_VISCOSITY)
   6.5 Full solimp (5 params)    DONE (piecewise power formula, all 14 files updated, tests pass)
   6.8 Site elements             DONE (SiteSpec trait, Site/Sites types, NSITE param propagated to all Model/Data/FK/integrators/solvers/dynamics, CPU+GPU FK computes site_xpos)
-  5.2 Solver islands            <- multi-agent parallelism
+  5.2 Solver islands            DONE (union-find detection, IslandData, island-aware PGS with per-island early termination, IslandPGSSolver ConstraintSolver wrapper, 7 tests)
   4.2 Broadphase (AABB/SAP)     DONE (detect_contacts_sap + detect_contacts_sap_gpu, tight AABBs, insertion-sort + sweep, CPU + GPU)
   0.5 MJCF XML parser           DONE (see Sprint 0)
 
