@@ -14,9 +14,10 @@ from builtin.math import abs
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import forward_kinematics
+from testing import assert_true, TestSuite
 
 
-fn test_pendulum_period() -> Bool:
+fn test_pendulum_period() raises:
     """Test that pendulum period matches analytical value.
 
     For a physical pendulum with moment of inertia I about the pivot:
@@ -93,7 +94,7 @@ fn test_pendulum_period() -> Bool:
 
     if zero_crossings < 2:
         print("  FAIL: Not enough zero crossings detected")
-        return False
+        assert_true(False, "Pendulum period test failed: not enough zero crossings detected")
 
     # Period = time between consecutive positive-to-negative crossings
     # Each such crossing occurs once per full period
@@ -112,13 +113,12 @@ fn test_pendulum_period() -> Bool:
 
     if error_pct < Float64(2.0):
         print("  PASS: Period within 2% of analytical value")
-        return True
     else:
         print("  FAIL: Period error exceeds 2%")
-        return False
+        assert_true(error_pct < Float64(2.0), "Pendulum period test failed: period error exceeds 2%")
 
 
-fn test_energy_conservation() -> Bool:
+fn test_energy_conservation() raises:
     """Test that total energy is conserved over multiple periods."""
     print("Test energy conservation...")
 
@@ -188,13 +188,12 @@ fn test_energy_conservation() -> Bool:
 
     if drift_pct < Float64(5.0):
         print("  PASS: Energy drift < 5%")
-        return True
     else:
         print("  FAIL: Energy drift exceeds 5%")
-        return False
+        assert_true(drift_pct < Float64(5.0), "Energy conservation test failed: energy drift exceeds 5%")
 
 
-fn test_gravity_swinging() -> Bool:
+fn test_gravity_swinging() raises:
     """Test that gravity causes the pendulum to swing."""
     print("Test gravity causes swinging...")
 
@@ -228,28 +227,10 @@ fn test_gravity_swinging() -> Bool:
 
     if angle_change > Float64(0.1) and abs(data.qvel[0]) > Float64(0.1):
         print("  PASS: Pendulum is swinging")
-        return True
     else:
         print("  FAIL: Pendulum did not swing")
-        return False
+        assert_true(angle_change > Float64(0.1) and abs(data.qvel[0]) > Float64(0.1), "Gravity swinging test failed: pendulum did not swing, angle_change=" + String(angle_change))
 
 
-fn main():
-    print("=== Pendulum Tests ===\n")
-
-    var all_pass = True
-
-    if not test_gravity_swinging():
-        all_pass = False
-
-    if not test_pendulum_period():
-        all_pass = False
-
-    if not test_energy_conservation():
-        all_pass = False
-
-    print("")
-    if all_pass:
-        print("All tests PASSED!")
-    else:
-        print("Some tests FAILED!")
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

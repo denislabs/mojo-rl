@@ -12,6 +12,7 @@ Run with:
     pixi run -e apple mojo run physics3d/tests/test_pendulum_gpu.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import sqrt, sin, cos, pi
 from gpu.host import DeviceContext, DeviceBuffer
 
@@ -44,7 +45,7 @@ comptime MAX_CONTACTS: Int = 5
 comptime BATCH: Int = 1
 
 
-fn main() raises:
+fn test_pendulum_gpu() raises:
     print("=" * 60)
     print("    GPU Pendulum Test")
     print("=" * 60)
@@ -274,12 +275,14 @@ fn main() raises:
             print("  PERIOD TEST: PASSED (error < 5%)")
         else:
             print("  PERIOD TEST: FAILED (error >= 5%)")
+        assert_true(period_error_pct < 5.0, "Period error too large: " + String(period_error_pct) + "% >= 5%")
     else:
         print(
             "  PERIOD TEST: FAILED (not enough zero crossings:",
             zero_crossings,
             ")",
         )
+        assert_true(False, "Not enough zero crossings for period measurement: " + String(zero_crossings))
 
     print()
 
@@ -293,9 +296,14 @@ fn main() raises:
         print("  ENERGY TEST: PASSED (drift < 10%)")
     else:
         print("  ENERGY TEST: FAILED (drift >= 10%)")
+    assert_true(energy_drift_pct < 10.0, "Energy drift too large: " + String(energy_drift_pct) + "% >= 10%")
 
     print()
     print("=" * 60)
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
 
 
 fn abs_f32(x: Float32) -> Float32:

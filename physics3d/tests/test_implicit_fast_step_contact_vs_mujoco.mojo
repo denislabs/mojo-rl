@@ -10,6 +10,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_implicit_fast_step_contact_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -54,7 +55,7 @@ fn compare_step(
     qvel_init: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
     num_steps: Int = 1,
-) raises -> Bool:
+) raises:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "---")
     print("  Steps:", num_steps)
@@ -240,8 +241,7 @@ fn compare_step(
     print("  Our contacts:", Int(data.num_contacts))
     var mj_ncon = Int(py=mj_data.ncon)
     print("  MJ  contacts:", mj_ncon)
-
-    return all_pass
+    assert_true(all_pass, "compare_step failed for: " + test_name)
 
 
 # =============================================================================
@@ -249,18 +249,18 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_ground_contact_default() raises -> Bool:
+fn test_ground_contact_default() raises:
     """Robot at default height — feet may touch ground (0-2 contacts)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     # rootz=0 means body_pos height (0.7m), feet near ground
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step(
+    compare_step(
         "Default height (feet near ground)", qpos, qvel, actions
     )
 
 
-fn test_ground_contact_default_with_action() raises -> Bool:
+fn test_ground_contact_default_with_action() raises:
     """Robot at default height with actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -271,83 +271,26 @@ fn test_ground_contact_default_with_action() raises -> Bool:
     actions[3] = 0.5
     actions[4] = -0.3
     actions[5] = 0.1
-    return compare_step("Default height with actions", qpos, qvel, actions)
+    compare_step("Default height with actions", qpos, qvel, actions)
 
 
-fn test_ground_contact_mild() raises -> Bool:
+fn test_ground_contact_mild() raises:
     """Robot slightly low — few contacts (rootz=-0.3)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz moderately low
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Mild contact (rootz=-0.3)", qpos, qvel, actions)
+    compare_step("Mild contact (rootz=-0.3)", qpos, qvel, actions)
 
 
-fn test_ground_contact_deep() raises -> Bool:
+fn test_ground_contact_deep() raises:
     """Robot deep penetration — many contacts (rootz=-0.45)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz deep — 10 contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Deep contact (rootz=-0.45)", qpos, qvel, actions)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_step("Deep contact (rootz=-0.45)", qpos, qvel, actions)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("ImplicitFast Full Step (contacts): Mojo vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: ImplicitFast (ref: MuJoCo Euler, same qH=M+h*D)")
-    print("Solver: Newton (opt.solver=2)")
-    print("Cone: elliptic (opt.cone=1)")
-    print("Precision: float64")
-    print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
-    print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_ground_contact_default():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_ground_contact_default_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_ground_contact_mild():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_ground_contact_deep():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

@@ -8,6 +8,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_fk_cpu_vs_gpu.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -103,7 +104,7 @@ fn compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+) raises:
     """Run FK on CPU and GPU with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
 
@@ -258,7 +259,7 @@ fn compare_fk(
         else:
             print("  OK   xipos", body_names[b], " err=", xipos_err)
 
-    return all_pass
+    assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -266,31 +267,43 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos(
-    ctx: DeviceContext,
-    model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+fn test_fk_default_qpos() raises:
+    print("=" * 60)
+    print("FK Validation: CPU vs GPU")
+    print("=" * 60)
+    print("Model: HalfCheetah (NBODY=7, NQ=9)")
+    print("Precision: float32")
+    print("Tolerances: pos=", POS_TOL, " quat=", QUAT_TOL)
+    print()
+
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
-    return compare_fk(
-        ctx, "Default qpos (rootz=0.7)", qpos, model_buf
-    )
+    compare_fk(ctx, "Default qpos (rootz=0.7)", qpos, model_buf)
+    print()
 
 
-fn test_fk_zero_qpos(
-    ctx: DeviceContext,
-    model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+fn test_fk_zero_qpos() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    return compare_fk(
-        ctx, "Zero qpos (robot at origin)", qpos, model_buf
-    )
+    compare_fk(ctx, "Zero qpos (robot at origin)", qpos, model_buf)
+    print()
 
 
-fn test_fk_nonzero_joints(
-    ctx: DeviceContext,
-    model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+fn test_fk_nonzero_joints() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx
     qpos[1] = 0.7  # rootz
@@ -301,13 +314,16 @@ fn test_fk_nonzero_joints(
     qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3  # ffoot
-    return compare_fk(ctx, "Non-zero joints", qpos, model_buf)
+    compare_fk(ctx, "Non-zero joints", qpos, model_buf)
+    print()
 
 
-fn test_fk_extreme_joints(
-    ctx: DeviceContext,
-    model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+fn test_fk_extreme_joints() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     qpos[3] = -0.52  # bthigh min
@@ -316,93 +332,24 @@ fn test_fk_extreme_joints(
     qpos[6] = -1.0  # fthigh min
     qpos[7] = 0.87  # fshin max
     qpos[8] = -0.5  # ffoot min
-    return compare_fk(
-        ctx, "Extreme joint angles (at limits)", qpos, model_buf
-    )
+    compare_fk(ctx, "Extreme joint angles (at limits)", qpos, model_buf)
+    print()
 
 
-fn test_fk_large_rootx(
-    ctx: DeviceContext,
-    model_buf: DeviceBuffer[DTYPE],
-) raises -> Bool:
+fn test_fk_large_rootx() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # rootx = 100m
     qpos[1] = 0.7  # rootz
     qpos[3] = 0.5  # bthigh
     qpos[6] = -0.5  # fthigh
-    return compare_fk(ctx, "Large rootx (100m)", qpos, model_buf)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_fk(ctx, "Large rootx (100m)", qpos, model_buf)
+    print()
 
 
 fn main() raises:
-    print("=" * 60)
-    print("FK Validation: CPU vs GPU")
-    print("=" * 60)
-    print("Model: HalfCheetah (NBODY=7, NQ=9)")
-    print("Precision: float32")
-    print("Tolerances: pos=", POS_TOL, " quat=", QUAT_TOL)
-    print()
-
-    # Initialize GPU
-    var ctx = DeviceContext()
-    print("GPU device initialized")
-
-    # Create model buffer once (shared across all tests)
-    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    HalfCheetahModel.init_model_gpu(ctx, model_buf)
-    ctx.synchronize()
-    print("Model copied to GPU")
-    print()
-
-    # Run tests
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_fk_default_qpos(ctx, model_buf):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_zero_qpos(ctx, model_buf):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_nonzero_joints(ctx, model_buf):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_extreme_joints(ctx, model_buf):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_large_rootx(ctx, model_buf):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

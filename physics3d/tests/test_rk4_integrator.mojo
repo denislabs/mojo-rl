@@ -17,6 +17,7 @@ from physics3d.integrator.rk4_integrator import RK4Integrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
+from testing import assert_true, TestSuite
 # Pendulum model setup:
 # - Body origin at (0,0,0) = pivot point
 # - CoM at (0,0,-L) via ipos (MuJoCo convention)
@@ -45,7 +46,7 @@ fn setup_pendulum(
 # =========================================================================
 
 
-fn test_rk4_compiles_halfcheetah() -> Bool:
+fn test_rk4_compiles_halfcheetah() raises:
     """Test that RK4Integrator[PGSSolver] compiles and runs a single step
     with the HalfCheetah model without crashing."""
     print("Test 5.1: RK4 compiles and runs with HalfCheetah...")
@@ -87,11 +88,10 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
     if q_changed and v_changed:
         print("  qpos[1] (z):", q0_1, "->", data.qpos[1])
         print("  PASS: RK4 step executed, state changed")
-        return True
     else:
         print("  FAIL: State did not change after RK4 step")
         print("  q_changed:", q_changed, "v_changed:", v_changed)
-        return False
+        assert_true(False, "RK4 compiles halfcheetah test failed: state did not change after RK4 step")
 
 
 # =========================================================================
@@ -99,7 +99,7 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
 # =========================================================================
 
 
-fn test_energy_conservation_rk4_vs_euler() -> Bool:
+fn test_energy_conservation_rk4_vs_euler() raises:
     """Test that RK4 conserves energy at least 10x better than Euler
     for an undamped pendulum over 1000 steps."""
     print("Test 5.2: Energy conservation RK4 vs Euler...")
@@ -186,12 +186,12 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
     if max_drift_rk4 < Float64(1e-15):
         print("  RK4 drift is negligible (< 1e-15 J)")
         print("  PASS: RK4 energy conservation is vastly better than Euler")
-        return True
+        return
 
     if max_drift_euler < Float64(1e-15):
         print("  Both drifts are negligible — test inconclusive but OK")
         print("  PASS: Both conserve energy well")
-        return True
+        return
 
     var improvement = max_drift_euler / max_drift_rk4
     print("  Improvement ratio:", improvement, "x")
@@ -202,14 +202,13 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
             improvement,
             "x smaller than Euler (>= 10x required)",
         )
-        return True
     else:
         print(
             "  FAIL: RK4 improvement ratio",
             improvement,
             "x is less than 10x",
         )
-        return False
+        assert_true(improvement >= Float64(10.0), "Energy conservation RK4 vs Euler test failed: RK4 improvement ratio is less than 10x")
 
 
 # =========================================================================
@@ -217,7 +216,7 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
 # =========================================================================
 
 
-fn test_trajectory_comparison() -> Bool:
+fn test_trajectory_comparison() raises:
     """Compare RK4 vs Euler for a pendulum at small angles.
     Both should produce similar results, but RK4 should be more accurate
     (closer to analytical solution)."""
@@ -299,45 +298,14 @@ fn test_trajectory_comparison() -> Bool:
 
     if both_reasonable and rk4_better:
         print("  PASS: Both produce similar trajectories, RK4 is more accurate")
-        return True
     elif both_reasonable:
         print("  PASS: Trajectories are similar (primary requirement)")
-        return True
     elif rk4_better:
         print("  PASS: RK4 is more accurate (Euler error larger but expected)")
-        return True
     else:
         print("  FAIL: RK4 is less accurate than Euler")
-        return False
+        assert_true(False, "Trajectory comparison test failed: RK4 is less accurate than Euler")
 
 
-fn main():
-    print("=" * 60)
-    print("RK4 Integrator Validation Tests")
-    print("=" * 60)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_rk4_compiles_halfcheetah():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_energy_conservation_rk4_vs_euler():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_trajectory_comparison():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print("Results:", num_pass, "passed,", num_fail, "failed")
-    print("=" * 60)
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

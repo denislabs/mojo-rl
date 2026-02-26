@@ -14,9 +14,10 @@ from builtin.math import abs
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.kinematics.quat_math import quat_rotate
+from testing import assert_true, TestSuite
 
 
-fn test_fk_identity() -> Bool:
+fn test_fk_identity() raises:
     """Test that qpos=0 gives xpos at pivot + body_pos offset."""
     print("Test FK identity (qpos=0)...")
 
@@ -63,13 +64,12 @@ fn test_fk_identity() -> Bool:
         z - expected_z
     ) > tol:
         print("  FAIL: xpos =", x, y, z, "expected", expected_x, expected_y, expected_z)
-        return False
+        assert_true(False, "FK identity test failed: xpos does not match expected position")
 
     print("  PASS: xpos =", x, y, z)
-    return True
 
 
-fn test_fk_hinge_90deg() -> Bool:
+fn test_fk_hinge_90deg() raises:
     """Test that a 90-degree hinge rotation is computed correctly."""
     print("Test FK HINGE 90deg...")
 
@@ -103,10 +103,9 @@ fn test_fk_hinge_90deg() -> Bool:
     # body_pos = (0,0,-1) in parent frame. Joint at origin, rotated 90deg.
     # Exact result depends on FK convention — validated by test_fk_vs_mujoco.
     print("  xpos =", x, y, z, "(validated by MuJoCo comparison tests)")
-    return True
 
 
-fn test_fk_double_pendulum() -> Bool:
+fn test_fk_double_pendulum() raises:
     """Test FK with two bodies in a chain."""
     print("Test FK double pendulum...")
 
@@ -163,39 +162,19 @@ fn test_fk_double_pendulum() -> Bool:
     var z1 = data.xpos[8]
 
     var tol = Float64(1e-6)
-    var pass_test = True
 
     if abs(x0 - 0.0) > tol or abs(y0 - 0.0) > tol or abs(z0 - (-0.5)) > tol:
         print("  FAIL: body1 xpos =", x0, y0, z0, "expected (0, 0, -0.5)")
-        pass_test = False
+        assert_true(False, "FK double pendulum test failed: body1 xpos does not match expected (0, 0, -0.5)")
     else:
         print("  PASS: body1 xpos =", x0, y0, z0)
 
     if abs(x1 - 0.0) > tol or abs(y1 - 0.0) > tol or abs(z1 - (-1.0)) > tol:
         print("  FAIL: body2 xpos =", x1, y1, z1, "expected (0, 0, -1)")
-        pass_test = False
+        assert_true(False, "FK double pendulum test failed: body2 xpos does not match expected (0, 0, -1)")
     else:
         print("  PASS: body2 xpos =", x1, y1, z1)
 
-    return pass_test
 
-
-fn main():
-    print("=== Forward Kinematics Tests ===\n")
-
-    var all_pass = True
-
-    if not test_fk_identity():
-        all_pass = False
-
-    if not test_fk_hinge_90deg():
-        all_pass = False
-
-    if not test_fk_double_pendulum():
-        all_pass = False
-
-    print("")
-    if all_pass:
-        print("All tests PASSED!")
-    else:
-        print("Some tests FAILED!")
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

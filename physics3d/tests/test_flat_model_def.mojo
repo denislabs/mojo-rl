@@ -23,6 +23,7 @@ from physics3d.parser import ParsedModel, parse_xml
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from testing import assert_true, TestSuite
 
 # =============================================================================
 # Flat data structs — must be ImplicitlyCopyable for use in InlineArray
@@ -363,7 +364,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn main():
+fn test_flat_model_def() raises:
     # =========================================================================
     # Q1: Does InlineArray[BodyData, N] work with a custom struct?
     # =========================================================================
@@ -429,3 +430,7 @@ fn main():
     forward_kinematics(model, data)
     print("[Q3] forward_kinematics ran on InlineArray-setup model ✓")
     print("     torso xpos_z =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

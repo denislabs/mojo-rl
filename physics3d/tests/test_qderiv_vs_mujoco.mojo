@@ -8,6 +8,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_qderiv_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -43,7 +44,7 @@ fn compare_qderiv(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
-) raises -> Bool:
+) raises:
     """Compare qDeriv between our engine and MuJoCo."""
     print("--- Test:", test_name, "---")
 
@@ -206,28 +207,23 @@ fn compare_qderiv(
             print("", mj_qDeriv[i * NV + j], end="")
         print()
 
-    var all_pass = num_fail == 0
-    if all_pass:
+    if num_fail == 0:
         print("  PASS")
     else:
         print("  FAIL")
-    return all_pass
+        assert_true(False, "compare_qderiv failed for: " + test_name)
 
 
-fn main() raises:
-    print("=" * 60)
-    print("qDeriv Comparison: Mojo vs MuJoCo")
-    print("=" * 60)
-    print()
-
-    # Test 1: Zero velocities (qDeriv should just be -damping diagonal)
+fn test_zero_velocity() raises:
+    """Zero velocities (qDeriv should just be -damping diagonal)."""
     var qpos0 = InlineArray[Float64, NQ](fill=0.0)
     qpos0[1] = 1.5
     var qvel0 = InlineArray[Float64, NV](fill=0.0)
-    _ = compare_qderiv("Zero velocity", qpos0, qvel0)
-    print()
+    compare_qderiv("Zero velocity", qpos0, qvel0)
 
-    # Test 2: Nonzero velocities (RNE derivative should add off-diagonal terms)
+
+fn test_moving_moderate_vel() raises:
+    """Nonzero velocities (RNE derivative should add off-diagonal terms)."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.5
     qpos1[2] = 0.1
@@ -238,10 +234,11 @@ fn main() raises:
     qvel1[2] = 0.5
     qvel1[3] = -1.0
     qvel1[6] = 1.2
-    _ = compare_qderiv("Moving (moderate vel)", qpos1, qvel1)
-    print()
+    compare_qderiv("Moving (moderate vel)", qpos1, qvel1)
 
-    # Test 3: High angular velocities
+
+fn test_fast_spinning() raises:
+    """High angular velocities."""
     var qpos2 = InlineArray[Float64, NQ](fill=0.0)
     qpos2[1] = 1.5
     qpos2[2] = 0.3
@@ -256,9 +253,8 @@ fn main() raises:
     qvel2[4] = 2.5
     qvel2[6] = 3.0
     qvel2[7] = -2.0
-    _ = compare_qderiv("Fast spinning", qpos2, qvel2)
-    print()
+    compare_qderiv("Fast spinning", qpos2, qvel2)
 
-    print("=" * 60)
-    print("Done")
-    print("=" * 60)
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

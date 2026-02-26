@@ -10,6 +10,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
@@ -35,7 +36,7 @@ comptime IPOS_TOL: Float64 = 1e-6  # ipos (CoM offset) tolerance
 # HalfCheetah test
 # =============================================================================
 
-fn test_half_cheetah() raises -> Bool:
+fn test_half_cheetah() raises:
     """Compare inertiafromgeom output for HalfCheetah against MuJoCo."""
     print("--- Test: HalfCheetah inertiafromgeom ---")
 
@@ -111,14 +112,14 @@ fn test_half_cheetah() raises -> Bool:
 
     if all_pass:
         print("  ALL OK  max_mass_err=", max_mass_err, " max_inertia_err=", max_inertia_err, " max_ipos_err=", max_ipos_err)
-    return all_pass
+    assert_true(all_pass, "Inertia from geom mismatch for: HalfCheetah")
 
 
 # =============================================================================
 # Hopper test
 # =============================================================================
 
-fn test_hopper() raises -> Bool:
+fn test_hopper() raises:
     """Compare inertiafromgeom output for Hopper against MuJoCo."""
     print("--- Test: Hopper inertiafromgeom ---")
 
@@ -185,31 +186,8 @@ fn test_hopper() raises -> Bool:
 
     if all_pass:
         print("  ALL OK  max_mass_err=", max_mass_err, " max_inertia_err=", max_inertia_err, " max_ipos_err=", max_ipos_err)
-    return all_pass
+    assert_true(all_pass, "Inertia from geom mismatch for: Hopper")
 
-
-# =============================================================================
-# Main
-# =============================================================================
 
 fn main() raises:
-    var passed = 0
-    var failed = 0
-
-    if test_half_cheetah():
-        passed += 1
-    else:
-        failed += 1
-
-    if test_hopper():
-        passed += 1
-    else:
-        failed += 1
-
-    print("\n============================================================")
-    print("Results:", passed, "passed,", failed, "failed out of", passed + failed)
-    if failed == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("============================================================")
+    TestSuite.discover_tests[__functions_in_module()]().run()

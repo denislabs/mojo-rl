@@ -11,6 +11,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_full_step_cpu_vs_gpu.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -79,7 +80,7 @@ fn compare_step(
     mut state_buf: DeviceBuffer[DTYPE],
     mut workspace_buf: DeviceBuffer[DTYPE],
     mut ws_host: HostBuffer[DTYPE],
-) raises -> Bool:
+) raises:
     """Run num_steps physics steps on CPU and GPU, compare final qpos/qvel."""
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
@@ -310,10 +311,10 @@ fn compare_step(
     print()
     print("  CPU contacts:", Int(data_cpu.num_contacts))
 
-    return all_pass
+    assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn main() raises:
+fn test_free_fall_1_step() raises:
     print("=" * 60)
     print("Full Step (no contacts): CPU vs GPU")
     print("=" * 60)
@@ -325,189 +326,151 @@ fn main() raises:
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
     print()
 
-    # Initialize GPU
     var ctx = DeviceContext()
-    print("GPU device initialized")
-
-    # Pre-allocate GPU buffers (reused across tests)
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
-    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)  # placeholder
-    print("GPU buffers allocated")
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # rootz high enough for free fall
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Free fall (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    var num_pass = 0
-    var num_fail = 0
 
-    # --- Config 1: Free fall (no contacts) ---
-    var qpos1 = InlineArray[Float64, NQ](fill=0.0)
-    qpos1[1] = 1.5  # rootz high enough for free fall
-    var qvel1 = InlineArray[Float64, NV](fill=0.0)
-    var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    if compare_step(
-        "Free fall (1 step)",
-        qpos1,
-        qvel1,
-        act1,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+fn test_free_fall_with_actions_1_step() raises:
+    var ctx = DeviceContext()
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+    ](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # rootz high enough for free fall
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 0.5  # bthigh
+    act[1] = -0.3  # bshin
+    act[2] = 0.2  # bfoot
+    act[3] = 0.5  # fthigh
+    act[4] = -0.3  # fshin
+    act[5] = 0.1  # ffoot
+    compare_step("Free fall + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 2: Free fall with actions ---
-    var act2 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act2[0] = 0.5  # bthigh
-    act2[1] = -0.3  # bshin
-    act2[2] = 0.2  # bfoot
-    act2[3] = 0.5  # fthigh
-    act2[4] = -0.3  # fshin
-    act2[5] = 0.1  # ffoot
-    if compare_step(
-        "Free fall + actions (1 step)",
-        qpos1,
-        qvel1,
-        act2,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_moving_with_actions_1_step() raises:
+    var ctx = DeviceContext()
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+    ](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # high
+    qpos[2] = 0.1  # slight pitch
+    qpos[3] = -0.3  # bthigh bent
+    qpos[6] = 0.4  # fthigh bent
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 2.0  # rootx vel
+    qvel[2] = 0.5  # rooty vel
+    qvel[3] = -1.0  # bthigh vel
+    qvel[6] = 1.2  # fthigh vel
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 1.0
+    act[1] = -0.5
+    act[3] = 1.0
+    act[4] = -0.5
+    compare_step("Moving + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 3: Moving robot, high up ---
-    var qpos3 = InlineArray[Float64, NQ](fill=0.0)
-    qpos3[1] = 1.5  # high
-    qpos3[2] = 0.1  # slight pitch
-    qpos3[3] = -0.3  # bthigh bent
-    qpos3[6] = 0.4  # fthigh bent
-    var qvel3 = InlineArray[Float64, NV](fill=0.0)
-    qvel3[0] = 2.0  # rootx vel
-    qvel3[2] = 0.5  # rooty vel
-    qvel3[3] = -1.0  # bthigh vel
-    qvel3[6] = 1.2  # fthigh vel
-    var act3 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act3[0] = 1.0
-    act3[1] = -0.5
-    act3[3] = 1.0
-    act3[4] = -0.5
-    if compare_step(
-        "Moving + actions (1 step)",
-        qpos3,
-        qvel3,
-        act3,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_free_fall_10_steps() raises:
+    var ctx = DeviceContext()
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+    ](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # rootz high enough for free fall
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Free fall (10 steps)", qpos, qvel, act, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 4: Free fall 10 steps ---
-    if compare_step(
-        "Free fall (10 steps)",
-        qpos1,
-        qvel1,
-        act1,
-        10,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_moving_with_actions_10_steps() raises:
+    var ctx = DeviceContext()
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+    ](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # high
+    qpos[2] = 0.1  # slight pitch
+    qpos[3] = -0.3  # bthigh bent
+    qpos[6] = 0.4  # fthigh bent
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 2.0  # rootx vel
+    qvel[2] = 0.5  # rooty vel
+    qvel[3] = -1.0  # bthigh vel
+    qvel[6] = 1.2  # fthigh vel
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 1.0
+    act[1] = -0.5
+    act[3] = 1.0
+    act[4] = -0.5
+    compare_step("Moving + actions (10 steps)", qpos, qvel, act, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 5: Moving + actions 10 steps ---
-    if compare_step(
-        "Moving + actions (10 steps)",
-        qpos3,
-        qvel3,
-        act3,
-        10,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_extreme_velocities_1_step() raises:
+    var ctx = DeviceContext()
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+    ](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 2.0  # very high
+    qpos[3] = -0.52
+    qpos[6] = -1.0
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 5.0
+    qvel[1] = -2.0
+    qvel[2] = 3.0
+    qvel[3] = -5.0
+    qvel[4] = 5.0
+    qvel[5] = -3.0
+    qvel[6] = 5.0
+    qvel[7] = -5.0
+    qvel[8] = 3.0
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Extreme velocities (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 6: Extreme velocities ---
-    var qpos6 = InlineArray[Float64, NQ](fill=0.0)
-    qpos6[1] = 2.0  # very high
-    qpos6[3] = -0.52
-    qpos6[6] = -1.0
-    var qvel6 = InlineArray[Float64, NV](fill=0.0)
-    qvel6[0] = 5.0
-    qvel6[1] = -2.0
-    qvel6[2] = 3.0
-    qvel6[3] = -5.0
-    qvel6[4] = 5.0
-    qvel6[5] = -3.0
-    qvel6[6] = 5.0
-    qvel6[7] = -5.0
-    qvel6[8] = 3.0
-    if compare_step(
-        "Extreme velocities (1 step)",
-        qpos6,
-        qvel6,
-        act1,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
 
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

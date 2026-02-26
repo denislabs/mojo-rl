@@ -13,6 +13,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_full_step_contact_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -69,7 +70,7 @@ fn compare_step(
     pos_rel_tol: Float64 = QPOS_REL_TOL,
     vel_abs_tol: Float64 = QVEL_ABS_TOL,
     vel_rel_tol: Float64 = QVEL_REL_TOL,
-) raises -> Bool:
+) raises:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "---")
     print("  Steps:", num_steps)
@@ -374,7 +375,7 @@ fn compare_step(
                     Float64(py=mj_efc_KBIP[kbip_off + 3]),
                     "]",
                 )
-    return all_pass
+    assert_true(all_pass, "compare_step failed for: " + test_name)
 
 
 # =============================================================================
@@ -382,16 +383,16 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_ground_contact() raises -> Bool:
+fn test_ground_contact() raises:
     """Robot low enough to have ground contact (feet touching)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz — pushes robot down
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Ground contact (low rootz)", qpos, qvel, actions)
+    compare_step("Ground contact (low rootz)", qpos, qvel, actions)
 
 
-fn test_ground_contact_with_action() raises -> Bool:
+fn test_ground_contact_with_action() raises:
     """Robot on ground with actions — full constraint solver test."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz — pushes robot down
@@ -403,7 +404,7 @@ fn test_ground_contact_with_action() raises -> Bool:
     actions[3] = 0.8  # fthigh
     actions[4] = -0.5  # fshin
     actions[5] = 0.3  # ffoot
-    return compare_step("Ground contact with action", qpos, qvel, actions)
+    compare_step("Ground contact with action", qpos, qvel, actions)
 
 
 # Multi-step tests — call compare_step multiple times from the same initial
@@ -412,7 +413,7 @@ fn test_ground_contact_with_action() raises -> Bool:
 # (Avoids creating a second Model+Data on the same stack frame.)
 
 
-fn test_multi_step_accumulation() raises -> Bool:
+fn test_multi_step_accumulation() raises:
     """Error growth: run 1,5,10,50 steps from the same start state."""
     print("--- Test: Multi-step error accumulation ---")
     print("  Same initial conditions, increasing number of steps")
@@ -427,17 +428,16 @@ fn test_multi_step_accumulation() raises -> Bool:
     actions[4] = -0.5
     actions[5] = 0.3
     # Each call re-runs from the same qpos/qvel, increasing num_steps
-    var p1 = compare_step("  N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  N=5 ", qpos, qvel, actions, 5,
+    compare_step("  N=1 ", qpos, qvel, actions, 1)
+    compare_step("  N=5 ", qpos, qvel, actions, 5,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p10 = compare_step("  N=10", qpos, qvel, actions, 10,
+    compare_step("  N=10", qpos, qvel, actions, 10,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p50 = compare_step("  N=50", qpos, qvel, actions, 50,
+    compare_step("  N=50", qpos, qvel, actions, 50,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    return p1 and p5 and p10 and p50
 
 
-fn test_fast_downward_impact() raises -> Bool:
+fn test_fast_downward_impact() raises:
     """Robot falling fast (qvel[1]=-3 m/s) — high-velocity impact at 1 step."""
     print("--- Test: Fast downward impact (v_z=-3 m/s) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -445,15 +445,14 @@ fn test_fast_downward_impact() raises -> Bool:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[1] = -3.0   # 3 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    var p1 = compare_step("  v_z=-3 N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5,
+    compare_step("  v_z=-3 N=1 ", qpos, qvel, actions, 1)
+    compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p10 = compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10,
+    compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    return p1 and p5 and p10
 
 
-fn test_very_fast_impact() raises -> Bool:
+fn test_very_fast_impact() raises:
     """Very high velocity impact (qvel[1]=-6 m/s) — worst-case penetration."""
     print("--- Test: Very fast impact (v_z=-6 m/s) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -461,15 +460,14 @@ fn test_very_fast_impact() raises -> Bool:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[1] = -6.0   # 6 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    var p1 = compare_step("  v_z=-6 N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5,
+    compare_step("  v_z=-6 N=1 ", qpos, qvel, actions, 1)
+    compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p10 = compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10,
+    compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    return p1 and p5 and p10
 
 
-fn test_running_gait_impact() raises -> Bool:
+fn test_running_gait_impact() raises:
     """Running gait velocities — forward motion + downward foot strike."""
     print("--- Test: Running gait impact (v_forward=3, v_z=-2) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -491,15 +489,14 @@ fn test_running_gait_impact() raises -> Bool:
     actions[1] = -0.8
     actions[3] = 0.8
     actions[4] = -0.8
-    var p1 = compare_step("  running N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  running N=5 ", qpos, qvel, actions, 5,
+    compare_step("  running N=1 ", qpos, qvel, actions, 1)
+    compare_step("  running N=5 ", qpos, qvel, actions, 5,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p20 = compare_step("  running N=20", qpos, qvel, actions, 20,
+    compare_step("  running N=20", qpos, qvel, actions, 20,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    return p1 and p5 and p20
 
 
-fn test_fthigh_at_limit_impact() raises -> Bool:
+fn test_fthigh_at_limit_impact() raises:
     """fthigh at upper limit (0.7) + fast downward impact.
 
     This reproduces the policy rollout bug: fthigh pinned at range_max=0.7
@@ -521,114 +518,12 @@ fn test_fthigh_at_limit_impact() raises -> Bool:
     actions[3] = 1.0  # fthigh: max torque toward limit
     actions[4] = -0.5
     actions[5] = 0.3
-    var p1 = compare_step("  fthigh_lim N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  fthigh_lim N=5 ", qpos, qvel, actions, 5,
+    compare_step("  fthigh_lim N=1 ", qpos, qvel, actions, 1)
+    compare_step("  fthigh_lim N=5 ", qpos, qvel, actions, 5,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    var p10 = compare_step("  fthigh_lim N=10", qpos, qvel, actions, 10,
+    compare_step("  fthigh_lim N=10", qpos, qvel, actions, 10,
         MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    return p1 and p5 and p10
-
-
-# =============================================================================
-# Main
-# =============================================================================
 
 
 fn main() raises:
-    print("=" * 70)
-    print("Full Step with Contacts: Mojo Engine vs MuJoCo Reference")
-    print("=" * 70)
-    print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: Euler (MuJoCo default)")
-    print("Solver: Newton")
-    print("Cone: pyramidal (both engines)")
-    print("Precision: float64")
-    print(
-        "Single-step tolerances: qpos/qvel abs=",
-        QPOS_ABS_TOL,
-        " rel=",
-        QPOS_REL_TOL,
-    )
-    print(
-        "Multi-step  tolerances: qpos/qvel abs=",
-        MULTI_QPOS_ABS_TOL,
-        " rel=",
-        MULTI_QPOS_REL_TOL,
-    )
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    # --- Original single-step tests ---
-    print("### Single-step baseline tests ###")
-    print()
-
-    if test_ground_contact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_ground_contact_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    # --- Multi-step accumulation tests ---
-    print("### Multi-step error accumulation (same start, more steps) ###")
-    print()
-
-    if test_multi_step_accumulation():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    # --- High-velocity impact tests ---
-    print("### High-velocity impact tests ###")
-    print()
-
-    if test_fast_downward_impact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_very_fast_impact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_running_gait_impact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    # --- Joint-limit + contact coupling test ---
-    print("### Joint limit + contact coupling test ###")
-    print()
-
-    if test_fthigh_at_limit_impact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 70)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED — check error magnitudes above for solver quality")
-    print("=" * 70)
+    TestSuite.discover_tests[__functions_in_module()]().run()

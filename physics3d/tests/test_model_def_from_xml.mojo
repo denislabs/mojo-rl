@@ -30,6 +30,7 @@ from physics3d.parser.xml_parser import (
 )
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
+from testing import assert_true, TestSuite
 
 
 # =============================================================================
@@ -89,7 +90,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn main():
+fn test_model_def_from_xml() raises:
     # =========================================================================
     # Step 1: Parse dimensions
     # =========================================================================
@@ -254,3 +255,7 @@ fn main():
     print()
 
     print("=== All CPU tests passed ===")
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

@@ -29,6 +29,7 @@ from physics3d.dynamics.mass_matrix import (
 )
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from testing import assert_true, TestSuite
 
 
 # =============================================================================
@@ -62,7 +63,7 @@ comptime TOL: Float64 = 1e-12
 
 fn test_sparse_pattern(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]
-) -> Bool:
+) raises:
     """Verify: actual_nnz == count_sparse_nnz, all positions in lower triangle,
     diagonal present in every row."""
     print("--- Test: Sparsity pattern ---")
@@ -78,18 +79,16 @@ fn test_sparse_pattern(
 
     print("  actual_nnz =", sM.actual_nnz, "  count_sparse_nnz =", nnz)
 
-    var ok = True
-
     if sM.actual_nnz != nnz:
         print("  FAIL: actual_nnz != count_sparse_nnz")
-        ok = False
+        assert_true(False, "Sparse pattern test failed: actual_nnz != count_sparse_nnz")
 
     # Every row must contain its diagonal as the last element
     for i in range(NV):
         var dp = sM.diag_pos(i)
         if sM.col_ind[dp] != i:
             print("  FAIL: row", i, "diagonal wrong (col_ind =", sM.col_ind[dp], ")")
-            ok = False
+            assert_true(False, "Sparse pattern test failed: row " + String(i) + " diagonal wrong")
 
     # All column indices must be in lower triangle (col <= row)
     for i in range(NV):
@@ -97,11 +96,9 @@ fn test_sparse_pattern(
         for t in range(sM.row_nnz[i]):
             if sM.col_ind[adr_i + t] > i:
                 print("  FAIL: row", i, "has col_ind", sM.col_ind[adr_i + t], "> i")
-                ok = False
+                assert_true(False, "Sparse pattern test failed: row " + String(i) + " has col_ind > i (not lower triangle)")
 
-    if ok:
-        print("  PASS  actual_nnz =", sM.actual_nnz)
-    return ok
+    print("  PASS  actual_nnz =", sM.actual_nnz)
 
 
 # =============================================================================
@@ -113,7 +110,7 @@ fn test_sparse_values_match_dense(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
-) -> Bool:
+) raises:
     """For given qpos: compute sparse M, expand to dense, compare with
     compute_mass_matrix_full (reference)."""
     print("--- Test: Sparse == Dense values  [", test_name, "] ---")
@@ -171,12 +168,11 @@ fn test_sparse_values_match_dense(
                         "  sparse =", s, "  err =", err,
                     )
 
-    var ok = fail_count == 0
-    if ok:
+    if fail_count == 0:
         print("  PASS  max_err =", max_err)
     else:
         print("  FAIL", fail_count, "entries  max_err =", max_err)
-    return ok
+        assert_true(False, "Sparse values match dense test failed [" + test_name + "]: " + String(fail_count) + " entries exceed tolerance, max_err = " + String(max_err))
 
 
 # =============================================================================
@@ -188,7 +184,7 @@ fn test_sparse_solve_matches_dense(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
-) -> Bool:
+) raises:
     """Verify ldl_solve_sparse(b) == ldl_solve(b) for multiple rhs vectors."""
     print("--- Test: Sparse LDL solve == Dense LDL solve  [", test_name, "] ---")
 
@@ -271,12 +267,11 @@ fn test_sparse_solve_matches_dense(
                         "  err =", err,
                     )
 
-    var ok = fail_count == 0
-    if ok:
+    if fail_count == 0:
         print("  PASS  max_err =", max_err)
     else:
         print("  FAIL", fail_count, "entries  max_err =", max_err)
-    return ok
+        assert_true(False, "Sparse LDL solve matches dense test failed [" + test_name + "]: " + String(fail_count) + " entries exceed tolerance, max_err = " + String(max_err))
 
 
 # =============================================================================
@@ -288,7 +283,7 @@ fn test_sparse_solve_residual(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
-) -> Bool:
+) raises:
     """Verify M * ldl_solve_sparse(b) ≈ b (small residual)."""
     print("--- Test: Sparse solve residual  [", test_name, "] ---")
 
@@ -341,20 +336,20 @@ fn test_sparse_solve_residual(
         if res > max_res:
             max_res = res
 
-    var ok = max_res < 1e-9
-    if ok:
+    if max_res < 1e-9:
         print("  PASS  max_residual =", max_res)
     else:
         print("  FAIL  max_residual =", max_res)
-    return ok
+        assert_true(False, "Sparse solve residual test failed [" + test_name + "]: max_residual = " + String(max_res) + " exceeds 1e-9")
 
 
 # =============================================================================
-# Main
+# Top-level test functions (called by test framework)
 # =============================================================================
 
 
-fn main():
+fn test_sparse_mass_matrix_all() raises:
+    """Run all sparse mass matrix tests."""
     print("=" * 60)
     print("Sparse Mass Matrix Validation (CSR vs Dense)")
     print("Model: HalfCheetah  NV =", NV, "  NM =", NM)
@@ -365,24 +360,15 @@ fn main():
     var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, _setup_data)
 
-    var num_pass = 0
-    var num_fail = 0
-
     # --- Pattern test ---
-    if test_sparse_pattern(model):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_pattern(model)
     print()
 
     # --- Sparse values == dense values ---
     var qpos_default = InlineArray[Float64, NQ](fill=0.0)
     qpos_default[1] = 0.7
 
-    if test_sparse_values_match_dense(model, "default qpos", qpos_default):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_values_match_dense(model, "default qpos", qpos_default)
     print()
 
     var qpos_joints = InlineArray[Float64, NQ](fill=0.0)
@@ -396,47 +382,27 @@ fn main():
     qpos_joints[7] = -0.8
     qpos_joints[8] = 0.3
 
-    if test_sparse_values_match_dense(model, "non-zero joints", qpos_joints):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_values_match_dense(model, "non-zero joints", qpos_joints)
     print()
 
     # --- Sparse LDL solve == Dense LDL solve ---
-    if test_sparse_solve_matches_dense(model, "default qpos", qpos_default):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_solve_matches_dense(model, "default qpos", qpos_default)
     print()
 
-    if test_sparse_solve_matches_dense(model, "non-zero joints", qpos_joints):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_solve_matches_dense(model, "non-zero joints", qpos_joints)
     print()
 
     # --- Residual test ---
-    if test_sparse_solve_residual(model, "default qpos", qpos_default):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_solve_residual(model, "default qpos", qpos_default)
     print()
 
-    if test_sparse_solve_residual(model, "non-zero joints", qpos_joints):
-        num_pass += 1
-    else:
-        num_fail += 1
+    test_sparse_solve_residual(model, "non-zero joints", qpos_joints)
     print()
 
     print("=" * 60)
-    print(
-        "Results:",
-        num_pass, "passed,",
-        num_fail, "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
+    print("ALL TESTS PASSED")
     print("=" * 60)
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

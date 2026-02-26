@@ -7,6 +7,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_cfrc_ext_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -42,7 +43,7 @@ fn run_test(
     qvel_init: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
     num_steps: Int = 1,
-) raises -> Bool:
+) raises:
     """Run num_steps, compare cfrc_ext[1:] vs MuJoCo."""
     print("--- Test:", test_name, "---")
 
@@ -175,38 +176,44 @@ fn run_test(
         print("  PASS")
     else:
         print("  FAIL")
-    return passed
+        assert_true(False, "run_test failed for: " + test_name)
 
 
-fn main() raises:
-    print("=" * 60)
-    print("cfrc_ext vs MuJoCo tests (Hopper)")
-    print("=" * 60)
-
-    var all_passed = True
-
-    # Test 1: Standing pose, no action — foot in contact with ground
+fn test_standing_no_action() raises:
+    """Standing pose, no action — foot in contact with ground."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.25  # rootz = default standing height
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act0 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    all_passed = run_test("Standing, no action, 1 step", qpos1, qvel1, act0, 1) and all_passed
+    run_test("Standing, no action, 1 step", qpos1, qvel1, act0, 1)
 
-    # Test 2: Standing pose, strong action (larger contact forces)
+
+fn test_standing_max_action() raises:
+    """Standing pose, strong action (larger contact forces)."""
+    var qpos1 = InlineArray[Float64, NQ](fill=0.0)
+    qpos1[1] = 1.25  # rootz = default standing height
+    var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=1.0)
-    all_passed = run_test("Standing, max action, 1 step", qpos1, qvel1, act1, 1) and all_passed
+    run_test("Standing, max action, 1 step", qpos1, qvel1, act1, 1)
 
-    # Test 3: After 5 steps with action
-    all_passed = run_test("Standing, max action, 5 steps", qpos1, qvel1, act1, 5) and all_passed
 
-    # Test 4: Slightly compressed (foot deeper in ground → bigger contact force)
+fn test_standing_max_action_5steps() raises:
+    """After 5 steps with action."""
+    var qpos1 = InlineArray[Float64, NQ](fill=0.0)
+    qpos1[1] = 1.25  # rootz = default standing height
+    var qvel1 = InlineArray[Float64, NV](fill=0.0)
+    var act1 = InlineArray[Float64, ACTION_DIM](fill=1.0)
+    run_test("Standing, max action, 5 steps", qpos1, qvel1, act1, 5)
+
+
+fn test_low_pose_max_action() raises:
+    """Slightly compressed (foot deeper in ground — bigger contact force)."""
     var qpos2 = InlineArray[Float64, NQ](fill=0.0)
     qpos2[1] = 1.0  # lower than default
-    all_passed = run_test("Low pose, max action, 1 step", qpos2, qvel1, act1, 1) and all_passed
+    var qvel1 = InlineArray[Float64, NV](fill=0.0)
+    var act1 = InlineArray[Float64, ACTION_DIM](fill=1.0)
+    run_test("Low pose, max action, 1 step", qpos2, qvel1, act1, 1)
 
-    print("=" * 60)
-    if all_passed:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

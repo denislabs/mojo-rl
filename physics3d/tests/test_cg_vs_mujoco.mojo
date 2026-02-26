@@ -21,6 +21,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs, sqrt
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -182,7 +183,7 @@ fn compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
-) raises -> Bool:
+) raises:
     """Run full pipeline + CG solver in both engines, compare forces and qacc."""
     print("--- Test:", test_name, "---")
 
@@ -580,7 +581,8 @@ fn compare_solver_forces(
         print("  ALL OK")
     else:
         print("  FAILED")
-    return all_pass
+
+    assert_true(all_pass, "Solver forces mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -588,15 +590,15 @@ fn compare_solver_forces(
 # =============================================================================
 
 
-fn test_low_pose_static() raises -> Bool:
+fn test_low_pose_static() raises:
     """Low pose (rootz=-0.3), zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Low pose static (rootz=-0.3)", qpos, qvel)
+    compare_solver_forces("Low pose static (rootz=-0.3)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises -> Bool:
+fn test_low_pose_moving() raises:
     """Low pose with velocity — tests friction damping."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -604,18 +606,18 @@ fn test_low_pose_moving() raises -> Bool:
     qvel[0] = 2.0
     qvel[1] = -0.5
     qvel[3] = -1.0
-    return compare_solver_forces("Low pose moving", qpos, qvel)
+    compare_solver_forces("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises -> Bool:
+fn test_very_low_pose() raises:
     """Very low pose (rootz=-0.45) — deeper penetration, larger forces."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Very low pose (rootz=-0.45)", qpos, qvel)
+    compare_solver_forces("Very low pose (rootz=-0.45)", qpos, qvel)
 
 
-fn test_bent_legs() raises -> Bool:
+fn test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -624,66 +626,8 @@ fn test_bent_legs() raises -> Bool:
     qpos[6] = 0.5
     qpos[7] = -0.8
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Bent legs", qpos, qvel)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_solver_forces("Bent legs", qpos, qvel)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Primal CG Solver Forces: Mojo Engine vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=", NV, ")")
-    print("MuJoCo: cone=elliptic, solver=CG")
-    print("Our solver: CGSolver (cone=ELLIPTIC)")
-    print(
-        "Tolerances: qacc abs=", QACC_ABS_TOL,
-        " qfrc abs=", QFRC_ABS_TOL,
-        " total_force abs=", TOTAL_FORCE_ABS_TOL,
-    )
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_low_pose_static():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_low_pose_moving():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_very_low_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_bent_legs():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

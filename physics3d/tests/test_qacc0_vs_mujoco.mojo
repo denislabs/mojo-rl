@@ -21,6 +21,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_qacc0_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -75,7 +76,7 @@ fn compare_qacc0(
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
-) raises -> Bool:
+) raises:
     """Compute qacc0 in both engines with identical state, compare."""
     print("--- Test:", test_name, "---")
 
@@ -278,6 +279,7 @@ fn compare_qacc0(
             "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
             " max_rel_err=", max_rel_err,
         )
+        assert_true(False, "compare_qacc0 failed for: " + test_name)
 
     # Print qacc0 values
     print("  Our qacc0:", end="")
@@ -322,24 +324,22 @@ fn compare_qacc0(
         print(" ", Float64(py=mj_actuator_flat[i]), end="")
     print()
 
-    return all_pass
-
 
 # =============================================================================
 # Test cases
 # =============================================================================
 
 
-fn test_gravity_only() raises -> Bool:
+fn test_gravity_only() raises:
     """Default pose, zero vel, zero actions — qacc0 = M^{-1} * gravity_bias."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_qacc0("Gravity only (default pose)", qpos, qvel, actions)
+    compare_qacc0("Gravity only (default pose)", qpos, qvel, actions)
 
 
-fn test_with_actions() raises -> Bool:
+fn test_with_actions() raises:
     """Default pose, zero vel, with actions — qacc0 includes actuator forces."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -351,10 +351,10 @@ fn test_with_actions() raises -> Bool:
     actions[3] = 1.0  # fthigh (gear=120)
     actions[4] = -0.5  # fshin (gear=60)
     actions[5] = 0.3  # ffoot (gear=30)
-    return compare_qacc0("With actions", qpos, qvel, actions)
+    compare_qacc0("With actions", qpos, qvel, actions)
 
 
-fn test_nonzero_vel() raises -> Bool:
+fn test_nonzero_vel() raises:
     """Non-zero joints + velocity — qacc0 includes Coriolis + damping."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0   # rootx
@@ -370,10 +370,10 @@ fn test_nonzero_vel() raises -> Bool:
     qvel[6] = 1.2   # fthigh vel
     qvel[7] = -0.6  # fshin vel
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_qacc0("Nonzero vel (Coriolis + damping)", qpos, qvel, actions)
+    compare_qacc0("Nonzero vel (Coriolis + damping)", qpos, qvel, actions)
 
 
-fn test_full_combo() raises -> Bool:
+fn test_full_combo() raises:
     """Nonzero joints + velocity + actions — tests everything together."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -399,77 +399,18 @@ fn test_full_combo() raises -> Bool:
     actions[3] = 0.8
     actions[4] = -0.5
     actions[5] = 0.3
-    return compare_qacc0("Full combo (vel + actions)", qpos, qvel, actions)
+    compare_qacc0("Full combo (vel + actions)", qpos, qvel, actions)
 
 
-fn test_ground_contact_pose() raises -> Bool:
+fn test_ground_contact_pose() raises:
     """Ground contact pose — qacc0 should not be affected by contacts.
     (contacts affect qacc via solver, but qacc0 = unconstrained acceleration)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz low — touches ground
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_qacc0("Ground contact pose (qacc0 unaffected)", qpos, qvel, actions)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_qacc0("Ground contact pose (qacc0 unaffected)", qpos, qvel, actions)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Unconstrained Acceleration (qacc0): Mojo Engine vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=9)")
-    print("qacc0 = (M + armature)^{-1} * f_net")
-    print("Tolerances: abs=", ABS_TOL, " rel=", REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_gravity_only():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_with_actions():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_nonzero_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_full_combo():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_ground_contact_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

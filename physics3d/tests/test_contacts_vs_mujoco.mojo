@@ -20,6 +20,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs, sqrt
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -71,7 +72,7 @@ fn _geom_body_from_mujoco(mj_model: PythonObject, geom_id: Int) raises -> Int:
 fn compare_contacts(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
-) raises -> Bool:
+) raises:
     """Detect contacts in both engines with identical state, compare."""
     print("--- Test:", test_name, "---")
 
@@ -254,7 +255,7 @@ fn compare_contacts(
     else:
         print("  FAILED")
 
-    return all_pass
+    assert_true(all_pass, "Contacts mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -262,35 +263,35 @@ fn compare_contacts(
 # =============================================================================
 
 
-fn test_high_pose() raises -> Bool:
+fn test_high_pose() raises:
     """Robot high above ground (rootz=0.5) — no contacts expected."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # rootz high
-    return compare_contacts("High pose (no contacts)", qpos)
+    compare_contacts("High pose (no contacts)", qpos)
 
 
-fn test_default_pose() raises -> Bool:
+fn test_default_pose() raises:
     """Default pose (rootz=0.7, which is body_pos offset) — may or may not contact."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz = MuJoCo default
-    return compare_contacts("Default pose (rootz=0.7)", qpos)
+    compare_contacts("Default pose (rootz=0.7)", qpos)
 
 
-fn test_low_pose() raises -> Bool:
+fn test_low_pose() raises:
     """Robot low (rootz=-0.3) — feet should be in contact with ground."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
-    return compare_contacts("Low pose (rootz=-0.3)", qpos)
+    compare_contacts("Low pose (rootz=-0.3)", qpos)
 
 
-fn test_very_low_pose() raises -> Bool:
+fn test_very_low_pose() raises:
     """Robot very low (rootz=-0.45) — multiple body parts in contact."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz very low
-    return compare_contacts("Very low pose (rootz=-0.45)", qpos)
+    compare_contacts("Very low pose (rootz=-0.45)", qpos)
 
 
-fn test_bent_legs() raises -> Bool:
+fn test_bent_legs() raises:
     """Bent legs with non-default joint angles — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3   # rootz low enough for contact
@@ -298,84 +299,16 @@ fn test_bent_legs() raises -> Bool:
     qpos[4] = 0.8    # bshin extended
     qpos[6] = 0.5    # fthigh bent
     qpos[7] = -0.8   # fshin extended
-    return compare_contacts("Bent legs (various joint angles)", qpos)
+    compare_contacts("Bent legs (various joint angles)", qpos)
 
 
-fn test_tilted_body() raises -> Bool:
+fn test_tilted_body() raises:
     """Tilted body (rooty rotation) — asymmetric contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz slightly low
     qpos[2] = 0.3   # rooty tilted forward
-    return compare_contacts("Tilted body (rooty=0.3)", qpos)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_contacts("Tilted body (rooty=0.3)", qpos)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Contact Detection: Mojo Engine vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NGEOM=", NGEOM, " NBODY=", NBODY, ")")
-    print(
-        "Tolerances: pos=", POS_TOL,
-        " dist=", DIST_TOL,
-        " normal_dot>", NORMAL_DOT_MIN,
-    )
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_high_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_default_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_low_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_very_low_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_bent_legs():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_tilted_body():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

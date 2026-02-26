@@ -19,6 +19,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_rk4_step_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -62,7 +63,7 @@ fn compare_step(
     qvel_init: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
     num_steps: Int = 1,
-) raises -> Bool:
+) raises:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
@@ -219,8 +220,7 @@ fn compare_step(
     print("  Our contacts:", Int(data.num_contacts))
     var mj_ncon = Int(py=mj_data.ncon)
     print("  MJ  contacts:", mj_ncon)
-
-    return all_pass
+    assert_true(all_pass, "compare_step failed for: " + test_name)
 
 
 # =============================================================================
@@ -228,17 +228,17 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_freefall() raises -> Bool:
+fn test_freefall() raises:
     """Free fall from height — no contacts expected.
     Pure gravity, tests basic RK4 integration accuracy."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5  # rootz high enough to avoid ground contact
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Free fall (no contacts)", qpos, qvel, actions)
+    compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_standing_with_action() raises -> Bool:
+fn test_standing_with_action() raises:
     """High up with moderate actions — tests force integration."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -250,10 +250,10 @@ fn test_standing_with_action() raises -> Bool:
     actions[3] = 0.5
     actions[4] = -0.3
     actions[5] = 0.1
-    return compare_step("Actions (no contacts)", qpos, qvel, actions)
+    compare_step("Actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_moving_with_action() raises -> Bool:
+fn test_moving_with_action() raises:
     """Moving with velocity + actions, no contacts.
 
     RK4 evaluates dynamics at 4 intermediate states, so nonzero velocities
@@ -275,10 +275,10 @@ fn test_moving_with_action() raises -> Bool:
     actions[1] = -0.5
     actions[3] = 1.0
     actions[4] = -0.5
-    return compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
+    compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_fast_spinning() raises -> Bool:
+fn test_fast_spinning() raises:
     """High angular velocities — maximizes Coriolis/gyroscopic effects.
 
     RK4 should capture these nonlinear effects more accurately than Euler
@@ -305,10 +305,10 @@ fn test_fast_spinning() raises -> Bool:
     actions[3] = 1.0
     actions[4] = -1.0
     actions[5] = 0.5
-    return compare_step("Fast spinning (high angular vel)", qpos, qvel, actions)
+    compare_step("Fast spinning (high angular vel)", qpos, qvel, actions)
 
 
-fn test_moving_10_steps() raises -> Bool:
+fn test_moving_10_steps() raises:
     """Moving with velocity 10 steps — multi-stage effects accumulate."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -323,7 +323,7 @@ fn test_moving_10_steps() raises -> Bool:
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[0] = 0.5
     actions[3] = 0.5
-    return compare_step(
+    compare_step(
         "Moving with actions (10 steps)", qpos, qvel, actions, num_steps=10
     )
 
@@ -333,7 +333,7 @@ fn test_moving_10_steps() raises -> Bool:
 # =============================================================================
 
 
-fn test_ground_contact() raises -> Bool:
+fn test_ground_contact() raises:
     """Robot low — feet in ground contact.
     body_pos rootz=0.7, so qpos[1]=-0.3 → world rootz=0.4 → contacts.
     Tests RK4 + constraint solver interaction."""
@@ -347,80 +347,8 @@ fn test_ground_contact() raises -> Bool:
     actions[3] = 0.5
     actions[4] = -0.3
     actions[5] = 0.1
-    return compare_step("Ground contact (with actions)", qpos, qvel, actions)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_step("Ground contact (with actions)", qpos, qvel, actions)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("RK4 Step: Mojo vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: RK4 (ref: MuJoCo opt.integrator=1)")
-    print("Solver: Newton (opt.solver=2)")
-    print("Cone: elliptic (opt.cone=1)")
-    print("Precision: float64")
-    print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
-    print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    # NOTE: Limited to 6 tests due to stack overflow from the large RK4 step()
-    # function frame (4× forward dynamics + many InlineArray temporaries).
-    # The 7th compare_step call overflows the default thread stack.
-
-    # No-contact tests (4 configs)
-    if test_freefall():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_standing_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_moving_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fast_spinning():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    # Multi-step test (1 config)
-    if test_moving_10_steps():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    # Contact test (1 config)
-    if test_ground_contact():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:", num_pass, "passed,", num_fail, "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

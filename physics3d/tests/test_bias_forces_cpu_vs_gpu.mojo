@@ -10,6 +10,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_bias_forces_cpu_vs_gpu.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -120,50 +121,65 @@ fn bias_forces_kernel[
 
 
 # =============================================================================
-# Main — allocates GPU buffers once, reuses across all tests
+# Comparison helper (runs one test scenario, reuses buffers)
 # =============================================================================
 
 
-fn main() raises:
-    print("=" * 60)
-    print("Bias Forces (RNE) Validation: CPU vs GPU")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=9)")
-    print("Precision: float32")
-    print("Tolerances: abs=", ABS_TOL, " rel=", REL_TOL)
-    print()
+fn compare_bias_forces(
+    ctx: DeviceContext,
+    test_name: String,
+    test_qpos: InlineArray[Float64, NQ],
+    test_qvel: InlineArray[Float64, NV],
+    model_cpu: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model_buf: DeviceBuffer[DTYPE],
+    mut state_host: HostBuffer[DTYPE],
+    mut state_buf: DeviceBuffer[DTYPE],
+    mut workspace_buf: DeviceBuffer[DTYPE],
+    mut ws_host: HostBuffer[DTYPE],
+) raises:
+    print("--- Test:", test_name, "---")
 
-    # Initialize GPU
-    var ctx = DeviceContext()
-    print("GPU device initialized")
+    # === CPU pipeline ===
+    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    for i in range(NQ):
+        data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[i])
+    for i in range(NV):
+        data_cpu.qvel[i] = Scalar[DTYPE](test_qvel[i])
 
-    # Create model (CPU + GPU) once
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
-    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    forward_kinematics(model_cpu, data_cpu)
+    compute_body_velocities(model_cpu, data_cpu)
 
-    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
+        model_cpu, data_cpu, cdof
+    )
+
+    var bias_cpu = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(V_SIZE):
+        bias_cpu[i] = Scalar[DTYPE](0)
+    compute_bias_forces_rne[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+    ](model_cpu, data_cpu, cdof, bias_cpu)
+
+    # === GPU pipeline (reuse buffers) ===
+    for i in range(BATCH * STATE_SIZE):
+        state_host[i] = Scalar[DTYPE](0)
+    for i in range(NQ):
+        state_host[qpos_offset[NQ, NV]() + i] = Scalar[DTYPE](test_qpos[i])
+    for i in range(NV):
+        state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](test_qvel[i])
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+
+    for i in range(BATCH * WS_SIZE):
+        ws_host[i] = Scalar[DTYPE](0)
+    ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
     ctx.synchronize()
-    print("Model copied to GPU")
 
-    # Pre-allocate GPU buffers ONCE (reused across all tests)
-    var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
-    ](ctx)
-    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
-    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
-    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
-    print("GPU buffers allocated")
-    print()
-
-    # Compile kernel once
     comptime kernel_fn = bias_forces_kernel[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
         STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
     ]
 
-    # LayoutTensors for kernel launch
     var state_tensor = LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ](state_buf.unsafe_ptr())
@@ -174,211 +190,206 @@ fn main() raises:
         DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
     ](workspace_buf.unsafe_ptr())
 
-    # =================================================================
-    # Test configurations: (name, qpos, qvel)
-    # =================================================================
-
-    comptime NUM_TESTS = 5
-    var test_names = InlineArray[String, NUM_TESTS](
-        uninitialized=True
+    ctx.enqueue_function[kernel_fn, kernel_fn](
+        state_tensor, model_tensor, ws_tensor,
+        grid_dim=(BATCH,),
+        block_dim=(1,),
     )
-    test_names[0] = "Default qpos, zero vel (gravity only)"
-    test_names[1] = "Zero qpos, zero vel"
-    test_names[2] = "Non-zero joints, zero vel"
-    test_names[3] = "Non-zero vel (gravity + Coriolis)"
-    test_names[4] = "Extreme velocities"
+    ctx.synchronize()
 
-    var test_qpos = InlineArray[InlineArray[Float64, NQ], NUM_TESTS](
-        uninitialized=True
-    )
-    var test_qvel = InlineArray[InlineArray[Float64, NV], NUM_TESTS](
-        uninitialized=True
-    )
+    ctx.enqueue_copy(ws_host.unsafe_ptr(), workspace_buf)
+    ctx.synchronize()
 
-    # Config 0: Default qpos, zero vel
-    test_qpos[0] = InlineArray[Float64, NQ](fill=0.0)
-    test_qpos[0][1] = 0.7
-    test_qvel[0] = InlineArray[Float64, NV](fill=0.0)
+    # === Compare ===
+    comptime bias_off = ws_bias_offset[NV, NBODY]()
+    var all_pass = True
+    var max_abs_err: Float64 = 0.0
+    var max_rel_err: Float64 = 0.0
+    var fail_count = 0
 
-    # Config 1: Zero qpos, zero vel
-    test_qpos[1] = InlineArray[Float64, NQ](fill=0.0)
-    test_qvel[1] = InlineArray[Float64, NV](fill=0.0)
+    for i in range(NV):
+        var cpu_val = Float64(bias_cpu[i])
+        var gpu_val = Float64(ws_host[bias_off + i])
+        var abs_err = abs(cpu_val - gpu_val)
+        var ref_mag = abs(cpu_val)
+        var rel_err: Float64 = 0.0
+        if ref_mag > 1e-10:
+            rel_err = abs_err / ref_mag
 
-    # Config 2: Non-zero joints, zero vel
-    test_qpos[2] = InlineArray[Float64, NQ](fill=0.0)
-    test_qpos[2][0] = 1.0
-    test_qpos[2][1] = 0.7
-    test_qpos[2][2] = 0.3
-    test_qpos[2][3] = -0.4
-    test_qpos[2][4] = 0.5
-    test_qpos[2][5] = -0.2
-    test_qpos[2][6] = 0.6
-    test_qpos[2][7] = -0.8
-    test_qpos[2][8] = 0.3
-    test_qvel[2] = InlineArray[Float64, NV](fill=0.0)
+        if abs_err > max_abs_err:
+            max_abs_err = abs_err
+        if rel_err > max_rel_err:
+            max_rel_err = rel_err
 
-    # Config 3: Non-zero vel (gravity + Coriolis)
-    test_qpos[3] = InlineArray[Float64, NQ](fill=0.0)
-    test_qpos[3][1] = 0.7
-    test_qpos[3][2] = 0.1
-    test_qpos[3][3] = -0.3
-    test_qpos[3][6] = 0.4
-    test_qvel[3] = InlineArray[Float64, NV](fill=0.0)
-    test_qvel[3][0] = 2.0
-    test_qvel[3][2] = 0.5
-    test_qvel[3][3] = -1.0
-    test_qvel[3][4] = 0.8
-    test_qvel[3][6] = 1.2
-    test_qvel[3][7] = -0.6
-
-    # Config 4: Extreme velocities
-    test_qpos[4] = InlineArray[Float64, NQ](fill=0.0)
-    test_qpos[4][1] = 0.7
-    test_qpos[4][3] = -0.52
-    test_qpos[4][6] = -1.0
-    test_qvel[4] = InlineArray[Float64, NV](fill=0.0)
-    test_qvel[4][0] = 5.0
-    test_qvel[4][1] = -2.0
-    test_qvel[4][2] = 3.0
-    test_qvel[4][3] = -5.0
-    test_qvel[4][4] = 5.0
-    test_qvel[4][5] = -3.0
-    test_qvel[4][6] = 5.0
-    test_qvel[4][7] = -5.0
-    test_qvel[4][8] = 3.0
-
-    # =================================================================
-    # Run all tests, reusing GPU buffers
-    # =================================================================
-
-    var num_pass = 0
-    var num_fail = 0
-
-    for t in range(NUM_TESTS):
-        print("--- Test:", test_names[t], "---")
-
-        # === CPU pipeline ===
-        var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
-        for i in range(NQ):
-            data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[t][i])
-        for i in range(NV):
-            data_cpu.qvel[i] = Scalar[DTYPE](test_qvel[t][i])
-
-        forward_kinematics(model_cpu, data_cpu)
-        compute_body_velocities(model_cpu, data_cpu)
-
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-            model_cpu, data_cpu, cdof
-        )
-
-        var bias_cpu = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(V_SIZE):
-            bias_cpu[i] = Scalar[DTYPE](0)
-        compute_bias_forces_rne[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](model_cpu, data_cpu, cdof, bias_cpu)
-
-        # === GPU pipeline (reuse buffers) ===
-        # Zero state host buffer and set qpos/qvel
-        for i in range(BATCH * STATE_SIZE):
-            state_host[i] = Scalar[DTYPE](0)
-        for i in range(NQ):
-            state_host[qpos_offset[NQ, NV]() + i] = Scalar[DTYPE](
-                test_qpos[t][i]
-            )
-        for i in range(NV):
-            state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](
-                test_qvel[t][i]
-            )
-        ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
-
-        # Zero workspace
-        for i in range(BATCH * WS_SIZE):
-            ws_host[i] = Scalar[DTYPE](0)
-        ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
-        ctx.synchronize()
-
-        # Launch kernel
-        ctx.enqueue_function[kernel_fn, kernel_fn](
-            state_tensor, model_tensor, ws_tensor,
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.synchronize()
-
-        # Copy workspace back to read bias
-        ctx.enqueue_copy(ws_host.unsafe_ptr(), workspace_buf)
-        ctx.synchronize()
-
-        # === Compare ===
-        comptime bias_off = ws_bias_offset[NV, NBODY]()
-        var all_pass = True
-        var max_abs_err: Float64 = 0.0
-        var max_rel_err: Float64 = 0.0
-        var fail_count = 0
-
-        for i in range(NV):
-            var cpu_val = Float64(bias_cpu[i])
-            var gpu_val = Float64(ws_host[bias_off + i])
-            var abs_err = abs(cpu_val - gpu_val)
-            var ref_mag = abs(cpu_val)
-            var rel_err: Float64 = 0.0
-            if ref_mag > 1e-10:
-                rel_err = abs_err / ref_mag
-
-            if abs_err > max_abs_err:
-                max_abs_err = abs_err
-            if rel_err > max_rel_err:
-                max_rel_err = rel_err
-
-            var ok = abs_err < ABS_TOL or rel_err < REL_TOL
-            if not ok:
-                print(
-                    "  FAIL bias[", i, "]",
-                    " cpu=", cpu_val,
-                    " gpu=", gpu_val,
-                    " abs_err=", abs_err,
-                    " rel_err=", rel_err,
-                )
-                fail_count += 1
-                all_pass = False
-
-        if all_pass:
+        var ok = abs_err < ABS_TOL or rel_err < REL_TOL
+        if not ok:
             print(
-                "  ALL OK  max_abs_err=", max_abs_err,
-                " max_rel_err=", max_rel_err,
+                "  FAIL bias[", i, "]",
+                " cpu=", cpu_val,
+                " gpu=", gpu_val,
+                " abs_err=", abs_err,
+                " rel_err=", rel_err,
             )
-            num_pass += 1
-        else:
-            print(
-                "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
-                " max_rel_err=", max_rel_err,
-            )
-            num_fail += 1
+            fail_count += 1
+            all_pass = False
 
-        # Print values
-        print("  CPU bias:", end="")
-        for i in range(NV):
-            print(" ", Float64(bias_cpu[i]), end="")
-        print()
-        print("  GPU bias:", end="")
-        for i in range(NV):
-            print(" ", Float64(ws_host[bias_off + i]), end="")
-        print()
-        print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
+    if all_pass:
+        print(
+            "  ALL OK  max_abs_err=", max_abs_err,
+            " max_rel_err=", max_rel_err,
+        )
     else:
-        print("SOME TESTS FAILED")
+        print(
+            "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
+            " max_rel_err=", max_rel_err,
+        )
+
+    print("  CPU bias:", end="")
+    for i in range(NV):
+        print(" ", Float64(bias_cpu[i]), end="")
+    print()
+    print("  GPU bias:", end="")
+    for i in range(NV):
+        print(" ", Float64(ws_host[bias_off + i]), end="")
+    print()
+
+    assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
+
+
+fn test_default_qpos_zero_vel() raises:
     print("=" * 60)
+    print("Bias Forces (RNE) Validation: CPU vs GPU")
+    print("=" * 60)
+    print("Model: HalfCheetah (NV=9)")
+    print("Precision: float32")
+    print("Tolerances: abs=", ABS_TOL, " rel=", REL_TOL)
+    print()
+
+    var ctx = DeviceContext()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 0.7
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    compare_bias_forces(ctx, "Default qpos, zero vel (gravity only)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    print()
+
+
+fn test_zero_qpos_zero_vel() raises:
+    var ctx = DeviceContext()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    compare_bias_forces(ctx, "Zero qpos, zero vel", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    print()
+
+
+fn test_nonzero_joints_zero_vel() raises:
+    var ctx = DeviceContext()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[0] = 1.0
+    qpos[1] = 0.7
+    qpos[2] = 0.3
+    qpos[3] = -0.4
+    qpos[4] = 0.5
+    qpos[5] = -0.2
+    qpos[6] = 0.6
+    qpos[7] = -0.8
+    qpos[8] = 0.3
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    compare_bias_forces(ctx, "Non-zero joints, zero vel", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    print()
+
+
+fn test_nonzero_vel_gravity_coriolis() raises:
+    var ctx = DeviceContext()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 0.7
+    qpos[2] = 0.1
+    qpos[3] = -0.3
+    qpos[6] = 0.4
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 2.0
+    qvel[2] = 0.5
+    qvel[3] = -1.0
+    qvel[4] = 0.8
+    qvel[6] = 1.2
+    qvel[7] = -0.6
+    compare_bias_forces(ctx, "Non-zero vel (gravity + Coriolis)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    print()
+
+
+fn test_extreme_velocities() raises:
+    var ctx = DeviceContext()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 0.7
+    qpos[3] = -0.52
+    qpos[6] = -1.0
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 5.0
+    qvel[1] = -2.0
+    qvel[2] = 3.0
+    qvel[3] = -5.0
+    qvel[4] = 5.0
+    qvel[5] = -3.0
+    qvel[6] = 5.0
+    qvel[7] = -5.0
+    qvel[8] = 3.0
+    compare_bias_forces(ctx, "Extreme velocities", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    print()
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

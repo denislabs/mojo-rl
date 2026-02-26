@@ -9,6 +9,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_solver_forces_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs, sqrt
 from collections import InlineArray
@@ -82,8 +83,8 @@ fn compare_vector(
     mj_vals: InlineArray[Float64, NV],
     abs_tol: Float64,
     rel_tol: Float64,
-) raises -> Bool:
-    """Compare NV-length vectors, return True if all pass."""
+) raises:
+    """Compare NV-length vectors, assert all pass."""
     var all_ok = True
     var max_abs: Float64 = 0.0
     var max_rel: Float64 = 0.0
@@ -125,7 +126,7 @@ fn compare_vector(
             "  ", label, " FAILED", fail_count, " elements  max_abs=",
             max_abs, " max_rel=", max_rel,
         )
-    return all_ok
+    assert_true(all_ok, label + " mismatch")
 
 
 # =============================================================================
@@ -137,7 +138,7 @@ fn compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
-) raises -> Bool:
+) raises:
     """Run full pipeline + solver in both engines, compare forces and qacc."""
     print("--- Test:", test_name, "---")
 
@@ -379,15 +380,11 @@ fn compare_solver_forces(
     print("    Our cost:    ", Float64(our_cost))
     print("    MuJoCo cost: ", Float64(mj_cost))
 
-    # === Comparisons ===
-    var all_pass = True
-
     print()
     print("  --- qfrc_constraint (NV) ---")
-    if not compare_vector(
+    compare_vector(
         "qfrc_constraint", our_qfrc, mj_qfrc, QFRC_ABS_TOL, QFRC_REL_TOL
-    ):
-        all_pass = False
+    )
 
     print("  Our qfrc:", end="")
     for i in range(NV):
@@ -400,10 +397,9 @@ fn compare_solver_forces(
 
     print()
     print("  --- qacc (NV) ---")
-    if not compare_vector(
+    compare_vector(
         "qacc", our_qacc, mj_qacc, QACC_ABS_TOL, QACC_REL_TOL
-    ):
-        all_pass = False
+    )
 
     print("  Our qacc:", end="")
     for i in range(NV):
@@ -474,11 +470,7 @@ fn compare_solver_forces(
         print("    our[", r, "] lambda=", lam, " J=[", j_str, "]")
 
     print()
-    if all_pass:
-        print("  ALL OK")
-    else:
-        print("  FAILED")
-    return all_pass
+    print("  ALL OK")
 
 
 # =============================================================================
@@ -486,15 +478,15 @@ fn compare_solver_forces(
 # =============================================================================
 
 
-fn test_low_pose_static() raises -> Bool:
+fn test_low_pose_static() raises:
     """Low pose — foot on ground, zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Low pose static (rootz=-0.8)", qpos, qvel)
+    compare_solver_forces("Low pose static (rootz=-0.8)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises -> Bool:
+fn test_low_pose_moving() raises:
     """Low pose with velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
@@ -502,18 +494,18 @@ fn test_low_pose_moving() raises -> Bool:
     qvel[0] = 2.0   # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # thigh rotating
-    return compare_solver_forces("Low pose moving", qpos, qvel)
+    compare_solver_forces("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises -> Bool:
+fn test_very_low_pose() raises:
     """Very low — deeper penetration."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -1.0  # very low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Very low pose (rootz=-1.0)", qpos, qvel)
+    compare_solver_forces("Very low pose (rootz=-1.0)", qpos, qvel)
 
 
-fn test_bent_joints() raises -> Bool:
+fn test_bent_joints() raises:
     """Bent joints — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
@@ -521,65 +513,8 @@ fn test_bent_joints() raises -> Bool:
     qpos[4] = 0.5    # leg extended
     qpos[5] = -0.3   # foot bent
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_solver_forces("Bent joints", qpos, qvel)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_solver_forces("Bent joints", qpos, qvel)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Solver Forces: Mojo Engine vs MuJoCo (Hopper)")
-    print("=" * 60)
-    print("Model: Hopper (NV=", NV, ")")
-    print("MuJoCo: cone=elliptic, solver=Newton")
-    print("Our solver: NewtonSolver (cone=ELLIPTIC)")
-    print(
-        "Tolerances: qacc abs=", QACC_ABS_TOL,
-        " qfrc abs=", QFRC_ABS_TOL,
-    )
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_low_pose_static():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_low_pose_moving():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_very_low_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_bent_joints():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

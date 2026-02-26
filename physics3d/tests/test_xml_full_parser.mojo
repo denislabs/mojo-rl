@@ -30,6 +30,7 @@ from physics3d.parser import parse_xml_full
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
+from testing import assert_true, TestSuite
 
 
 # =============================================================================
@@ -89,7 +90,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn main():
+fn test_xml_full_parser() raises:
     # =========================================================================
     # Step 1: Dimension check
     # =========================================================================
@@ -105,8 +106,7 @@ fn main():
 
     @parameter
     if pm.NBODY != 8 or pm.NJOINT != 9 or pm.NQ != 9 or pm.NV != 9 or pm.NGEOM != 8 or pm.NACT != 6:
-        print("ERROR: dimension mismatch — aborting")
-        return
+        assert_true(False, "dimension mismatch — NBODY/NJOINT/NQ/NV/NGEOM/NACT not as expected")
 
     # =========================================================================
     # Step 2: Full parse — dimensions from comptime pm, data at runtime
@@ -182,5 +182,9 @@ fn main():
     print("torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)")
 
     forward_kinematics(model, data)
-    print("FK completed ✓")
+    print("FK completed")
     print("torso xpos_z  =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

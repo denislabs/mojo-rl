@@ -10,6 +10,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_full_step_vs_mujoco.mojo
 """
 
+from testing import assert_true, TestSuite
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
@@ -52,7 +53,7 @@ fn compare_step(
     qvel_init: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
     num_steps: Int = 1,
-) raises -> Bool:
+) raises:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "---")
     print("  Steps:", num_steps)
@@ -241,8 +242,7 @@ fn compare_step(
     print("  Our contacts:", Int(data.num_contacts))
     var mj_ncon = Int(py=mj_data.ncon)
     print("  MJ  contacts:", mj_ncon)
-
-    return all_pass
+    assert_true(all_pass, "compare_step failed for: " + test_name)
 
 
 # =============================================================================
@@ -250,25 +250,25 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_freefall() raises -> Bool:
+fn test_freefall() raises:
     """Free fall from default height — no contacts expected.
     Hopper torso is at body_pos z=1.25, so qpos rootz=0 is high enough."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # rootz extra offset => torso at 1.75, no contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Free fall (no contacts)", qpos, qvel, actions)
+    compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_standing_zero_action() raises -> Bool:
+fn test_standing_zero_action() raises:
     """Standing at default height — may have ground contact."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Standing, zero action", qpos, qvel, actions)
+    compare_step("Standing, zero action", qpos, qvel, actions)
 
 
-fn test_standing_with_action() raises -> Bool:
+fn test_standing_with_action() raises:
     """Standing with moderate actions applied."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -276,10 +276,10 @@ fn test_standing_with_action() raises -> Bool:
     actions[0] = 0.5  # thigh
     actions[1] = -0.3  # leg
     actions[2] = 0.2  # foot
-    return compare_step("Standing, moderate action", qpos, qvel, actions)
+    compare_step("Standing, moderate action", qpos, qvel, actions)
 
 
-fn test_moving_with_action() raises -> Bool:
+fn test_moving_with_action() raises:
     """Robot already moving with velocity + actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 0.1  # rooty slight pitch
@@ -293,100 +293,31 @@ fn test_moving_with_action() raises -> Bool:
     actions[0] = 1.0  # max thigh
     actions[1] = -0.5  # leg
     actions[2] = 0.3  # foot
-    return compare_step("Moving with actions", qpos, qvel, actions)
+    compare_step("Moving with actions", qpos, qvel, actions)
 
 
-fn test_freefall_10_steps() raises -> Bool:
+fn test_freefall_10_steps() raises:
     """Free fall 10 steps — accumulates any per-step drift."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # high enough for 10 steps of free fall
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step(
+    compare_step(
         "Free fall (10 steps)", qpos, qvel, actions, num_steps=10
     )
 
 
-fn test_standing_10_steps() raises -> Bool:
+fn test_standing_10_steps() raises:
     """Standing 10 steps with actions — tests solver stability."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[0] = 0.5  # thigh
     actions[1] = -0.3  # leg
-    return compare_step(
+    compare_step(
         "Standing with action (10 steps)", qpos, qvel, actions, num_steps=10
     )
 
 
-# =============================================================================
-# Main
-# =============================================================================
-
-
 fn main() raises:
-    print("=" * 60)
-    print("Full Step Validation: Mojo Engine vs MuJoCo Reference")
-    print("=" * 60)
-    print("Model: Hopper (NQ=6, NV=6)")
-    print("Integrator: Euler (opt.integrator=0)")
-    print("Solver: Newton (opt.solver=2)")
-    print("Cone: elliptic (opt.cone=1)")
-    print("Precision: float64")
-    print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
-    print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_freefall():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_standing_zero_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_standing_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_moving_with_action():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_freefall_10_steps():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_standing_10_steps():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

@@ -14,6 +14,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_full_step_contact_cpu_vs_gpu.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -84,7 +85,7 @@ fn compare_step(
     mut state_buf: DeviceBuffer[DTYPE],
     mut workspace_buf: DeviceBuffer[DTYPE],
     mut ws_host: HostBuffer[DTYPE],
-) raises -> Bool:
+) raises:
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
     # === CPU pipeline ===
@@ -307,10 +308,10 @@ fn compare_step(
     print()
     print("  CPU contacts:", Int(data_cpu.num_contacts))
 
-    return all_pass
+    assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn main() raises:
+fn test_ground_contact_1_step() raises:
     print("=" * 60)
     print("Full Step with Contacts: CPU vs GPU")
     print("=" * 60)
@@ -321,171 +322,133 @@ fn main() raises:
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
     print()
 
-    # Initialize GPU
     var ctx = DeviceContext()
-    print("GPU device initialized")
-
-    # Create GPU model buffer (with geoms + invweight0)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    print("Model copied to GPU (with geoms + invweight0)")
-
-    # Pre-allocate GPU buffers
-    var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
-    ](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
-    print("GPU buffers allocated")
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.2  # rootz low => contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Ground contact (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    var num_pass = 0
-    var num_fail = 0
 
-    # --- Config 1: Ground contact, no actions (1 step) ---
-    var qpos1 = InlineArray[Float64, NQ](fill=0.0)
-    qpos1[1] = -0.2  # rootz low => contacts
-    var qvel1 = InlineArray[Float64, NV](fill=0.0)
-    var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    if compare_step(
-        "Ground contact (1 step)",
-        qpos1,
-        qvel1,
-        act1,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+fn test_ground_contact_with_actions_1_step() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.2  # rootz low => contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 0.5  # bthigh
+    act[1] = -0.3  # bshin
+    act[2] = 0.2  # bfoot
+    act[3] = 0.5  # fthigh
+    act[4] = -0.3  # fshin
+    act[5] = 0.1  # ffoot
+    compare_step("Ground contact + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 2: Ground contact with actions (1 step) ---
-    var act2 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act2[0] = 0.5  # bthigh
-    act2[1] = -0.3  # bshin
-    act2[2] = 0.2  # bfoot
-    act2[3] = 0.5  # fthigh
-    act2[4] = -0.3  # fshin
-    act2[5] = 0.1  # ffoot
-    if compare_step(
-        "Ground contact + actions (1 step)",
-        qpos1,
-        qvel1,
-        act2,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_deep_penetration_1_step() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.5  # very low => many contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Deep penetration (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 3: Deep penetration (1 step) ---
-    var qpos3 = InlineArray[Float64, NQ](fill=0.0)
-    qpos3[1] = -0.5  # very low => many contacts
-    if compare_step(
-        "Deep penetration (1 step)",
-        qpos3,
-        qvel1,
-        act1,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_moving_with_contacts_1_step() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.2  # rootz low => contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 1.0  # rootx vel
+    qvel[1] = -1.0  # rootz vel (falling)
+    qvel[2] = -0.5  # rooty vel
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 0.5
+    act[1] = -0.3
+    act[2] = 0.2
+    act[3] = 0.5
+    act[4] = -0.3
+    act[5] = 0.1
+    compare_step("Moving + contacts (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 4: Moving + contacts (1 step) ---
-    var qvel4 = InlineArray[Float64, NV](fill=0.0)
-    qvel4[0] = 1.0  # rootx vel
-    qvel4[1] = -1.0  # rootz vel (falling)
-    qvel4[2] = -0.5  # rooty vel
-    if compare_step(
-        "Moving + contacts (1 step)",
-        qpos1,
-        qvel4,
-        act2,
-        1,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_ground_contact_5_steps() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.2  # rootz low => contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    compare_step("Ground contact (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 5: Ground contact, 5 steps ---
-    if compare_step(
-        "Ground contact (5 steps)",
-        qpos1,
-        qvel1,
-        act1,
-        5,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
+
+fn test_ground_contact_with_actions_5_steps() raises:
+    var ctx = DeviceContext()
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    ctx.synchronize()
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = -0.2  # rootz low => contacts
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    act[0] = 0.5
+    act[1] = -0.3
+    act[2] = 0.2
+    act[3] = 0.5
+    act[4] = -0.3
+    act[5] = 0.1
+    compare_step("Ground contact + actions (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
     print()
 
-    # --- Config 6: Ground contact + actions, 5 steps ---
-    if compare_step(
-        "Ground contact + actions (5 steps)",
-        qpos1,
-        qvel1,
-        act2,
-        5,
-        ctx,
-        model_buf,
-        state_host,
-        state_buf,
-        workspace_buf,
-        ws_host,
-    ):
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
 
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

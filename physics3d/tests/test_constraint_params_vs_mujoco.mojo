@@ -20,6 +20,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs, sqrt
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -115,7 +116,7 @@ fn compare_constraint_params(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
-) raises -> Bool:
+) raises:
     """Compute constraints in both engines with identical state, compare params."""
     print("--- Test:", test_name, "---")
 
@@ -235,7 +236,7 @@ fn compare_constraint_params(
 
     if mj_nefc == 0 and constraints.num_rows == 0:
         print("  ALL OK  (no constraints)")
-        return True
+        return
 
     # Get MuJoCo efc arrays
     var mj_D = mj_data.efc_D.flatten().tolist()
@@ -565,7 +566,7 @@ fn compare_constraint_params(
     else:
         print("  FAILED")
 
-    return all_pass
+    assert_true(all_pass, "Constraint params mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -573,15 +574,15 @@ fn compare_constraint_params(
 # =============================================================================
 
 
-fn test_low_pose_static() raises -> Bool:
+fn test_low_pose_static() raises:
     """Low pose (rootz=-0.3), zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_constraint_params("Low pose static (rootz=-0.3)", qpos, qvel)
+    compare_constraint_params("Low pose static (rootz=-0.3)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises -> Bool:
+fn test_low_pose_moving() raises:
     """Low pose with velocity — bias should include velocity damping terms."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
@@ -589,18 +590,18 @@ fn test_low_pose_moving() raises -> Bool:
     qvel[0] = 2.0  # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # bthigh rotating
-    return compare_constraint_params("Low pose moving", qpos, qvel)
+    compare_constraint_params("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises -> Bool:
+fn test_very_low_pose() raises:
     """Very low pose (rootz=-0.45) — deeper penetration, different impedance."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz very low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_constraint_params("Very low pose (rootz=-0.45)", qpos, qvel)
+    compare_constraint_params("Very low pose (rootz=-0.45)", qpos, qvel)
 
 
-fn test_bent_legs() raises -> Bool:
+fn test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -609,69 +610,8 @@ fn test_bent_legs() raises -> Bool:
     qpos[6] = 0.5  # fthigh bent
     qpos[7] = -0.8  # fshin extended
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_constraint_params("Bent legs", qpos, qvel)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_constraint_params("Bent legs", qpos, qvel)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Constraint Parameters: Mojo Engine vs MuJoCo")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=", NV, ")")
-    print("MuJoCo cone: elliptic (to match our engine)")
-    print(
-        "Tolerances: aref_abs=",
-        AREF_ABS_TOL,
-        " imp_abs=",
-        IMP_ABS_TOL,
-        " DR_abs=",
-        DR_ABS_TOL,
-    )
-    print("Now comparing D/R using body_invweight0 (MuJoCo-matching)")
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_low_pose_static():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_low_pose_moving():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_very_low_pose():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_bent_legs():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

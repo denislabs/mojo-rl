@@ -10,6 +10,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs, pi
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -42,7 +43,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 fn compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
-) raises -> Bool:
+) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
 
@@ -174,7 +175,7 @@ fn compare_fk(
         else:
             print("  OK   xipos", body_names[bi], " err=", xipos_err)
 
-    return all_pass
+    assert_true(all_pass, "FK mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -182,20 +183,20 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises -> Bool:
+fn test_fk_default_qpos() raises:
     """Test FK at MuJoCo default qpos: rootz=0.7, all others zero."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
-    return compare_fk("Default qpos (rootz=0.7)", qpos)
+    compare_fk("Default qpos (rootz=0.7)", qpos)
 
 
-fn test_fk_zero_qpos() raises -> Bool:
+fn test_fk_zero_qpos() raises:
     """Test FK at qpos=0 (robot at origin)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    return compare_fk("Zero qpos (robot at origin)", qpos)
+    compare_fk("Zero qpos (robot at origin)", qpos)
 
 
-fn test_fk_nonzero_joints() raises -> Bool:
+fn test_fk_nonzero_joints() raises:
     """Test FK with non-zero joint angles."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx = 1m forward
@@ -207,10 +208,10 @@ fn test_fk_nonzero_joints() raises -> Bool:
     qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3  # ffoot
-    return compare_fk("Non-zero joints", qpos)
+    compare_fk("Non-zero joints", qpos)
 
 
-fn test_fk_extreme_joints() raises -> Bool:
+fn test_fk_extreme_joints() raises:
     """Test FK at joint limits."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -220,76 +221,18 @@ fn test_fk_extreme_joints() raises -> Bool:
     qpos[6] = -1.0  # fthigh min
     qpos[7] = 0.87  # fshin max
     qpos[8] = -0.5  # ffoot min
-    return compare_fk("Extreme joint angles (at limits)", qpos)
+    compare_fk("Extreme joint angles (at limits)", qpos)
 
 
-fn test_fk_large_rootx() raises -> Bool:
+fn test_fk_large_rootx() raises:
     """Test FK with large horizontal displacement."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # rootx = 100m forward
     qpos[1] = 0.7  # rootz
     qpos[3] = 0.5  # bthigh
     qpos[6] = -0.5  # fthigh
-    return compare_fk("Large rootx (100m)", qpos)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_fk("Large rootx (100m)", qpos)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("FK Validation: Mojo Engine vs MuJoCo Reference")
-    print("=" * 60)
-    print("Model: HalfCheetah (NBODY=7, NQ=9)")
-    print("Tolerances: pos=", POS_TOL, " quat=", QUAT_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_fk_default_qpos():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_zero_qpos():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_nonzero_joints():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_extreme_joints():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_fk_large_rootx():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

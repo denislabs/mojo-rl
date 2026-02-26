@@ -7,6 +7,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_qderiv_finite_diff.mojo
 """
 
+from testing import assert_true, TestSuite
 from math import abs
 from collections import InlineArray
 
@@ -61,7 +62,7 @@ fn compute_bias_at_qvel(
     return bias^
 
 
-fn main() raises:
+fn test_qderiv_finite_diff() raises:
     print("=" * 60)
     print("qDeriv Finite Difference Verification")
     print("=" * 60)
@@ -215,3 +216,8 @@ fn main() raises:
     else:
         print()
         print("  FAIL — analytical derivative has errors")
+    assert_true(num_fail == 0, "qDeriv analytical vs finite difference mismatch")
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

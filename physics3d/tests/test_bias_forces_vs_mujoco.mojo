@@ -10,6 +10,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import (
@@ -51,7 +52,7 @@ fn compare_bias_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
-) raises -> Bool:
+) raises:
     """Compute bias forces in both engines with identical state, compare."""
     print("--- Test:", test_name, "---")
 
@@ -151,7 +152,7 @@ fn compare_bias_forces(
         print(" ", Float64(py=mj_bias_flat[i]), end="")
     print()
 
-    return all_pass
+    assert_true(all_pass, "Bias forces mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -159,22 +160,22 @@ fn compare_bias_forces(
 # =============================================================================
 
 
-fn test_default_qpos_zero_vel() raises -> Bool:
+fn test_default_qpos_zero_vel() raises:
     """Bias at default qpos, zero velocity (gravity only)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_bias_forces("Default qpos, zero vel (gravity only)", qpos, qvel)
+    compare_bias_forces("Default qpos, zero vel (gravity only)", qpos, qvel)
 
 
-fn test_zero_qpos_zero_vel() raises -> Bool:
+fn test_zero_qpos_zero_vel() raises:
     """Bias at qpos=0, zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_bias_forces("Zero qpos, zero vel", qpos, qvel)
+    compare_bias_forces("Zero qpos, zero vel", qpos, qvel)
 
 
-fn test_nonzero_joints_zero_vel() raises -> Bool:
+fn test_nonzero_joints_zero_vel() raises:
     """Bias with non-zero joints, zero velocity (gravity only)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0   # rootx
@@ -187,10 +188,10 @@ fn test_nonzero_joints_zero_vel() raises -> Bool:
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3   # ffoot
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_bias_forces("Non-zero joints, zero vel", qpos, qvel)
+    compare_bias_forces("Non-zero joints, zero vel", qpos, qvel)
 
 
-fn test_nonzero_vel() raises -> Bool:
+fn test_nonzero_vel() raises:
     """Bias with non-zero velocity (includes Coriolis)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7   # rootz
@@ -204,10 +205,10 @@ fn test_nonzero_vel() raises -> Bool:
     qvel[4] = 0.8   # bshin vel
     qvel[6] = 1.2   # fthigh vel
     qvel[7] = -0.6  # fshin vel
-    return compare_bias_forces("Non-zero vel (gravity + Coriolis)", qpos, qvel)
+    compare_bias_forces("Non-zero vel (gravity + Coriolis)", qpos, qvel)
 
 
-fn test_extreme_vel() raises -> Bool:
+fn test_extreme_vel() raises:
     """Bias with large velocities (stress test Coriolis)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -223,66 +224,8 @@ fn test_extreme_vel() raises -> Bool:
     qvel[6] = 5.0    # fthigh fast
     qvel[7] = -5.0   # fshin fast
     qvel[8] = 3.0    # ffoot fast
-    return compare_bias_forces("Extreme velocities", qpos, qvel)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_bias_forces("Extreme velocities", qpos, qvel)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Bias Forces (RNE) Validation: Mojo Engine vs MuJoCo Reference")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=9)")
-    print("Tolerances: abs=", ABS_TOL, " rel=", REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_default_qpos_zero_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_zero_qpos_zero_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_nonzero_joints_zero_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_nonzero_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_extreme_vel():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

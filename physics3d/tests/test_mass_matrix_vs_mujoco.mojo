@@ -11,6 +11,7 @@ Run with:
 from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
+from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -49,7 +50,7 @@ comptime M_REL_TOL: Float64 = 1e-3  # Relative tolerance for large values
 fn compare_mass_matrix(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
-) raises -> Bool:
+) raises:
     """Compute mass matrix in both engines with identical qpos, compare."""
     print("--- Test:", test_name, "---")
 
@@ -169,7 +170,7 @@ fn compare_mass_matrix(
         print(" ", Float64(py=mj_M_flat[i * nv + i]), end="")
     print()
 
-    return all_pass
+    assert_true(all_pass, "Mass matrix mismatch for: " + test_name)
 
 
 # =============================================================================
@@ -177,20 +178,20 @@ fn compare_mass_matrix(
 # =============================================================================
 
 
-fn test_default_qpos() raises -> Bool:
+fn test_default_qpos() raises:
     """Mass matrix at default qpos (rootz=0.7)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
-    return compare_mass_matrix("Default qpos (rootz=0.7)", qpos)
+    compare_mass_matrix("Default qpos (rootz=0.7)", qpos)
 
 
-fn test_zero_qpos() raises -> Bool:
+fn test_zero_qpos() raises:
     """Mass matrix at qpos=0."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    return compare_mass_matrix("Zero qpos", qpos)
+    compare_mass_matrix("Zero qpos", qpos)
 
 
-fn test_nonzero_joints() raises -> Bool:
+fn test_nonzero_joints() raises:
     """Mass matrix with non-zero joint angles."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0   # rootx
@@ -202,10 +203,10 @@ fn test_nonzero_joints() raises -> Bool:
     qpos[6] = 0.6   # fthigh
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3   # ffoot
-    return compare_mass_matrix("Non-zero joints", qpos)
+    compare_mass_matrix("Non-zero joints", qpos)
 
 
-fn test_extreme_joints() raises -> Bool:
+fn test_extreme_joints() raises:
     """Mass matrix at joint limits."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -215,60 +216,8 @@ fn test_extreme_joints() raises -> Bool:
     qpos[6] = -1.0    # fthigh min
     qpos[7] = 0.87    # fshin max
     qpos[8] = -0.5    # ffoot min
-    return compare_mass_matrix("Extreme joint angles", qpos)
-
-
-# =============================================================================
-# Main
-# =============================================================================
+    compare_mass_matrix("Extreme joint angles", qpos)
 
 
 fn main() raises:
-    print("=" * 60)
-    print("Mass Matrix Validation: Mojo Engine vs MuJoCo Reference")
-    print("=" * 60)
-    print("Model: HalfCheetah (NV=9)")
-    print("Tolerances: abs=", M_TOL, " rel=", M_REL_TOL)
-    print()
-
-    var num_pass = 0
-    var num_fail = 0
-
-    if test_default_qpos():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_zero_qpos():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_nonzero_joints():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    if test_extreme_joints():
-        num_pass += 1
-    else:
-        num_fail += 1
-    print()
-
-    print("=" * 60)
-    print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
-        num_pass + num_fail,
-    )
-    if num_fail == 0:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-    print("=" * 60)
+    TestSuite.discover_tests[__functions_in_module()]().run()

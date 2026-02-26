@@ -9,9 +9,10 @@ from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
 from physics3d.integrator.implicit_integrator import ImplicitIntegrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.types import Model, Data
+from testing import assert_true, TestSuite
 
 
-fn test_lu_factorization() -> Bool:
+fn test_lu_factorization() raises:
     """Test LU factorization with a simple 3x3 system."""
     print("Test LU factorization...")
 
@@ -65,10 +66,10 @@ fn test_lu_factorization() -> Bool:
         print("  PASS")
     else:
         print("  FAIL")
-    return ok
+        assert_true(ok, "LU factorization test failed: solution values are unreasonably large")
 
 
-fn test_implicit_integrator_import() -> Bool:
+fn test_implicit_integrator_import() raises:
     """Test that ImplicitIntegrator can be instantiated."""
     print("Test implicit integrator import...")
 
@@ -77,10 +78,9 @@ fn test_implicit_integrator_import() -> Bool:
 
     print("  ImplicitIntegrator[PGSSolver] alias created successfully")
     print("  PASS")
-    return True
 
 
-fn test_zero_velocity_qderiv() -> Bool:
+fn test_zero_velocity_qderiv() raises:
     """Test that qDeriv RNE contribution is zero when velocities are zero.
 
     At zero velocity, there are no Coriolis/centrifugal effects, so the
@@ -146,33 +146,10 @@ fn test_zero_velocity_qderiv() -> Bool:
 
     if max_val < 1e-10:
         print("  PASS (max qDeriv =", max_val, ")")
-        return True
     else:
         print("  FAIL (max qDeriv =", max_val, ")")
-        return False
+        assert_true(max_val < 1e-10, "Zero-velocity qDeriv test failed: max qDeriv exceeds 1e-10")
 
 
-fn main():
-    print("=" * 60)
-    print("Full Implicit Integrator Tests")
-    print("=" * 60)
-
-    var passed = 0
-    var total = 0
-
-    total += 1
-    if test_lu_factorization():
-        passed += 1
-
-    total += 1
-    if test_implicit_integrator_import():
-        passed += 1
-
-    total += 1
-    if test_zero_velocity_qderiv():
-        passed += 1
-
-    print("")
-    print("=" * 60)
-    print("Results:", passed, "/", total, "tests passed")
-    print("=" * 60)
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

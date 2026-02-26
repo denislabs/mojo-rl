@@ -12,6 +12,7 @@ Expected output for the inline HalfCheetah XML:
 
 from physics3d.parser import ParsedModel, parse_xml
 from io.file import open
+from testing import assert_true, TestSuite
 
 comptime half_cheetah_xml = """
 <mujoco model="cheetah">
@@ -87,7 +88,7 @@ fn read_file(path: String) -> String:
         return ""
 
 
-fn main():
+fn test_parser_xml_compile() raises:
     # Parse inline XML at comptime
     comptime xml = read_file("envs/half_cheetah/half_cheetah.xml")
     print(xml)
@@ -111,3 +112,7 @@ fn main():
     # To parse XML from a file at comptime, we would need a Mojo-native
     # file reader. For now, embed XML strings directly (as done above)
     # or use a build-time code generator.
+
+
+fn main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
