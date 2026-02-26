@@ -20,10 +20,8 @@ from collections import InlineArray
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -36,8 +34,8 @@ comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY  # 7
 comptime NJOINT = HalfCheetahModel.NJOINT  # 9
 comptime NGEOM = HalfCheetahModel.NGEOM  # 9
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM  # 6
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS  # 20
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
 # Tolerances — relaxed for contact scenarios. Remaining ~5-10% error is from
 # contact geometry differences (our contact detection gives slightly different

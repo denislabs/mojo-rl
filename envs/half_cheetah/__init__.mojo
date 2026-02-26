@@ -23,12 +23,8 @@ Example usage:
 
 from .half_cheetah import HalfCheetah
 from .curriculum import HalfCheetahCurriculum
+from .half_cheetah_xml import HalfCheetahModel
 from .half_cheetah_def import (
-    # Robot definition
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahActuators,
     # Params struct
     HalfCheetahParams,
     HalfCheetahParamsCPU,

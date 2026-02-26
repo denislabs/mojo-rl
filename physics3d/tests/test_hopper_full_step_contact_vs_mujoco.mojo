@@ -16,10 +16,8 @@ from collections import InlineArray
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from envs.hopper.hopper_def import (
-    HopperModel,
-    HopperParams,
-)
+from envs.hopper.hopper_xml import HopperModel
+from envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================
@@ -32,8 +30,8 @@ comptime NV = HopperModel.NV  # 6
 comptime NBODY = HopperModel.NBODY  # 5
 comptime NJOINT = HopperModel.NJOINT  # 6
 comptime NGEOM = HopperModel.NGEOM  # 5
-comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS  # 20
-comptime ACTION_DIM = HopperParams[DTYPE].ACTION_DIM  # 3
+comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS  # 20
+comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 
 # Tolerances — relaxed for contact scenarios
 comptime QPOS_ABS_TOL: Float64 = 2e-4

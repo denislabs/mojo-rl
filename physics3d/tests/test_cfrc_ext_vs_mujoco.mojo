@@ -14,10 +14,8 @@ from collections import InlineArray
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from envs.hopper.hopper_def import (
-    HopperModel,
-    HopperParams,
-)
+from envs.hopper.hopper_xml import HopperModel
+from envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================
@@ -30,8 +28,8 @@ comptime NV = HopperModel.NV
 comptime NBODY = HopperModel.NBODY
 comptime NJOINT = HopperModel.NJOINT
 comptime NGEOM = HopperModel.NGEOM
-comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HopperParams[DTYPE].ACTION_DIM
+comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS
+comptime ACTION_DIM = HopperConfig.ACTION_DIM
 
 # Tolerances
 comptime TOL: Float64 = 1.0    # N or Nm absolute tolerance
@@ -50,9 +48,9 @@ fn run_test(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HopperModel.CONE_TYPE
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
     HopperModel.setup_model_and_data(model, data)
 
     for i in range(NQ):

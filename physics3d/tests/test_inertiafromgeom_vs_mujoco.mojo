@@ -12,24 +12,11 @@ from math import abs
 from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one
-from physics3d.model.model_def import Bodies, Joints, Geoms, ModelDef, ModelDefaults
 from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahParams,
-    HalfCheetahDefaults,
-)
-from envs.hopper.hopper_def import (
-    HopperModel,
-    HopperBodies,
-    HopperJoints,
-    HopperGeoms,
-    HopperDefaults,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from envs.hopper.hopper_xml import HopperModel
 
 
 # =============================================================================
@@ -57,13 +44,12 @@ fn test_half_cheetah() raises -> Bool:
     comptime NBODY = HalfCheetahModel.NBODY
     comptime NJOINT = HalfCheetahModel.NJOINT
     comptime NGEOM = HalfCheetahModel.NGEOM
-    comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+    comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 
     # Build model with inertiafromgeom enabled
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, 1]()
-    HalfCheetahBodies.setup_model[DTYPE, NQ, NV, NJOINT, MAX_CONTACTS, NGEOM, 0, 1](model)
-    HalfCheetahJoints.setup_model[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NGEOM, 0, 1, HalfCheetahDefaults](model)
-    HalfCheetahGeoms.setup_model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, 1, HalfCheetahDefaults](model)
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _data_hc = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model, _data_hc)
 
     # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
     compute_inertia_from_geoms(model)
@@ -143,10 +129,10 @@ fn test_hopper() raises -> Bool:
     comptime NGEOM = HopperModel.NGEOM
 
     # Build model with inertiafromgeom enabled
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, 20, NGEOM, 0, 1]()
-    HopperBodies.setup_model[DTYPE, NQ, NV, NJOINT, 20, NGEOM, 0, 1](model)
-    HopperJoints.setup_model[DTYPE, NQ, NV, NBODY, 20, NGEOM, 0, 1, HopperDefaults](model)
-    HopperGeoms.setup_model[DTYPE, NQ, NV, NBODY, NJOINT, 20, NGEOM, 0, 1, HopperDefaults](model)
+    comptime HOPPER_MAX_CONTACTS = 20
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE]()
+    var _data_hopper = Data[DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, HopperModel.NSITE]()
+    HopperModel.setup_model_and_data[DTYPE](model, _data_hopper)
 
     # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
     compute_inertia_from_geoms(model)

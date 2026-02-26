@@ -11,9 +11,9 @@ from math import sqrt, pi
 from builtin.math import abs
 
 from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -38,7 +38,7 @@ from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 
 comptime NV = HalfCheetahModel.NV
-comptime FRAME_SKIP = HalfCheetahParams[DType.float64].FRAME_SKIP
+comptime FRAME_SKIP = HalfCheetahConfig.FRAME_SKIP
 comptime BTHIGH_GEAR: Float64 = 120.0
 comptime BSHIN_GEAR: Float64 = 90.0
 comptime BFOOT_GEAR: Float64 = 60.0

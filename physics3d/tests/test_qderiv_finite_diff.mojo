@@ -19,13 +19,8 @@ from physics3d.dynamics.jacobian import compute_cdof
 from physics3d.dynamics.bias_forces import compute_bias_forces_rne
 from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
 from physics3d.joint_types import JNT_FREE, JNT_BALL
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 comptime DTYPE = DType.float64
@@ -34,7 +29,7 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 comptime M_SIZE = NV * NV
 comptime CDOF_SIZE = NV * 6
 comptime CRB_SIZE = NBODY * 10
@@ -42,13 +37,13 @@ comptime CRB_SIZE = NBODY * 10
 
 fn compute_bias_at_qvel(
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
     ],
     qpos: InlineArray[Float64, NQ],
     qvel: InlineArray[Float64, NV],
 ) raises -> InlineArray[Scalar[DTYPE], NV]:
     """Compute full RNE bias forces (gravity + Coriolis) for given qpos, qvel."""
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos[i])
     for i in range(NV):
@@ -74,12 +69,10 @@ fn main() raises:
 
     # Setup model
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ](
-    )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+    ]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
 
     # Test configuration with nonzero velocities
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -94,7 +87,6 @@ fn main() raises:
     qvel[6] = 1.2
 
     # === Analytical qDeriv ===
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos[i])
     for i in range(NV):

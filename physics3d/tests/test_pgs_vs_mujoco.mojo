@@ -48,10 +48,8 @@ from physics3d.constraints.constraint_data import (
 )
 from physics3d.solver import PGSSolver
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -64,7 +62,7 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 comptime MAX_EQUALITY = 0
 
 comptime V_SIZE = _max_one[NV]()

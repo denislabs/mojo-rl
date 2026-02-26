@@ -49,13 +49,8 @@ from physics3d.gpu.buffer_utils import (
     create_state_buffer,
     copy_data_to_buffer,
 )
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -68,7 +63,7 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 comptime BATCH = 1
 
 comptime MC = _max_one[MAX_CONTACTS]()
@@ -139,11 +134,9 @@ fn main() raises:
     print("GPU device initialized")
 
     # === Create CPU model ===
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
 
     # Copy model to GPU
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
@@ -223,7 +216,7 @@ fn main() raises:
         print("--- Test:", test_names[t], "---")
 
         # === CPU ===
-        var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+        var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
         for i in range(NQ):
             data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[t][i])
 

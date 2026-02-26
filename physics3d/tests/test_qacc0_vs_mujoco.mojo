@@ -38,14 +38,8 @@ from physics3d.dynamics.mass_matrix import (
     ldl_solve,
 )
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -58,8 +52,8 @@ comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM  # 6
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
 comptime V_SIZE = _max_one[NV]()
 comptime M_SIZE = _max_one[NV * NV]()
@@ -86,13 +80,9 @@ fn compare_qacc0(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
-
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
     for i in range(NV):
@@ -144,9 +134,7 @@ fn compare_qacc0(
     var action_list = List[Float64]()
     for i in range(ACTION_DIM):
         action_list.append(actions[i])
-    HalfCheetahActuators.apply_actions[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-    ](data, action_list)
+    HalfCheetahModel.apply_actions[DTYPE](data, action_list)
 
     # 6. Compute f_net = qfrc - bias (matches our integrator convention)
     var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)

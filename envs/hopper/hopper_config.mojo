@@ -25,6 +25,9 @@ struct HopperConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 4
     comptime MAX_STEPS: Int = 1000
+    comptime OBS_DIM: Int = 11
+    comptime ACTION_DIM: Int = 3
+    comptime MAX_CONTACTS: Int = 20
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         HopperModel.NQ, HopperModel.NV
     ]()  # RK4 needs NQ + 7*NV extra workspace

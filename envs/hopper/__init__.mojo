@@ -24,12 +24,8 @@ Example usage:
 
 from .hopper import Hopper
 from .curriculum import HopperCurriculum
+from .hopper_xml import HopperModel
 from .hopper_def import (
-    # Model definition
-    HopperModel,
-    HopperBodies,
-    HopperJoints,
-    HopperActuators,
     # Params struct (new name)
     HopperParams,
     HopperParamsCPU,
@@ -38,11 +34,6 @@ from .hopper_def import (
     HopperConstants,
     HopperConstantsCPU,
     HopperConstantsGPU,
-    # Body type aliases
-    HopperTorso,
-    HopperThigh,
-    HopperLeg,
-    HopperFoot,
     # Body indices
     BODY_TORSO,
     BODY_THIGH,
@@ -101,3 +92,4 @@ from .hopper_def import (
     FOOT_JOINT_MIN,
     FOOT_JOINT_MAX,
 )
+from .hopper_config import HopperConfig

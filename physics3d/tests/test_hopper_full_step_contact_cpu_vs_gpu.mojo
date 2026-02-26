@@ -26,10 +26,8 @@ from physics3d.gpu.constants import (
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
 )
-from envs.hopper.hopper_def import (
-    HopperModel,
-    HopperParams,
-)
+from envs.hopper.hopper_xml import HopperModel
+from envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================
@@ -42,8 +40,8 @@ comptime NV = HopperModel.NV  # 6
 comptime NBODY = HopperModel.NBODY  # 5
 comptime NJOINT = HopperModel.NJOINT  # 6
 comptime NGEOM = HopperModel.NGEOM  # 5
-comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS  # 20
-comptime ACTION_DIM = HopperParams[DTYPE].ACTION_DIM  # 3
+comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS  # 20
+comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()

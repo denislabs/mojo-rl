@@ -23,10 +23,8 @@ from physics3d.dynamics.mass_matrix import (
 )
 from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
 from physics3d.joint_types import JNT_FREE, JNT_BALL
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 comptime DTYPE = DType.float64
@@ -35,7 +33,7 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 comptime M_SIZE = NV * NV
 comptime CDOF_SIZE = NV * 6
 comptime CRB_SIZE = NBODY * 10

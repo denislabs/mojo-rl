@@ -28,7 +28,7 @@ from gpu.host import DeviceContext
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.half_cheetah import (
     HalfCheetah,
-    HalfCheetahParams,
+    HalfCheetahConfig,
     HalfCheetahCurriculum,
 )
 
@@ -38,9 +38,8 @@ from envs.half_cheetah import (
 # =============================================================================
 
 # HalfCheetah: 17D observation, 6D continuous action
-comptime C = HalfCheetahParams[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 17
-comptime ACTION_DIM = C.ACTION_DIM  # 6
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency

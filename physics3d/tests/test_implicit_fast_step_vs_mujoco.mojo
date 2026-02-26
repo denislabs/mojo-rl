@@ -24,10 +24,8 @@ from collections import InlineArray
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
 from physics3d.solver import NewtonSolver
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -40,8 +38,8 @@ comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM
 
 # Tolerances — tight, matching Euler test precision (comparing against MuJoCo
 # Euler which uses the same qH = M + h*D formula as our ImplicitFast)

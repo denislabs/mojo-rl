@@ -3,14 +3,13 @@
 from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper import Hopper
-from envs.hopper.hopper_def import HopperConstantsGPU
+from envs.hopper import Hopper, HopperConfig
 from deep_rl import dtype as agent_dtype
 
 
 # Constants (must match training)
-comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256

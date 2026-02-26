@@ -23,8 +23,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper import Hopper, HopperCurriculum
-from envs.hopper.hopper_def import HopperConstantsGPU
+from envs.hopper import Hopper, HopperCurriculum, HopperConfig
 
 
 # =============================================================================
@@ -32,8 +31,8 @@ from envs.hopper.hopper_def import HopperConstantsGPU
 # =============================================================================
 
 # Hopper: 11D observation, 3D continuous action
-comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency

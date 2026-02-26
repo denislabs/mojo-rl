@@ -16,13 +16,8 @@ from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
 from physics3d.dynamics.mass_matrix import compute_mass_matrix_full
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -35,7 +30,7 @@ comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY  # 7
 comptime NJOINT = HalfCheetahModel.NJOINT  # 9
 comptime NGEOM = HalfCheetahModel.NGEOM  # 9
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS  # 20
 
 comptime M_SIZE = _max_one[NV * NV]()
 comptime CDOF_SIZE = _max_one[NV * 6]()
@@ -59,13 +54,9 @@ fn compare_mass_matrix(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
-
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
 
     # Set qpos
     for i in range(NQ):

@@ -16,13 +16,7 @@ from physics3d.integrator import EulerIntegrator
 from physics3d.integrator.rk4_integrator import RK4Integrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-)
-
-
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
 # Pendulum model setup:
 # - Body origin at (0,0,0) = pivot point
 # - CoM at (0,0,-L) via ipos (MuJoCo convention)
@@ -64,12 +58,9 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
     comptime NGEOM = 9
     comptime MAX_CONTACTS = 20
 
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM]()
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
-
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HC.MAX_EQUALITY, HC.CONE_TYPE, HC.MAX_TENDON, HC.NSITE]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HC.NSITE]()
+    HC.setup_model_and_data[DTYPE](model, data)
 
     # Set initial state: torso at height 0.7
     data.qpos[1] = Scalar[DTYPE](0.7)

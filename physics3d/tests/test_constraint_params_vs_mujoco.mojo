@@ -37,10 +37,8 @@ from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints
 from physics3d.constraints.constraint_data import ConstraintData
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -53,7 +51,7 @@ comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY  # 7
 comptime NJOINT = HalfCheetahModel.NJOINT  # 9
 comptime NGEOM = HalfCheetahModel.NGEOM  # 9
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS  # 20
 comptime MAX_EQUALITY = 0
 
 comptime V_SIZE = _max_one[NV]()

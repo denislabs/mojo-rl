@@ -70,14 +70,8 @@ from physics3d.gpu.buffer_utils import (
     create_state_buffer,
     copy_data_to_buffer,
 )
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -90,8 +84,8 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
@@ -366,11 +360,9 @@ fn main() raises:
     print("GPU device initialized")
 
     # Create model (CPU + GPU) once
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
 
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -513,7 +505,7 @@ fn main() raises:
         print("--- Test:", test_names[t], "---")
 
         # === CPU pipeline (float32) ===
-        var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+        var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
         for i in range(NQ):
             data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[t][i])
         for i in range(NV):
@@ -523,9 +515,7 @@ fn main() raises:
         var action_list = List[Float64]()
         for i in range(ACTION_DIM):
             action_list.append(test_actions[t][i])
-        HalfCheetahActuators.apply_actions[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-        ](data_cpu, action_list)
+        HalfCheetahModel.apply_actions[DTYPE](data_cpu, action_list)
 
         # FK + body velocities
         forward_kinematics(model_cpu, data_cpu)

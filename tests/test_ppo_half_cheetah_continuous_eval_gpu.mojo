@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetah, HalfCheetahParams
+from envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 from deep_rl import dtype as gpu_dtype
 
 
@@ -22,9 +22,8 @@ from deep_rl import dtype as gpu_dtype
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = HalfCheetahParams[gpu_dtype]
-comptime OBS_DIM = C.OBS_DIM  # 17
-comptime ACTION_DIM = C.ACTION_DIM  # 6
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512

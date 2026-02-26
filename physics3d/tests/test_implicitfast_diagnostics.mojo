@@ -23,7 +23,6 @@ from physics3d.kinematics.forward_kinematics import (
 )
 from physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
-    compute_body_invweight0,
     ldl_factor,
     ldl_solve,
 )
@@ -31,15 +30,8 @@ from physics3d.dynamics.bias_forces import compute_bias_forces_rne
 from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.joint_types import JNT_FREE, JNT_BALL
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
-    HalfCheetahParams,
-    HalfCheetahDefaults,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 comptime DTYPE = DType.float64
@@ -48,8 +40,8 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM
 comptime M_SIZE = NV * NV
 comptime V_SIZE = NV
 comptime CDOF_SIZE = NV * 6
@@ -159,20 +151,8 @@ fn main() raises:
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahBodies.setup_model(model)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    forward_kinematics(model, data)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model, data
-    )
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
@@ -186,9 +166,7 @@ fn main() raises:
     # Apply actuator forces
     for i in range(NV):
         data.qfrc[i] = Scalar[DTYPE](0)
-    HalfCheetahActuators.apply_actions[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-    ](data, action_list)
+    HalfCheetahModel.apply_actions(data, action_list)
 
     # Replicate ImplicitFast step manually
     var dt = model.timestep

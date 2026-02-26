@@ -12,8 +12,8 @@ from math import sqrt, pi
 from builtin.math import abs
 
 from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,

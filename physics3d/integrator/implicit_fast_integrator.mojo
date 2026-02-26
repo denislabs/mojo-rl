@@ -274,15 +274,38 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 5. Compute mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         var sM = SparseMassMatrix[DTYPE, NV, NM]()
+
         @parameter
         if SPARSE:
             build_sparse_pattern[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-                NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
             ](model, sM)
             compute_mass_matrix_sparse[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                CDOF_SIZE,
+                CRB_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
             ](model, data, cdof, crb, sM)
         else:
             for i in range(M_SIZE):
@@ -296,6 +319,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var arm = joint.armature
+
             @parameter
             if SPARSE:
                 if joint.jnt_type == JNT_FREE:
@@ -328,6 +352,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 6. LDL factorize M and solve for qacc
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
         @parameter
         if SPARSE:
             ldl_factor_sparse(sM)
@@ -422,6 +447,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
+
         @parameter
         if SPARSE:
             ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc)
@@ -432,14 +458,21 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M_inv[i] = Scalar[DTYPE](0)
+
         @parameter
         if SPARSE:
             # Compute M_inv column-by-column: solve M * e_j = e_j for each j
-            var e_col = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-            var col_result = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+            var e_col = InlineArray[Scalar[DTYPE], V_SIZE](
+                fill=Scalar[DTYPE](0)
+            )
+            var col_result = InlineArray[Scalar[DTYPE], V_SIZE](
+                fill=Scalar[DTYPE](0)
+            )
             for col in range(NV):
                 for k in range(NV):
-                    e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](0)
+                    e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](
+                        0
+                    )
                 ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
                 for row in range(NV):
                     M_inv[row * NV + col] = col_result[row]
@@ -688,12 +721,25 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 9d. Re-factor M_hat and solve qacc = M_hat^{-1} * qfrc_total
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
+
         @parameter
         if SPARSE:
             # Recompute sparse M, add armature + dt*damping to diagonal, then factor
             compute_mass_matrix_sparse[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-                CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NM,
+                CDOF_SIZE,
+                CRB_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
             ](model, data, cdof, crb, sM)
             for j2 in range(model.num_joints):
                 var joint2 = model.joints[j2]

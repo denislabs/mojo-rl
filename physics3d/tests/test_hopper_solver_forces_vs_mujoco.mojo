@@ -41,10 +41,8 @@ from physics3d.solver.primal_common import (
     primal_D,
 )
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.hopper.hopper_def import (
-    HopperModel,
-    HopperParams,
-)
+from envs.hopper.hopper_xml import HopperModel
+from envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================
@@ -57,7 +55,7 @@ comptime NV = HopperModel.NV  # 6
 comptime NBODY = HopperModel.NBODY  # 5
 comptime NJOINT = HopperModel.NJOINT  # 6
 comptime NGEOM = HopperModel.NGEOM  # 5
-comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS  # 20
+comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS  # 20
 comptime MAX_EQUALITY = 0
 
 comptime V_SIZE = _max_one[NV]()

@@ -27,13 +27,8 @@ from physics3d.dynamics.mass_matrix import (
     ldl_solve_sparse,
     sparse_to_dense,
 )
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahParams,
-)
+from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -46,7 +41,7 @@ comptime NV = HalfCheetahModel.NV   # 9
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
+comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 
 comptime M_SIZE = _max_one[NV * NV]()
 comptime CDOF_SIZE = _max_one[NV * 6]()
@@ -66,7 +61,7 @@ comptime TOL: Float64 = 1e-12
 
 
 fn test_sparse_pattern(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM]
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]
 ) -> Bool:
     """Verify: actual_nnz == count_sparse_nnz, all positions in lower triangle,
     diagonal present in every row."""
@@ -115,7 +110,7 @@ fn test_sparse_pattern(
 
 
 fn test_sparse_values_match_dense(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) -> Bool:
@@ -123,7 +118,7 @@ fn test_sparse_values_match_dense(
     compute_mass_matrix_full (reference)."""
     print("--- Test: Sparse == Dense values  [", test_name, "] ---")
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -190,14 +185,14 @@ fn test_sparse_values_match_dense(
 
 
 fn test_sparse_solve_matches_dense(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) -> Bool:
     """Verify ldl_solve_sparse(b) == ldl_solve(b) for multiple rhs vectors."""
     print("--- Test: Sparse LDL solve == Dense LDL solve  [", test_name, "] ---")
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -290,14 +285,14 @@ fn test_sparse_solve_matches_dense(
 
 
 fn test_sparse_solve_residual(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) -> Bool:
     """Verify M * ldl_solve_sparse(b) ≈ b (small residual)."""
     print("--- Test: Sparse solve residual  [", test_name, "] ---")
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -366,10 +361,9 @@ fn main():
     print("=" * 60)
     print()
 
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM]()
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    HalfCheetahModel.setup_model_and_data[DTYPE](model, _setup_data)
 
     var num_pass = 0
     var num_fail = 0

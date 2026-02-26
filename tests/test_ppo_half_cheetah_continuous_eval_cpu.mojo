@@ -18,7 +18,6 @@ from envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahModel,
     HalfCheetahConfig,
-    HalfCheetahParams,
 )
 from envs.phyics3d_env import Phyics3dEnv
 
@@ -26,9 +25,8 @@ from envs.phyics3d_env import Phyics3dEnv
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = HalfCheetahParams[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 17
-comptime ACTION_DIM = C.ACTION_DIM  # 6
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512

@@ -31,6 +31,9 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
 
     # Termination
     comptime MAX_PITCH = 1.0  # ~57 deg
+    comptime OBS_DIM: Int = 17
+    comptime ACTION_DIM: Int = 6
+    comptime MAX_CONTACTS: Int = 20
 
     # === CPU: Integrator step ===
     @staticmethod
