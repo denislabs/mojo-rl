@@ -144,31 +144,19 @@ fn debug_step[
             )
 
     # 2. Compute cdof + crb + mass matrix
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
-    compute_mass_matrix_full[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        M_SIZE,
-        CDOF_SIZE,
-        CRB_SIZE,
-    ](model, data, cdof, crb, M)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
+    compute_mass_matrix_full(model, data, cdof, crb, M)
 
     # Add armature + implicit damping (M_hat = M + arm - dt*qDeriv)
     # For passive system: qDeriv[i,i] = -damping[i], so M_hat = M + arm + dt*damp
@@ -192,20 +180,22 @@ fn debug_step[
             M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
 
     # 3. LDL factorize and solve for unconstrained qacc
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_diag = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_diag)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_diag = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_diag.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_diag)
 
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model, data, cdof, bias)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model, data, cdof, bias)
 
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data.qfrc[i] - bias[i]
+        f_net.append(data.qfrc[i] - bias[i])
 
     # Passive forces: damping + stiffness + frictionloss
     for j in range(model.num_joints):
@@ -253,16 +243,16 @@ fn debug_step[
                     data.qpos[qpos_adr] - sref
                 )
 
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D_diag, f_net, qacc)
+    var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D_diag, f_net, qacc)
 
     # 4. M_inv for constraint solver
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_diag, M_inv)
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_diag, M_inv)
 
     if verbose:
         print("  [PRE-SOLVER]")
@@ -290,18 +280,9 @@ fn debug_step[
     # 5. Build constraints
     comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        MAX_ROWS,
-        V_SIZE,
-        M_SIZE,
-        CDOF_SIZE,
-    ](model, data, cdof, M_inv, qacc, dt, constraints)
+    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+        model, data, cdof, M_inv, dt, constraints
+    )
 
     if verbose:
         print("  [CONSTRAINTS] num_rows:", constraints.num_rows,

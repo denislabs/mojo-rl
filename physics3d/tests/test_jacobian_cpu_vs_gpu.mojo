@@ -362,7 +362,7 @@ fn compare_jacobian(
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
     test_qvel: InlineArray[Float64, NV],
-    model_cpu: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE],
+    model_cpu: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     model_buf: DeviceBuffer[DTYPE],
     mut state_host: HostBuffer[DTYPE],
     mut state_buf: DeviceBuffer[DTYPE],
@@ -374,7 +374,7 @@ fn compare_jacobian(
     print("--- Test:", test_name, "---")
 
     # === CPU pipeline ===
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[i])
     for i in range(NV):
@@ -383,23 +383,23 @@ fn compare_jacobian(
     forward_kinematics(model_cpu, data_cpu)
     compute_body_velocities(model_cpu, data_cpu)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model_cpu, data_cpu, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model_cpu, data_cpu, cdof)
 
     detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
         model_cpu, data_cpu
     )
 
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model_cpu, data_cpu, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model_cpu, data_cpu, cdof, crb, M)
 
     # Add armature
@@ -416,22 +416,24 @@ fn compare_jacobian(
         else:
             M[dof_adr * NV + dof_adr] += arm
 
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
-
-    var qvel_arr = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qvel_arr[i] = Scalar[DTYPE](test_qvel[i])
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_ldl, M_inv)
 
     var dt_cpu = Scalar[DTYPE](0.01)
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints(model_cpu, data_cpu, cdof, M_inv, qvel_arr, dt_cpu, constraints)
+    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+        model_cpu, data_cpu, cdof, M_inv, dt_cpu, constraints
+    )
 
     var cpu_ncon = data_cpu.num_contacts
     var cpu_nnorm = constraints.num_normals
@@ -581,13 +583,13 @@ fn test_low_static() raises:
     print()
 
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -603,13 +605,13 @@ fn test_low_static() raises:
 
 fn test_low_moving() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -627,13 +629,13 @@ fn test_low_moving() raises:
 
 fn test_very_low() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -652,13 +654,13 @@ fn main() raises:
 
 fn test_bent_legs() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
+    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)

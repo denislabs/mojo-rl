@@ -486,7 +486,7 @@ struct Model[
         )
         self.solimp_limit[0] = Scalar[Self.DTYPE](0.0)
         self.solimp_limit[1] = Scalar[Self.DTYPE](0.8)
-        self.solimp_limit[2] = Scalar[Self.DTYPE](0.01)
+        self.solimp_limit[2] = Scalar[Self.DTYPE](0.03)
         self.solimp_limit[3] = Scalar[Self.DTYPE](0.5)
         self.solimp_limit[4] = Scalar[Self.DTYPE](2.0)
 

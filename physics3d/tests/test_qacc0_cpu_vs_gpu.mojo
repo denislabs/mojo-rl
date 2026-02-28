@@ -377,19 +377,19 @@ fn compare_qacc0(
     forward_kinematics(model_cpu, data_cpu)
     compute_body_velocities(model_cpu, data_cpu)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model_cpu, data_cpu, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model_cpu, data_cpu, cdof)
 
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model_cpu, data_cpu, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model_cpu, data_cpu, cdof, crb, M)
 
     var dt_cpu = model_cpu.timestep
@@ -406,20 +406,22 @@ fn compare_qacc0(
         else:
             M[dof_adr * NV + dof_adr] += diag_add
 
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var bias_cpu = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias_cpu[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model_cpu, data_cpu, cdof, bias_cpu)
+    var bias_cpu = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias_cpu.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model_cpu, data_cpu, cdof, bias_cpu)
 
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data_cpu.qfrc[i] - bias_cpu[i]
+        f_net.append(data_cpu.qfrc[i] - bias_cpu[i])
 
     for j in range(model_cpu.num_joints):
         var joint = model_cpu.joints[j]
@@ -476,10 +478,10 @@ fn compare_qacc0(
                 elif v < -VEL_THRESH:
                     f_net[dof_adr] += joint.frictionloss
 
-    var qacc_cpu = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc_cpu[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, f_net, qacc_cpu)
+    var qacc_cpu = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc_cpu.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D_ldl, f_net, qacc_cpu)
 
     # === GPU pipeline ===
     for i in range(BATCH * STATE_SIZE):
@@ -595,7 +597,7 @@ fn test_gravity_only() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -616,7 +618,7 @@ fn test_with_actions() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -643,7 +645,7 @@ fn test_nonzero_vel_coriolis_damping() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -673,7 +675,7 @@ fn test_full_combo() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -714,7 +716,7 @@ fn test_extreme_velocities() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)

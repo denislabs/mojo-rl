@@ -67,27 +67,22 @@ fn compare_mass_matrix(
     forward_kinematics(model, data)
 
     # Compute cdof (spatial motion axes)
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE
-    ](model, data, cdof)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # Compute composite rigid body inertia
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
     # Compute full mass matrix
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
-    compute_mass_matrix_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        M_SIZE, CDOF_SIZE, CRB_SIZE,
-    ](model, data, cdof, crb, M)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
+    compute_mass_matrix_full(model, data, cdof, crb, M)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

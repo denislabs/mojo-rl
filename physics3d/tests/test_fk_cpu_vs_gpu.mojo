@@ -120,7 +120,7 @@ fn compare_fk(
     # === GPU FK ===
     # Create state buffer and set qpos
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     for i in range(NQ):
         state_host[qpos_offset[NQ, NV]() + i] = Scalar[DTYPE](qpos_values[i])

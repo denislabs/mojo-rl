@@ -181,23 +181,21 @@ fn main() raises:
     print("  Contacts detected:", Int(data.num_contacts))
 
     # cdof
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # CRB
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
     # Mass matrix (raw CRBA — no armature, no dt*damp)
-    var M_raw = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_raw[i] = Scalar[DTYPE](0)
+    var M_raw = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_raw.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model, data, cdof, crb, M_raw)
 
     print("\n  M_raw diagonal (CRBA only, no armature):")
@@ -207,9 +205,9 @@ fn main() raises:
     print()
 
     # Copy M for M_hat computation
-    var M_hat = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var M_hat = List[Scalar[DTYPE]](capacity=M_SIZE)
     for i in range(M_SIZE):
-        M_hat[i] = M_raw[i]
+        M_hat.append(M_raw[i])
 
     # Add armature + dt*damp to diagonal (ImplicitFast M_hat)
     print("\n  Joint damping/armature values:")
@@ -254,17 +252,15 @@ fn main() raises:
     print()
 
     # Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model, data, cdof, bias)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model, data, cdof, bias)
 
     # f_net = qfrc - bias
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data.qfrc[i] - bias[i]
+        f_net.append(data.qfrc[i] - bias[i])
 
     # Add damping forces
     for j in range(model.num_joints):
@@ -309,14 +305,18 @@ fn main() raises:
                 )
 
     # LDL factorize M_hat and solve for qacc
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_hat, L, D)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M_hat, L, D)
 
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
+    var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D, f_net, qacc)
 
     # =====================================================================
     # Part 3: Compare intermediate values

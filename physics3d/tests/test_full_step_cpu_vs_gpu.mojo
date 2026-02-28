@@ -93,10 +93,12 @@ fn compare_step(
         NJOINT,
         MAX_CONTACTS,
         NGEOM,
-        0,
+        HalfCheetahModel.MAX_EQUALITY,
         HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
@@ -132,7 +134,7 @@ fn compare_step(
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
     # Apply actions to get qfrc (use a temp data)
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -328,7 +330,7 @@ fn test_free_fall_1_step() raises:
 
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
@@ -346,7 +348,7 @@ fn test_free_fall_1_step() raises:
 fn test_free_fall_with_actions_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
@@ -370,7 +372,7 @@ fn test_free_fall_with_actions_1_step() raises:
 fn test_moving_with_actions_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
@@ -399,7 +401,7 @@ fn test_moving_with_actions_1_step() raises:
 fn test_free_fall_10_steps() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
@@ -417,7 +419,7 @@ fn test_free_fall_10_steps() raises:
 fn test_moving_with_actions_10_steps() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
@@ -446,7 +448,7 @@ fn test_moving_with_actions_10_steps() raises:
 fn test_extreme_velocities_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)

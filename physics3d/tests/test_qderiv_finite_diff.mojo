@@ -42,7 +42,7 @@ fn compute_bias_at_qvel(
     ],
     qpos: InlineArray[Float64, NQ],
     qvel: InlineArray[Float64, NV],
-) raises -> InlineArray[Scalar[DTYPE], NV]:
+) raises -> List[Scalar[DTYPE]]:
     """Compute full RNE bias forces (gravity + Coriolis) for given qpos, qvel."""
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     for i in range(NQ):
@@ -53,10 +53,14 @@ fn compute_bias_at_qvel(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
     compute_cdof(model, data, cdof)
 
-    var bias = InlineArray[Scalar[DTYPE], NV](uninitialized=True)
+    var bias = List[Scalar[DTYPE]](capacity=NV)
+    for _ in range(NV):
+        bias.append(Scalar[DTYPE](0))
     compute_bias_forces_rne(model, data, cdof, bias)
 
     return bias^
@@ -96,13 +100,15 @@ fn test_qderiv_finite_diff() raises:
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
     compute_cdof(model, data, cdof)
 
     # Initialize qDeriv with passive damping
-    var qDeriv_analytical = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        qDeriv_analytical[i] = Scalar[DTYPE](0)
+    var qDeriv_analytical = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        qDeriv_analytical.append(Scalar[DTYPE](0))
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -123,9 +129,9 @@ fn test_qderiv_finite_diff() raises:
     var eps: Float64 = 1e-6
     var bias_ref = compute_bias_at_qvel(model, qpos, qvel)
 
-    var qDeriv_fd = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        qDeriv_fd[i] = Scalar[DTYPE](0)
+    var qDeriv_fd = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        qDeriv_fd.append(Scalar[DTYPE](0))
 
     for k in range(NV):
         # Perturb qvel[k] by +eps

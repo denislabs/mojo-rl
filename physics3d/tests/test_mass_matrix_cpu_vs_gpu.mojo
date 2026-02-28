@@ -151,29 +151,24 @@ fn compare_mass_matrix(
 
     forward_kinematics(model_cpu, data_cpu)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model_cpu, data_cpu, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model_cpu, data_cpu, cdof)
 
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model_cpu, data_cpu, crb)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model_cpu, data_cpu, crb)
 
-    var M_cpu = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_cpu[i] = Scalar[DTYPE](0)
-    compute_mass_matrix_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        M_SIZE, CDOF_SIZE, CRB_SIZE,
-    ](model_cpu, data_cpu, cdof, crb, M_cpu)
+    var M_cpu = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_cpu.append(Scalar[DTYPE](0))
+    compute_mass_matrix_full(model_cpu, data_cpu, cdof, crb, M_cpu)
 
     # === GPU: run kernel ===
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
     ](ctx)
     for i in range(NQ):
         state_host[qpos_offset[NQ, NV]() + i] = Scalar[DTYPE](qpos_values[i])

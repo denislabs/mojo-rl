@@ -182,10 +182,10 @@ fn compare_jacobians(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # 2. Contact detection
     detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
@@ -193,14 +193,14 @@ fn compare_jacobians(
     )
 
     # 3. Mass matrix + armature + dt*D → LDL → M_inv
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model, data, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model, data, cdof, crb, M)
 
     var dt = Scalar[DTYPE](0.01)
@@ -218,22 +218,22 @@ fn compare_jacobians(
         else:
             M[dof_adr * NV + dof_adr] += arm + dt * damp
 
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_ldl, M_inv)
 
     # 4. Build constraints
-    var qvel_arr = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qvel_arr[i] = Scalar[DTYPE](qvel_values[i])
-
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints(model, data, cdof, M_inv, qvel_arr, dt, constraints)
+    build_constraints(model, data, cdof, M_inv, dt, constraints)
 
     var our_ncon = data.num_contacts
     var our_nnorm = constraints.num_normals

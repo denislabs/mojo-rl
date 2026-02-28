@@ -166,6 +166,28 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         if len(sr_s) > 0:
             d.joint_springref = _parse_float(sr_s)
 
+        var srl_s = _extract_attr(jtag, "solreflimit")
+        if len(srl_s) > 0:
+            var sv = _parse_vec3(srl_s)
+            d.joint_solref_limit_0 = sv[0]
+            d.joint_solref_limit_1 = sv[1]
+
+        var sil_s = _extract_attr(jtag, "solimplimit")
+        if len(sil_s) > 0:
+            var parts = List[String]()
+            from .xml_parser import _split_spaces
+            _split_spaces(sil_s, parts)
+            if len(parts) >= 1:
+                d.joint_solimp_limit_0 = _parse_float(parts[0])
+            if len(parts) >= 2:
+                d.joint_solimp_limit_1 = _parse_float(parts[1])
+            if len(parts) >= 3:
+                d.joint_solimp_limit_2 = _parse_float(parts[2])
+            if len(parts) >= 4:
+                d.joint_solimp_limit_3 = _parse_float(parts[3])
+            if len(parts) >= 5:
+                d.joint_solimp_limit_4 = _parse_float(parts[4])
+
     # Find default <geom
     var gpos = defaults_sec.find("<geom")
     if gpos != -1:
@@ -840,12 +862,52 @@ fn _fill_model[
                 else:
                     jd.springref = defaults.joint_springref
 
+                # ref (MuJoCo joint reference position → qpos0)
+                var ref_s = _extract_attr(tag, "ref")
+                if len(ref_s) > 0:
+                    jd.ref_val = _parse_float(ref_s)
+                else:
+                    jd.ref_val = 0.0
+
                 # frictionloss
                 var fl_s = _extract_attr(tag, "frictionloss")
                 if len(fl_s) > 0:
                     jd.frictionloss = _parse_float(fl_s)
                 else:
                     jd.frictionloss = defaults.joint_frictionloss
+
+                # solreflimit (per-joint or default)
+                var srl_s = _extract_attr(tag, "solreflimit")
+                if len(srl_s) > 0:
+                    var sv = _parse_vec3(srl_s)
+                    jd.solref_limit_0 = sv[0]
+                    jd.solref_limit_1 = sv[1]
+                else:
+                    jd.solref_limit_0 = defaults.joint_solref_limit_0
+                    jd.solref_limit_1 = defaults.joint_solref_limit_1
+
+                # solimplimit (per-joint or default)
+                var sil_s = _extract_attr(tag, "solimplimit")
+                if len(sil_s) > 0:
+                    var parts2 = List[String]()
+                    from .xml_parser import _split_spaces
+                    _split_spaces(sil_s, parts2)
+                    if len(parts2) >= 1:
+                        jd.solimp_limit_0 = _parse_float(parts2[0])
+                    if len(parts2) >= 2:
+                        jd.solimp_limit_1 = _parse_float(parts2[1])
+                    if len(parts2) >= 3:
+                        jd.solimp_limit_2 = _parse_float(parts2[2])
+                    if len(parts2) >= 4:
+                        jd.solimp_limit_3 = _parse_float(parts2[3])
+                    if len(parts2) >= 5:
+                        jd.solimp_limit_4 = _parse_float(parts2[4])
+                else:
+                    jd.solimp_limit_0 = defaults.joint_solimp_limit_0
+                    jd.solimp_limit_1 = defaults.joint_solimp_limit_1
+                    jd.solimp_limit_2 = defaults.joint_solimp_limit_2
+                    jd.solimp_limit_3 = defaults.joint_solimp_limit_3
+                    jd.solimp_limit_4 = defaults.joint_solimp_limit_4
 
                 result.joints[joint_count] = jd
             joint_count += 1

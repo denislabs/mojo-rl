@@ -37,7 +37,10 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
 )
 from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
+from physics3d.constraints.constraint_builder import (
+    build_constraints,
+    writeback_forces,
+)
 from physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -137,12 +140,23 @@ fn compare_vector(
 
     if all_ok:
         print(
-            "  ", label, " ALL OK  max_abs=", max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " ALL OK  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     else:
         print(
-            "  ", label, " FAILED", fail_count, " elements  max_abs=",
-            max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " FAILED",
+            fail_count,
+            " elements  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     return all_ok
 
@@ -163,13 +177,29 @@ fn compare_scalar(
     var ok = abs_err < abs_tol or rel_err < rel_tol
     if ok:
         print(
-            "    OK  ", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    OK  ",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     else:
         print(
-            "    FAIL", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    FAIL",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     return ok
 
@@ -185,14 +215,27 @@ fn compare_solver_forces(
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
 ) raises:
-    """Run full pipeline + CG solver in both engines, compare forces and qacc."""
+    """Run full pipeline + CG solver in both engines, compare forces and qacc.
+    """
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
@@ -205,10 +248,10 @@ fn compare_solver_forces(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # 2. Contact detection
     detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
@@ -216,14 +259,14 @@ fn compare_solver_forces(
     )
 
     # 3. Composite inertia + Mass matrix
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model, data, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model, data, cdof, crb, M)
 
     # 4. Add armature only to M diagonal
@@ -242,27 +285,29 @@ fn compare_solver_forces(
             M[dof_adr * NV + dof_adr] += arm
 
     # 5. LDL factorize + M_inv
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_ldl, M_inv)
 
     # 6. Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model, data, cdof, bias)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model, data, cdof, bias)
 
     # 7. f_net = qfrc - bias
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data.qfrc[i] - bias[i]
+        f_net.append(data.qfrc[i] - bias[i])
 
     # 8. Apply passive forces (damping + stiffness + frictionloss)
     for j in range(model.num_joints):
@@ -323,15 +368,15 @@ fn compare_solver_forces(
                     f_net[dof_adr] += floss
 
     # 9. qacc = M^{-1} * f_net via LDL solve (unconstrained acceleration)
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, f_net, qacc)
+    var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D_ldl, f_net, qacc)
 
     # 10. Build constraints
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
-        model, data, cdof, M_inv, qacc, dt, constraints
+    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+        model, data, cdof, M_inv, dt, constraints
     )
 
     # 11. Fill M_hat and qfrc_smooth for primal solver
@@ -345,18 +390,26 @@ fn compare_solver_forces(
     var our_nfric = constraints.num_friction
     var our_nlim = constraints.num_limits
     print(
-        "  Our: contacts=", our_ncon,
-        " rows=", constraints.num_rows,
-        " (N:", our_nnorm, " F:", our_nfric, " L:", our_nlim, ")",
+        "  Our: contacts=",
+        our_ncon,
+        " rows=",
+        constraints.num_rows,
+        " (N:",
+        our_nnorm,
+        " F:",
+        our_nfric,
+        " L:",
+        our_nlim,
+        ")",
     )
 
     # Save qacc0 before solver modifies it
-    var qacc0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc0 = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        qacc0[i] = qacc[i]
+        qacc0.append(qacc[i])
 
     # 12. Solve constraints with CGSolver (modifies qacc in-place)
-    CGSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
+    CGSolver.solve[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -379,7 +432,9 @@ fn compare_solver_forces(
     for c in range(Int(data.num_contacts)):
         var total_c: Float64 = 0.0
         for e in range(ROWS_PER_CON):
-            total_c += Float64(constraints.rows[c * ROWS_PER_CON + e].lambda_val)
+            total_c += Float64(
+                constraints.rows[c * ROWS_PER_CON + e].lambda_val
+            )
         our_normal_forces[c] = total_c
         our_total_normal += total_c
 
@@ -392,9 +447,9 @@ fn compare_solver_forces(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our solver: pyramidal cone, CG solver, Euler integrator
-    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel)
-    mj_model.opt.solver = 1     # CG (was 2 for Newton)
-    mj_model.opt.integrator = 0 # Euler
+    mj_model.opt.cone = 0  # pyramidal (matches HalfCheetahModel)
+    mj_model.opt.solver = 1  # CG (was 2 for Newton)
+    mj_model.opt.integrator = 0  # Euler
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -448,7 +503,9 @@ fn compare_solver_forces(
     # === Cost comparison ===
     comptime MR = _max_one[MAX_ROWS]()
 
-    var D_vals_cmp = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
+    var D_vals_cmp = List[Scalar[DTYPE]](capacity=MR)
+    for _ in range(MR):
+        D_vals_cmp.append(Scalar[DTYPE](0))
     for r_cmp in range(constraints.num_rows):
         D_vals_cmp[r_cmp] = primal_D(
             constraints.rows[r_cmp].inv_K_imp,
@@ -456,14 +513,24 @@ fn compare_solver_forces(
         )
 
     var our_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, qacc, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        qacc,
+        qacc0,
+        f_net,
+        M,
     )
 
-    var mj_qacc_typed = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var mj_qacc_typed = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        mj_qacc_typed[i] = Scalar[DTYPE](mj_qacc[i])
+        mj_qacc_typed.append(Scalar[DTYPE](mj_qacc[i]))
     var mj_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, mj_qacc_typed, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        mj_qacc_typed,
+        qacc0,
+        f_net,
+        M,
     )
 
     print("  --- Cost comparison ---")
@@ -517,8 +584,11 @@ fn compare_solver_forces(
     print()
     print("  --- Comparison 3: Total normal force ---")
     if not compare_scalar(
-        "total_normal", our_total_normal, mj_total_normal,
-        TOTAL_FORCE_ABS_TOL, TOTAL_FORCE_REL_TOL,
+        "total_normal",
+        our_total_normal,
+        mj_total_normal,
+        TOTAL_FORCE_ABS_TOL,
+        TOTAL_FORCE_REL_TOL,
     ):
         all_pass = False
 
@@ -535,10 +605,18 @@ fn compare_solver_forces(
         var ok = abs_err < PER_CONTACT_ABS_TOL or rel_err < PER_CONTACT_REL_TOL
         var status = "OK  " if ok else "FAIL"
         print(
-            "    [", status, "] contact", c,
-            " ours=", our_normal_forces[c],
-            " mj=", mj_normal_forces[c],
-            " abs=", abs_err, " rel=", rel_err,
+            "    [",
+            status,
+            "] contact",
+            c,
+            " ours=",
+            our_normal_forces[c],
+            " mj=",
+            mj_normal_forces[c],
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
 
     # 5. Per-row efc_force (informational)
@@ -558,8 +636,12 @@ fn compare_solver_forces(
         else:
             ctype_str = "? "
         print(
-            "    our[", r, "] type=", ctype_str,
-            " lambda=", Float64(constraints.rows[r].lambda_val),
+            "    our[",
+            r,
+            "] type=",
+            ctype_str,
+            " lambda=",
+            Float64(constraints.rows[r].lambda_val),
         )
 
     for r in range(mj_nefc):
@@ -572,8 +654,12 @@ fn compare_solver_forces(
         else:
             tstr = String(t)
         print(
-            "    mj [", r, "] type=", tstr,
-            " force=", Float64(py=mj_efc_force_flat[r]),
+            "    mj [",
+            r,
+            "] type=",
+            tstr,
+            " force=",
+            Float64(py=mj_efc_force_flat[r]),
         )
 
     print()

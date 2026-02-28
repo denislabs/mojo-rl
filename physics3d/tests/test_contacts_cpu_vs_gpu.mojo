@@ -302,7 +302,7 @@ fn test_high_above_ground() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -319,7 +319,7 @@ fn test_default_pose() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -335,7 +335,7 @@ fn test_low_static() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -352,7 +352,7 @@ fn test_very_low() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -369,7 +369,7 @@ fn test_bent_legs() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -390,7 +390,7 @@ fn test_tilted() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH](ctx)
+    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)

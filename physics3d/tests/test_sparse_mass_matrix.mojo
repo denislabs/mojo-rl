@@ -120,21 +120,20 @@ fn test_sparse_values_match_dense(
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](fill=Scalar[DTYPE](0))
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
     # Dense reference
-    var M_dense = InlineArray[Scalar[DTYPE], M_SIZE](fill=Scalar[DTYPE](0))
-    compute_mass_matrix_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        M_SIZE, CDOF_SIZE, CRB_SIZE, NGEOM,
-    ](model, data, cdof, crb, M_dense)
+    var M_dense = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_dense.append(Scalar[DTYPE](0))
+    compute_mass_matrix_full(model, data, cdof, crb, M_dense)
 
     # Sparse
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
@@ -147,7 +146,9 @@ fn test_sparse_values_match_dense(
     ](model, data, cdof, crb, sM)
 
     # Expand sparse to dense
-    var M_from_sparse = InlineArray[Scalar[DTYPE], M_SIZE](fill=Scalar[DTYPE](0))
+    var M_from_sparse = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_from_sparse.append(Scalar[DTYPE](0))
     sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_from_sparse)
 
     # Compare lower triangle (upper is symmetric copy)
@@ -193,29 +194,32 @@ fn test_sparse_solve_matches_dense(
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](fill=Scalar[DTYPE](0))
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
     # Build dense M with armature
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](fill=Scalar[DTYPE](0))
-    compute_mass_matrix_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        M_SIZE, CDOF_SIZE, CRB_SIZE, NGEOM,
-    ](model, data, cdof, crb, M)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
+    compute_mass_matrix_full(model, data, cdof, crb, M)
     for j in range(model.num_joints):
         var dof = model.joints[j].dof_adr
         M[dof * NV + dof] += model.joints[j].armature
 
     # Dense LDL
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](fill=Scalar[DTYPE](0))
-    var D = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D)
 
     # Build sparse M with armature
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
@@ -236,7 +240,9 @@ fn test_sparse_solve_matches_dense(
     var fail_count = 0
 
     for rhs_case in range(3):
-        var b = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        var b = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            b.append(Scalar[DTYPE](0))
         for i in range(NV):
             if rhs_case == 0:
                 b[i] = Scalar[DTYPE](Float64(i + 1))
@@ -247,10 +253,14 @@ fn test_sparse_solve_matches_dense(
         if rhs_case == 2:
             b[NV // 2] = Scalar[DTYPE](1)  # unit vector
 
-        var x_dense = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-        var x_sparse = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        var x_dense = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            x_dense.append(Scalar[DTYPE](0))
+        var x_sparse = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            x_sparse.append(Scalar[DTYPE](0))
 
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, b, x_dense)
+        ldl_solve[DTYPE, NV](L, D, b, x_dense)
         ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, b, x_sparse)
 
         for i in range(NV):
@@ -292,14 +302,14 @@ fn test_sparse_solve_residual(
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](fill=Scalar[DTYPE](0))
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia(model, data, crb)
 
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
     build_sparse_pattern[
@@ -314,16 +324,22 @@ fn test_sparse_solve_residual(
         sM.values[sM.diag_pos(dof)] += model.joints[j].armature
 
     # Save M before factorization (expand to dense for residual check)
-    var M_dense = InlineArray[Scalar[DTYPE], M_SIZE](fill=Scalar[DTYPE](0))
+    var M_dense = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_dense.append(Scalar[DTYPE](0))
     sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_dense)
 
     ldl_factor_sparse[DTYPE, NV, NM](sM)
 
-    var b = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var b = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        b.append(Scalar[DTYPE](0))
     for i in range(NV):
         b[i] = Scalar[DTYPE](Float64(i + 1))
 
-    var x = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var x = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        x.append(Scalar[DTYPE](0))
     ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, b, x)
 
     # Compute residual r = M * x - b

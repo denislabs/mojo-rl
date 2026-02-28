@@ -206,10 +206,10 @@ fn compare_solver_forces(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # 2. Contact detection
     detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
@@ -217,14 +217,14 @@ fn compare_solver_forces(
     )
 
     # 3. Composite inertia + Mass matrix
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model, data, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model, data, cdof, crb, M)
 
     # 4. Add armature only to M diagonal (MuJoCo solver uses M+arm, NOT M+arm+dt*damp)
@@ -244,27 +244,29 @@ fn compare_solver_forces(
             M[dof_adr * NV + dof_adr] += arm
 
     # 5. LDL factorize + M_inv
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_ldl, M_inv)
 
     # 6. Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model, data, cdof, bias)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model, data, cdof, bias)
 
     # 7. f_net = qfrc - bias
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data.qfrc[i] - bias[i]
+        f_net.append(data.qfrc[i] - bias[i])
 
     # 8. Apply passive forces (damping + stiffness + frictionloss)
     # Matches euler_integrator.mojo lines 238-305
@@ -326,10 +328,10 @@ fn compare_solver_forces(
                     f_net[dof_adr] += floss
 
     # 9. qacc = M^{-1} * f_net via LDL solve (unconstrained acceleration)
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, f_net, qacc)
+    var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D_ldl, f_net, qacc)
 
     # Diagnostic: verify M*qacc = f_net (LDL sanity check)
     var residual_max: Scalar[DTYPE] = 0
@@ -341,10 +343,10 @@ fn compare_solver_forces(
         if res > residual_max:
             residual_max = res
 
-    # 10. Build constraints (passing qacc as unconstrained acceleration)
+    # 10. Build constraints
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
     build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
-        model, data, cdof, M_inv, qacc, dt, constraints
+        model, data, cdof, M_inv, dt, constraints
     )
 
     # 11. Fill M_hat and qfrc_smooth for primal solver
@@ -364,9 +366,9 @@ fn compare_solver_forces(
     )
 
     # Save qacc0 before solver modifies it
-    var qacc0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc0 = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        qacc0[i] = qacc[i]
+        qacc0.append(qacc[i])
 
     # 12. Solve constraints (modifies qacc in-place)
     NewtonSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
@@ -586,7 +588,9 @@ fn compare_solver_forces(
     comptime MR = _max_one[MAX_ROWS]()
 
     # Compute D values (same as solver does)
-    var D_vals_cmp = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
+    var D_vals_cmp = List[Scalar[DTYPE]](capacity=MR)
+    for _ in range(MR):
+        D_vals_cmp.append(Scalar[DTYPE](0))
     for r_cmp in range(constraints.num_rows):
         D_vals_cmp[r_cmp] = primal_D(
             constraints.rows[r_cmp].inv_K_imp,
@@ -599,9 +603,9 @@ fn compare_solver_forces(
     )
 
     # Cost at MuJoCo's solution
-    var mj_qacc_typed = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var mj_qacc_typed = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        mj_qacc_typed[i] = Scalar[DTYPE](mj_qacc[i])
+        mj_qacc_typed.append(Scalar[DTYPE](mj_qacc[i]))
     var mj_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
         constraints, D_vals_cmp, mj_qacc_typed, qacc0, f_net, M,
     )

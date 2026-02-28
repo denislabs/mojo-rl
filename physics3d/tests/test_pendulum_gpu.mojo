@@ -122,7 +122,7 @@ fn test_pendulum_gpu() raises:
 
     # Create host buffers
     var state_host = create_state_buffer[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH
     ](ctx)
     var model_host = create_model_buffer[DTYPE, NBODY, NJOINT](ctx)
 

@@ -108,6 +108,14 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var stiffness: Float64
     var springref: Float64
     var frictionloss: Float64
+    var ref_val: Float64  # MuJoCo joint ref (zero-position offset for qpos0)
+    var solref_limit_0: Float64  # -1.0 = use model default
+    var solref_limit_1: Float64  # -1.0 = use model default
+    var solimp_limit_0: Float64  # -1.0 = use model default
+    var solimp_limit_1: Float64  # -1.0 = use model default
+    var solimp_limit_2: Float64  # -1.0 = use model default
+    var solimp_limit_3: Float64  # -1.0 = use model default
+    var solimp_limit_4: Float64  # -1.0 = use model default
 
     fn __init__(
         out self,
@@ -129,6 +137,14 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         stiffness: Float64 = 0.0,
         springref: Float64 = 0.0,
         frictionloss: Float64 = 0.0,
+        ref_val: Float64 = 0.0,
+        solref_limit_0: Float64 = -1.0,
+        solref_limit_1: Float64 = -1.0,
+        solimp_limit_0: Float64 = -1.0,
+        solimp_limit_1: Float64 = -1.0,
+        solimp_limit_2: Float64 = -1.0,
+        solimp_limit_3: Float64 = -1.0,
+        solimp_limit_4: Float64 = -1.0,
     ):
         self.jnt_type = jnt_type
         self.body_id = body_id
@@ -148,6 +164,14 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         self.stiffness = stiffness
         self.springref = springref
         self.frictionloss = frictionloss
+        self.ref_val = ref_val
+        self.solref_limit_0 = solref_limit_0
+        self.solref_limit_1 = solref_limit_1
+        self.solimp_limit_0 = solimp_limit_0
+        self.solimp_limit_1 = solimp_limit_1
+        self.solimp_limit_2 = solimp_limit_2
+        self.solimp_limit_3 = solimp_limit_3
+        self.solimp_limit_4 = solimp_limit_4
 
 
 # =============================================================================
@@ -627,6 +651,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var joint_limited: Bool
     var joint_frictionloss: Float64
     var joint_springref: Float64
+    var joint_solref_limit_0: Float64
+    var joint_solref_limit_1: Float64
+    var joint_solimp_limit_0: Float64
+    var joint_solimp_limit_1: Float64
+    var joint_solimp_limit_2: Float64
+    var joint_solimp_limit_3: Float64
+    var joint_solimp_limit_4: Float64
     var geom_friction: Float64
     var geom_friction_spin: Float64
     var geom_friction_roll: Float64
@@ -657,6 +688,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_limited: Bool = False,
         joint_frictionloss: Float64 = 0.0,
         joint_springref: Float64 = 0.0,
+        joint_solref_limit_0: Float64 = 0.02,
+        joint_solref_limit_1: Float64 = 1.0,
+        joint_solimp_limit_0: Float64 = 0.0,
+        joint_solimp_limit_1: Float64 = 0.8,
+        joint_solimp_limit_2: Float64 = 0.03,
+        joint_solimp_limit_3: Float64 = 0.5,
+        joint_solimp_limit_4: Float64 = 2.0,
         geom_friction: Float64 = 0.5,
         geom_friction_spin: Float64 = 0.005,
         geom_friction_roll: Float64 = 0.0001,
@@ -685,6 +723,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_limited = joint_limited
         self.joint_frictionloss = joint_frictionloss
         self.joint_springref = joint_springref
+        self.joint_solref_limit_0 = joint_solref_limit_0
+        self.joint_solref_limit_1 = joint_solref_limit_1
+        self.joint_solimp_limit_0 = joint_solimp_limit_0
+        self.joint_solimp_limit_1 = joint_solimp_limit_1
+        self.joint_solimp_limit_2 = joint_solimp_limit_2
+        self.joint_solimp_limit_3 = joint_solimp_limit_3
+        self.joint_solimp_limit_4 = joint_solimp_limit_4
         self.geom_friction = geom_friction
         self.geom_friction_spin = geom_friction_spin
         self.geom_friction_roll = geom_friction_roll
@@ -891,6 +936,26 @@ struct FlatModelDef[
                     frictionloss=Scalar[DTYPE](jd.frictionloss),
                 )
             # JNT_BALL and JNT_FREE not yet wired — add when needed
+
+            # Set qpos0 from joint ref attribute (MuJoCo: displacement = qpos - qpos0)
+            var qpos_adr_j = model.joints[j].qpos_adr
+            model.qpos0[qpos_adr_j] = Scalar[DTYPE](jd.ref_val)
+
+            # Set per-joint solimp/solref for limits (use parsed value if >= 0, else model default)
+            var jr0: Float64 = jd.solref_limit_0 if jd.solref_limit_0 >= 0.0 else Float64(model.solref_limit[0])
+            var jr1: Float64 = jd.solref_limit_1 if jd.solref_limit_1 >= 0.0 else Float64(model.solref_limit[1])
+            var ji0: Float64 = jd.solimp_limit_0 if jd.solimp_limit_0 >= 0.0 else Float64(model.solimp_limit[0])
+            var ji1: Float64 = jd.solimp_limit_1 if jd.solimp_limit_1 >= 0.0 else Float64(model.solimp_limit[1])
+            var ji2: Float64 = jd.solimp_limit_2 if jd.solimp_limit_2 >= 0.0 else Float64(model.solimp_limit[2])
+            var ji3: Float64 = jd.solimp_limit_3 if jd.solimp_limit_3 >= 0.0 else Float64(model.solimp_limit[3])
+            var ji4: Float64 = jd.solimp_limit_4 if jd.solimp_limit_4 >= 0.0 else Float64(model.solimp_limit[4])
+            model.joint_solref_limit[j * 2 + 0] = Scalar[DTYPE](jr0)
+            model.joint_solref_limit[j * 2 + 1] = Scalar[DTYPE](jr1)
+            model.joint_solimp_limit[j * 5 + 0] = Scalar[DTYPE](ji0)
+            model.joint_solimp_limit[j * 5 + 1] = Scalar[DTYPE](ji1)
+            model.joint_solimp_limit[j * 5 + 2] = Scalar[DTYPE](ji2)
+            model.joint_solimp_limit[j * 5 + 3] = Scalar[DTYPE](ji3)
+            model.joint_solimp_limit[j * 5 + 4] = Scalar[DTYPE](ji4)
 
         # Geoms — populate model.geom_* arrays directly
         for i in range(Self.NGEOM):

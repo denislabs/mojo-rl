@@ -64,13 +64,15 @@ fn compare_qderiv(
     compute_body_velocities(model, data)
 
     # Compute cdof
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
     compute_cdof(model, data, cdof)
 
     # Initialize qDeriv with passive damping (like ImplicitIntegrator does)
-    var qDeriv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        qDeriv[i] = Scalar[DTYPE](0)
+    var qDeriv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        qDeriv.append(Scalar[DTYPE](0))
 
     # Passive damping: qDeriv[i,i] = -damping[i]
     for j in range(model.num_joints):
