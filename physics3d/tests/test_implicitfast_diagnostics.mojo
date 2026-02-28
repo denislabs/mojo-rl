@@ -148,10 +148,9 @@ fn main() raises:
     print("\n--- Part 2: Our engine intermediate values ---")
 
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ](
-    )
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, ConeType.ELLIPTIC, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+    ]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):

@@ -190,10 +190,9 @@ fn compare_pyramidal_solver(
 
     # === Our engine (PYRAMIDAL) ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.PYRAMIDAL
-    ](
-    )
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, ConeType.PYRAMIDAL, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+    ]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration

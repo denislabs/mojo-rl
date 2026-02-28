@@ -69,11 +69,10 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
-    ](
-    )
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+    ]()
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):

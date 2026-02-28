@@ -198,7 +198,6 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_pendulum.mojo` | Pendulum period (~2.016s) + energy conservation (<5% drift) | CPU | PASS |
 | `test_pendulum_gpu.mojo` | Same pendulum on GPU (relaxed: period 5%, energy 10%) | GPU | PASS |
 | `test_implicit_integrator.mojo` | LU factorization, ImplicitIntegrator compilation, zero-vel qDeriv | CPU | PASS |
-| `test_robot.mojo` | HalfCheetahRobot instantiation (compilation check) | CPU | PASS |
 
 ### Diagnostic / Stress Tests (not pass/fail, produce logs)
 

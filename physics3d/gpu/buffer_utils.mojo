@@ -196,6 +196,7 @@ fn create_state_buffer[
     NV: Int,
     NBODY: Int,
     MAX_CONTACTS: Int,
+    NSITE: Int,
     BATCH: Int,
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Allocate host buffer for GC state.
@@ -652,6 +653,7 @@ fn copy_data_to_buffer[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NSITE: Int,
 ](
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     buffer: HostBuffer[DTYPE],
@@ -721,7 +723,9 @@ fn copy_data_to_buffer[
     for i in range(NBODY * 10):
         buffer[base + CINERT_OFF + i] = Scalar[DTYPE](0)
 
-    comptime QFRC_ACT_OFF = qfrc_actuator_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    comptime QFRC_ACT_OFF = qfrc_actuator_offset[
+        NQ, NV, NBODY, MAX_CONTACTS, NSITE
+    ]()
     for i in range(NV):
         buffer[base + QFRC_ACT_OFF + i] = Scalar[DTYPE](0)
 
@@ -733,6 +737,7 @@ fn copy_buffer_to_data[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NSITE: Int,
 ](
     buffer: UnsafePointer[Scalar[DTYPE]],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],

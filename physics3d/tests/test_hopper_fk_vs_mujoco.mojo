@@ -51,9 +51,9 @@ fn compare_fk(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HopperModel.CONE_TYPE
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
     HopperModel.setup_model_and_data(model, data)
 
     # Set qpos
