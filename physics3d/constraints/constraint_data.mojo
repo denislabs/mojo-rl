@@ -111,7 +111,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     var J: List[Scalar[Self.DTYPE]]
     var MinvJT: List[Scalar[Self.DTYPE]]
     # Mass matrix (with armature + implicit damping) — for primal solvers
-    var M_hat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV * Self.NV]()]
+    var M_hat: List[Scalar[Self.DTYPE]]
     # Net unconstrained force (qfrc - bias - passive) — for primal solvers
     var qfrc_smooth: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
     var num_rows: Int
@@ -135,9 +135,10 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         self.MinvJT = List[Scalar[Self.DTYPE]](capacity=JSize)
         for _ in range(JSize):
             self.MinvJT.append(Scalar[Self.DTYPE](0))
-        self.M_hat = InlineArray[Scalar[Self.DTYPE], MSize](
-            fill=Scalar[Self.DTYPE](0)
-        )
+        self.M_hat = List[Scalar[Self.DTYPE]](capacity=MSize)
+        for _ in range(MSize):
+            self.M_hat.append(Scalar[Self.DTYPE](0))
+
         self.qfrc_smooth = InlineArray[Scalar[Self.DTYPE], VSize](
             fill=Scalar[Self.DTYPE](0)
         )

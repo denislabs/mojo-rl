@@ -179,6 +179,7 @@ fn compare_scalar(
 # =============================================================================
 
 
+@no_inline
 fn compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],

@@ -56,6 +56,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
+@no_inline
 fn compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
@@ -109,7 +110,7 @@ fn compare_step(
     # Match our engine settings: Euler integrator, Newton solver, elliptic cone
     mj_model.opt.integrator = 0  # mjINT_EULER
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel, MuJoCo default)
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):

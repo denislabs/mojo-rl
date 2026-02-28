@@ -19,10 +19,7 @@ fn chol_factor[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
-](
-    H: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
-):
+](H: List[Scalar[DTYPE]], mut L: List[Scalar[DTYPE]],):
     """In-place Cholesky factorization: L*L^T = H (lower triangular).
 
     H must be symmetric positive definite. L is output lower triangular.
@@ -52,11 +49,7 @@ fn chol_solve[
     NV: Int,
     M_SIZE: Int,
     V_SIZE: Int,
-](
-    L: InlineArray[Scalar[DTYPE], M_SIZE],
-    b: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
-):
+](L: List[Scalar[DTYPE]], b: List[Scalar[DTYPE]], mut x: List[Scalar[DTYPE]],):
     """Solve H*x = b given Cholesky factor L (where H = L*L^T).
 
     Two-phase: forward substitution L*y = b, then back substitution L^T*x = y.

@@ -186,17 +186,15 @@ fn compare_bias_forces(
     forward_kinematics(model_cpu, data_cpu)
     compute_body_velocities(model_cpu, data_cpu)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model_cpu, data_cpu, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model_cpu, data_cpu, cdof)
 
-    var bias_cpu = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias_cpu[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model_cpu, data_cpu, cdof, bias_cpu)
+    var bias_cpu = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias_cpu.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model_cpu, data_cpu, cdof, bias_cpu)
 
     # === GPU pipeline (reuse buffers) ===
     for i in range(BATCH * STATE_SIZE):

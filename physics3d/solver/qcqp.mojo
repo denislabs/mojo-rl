@@ -18,7 +18,9 @@ from ..types import _max_one
 
 
 @always_inline
-fn qcqp2[DTYPE: DType](
+fn qcqp2[
+    DTYPE: DType
+](
     mut f1: Scalar[DTYPE],
     mut f2: Scalar[DTYPE],
     mu: Scalar[DTYPE],
@@ -49,7 +51,9 @@ fn qcqp2[DTYPE: DType](
 
 
 @always_inline
-fn qcqp3[DTYPE: DType](
+fn qcqp3[
+    DTYPE: DType
+](
     mut f1: Scalar[DTYPE],
     mut f2: Scalar[DTYPE],
     mut f3: Scalar[DTYPE],
@@ -139,7 +143,9 @@ fn qcqp3[DTYPE: DType](
 
 
 @always_inline
-fn qcqp5[DTYPE: DType](
+fn qcqp5[
+    DTYPE: DType
+](
     mut f1: Scalar[DTYPE],
     mut f2: Scalar[DTYPE],
     mut f3: Scalar[DTYPE],
@@ -220,7 +226,9 @@ fn qcqp5[DTYPE: DType](
         var g3 = v3 / d3
         var g4 = v4 / d4
         var g5 = v5 / d5
-        var val = g1 * g1 + g2 * g2 + g3 * g3 + g4 * g4 + g5 * g5 - Scalar[DTYPE](1.0)
+        var val = (
+            g1 * g1 + g2 * g2 + g3 * g3 + g4 * g4 + g5 * g5 - Scalar[DTYPE](1.0)
+        )
 
         if abs(val) < Scalar[DTYPE](1e-8):
             f1 = v1
@@ -236,8 +244,11 @@ fn qcqp5[DTYPE: DType](
         var dv4 = -f4 * d4 * d4 / (dd4 * dd4)
         var dv5 = -f5 * d5 * d5 / (dd5 * dd5)
         var deriv = Scalar[DTYPE](2.0) * (
-            g1 * dv1 / d1 + g2 * dv2 / d2 + g3 * dv3 / d3
-            + g4 * dv4 / d4 + g5 * dv5 / d5
+            g1 * dv1 / d1
+            + g2 * dv2 / d2
+            + g3 * dv3 / d3
+            + g4 * dv4 / d4
+            + g5 * dv5 / d5
         )
 
         if abs(deriv) < Scalar[DTYPE](1e-12):
@@ -263,7 +274,9 @@ fn qcqp5[DTYPE: DType](
 
 
 @always_inline
-fn mj_qcqp2[DTYPE: DType](
+fn mj_qcqp2[
+    DTYPE: DType
+](
     mut res0: Scalar[DTYPE],
     mut res1: Scalar[DTYPE],
     A: InlineArray[Scalar[DTYPE], 4],  # 2x2 row-major
@@ -332,7 +345,9 @@ fn mj_qcqp2[DTYPE: DType](
 
 
 @always_inline
-fn mj_qcqp3[DTYPE: DType](
+fn mj_qcqp3[
+    DTYPE: DType
+](
     mut res0: Scalar[DTYPE],
     mut res1: Scalar[DTYPE],
     mut res2: Scalar[DTYPE],
@@ -397,7 +412,9 @@ fn mj_qcqp3[DTYPE: DType](
         if val < Scalar[DTYPE](1e-10):
             break
 
-        var deriv = Scalar[DTYPE](-2.0) * (P11 * v1 * v1 + P22 * v2 * v2 + P33 * v3 * v3) - Scalar[DTYPE](4.0) * (P12 * v1 * v2 + P13 * v1 * v3 + P23 * v2 * v3)
+        var deriv = Scalar[DTYPE](-2.0) * (
+            P11 * v1 * v1 + P22 * v2 * v2 + P33 * v3 * v3
+        ) - Scalar[DTYPE](4.0) * (P12 * v1 * v2 + P13 * v1 * v3 + P23 * v2 * v3)
 
         var delta = -val / deriv
         if delta < Scalar[DTYPE](1e-10):
@@ -411,7 +428,9 @@ fn mj_qcqp3[DTYPE: DType](
 
 
 @always_inline
-fn mj_qcqp5[DTYPE: DType](
+fn mj_qcqp5[
+    DTYPE: DType
+](
     mut res: InlineArray[Scalar[DTYPE], 5],
     A: InlineArray[Scalar[DTYPE], 25],  # 5x5 row-major
     b: InlineArray[Scalar[DTYPE], 5],
@@ -521,7 +540,9 @@ fn mj_qcqp5[DTYPE: DType](
 
 
 @always_inline
-fn cost_change[DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int](
+fn cost_change[
+    DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int
+](
     force: InlineArray[Scalar[DTYPE], MAX_DIM],
     oldforce: InlineArray[Scalar[DTYPE], MAX_DIM],
     AR: InlineArray[Scalar[DTYPE], AR_SIZE],
@@ -545,5 +566,7 @@ fn cost_change[DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int](
             change += delta_i * res[i]
             for j in range(dim):
                 var delta_j = force[j] - oldforce[j]
-                change += Scalar[DTYPE](0.5) * delta_i * AR[i * dim + j] * delta_j
+                change += (
+                    Scalar[DTYPE](0.5) * delta_i * AR[i * dim + j] * delta_j
+                )
     return change

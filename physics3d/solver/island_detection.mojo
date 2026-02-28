@@ -68,7 +68,9 @@ fn detect_islands[
     NV: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-) -> IslandData[MAX_ROWS, NV]:
+) -> IslandData[
+    MAX_ROWS, NV
+]:
     """Detect constraint islands via union-find on the DOF coupling graph.
 
     Two DOFs are coupled (same island) if they both appear as non-zero

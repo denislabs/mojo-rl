@@ -55,11 +55,11 @@ fn compute_fluid_forces[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
-    NSITE,
+        NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    cdof: InlineArray[Scalar[DTYPE], _max_one[NV * 6]()],
-    mut f_net: InlineArray[Scalar[DTYPE], _max_one[NV]()],
+    cdof: List[Scalar[DTYPE]],
+    mut f_net: List[Scalar[DTYPE]],
 ) where DTYPE.is_floating_point():
     """Apply inertia-box fluid forces to f_net (MuJoCo-matching).
 
@@ -166,9 +166,15 @@ fn compute_fluid_forces[
             var bx4 = bx * bx * bx * bx
             var by4 = by * by * by * by
             var bz4 = bz * bz * bz * bz
-            ltx = ltx - rho * bx * (by4 + bz4) * abs(wx) * wx / Scalar[DTYPE](64)
-            lty = lty - rho * by * (bx4 + bz4) * abs(wy) * wy / Scalar[DTYPE](64)
-            ltz = ltz - rho * bz * (bx4 + by4) * abs(wz) * wz / Scalar[DTYPE](64)
+            ltx = ltx - rho * bx * (by4 + bz4) * abs(wx) * wx / Scalar[DTYPE](
+                64
+            )
+            lty = lty - rho * by * (bx4 + bz4) * abs(wy) * wy / Scalar[DTYPE](
+                64
+            )
+            ltz = ltz - rho * bz * (bx4 + by4) * abs(wz) * wz / Scalar[DTYPE](
+                64
+            )
 
         # --- 6. Rotate forces/torques back to world frame ---
         var fw = quat_rotate[DTYPE](qx, qy, qz, qw, lfx, lfy, lfz)
@@ -220,8 +226,12 @@ fn compute_fluid_forces[
                     var cl2 = cdof[di * 6 + 5]
                     f_net[di] = (
                         f_net[di]
-                        + cl0 * fx_w + cl1 * fy_w + cl2 * fz_w
-                        + ca0 * tau_ox + ca1 * tau_oy + ca2 * tau_oz
+                        + cl0 * fx_w
+                        + cl1 * fy_w
+                        + cl2 * fz_w
+                        + ca0 * tau_ox
+                        + ca1 * tau_oy
+                        + ca2 * tau_oz
                     )
 
             body = model.body_parent[body]

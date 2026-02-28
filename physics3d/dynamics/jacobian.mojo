@@ -100,7 +100,6 @@ fn compute_cdof[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
-    CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -121,7 +120,7 @@ fn compute_cdof[
     NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    mut cdof: List[Scalar[DTYPE]],
 ):
     """Compute spatial motion axis (cdof) for each DOF.
 
@@ -146,7 +145,7 @@ fn compute_cdof[
         cdof: Output array of 6*NV spatial motion axes.
     """
     # Zero out
-    for i in range(CDOF_SIZE):
+    for i in range(NV * 6):
         cdof[i] = Scalar[DTYPE](0)
 
     # Process per-body (like MuJoCo FK), tracking accumulated orientation
@@ -350,7 +349,6 @@ fn compute_contact_jacobian_row[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     V_SIZE: Int,
-    CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -371,7 +369,7 @@ fn compute_contact_jacobian_row[
     NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    cdof: List[Scalar[DTYPE]],
     contact_body_a: Int,
     contact_body_b: Int,
     contact_pos_x: Scalar[DTYPE],
@@ -525,7 +523,6 @@ fn compute_composite_inertia[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
-    CRB_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -546,7 +543,7 @@ fn compute_composite_inertia[
     NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+    mut crb: List[Scalar[DTYPE]],
 ):
     """Compute composite rigid body inertia for each body.
 

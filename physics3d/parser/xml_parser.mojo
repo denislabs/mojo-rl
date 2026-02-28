@@ -650,6 +650,35 @@ fn _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     return _trim(angle_val) == "degree"
 
 
+fn _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
+    """Return True when <compiler inertiafromgeom="true"/> is present. Comptime-safe."""
+    var t = xml.find("<compiler")
+    if t == -1:
+        return False
+    var tag_end = xml.find(">", t)
+    if tag_end == -1:
+        return False
+    var tag = String(xml[t : tag_end + 1])
+    var val = _extract_attr(tag, "inertiafromgeom")
+    return _trim(val) == "true"
+
+
+fn _xml_compiler_settotalmass[xml: String]() -> Float64:
+    """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe."""
+    var t = xml.find("<compiler")
+    if t == -1:
+        return Float64(-1.0)
+    var tag_end = xml.find(">", t)
+    if tag_end == -1:
+        return Float64(-1.0)
+    var tag = String(xml[t : tag_end + 1])
+    var val = _extract_attr(tag, "settotalmass")
+    var trimmed = _trim(val)
+    if len(trimmed) == 0:
+        return Float64(-1.0)
+    return _parse_float(trimmed)
+
+
 fn parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 

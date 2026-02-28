@@ -61,13 +61,11 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         MAX_ROWS: Int,
-        V_SIZE: Int,
-        M_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -79,13 +77,13 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+        M_inv: List[Scalar[DTYPE]],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: List[Scalar[DTYPE]],
         dt: Scalar[DTYPE],
     ):
         """Solve constraints on CPU.
@@ -116,8 +114,8 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin

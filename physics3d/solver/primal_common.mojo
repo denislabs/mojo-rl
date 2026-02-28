@@ -42,10 +42,9 @@ comptime PRIMAL_MINVAL: Float64 = 1e-12
 
 
 @always_inline
-fn primal_D[DTYPE: DType](
-    inv_K_imp: Scalar[DTYPE],
-    K: Scalar[DTYPE],
-) -> Scalar[DTYPE]:
+fn primal_D[
+    DTYPE: DType
+](inv_K_imp: Scalar[DTYPE], K: Scalar[DTYPE],) -> Scalar[DTYPE]:
     """Compute MuJoCo-matching primal D = 1/R from stored constraint values.
 
     Our constraint rows store:
@@ -74,9 +73,9 @@ fn constraint_update[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    jar: InlineArray[Scalar[DTYPE], R_SIZE],
-    mut force: InlineArray[Scalar[DTYPE], R_SIZE],
-    mut state: InlineArray[Int, R_SIZE],
+    jar: List[Scalar[DTYPE]],
+    mut force: List[Scalar[DTYPE]],
+    mut state: List[Int],
     mut cost: Scalar[DTYPE],
 ):
     """Compute constraint forces, state, and cost from jar = J*qacc - aref.
@@ -139,9 +138,7 @@ fn constraint_update[
             var T = sqrt(T_sq)
 
             # Get mu from first friction child (all should have same mu for slide)
-            var mu = constraints.rows[
-                friction_start + fric_idx
-            ].friction_coef
+            var mu = constraints.rows[friction_start + fric_idx].friction_coef
 
             # Three-zone logic (MuJoCo mj_constraintUpdate_impl)
             if N >= Scalar[DTYPE](0) and N * N >= mu * mu * T_sq:
@@ -185,9 +182,7 @@ fn constraint_update[
     # === Process limit constraints (inequality) ===
     for r_off in range(constraints.num_limits):
         var r = limits_start + r_off
-        var D_r = primal_D(
-            constraints.rows[r].inv_K_imp, constraints.rows[r].K
-        )
+        var D_r = primal_D(constraints.rows[r].inv_K_imp, constraints.rows[r].K)
         if jar[r] >= Scalar[DTYPE](0):
             pass  # Satisfied
         else:
@@ -198,9 +193,7 @@ fn constraint_update[
     # === Process equality constraints (bilateral, always quadratic) ===
     for r_off in range(constraints.num_equality):
         var r = equality_start + r_off
-        var D_r = primal_D(
-            constraints.rows[r].inv_K_imp, constraints.rows[r].K
-        )
+        var D_r = primal_D(constraints.rows[r].inv_K_imp, constraints.rows[r].K)
         force[r] = -D_r * jar[r]
         state[r] = PRIMAL_QUADRATIC
         cost += Scalar[DTYPE](0.5) * D_r * jar[r] * jar[r]
@@ -211,12 +204,10 @@ fn compute_jar[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
-    V_SIZE: Int,
-    R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut jar: InlineArray[Scalar[DTYPE], R_SIZE],
+    qacc: List[Scalar[DTYPE]],
+    mut jar: List[Scalar[DTYPE]],
 ):
     """Compute jar[i] = J[i,:] . qacc - aref[i] for all constraints.
 
@@ -238,8 +229,8 @@ fn compute_qfrc_constraint[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    force: InlineArray[Scalar[DTYPE], R_SIZE],
-    mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
+    force: List[Scalar[DTYPE]],
+    mut qfrc: List[Scalar[DTYPE]],
 ):
     """Compute qfrc_constraint = J^T * force."""
     for i in range(NV):
@@ -257,10 +248,10 @@ fn compute_gauss_cost[
     NV: Int,
     V_SIZE: Int,
 ](
-    Ma: InlineArray[Scalar[DTYPE], V_SIZE],
-    qfrc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
+    Ma: List[Scalar[DTYPE]],
+    qfrc_smooth: List[Scalar[DTYPE]],
+    qacc: List[Scalar[DTYPE]],
+    qacc_smooth: List[Scalar[DTYPE]],
 ) -> Scalar[DTYPE]:
     """Compute Gauss cost = 0.5 * (Ma - qfrc_smooth) . (qacc - qacc_smooth)."""
     var cost_val: Scalar[DTYPE] = 0
@@ -278,10 +269,10 @@ fn compute_total_cost[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qfrc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    M_hat: InlineArray[Scalar[DTYPE], _max_one[NV * NV]()],
+    qacc: List[Scalar[DTYPE]],
+    qacc_smooth: List[Scalar[DTYPE]],
+    qfrc_smooth: List[Scalar[DTYPE]],
+    M_hat: List[Scalar[DTYPE]],
 ) -> Scalar[DTYPE]:
     """Compute total primal cost at the given qacc.
 
@@ -292,9 +283,9 @@ fn compute_total_cost[
     comptime MR = _max_one[MAX_ROWS]()
 
     # Compute Ma = M * qacc
-    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        Ma[i] = Scalar[DTYPE](0)
+    var Ma = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for i in range(V_SIZE):
+        Ma.append(Scalar[DTYPE](0))
         for j in range(NV):
             Ma[i] += M_hat[i * NV + j] * qacc[j]
 
@@ -304,17 +295,18 @@ fn compute_total_cost[
     )
 
     # Compute jar = J*qacc + bias
-    var jar = InlineArray[Scalar[DTYPE], R_SIZE](uninitialized=True)
-    for i in range(R_SIZE):
-        jar[i] = Scalar[DTYPE](0)
-    compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, R_SIZE](constraints, qacc, jar)
+    var jar = List[Scalar[DTYPE]](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        jar.append(Scalar[DTYPE](0))
+    compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
     # Constraint cost via cone-aware update
-    var force = InlineArray[Scalar[DTYPE], R_SIZE](uninitialized=True)
-    var cstate = InlineArray[Int, R_SIZE](uninitialized=True)
-    for i in range(R_SIZE):
-        force[i] = Scalar[DTYPE](0)
-        cstate[i] = PRIMAL_SATISFIED
+    var force = List[Scalar[DTYPE]](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        force.append(Scalar[DTYPE](0))
+    var cstate = List[Int](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        cstate.append(PRIMAL_SATISFIED)
     var cnstr_cost: Scalar[DTYPE] = 0
     constraint_update[DTYPE, MAX_ROWS, NV, R_SIZE](
         constraints, jar, force, cstate, cnstr_cost
@@ -379,7 +371,6 @@ fn compute_primal_D_values[
                 ) / D_ldl[j]
             else:
                 L_ldl[i_row * NV + j] = Scalar[DTYPE](0)
-
 
     # Compute diagApprox per row using MuJoCo convention:
     # all rows in a contact group use the normal row's diagApprox
@@ -484,10 +475,10 @@ fn constraint_update_with_D[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    jar: InlineArray[Scalar[DTYPE], R_SIZE],
-    D_values: InlineArray[Scalar[DTYPE], R_SIZE],
-    mut force: InlineArray[Scalar[DTYPE], R_SIZE],
-    mut state: InlineArray[Int, R_SIZE],
+    jar: List[Scalar[DTYPE]],
+    D_values: List[Scalar[DTYPE]],
+    mut force: List[Scalar[DTYPE]],
+    mut state: List[Int],
     mut cost: Scalar[DTYPE],
 ):
     """Cone-aware constraint_update using precomputed D values.
@@ -538,9 +529,7 @@ fn constraint_update_with_D[
                 var fr = friction_start + fric_idx + g
                 T_sq += jar[fr] * jar[fr]
             var T = sqrt(T_sq)
-            var mu = constraints.rows[
-                friction_start + fric_idx
-            ].friction_coef
+            var mu = constraints.rows[friction_start + fric_idx].friction_coef
 
             if N >= Scalar[DTYPE](0) and N * N >= mu * mu * T_sq:
                 pass
@@ -592,7 +581,7 @@ fn constraint_update_with_D[
         cost += Scalar[DTYPE](0.5) * D_r * jar[r] * jar[r]
 
 
-@always_inline
+@no_inline
 fn compute_total_cost_with_D[
     DTYPE: DType,
     MAX_ROWS: Int,
@@ -601,16 +590,16 @@ fn compute_total_cost_with_D[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    D_values: InlineArray[Scalar[DTYPE], R_SIZE],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qfrc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    M_hat: InlineArray[Scalar[DTYPE], _max_one[NV * NV]()],
+    D_values: List[Scalar[DTYPE]],
+    qacc: List[Scalar[DTYPE]],
+    qacc_smooth: List[Scalar[DTYPE]],
+    qfrc_smooth: List[Scalar[DTYPE]],
+    M_hat: List[Scalar[DTYPE]],
 ) -> Scalar[DTYPE]:
     """Compute total primal cost using precomputed D values."""
-    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        Ma[i] = Scalar[DTYPE](0)
+    var Ma = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for i in range(V_SIZE):
+        Ma.append(Scalar[DTYPE](0))
         for j in range(NV):
             Ma[i] += M_hat[i * NV + j] * qacc[j]
 
@@ -618,16 +607,17 @@ fn compute_total_cost_with_D[
         Ma, qfrc_smooth, qacc, qacc_smooth
     )
 
-    var jar = InlineArray[Scalar[DTYPE], R_SIZE](uninitialized=True)
-    for i in range(R_SIZE):
-        jar[i] = Scalar[DTYPE](0)
-    compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, R_SIZE](constraints, qacc, jar)
+    var jar = List[Scalar[DTYPE]](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        jar.append(Scalar[DTYPE](0))
+    compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
-    var force = InlineArray[Scalar[DTYPE], R_SIZE](uninitialized=True)
-    var cstate = InlineArray[Int, R_SIZE](uninitialized=True)
-    for i in range(R_SIZE):
-        force[i] = Scalar[DTYPE](0)
-        cstate[i] = PRIMAL_SATISFIED
+    var force = List[Scalar[DTYPE]](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        force.append(Scalar[DTYPE](0))
+    var cstate = List[Int](capacity=R_SIZE)
+    for _ in range(R_SIZE):
+        cstate.append(PRIMAL_SATISFIED)
     var cnstr_cost: Scalar[DTYPE] = 0
     constraint_update_with_D[DTYPE, MAX_ROWS, NV, R_SIZE](
         constraints, jar, D_values, force, cstate, cnstr_cost
@@ -636,7 +626,7 @@ fn compute_total_cost_with_D[
     return gauss + cnstr_cost
 
 
-@always_inline
+@no_inline
 fn primal_linesearch_with_D[
     DTYPE: DType,
     MAX_ROWS: Int,
@@ -645,15 +635,15 @@ fn primal_linesearch_with_D[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    D_values: InlineArray[Scalar[DTYPE], R_SIZE],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qfrc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    Ma: InlineArray[Scalar[DTYPE], V_SIZE],
-    Mv: InlineArray[Scalar[DTYPE], V_SIZE],
-    search: InlineArray[Scalar[DTYPE], V_SIZE],
-    jar: InlineArray[Scalar[DTYPE], R_SIZE],
-    force: InlineArray[Scalar[DTYPE], R_SIZE],
+    D_values: List[Scalar[DTYPE]],
+    qacc: List[Scalar[DTYPE]],
+    qacc_smooth: List[Scalar[DTYPE]],
+    qfrc_smooth: List[Scalar[DTYPE]],
+    Ma: List[Scalar[DTYPE]],
+    Mv: List[Scalar[DTYPE]],
+    search: List[Scalar[DTYPE]],
+    jar: List[Scalar[DTYPE]],
+    force: List[Scalar[DTYPE]],
     tolerance: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     """Newton-based linesearch matching MuJoCo's PrimalSearch.
@@ -718,12 +708,19 @@ fn primal_linesearch_with_D[
     for n_init in range(num_normals):
         var group_sz_init = 0
         while fric_idx_init + group_sz_init < num_friction:
-            if constraints.rows[friction_start + fric_idx_init + group_sz_init].friction_parent != n_init:
+            if (
+                constraints.rows[
+                    friction_start + fric_idx_init + group_sz_init
+                ].friction_parent
+                != n_init
+            ):
                 break
             group_sz_init += 1
 
         var N0 = jar[n_init]
-        var mu_init = constraints.rows[friction_start + fric_idx_init].friction_coef if group_sz_init > 0 else Scalar[DTYPE](0)
+        var mu_init = constraints.rows[
+            friction_start + fric_idx_init
+        ].friction_coef if group_sz_init > 0 else Scalar[DTYPE](0)
 
         if group_sz_init == 0:
             # Frictionless normal: d/dalpha of 0.5*D*jar^2 = D*jar*Jv, d2 = D*Jv^2
@@ -818,12 +815,19 @@ fn primal_linesearch_with_D[
     for n_ev in range(num_normals):
         var group_sz_ev = 0
         while fric_idx_ev + group_sz_ev < num_friction:
-            if constraints.rows[friction_start + fric_idx_ev + group_sz_ev].friction_parent != n_ev:
+            if (
+                constraints.rows[
+                    friction_start + fric_idx_ev + group_sz_ev
+                ].friction_parent
+                != n_ev
+            ):
                 break
             group_sz_ev += 1
 
         var N_ev = jar_a[n_ev]
-        var mu_ev = constraints.rows[friction_start + fric_idx_ev].friction_coef if group_sz_ev > 0 else Scalar[DTYPE](0)
+        var mu_ev = constraints.rows[
+            friction_start + fric_idx_ev
+        ].friction_coef if group_sz_ev > 0 else Scalar[DTYPE](0)
 
         if group_sz_ev == 0:
             if N_ev < Scalar[DTYPE](0):
@@ -836,7 +840,10 @@ fn primal_linesearch_with_D[
                 T_ev_sq += jar_a[fr_ev] * jar_a[fr_ev]
             var T_ev = sqrt(T_ev_sq)
 
-            if N_ev >= Scalar[DTYPE](0) and N_ev * N_ev >= mu_ev * mu_ev * T_ev_sq:
+            if (
+                N_ev >= Scalar[DTYPE](0)
+                and N_ev * N_ev >= mu_ev * mu_ev * T_ev_sq
+            ):
                 pass
             elif (mu_ev * N_ev + T_ev) <= Scalar[DTYPE](0):
                 d1_eval += D_values[n_ev] * jar_a[n_ev] * Jv[n_ev]
@@ -861,7 +868,9 @@ fn primal_linesearch_with_D[
                 for g_ev in range(group_sz_ev):
                     var fr_ev = friction_start + fric_idx_ev + g_ev
                     Jv_f_sq_ev += Jv[fr_ev] * Jv[fr_ev]
-                var d2sda2_ev = -mu_ev * (Jv_f_sq_ev - dTda_ev * dTda_ev) / T_ev_safe
+                var d2sda2_ev = (
+                    -mu_ev * (Jv_f_sq_ev - dTda_ev * dTda_ev) / T_ev_safe
+                )
                 d2_eval += Dm_ev * (dsda_ev * dsda_ev + s_ev * d2sda2_ev)
 
         fric_idx_ev += group_sz_ev
@@ -890,7 +899,9 @@ fn primal_linesearch_with_D[
     var p1_d2 = d2_eval
 
     # Determine direction for one-sided search
-    var dir_sign: Scalar[DTYPE] = -1 if p1_d1 > Scalar[DTYPE](0) else Scalar[DTYPE](1)
+    var dir_sign: Scalar[DTYPE] = -1 if p1_d1 > Scalar[DTYPE](0) else Scalar[
+        DTYPE
+    ](1)
 
     # === Phase 2: One-sided Newton pursuit ===
     # Follow the derivative until sign changes (bracket found)
@@ -922,12 +933,19 @@ fn primal_linesearch_with_D[
         for n_p in range(num_normals):
             var group_sz_p = 0
             while fric_idx_p + group_sz_p < num_friction:
-                if constraints.rows[friction_start + fric_idx_p + group_sz_p].friction_parent != n_p:
+                if (
+                    constraints.rows[
+                        friction_start + fric_idx_p + group_sz_p
+                    ].friction_parent
+                    != n_p
+                ):
                     break
                 group_sz_p += 1
 
             var N_p = jar_a[n_p]
-            var mu_p = constraints.rows[friction_start + fric_idx_p].friction_coef if group_sz_p > 0 else Scalar[DTYPE](0)
+            var mu_p = constraints.rows[
+                friction_start + fric_idx_p
+            ].friction_coef if group_sz_p > 0 else Scalar[DTYPE](0)
 
             if group_sz_p == 0:
                 if N_p < Scalar[DTYPE](0):
@@ -940,7 +958,10 @@ fn primal_linesearch_with_D[
                     T_p_sq += jar_a[fr_p] * jar_a[fr_p]
                 var T_p = sqrt(T_p_sq)
 
-                if N_p >= Scalar[DTYPE](0) and N_p * N_p >= mu_p * mu_p * T_p_sq:
+                if (
+                    N_p >= Scalar[DTYPE](0)
+                    and N_p * N_p >= mu_p * mu_p * T_p_sq
+                ):
                     pass
                 elif (mu_p * N_p + T_p) <= Scalar[DTYPE](0):
                     d1_eval += D_values[n_p] * jar_a[n_p] * Jv[n_p]
@@ -965,7 +986,9 @@ fn primal_linesearch_with_D[
                     for g_p in range(group_sz_p):
                         var fr_p = friction_start + fric_idx_p + g_p
                         Jv_f_sq_p += Jv[fr_p] * Jv[fr_p]
-                    var d2sda2_p = -mu_p * (Jv_f_sq_p - dTda_p * dTda_p) / T_p_safe
+                    var d2sda2_p = (
+                        -mu_p * (Jv_f_sq_p - dTda_p * dTda_p) / T_p_safe
+                    )
                     d2_eval += Dm_p * (dsda_p * dsda_p + s_p * d2sda2_p)
 
             fric_idx_p += group_sz_p
@@ -1016,12 +1039,19 @@ fn primal_linesearch_with_D[
         for n_m in range(num_normals):
             var group_sz_m = 0
             while fric_idx_m + group_sz_m < num_friction:
-                if constraints.rows[friction_start + fric_idx_m + group_sz_m].friction_parent != n_m:
+                if (
+                    constraints.rows[
+                        friction_start + fric_idx_m + group_sz_m
+                    ].friction_parent
+                    != n_m
+                ):
                     break
                 group_sz_m += 1
 
             var N_m = jar_a[n_m]
-            var mu_m = constraints.rows[friction_start + fric_idx_m].friction_coef if group_sz_m > 0 else Scalar[DTYPE](0)
+            var mu_m = constraints.rows[
+                friction_start + fric_idx_m
+            ].friction_coef if group_sz_m > 0 else Scalar[DTYPE](0)
 
             if group_sz_m == 0:
                 if N_m < Scalar[DTYPE](0):
@@ -1034,7 +1064,10 @@ fn primal_linesearch_with_D[
                     T_m_sq += jar_a[fr_m] * jar_a[fr_m]
                 var T_m = sqrt(T_m_sq)
 
-                if N_m >= Scalar[DTYPE](0) and N_m * N_m >= mu_m * mu_m * T_m_sq:
+                if (
+                    N_m >= Scalar[DTYPE](0)
+                    and N_m * N_m >= mu_m * mu_m * T_m_sq
+                ):
                     pass
                 elif (mu_m * N_m + T_m) <= Scalar[DTYPE](0):
                     d1_eval += D_values[n_m] * jar_a[n_m] * Jv[n_m]
@@ -1059,7 +1092,9 @@ fn primal_linesearch_with_D[
                     for g_m in range(group_sz_m):
                         var fr_m = friction_start + fric_idx_m + g_m
                         Jv_f_sq_m += Jv[fr_m] * Jv[fr_m]
-                    var d2sda2_m = -mu_m * (Jv_f_sq_m - dTda_m * dTda_m) / T_m_safe
+                    var d2sda2_m = (
+                        -mu_m * (Jv_f_sq_m - dTda_m * dTda_m) / T_m_safe
+                    )
                     d2_eval += Dm_m * (dsda_m * dsda_m + s_m * d2sda2_m)
 
             fric_idx_m += group_sz_m
@@ -1095,7 +1130,9 @@ fn primal_linesearch_with_D[
             p2_d2 = d2_eval
 
         # Check if bracket is tiny
-        if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](PRIMAL_MINVAL):
+        if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](
+            PRIMAL_MINVAL
+        ):
             break
 
     # Return whichever has smaller |d1|
@@ -1113,14 +1150,14 @@ fn primal_linesearch[
     R_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qfrc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    Ma: InlineArray[Scalar[DTYPE], V_SIZE],
-    Mv: InlineArray[Scalar[DTYPE], V_SIZE],
-    search: InlineArray[Scalar[DTYPE], V_SIZE],
-    jar: InlineArray[Scalar[DTYPE], R_SIZE],
-    force: InlineArray[Scalar[DTYPE], R_SIZE],
+    qacc: List[Scalar[DTYPE]],
+    qacc_smooth: List[Scalar[DTYPE]],
+    qfrc_smooth: List[Scalar[DTYPE]],
+    Ma: List[Scalar[DTYPE]],
+    Mv: List[Scalar[DTYPE]],
+    search: List[Scalar[DTYPE]],
+    jar: List[Scalar[DTYPE]],
+    force: List[Scalar[DTYPE]],
     tolerance: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     """Cone-aware linesearch using cost evaluation + Armijo backtracking.
@@ -1169,9 +1206,7 @@ fn primal_linesearch[
         var Jv: Scalar[DTYPE] = 0
         for i in range(NV):
             Jv += constraints.J[r * NV + i] * search[i]
-        var D_r = primal_D(
-            constraints.rows[r].inv_K_imp, constraints.rows[r].K
-        )
+        var D_r = primal_D(constraints.rows[r].inv_K_imp, constraints.rows[r].K)
         # Use D_r for quadratic rows, Dm for cone rows
         d2 += D_r * Jv * Jv
 
@@ -1194,7 +1229,9 @@ fn primal_linesearch[
     comptime ARMIJO_C: Float64 = 1e-4
     comptime BACKTRACK_BETA: Float64 = 0.5
 
-    var qacc_trial = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc_trial = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc_trial.append(Scalar[DTYPE](0))
     for _ in range(PRIMAL_MAX_LINESEARCH):
         # Evaluate cost at trial alpha
         for i in range(NV):

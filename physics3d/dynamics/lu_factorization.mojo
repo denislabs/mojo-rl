@@ -24,10 +24,7 @@ fn lu_factor[
     NV: Int,
     M_SIZE: Int,
     V_SIZE: Int,
-](
-    mut A: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut piv: InlineArray[Int, V_SIZE],
-):
+](mut A: List[Scalar[DTYPE]], mut piv: List[Int],):
     """In-place LU factorization with partial pivoting of NV×NV matrix A.
 
     Computes P*A = L*U where:
@@ -82,10 +79,10 @@ fn lu_solve[
     M_SIZE: Int,
     V_SIZE: Int,
 ](
-    A: InlineArray[Scalar[DTYPE], M_SIZE],
-    piv: InlineArray[Int, V_SIZE],
-    b: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
+    A: List[Scalar[DTYPE]],
+    piv: List[Int],
+    b: List[Scalar[DTYPE]],
+    mut x: List[Scalar[DTYPE]],
 ):
     """Solve A * x = b using precomputed LU factors with pivoting.
 
@@ -131,11 +128,7 @@ fn compute_M_inv_from_lu[
     NV: Int,
     M_SIZE: Int,
     V_SIZE: Int,
-](
-    A: InlineArray[Scalar[DTYPE], M_SIZE],
-    piv: InlineArray[Int, V_SIZE],
-    mut M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
-):
+](A: List[Scalar[DTYPE]], piv: List[Int], mut M_inv: List[Scalar[DTYPE]],):
     """Compute M^-1 from LU factors by solving M * M_inv[:,j] = e_j.
 
     Args:
@@ -146,8 +139,12 @@ fn compute_M_inv_from_lu[
     for i in range(M_SIZE):
         M_inv[i] = Scalar[DTYPE](0)
 
-    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var e = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        e.append(Scalar[DTYPE](0))
+    var col = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        col.append(Scalar[DTYPE](0))
 
     for j in range(NV):
         # Set up unit vector e_j
@@ -202,10 +199,14 @@ fn lu_factor_gpu[
 
     for k in range(NV):
         # Find pivot: row with largest absolute value in column k
-        var max_val = abs(rebind[Scalar[DTYPE]](workspace[env, L_idx + k * NV + k]))
+        var max_val = abs(
+            rebind[Scalar[DTYPE]](workspace[env, L_idx + k * NV + k])
+        )
         var max_row = k
         for i in range(k + 1, NV):
-            var val = abs(rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + k]))
+            var val = abs(
+                rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + k])
+            )
             if val > max_val:
                 max_val = val
                 max_row = i
@@ -229,9 +230,10 @@ fn lu_factor_gpu[
         # Compute multipliers and update trailing submatrix
         var inv_pivot = Scalar[DTYPE](1) / pivot
         for i in range(k + 1, NV):
-            var lik = rebind[Scalar[DTYPE]](
-                workspace[env, L_idx + i * NV + k]
-            ) * inv_pivot
+            var lik = (
+                rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + k])
+                * inv_pivot
+            )
             workspace[env, L_idx + i * NV + k] = lik
             for j in range(k + 1, NV):
                 var cur = rebind[Scalar[DTYPE]](
@@ -288,9 +290,10 @@ fn lu_solve_workspace_gpu[
     for i in range(NV - 1, -1, -1):
         var s = y[i]
         for j in range(i + 1, NV):
-            s = s - workspace[env, L_idx + i * NV + j] * workspace[
-                env, x_idx + j
-            ]
+            s = (
+                s
+                - workspace[env, L_idx + i * NV + j] * workspace[env, x_idx + j]
+            )
         var diag = rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + i])
         if abs(diag) > Scalar[DTYPE](1e-30):
             workspace[env, x_idx + i] = s / diag
@@ -331,9 +334,7 @@ fn compute_M_inv_from_lu_gpu[
 
         # Apply permutation
         for i in range(NV):
-            var piv_i = Int(
-                rebind[Scalar[DTYPE]](workspace[env, D_idx + i])
-            )
+            var piv_i = Int(rebind[Scalar[DTYPE]](workspace[env, D_idx + i]))
             if piv_i != i:
                 var tmp = e[i]
                 e[i] = e[piv_i]
@@ -352,9 +353,7 @@ fn compute_M_inv_from_lu_gpu[
             var s = y[i]
             for k in range(i + 1, NV):
                 s = s - workspace[env, L_idx + i * NV + k] * col[k]
-            var diag = rebind[Scalar[DTYPE]](
-                workspace[env, L_idx + i * NV + i]
-            )
+            var diag = rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + i])
             if abs(diag) > Scalar[DTYPE](1e-30):
                 col[i] = s / diag
             else:

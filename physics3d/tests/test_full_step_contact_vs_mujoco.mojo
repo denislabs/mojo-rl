@@ -60,6 +60,7 @@ comptime MULTI_QVEL_REL_TOL: Float64 = 5e-3
 # =============================================================================
 
 
+@no_inline
 fn compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
@@ -77,9 +78,21 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Now set test configuration
@@ -99,9 +112,7 @@ fn compare_step(
 
         HalfCheetahModel.apply_actions(data, action_list)
 
-        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
-            model, data
-        )
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
 
     # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
@@ -112,7 +123,9 @@ fn compare_step(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our pyramidal cone setting
-    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
+    mj_model.opt.cone = (
+        0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel, MuJoCo default)
+    )
     mj_model.opt.solver = 2  # mjSOL_NEWTON to match our NewtonSolver
     mj_model.opt.integrator = 0  # mjINT_EULER to match our EulerIntegrator
     var mj_data = mujoco.MjData(mj_model)
@@ -428,12 +441,39 @@ fn test_multi_step_accumulation() raises:
     actions[5] = 0.3
     # Each call re-runs from the same qpos/qvel, increasing num_steps
     compare_step("  N=1 ", qpos, qvel, actions, 1)
-    compare_step("  N=5 ", qpos, qvel, actions, 5,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  N=10", qpos, qvel, actions, 10,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  N=50", qpos, qvel, actions, 50,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    compare_step(
+        "  N=5 ",
+        qpos,
+        qvel,
+        actions,
+        5,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  N=10",
+        qpos,
+        qvel,
+        actions,
+        10,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  N=50",
+        qpos,
+        qvel,
+        actions,
+        50,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
 
 
 fn test_fast_downward_impact() raises:
@@ -442,28 +482,64 @@ fn test_fast_downward_impact() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.35  # rootz — feet very close to ground
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[1] = -3.0   # 3 m/s downward
+    qvel[1] = -3.0  # 3 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     compare_step("  v_z=-3 N=1 ", qpos, qvel, actions, 1)
-    compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    compare_step(
+        "  v_z=-3 N=5 ",
+        qpos,
+        qvel,
+        actions,
+        5,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  v_z=-3 N=10",
+        qpos,
+        qvel,
+        actions,
+        10,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
 
 
 fn test_very_fast_impact() raises:
     """Very high velocity impact (qvel[1]=-6 m/s) — worst-case penetration."""
     print("--- Test: Very fast impact (v_z=-6 m/s) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.3   # rootz — feet near ground
+    qpos[1] = -0.3  # rootz — feet near ground
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[1] = -6.0   # 6 m/s downward
+    qvel[1] = -6.0  # 6 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     compare_step("  v_z=-6 N=1 ", qpos, qvel, actions, 1)
-    compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    compare_step(
+        "  v_z=-6 N=5 ",
+        qpos,
+        qvel,
+        actions,
+        5,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  v_z=-6 N=10",
+        qpos,
+        qvel,
+        actions,
+        10,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
 
 
 fn test_running_gait_impact() raises:
@@ -471,32 +547,51 @@ fn test_running_gait_impact() raises:
     print("--- Test: Running gait impact (v_forward=3, v_z=-2) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.35
-    qpos[2] = -0.2    # rooty: slight forward lean
-    qpos[3] = 0.4     # bthigh
-    qpos[4] = -0.7    # bshin
-    qpos[6] = -0.3    # fthigh
-    qpos[7] = 0.6     # fshin
+    qpos[2] = -0.2  # rooty: slight forward lean
+    qpos[3] = 0.4  # bthigh
+    qpos[4] = -0.7  # bshin
+    qpos[6] = -0.3  # fthigh
+    qpos[7] = 0.6  # fshin
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 3.0     # rootx: 3 m/s forward
-    qvel[1] = -2.0    # rootz: 2 m/s downward
-    qvel[3] = 5.0     # bthigh angular velocity
-    qvel[4] = -8.0    # bshin
-    qvel[6] = -4.0    # fthigh
-    qvel[7] = 7.0     # fshin
+    qvel[0] = 3.0  # rootx: 3 m/s forward
+    qvel[1] = -2.0  # rootz: 2 m/s downward
+    qvel[3] = 5.0  # bthigh angular velocity
+    qvel[4] = -8.0  # bshin
+    qvel[6] = -4.0  # fthigh
+    qvel[7] = 7.0  # fshin
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[0] = 0.8
     actions[1] = -0.8
     actions[3] = 0.8
     actions[4] = -0.8
     compare_step("  running N=1 ", qpos, qvel, actions, 1)
-    compare_step("  running N=5 ", qpos, qvel, actions, 5,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  running N=20", qpos, qvel, actions, 20,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    compare_step(
+        "  running N=5 ",
+        qpos,
+        qvel,
+        actions,
+        5,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  running N=20",
+        qpos,
+        qvel,
+        actions,
+        20,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
 
 
 fn test_fthigh_at_limit_impact() raises:
-    """fthigh at upper limit (0.7) + fast downward impact.
+    """
+    fthigh at upper limit (0.7) + fast downward impact.
 
     This reproduces the policy rollout bug: fthigh pinned at range_max=0.7
     while the foot strikes the ground at high velocity.  Previously,
@@ -507,21 +602,39 @@ fn test_fthigh_at_limit_impact() raises:
     print("--- Test: fthigh at limit (0.7) + fast downward impact ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.35  # rootz — feet close to ground
-    qpos[6] = 0.7    # fthigh at upper range_max limit
-    qpos[7] = 0.4    # fshin bent
-    qpos[8] = -0.2   # ffoot
+    qpos[6] = 0.7  # fthigh at upper range_max limit
+    qpos[7] = 0.4  # fshin bent
+    qpos[8] = -0.2  # ffoot
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[1] = -3.0   # 3 m/s downward (foot strike)
-    qvel[6] = 2.0    # fthigh velocity pushing toward limit
+    qvel[1] = -3.0  # 3 m/s downward (foot strike)
+    qvel[6] = 2.0  # fthigh velocity pushing toward limit
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[3] = 1.0  # fthigh: max torque toward limit
     actions[4] = -0.5
     actions[5] = 0.3
     compare_step("  fthigh_lim N=1 ", qpos, qvel, actions, 1)
-    compare_step("  fthigh_lim N=5 ", qpos, qvel, actions, 5,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
-    compare_step("  fthigh_lim N=10", qpos, qvel, actions, 10,
-        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    compare_step(
+        "  fthigh_lim N=5 ",
+        qpos,
+        qvel,
+        actions,
+        5,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
+    compare_step(
+        "  fthigh_lim N=10",
+        qpos,
+        qvel,
+        actions,
+        10,
+        MULTI_QPOS_ABS_TOL,
+        MULTI_QPOS_REL_TOL,
+        MULTI_QVEL_ABS_TOL,
+        MULTI_QVEL_REL_TOL,
+    )
 
 
 fn main() raises:

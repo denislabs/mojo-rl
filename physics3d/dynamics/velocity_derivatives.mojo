@@ -351,8 +351,6 @@ fn compute_rne_vel_derivative[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
-    M_SIZE: Int,
-    CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -369,12 +367,12 @@ fn compute_rne_vel_derivative[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
-    NSITE,
+        MAX_TENDON,
+        NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    mut qDeriv: InlineArray[Scalar[DTYPE], M_SIZE],
+    cdof: List[Scalar[DTYPE]],
+    mut qDeriv: List[Scalar[DTYPE]],
 ) where DTYPE.is_floating_point():
     """Compute d(qfrc_bias)/d(qvel) and subtract from qDeriv.
 
@@ -843,9 +841,7 @@ fn compute_rne_vel_derivative[
                         Dcdofdot[dof * 6 * NV + ii * NV + kk] = s
 
                 for kk in range(6):
-                    Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[
-                        dof * 6 + kk
-                    ]
+                    Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[dof * 6 + kk]
 
     # =========================================================================
     # Step 2: Forward pass - compute Dcacc and Dcfrcbody
@@ -936,9 +932,7 @@ fn compute_rne_vel_derivative[
         var parent = model.body_parent[b]
         if parent >= 0:
             for idx in range(6 * NV):
-                Dcfrcbody[parent * 6 * NV + idx] += Dcfrcbody[
-                    b * 6 * NV + idx
-                ]
+                Dcfrcbody[parent * 6 * NV + idx] += Dcfrcbody[b * 6 * NV + idx]
 
     # =========================================================================
     # Step 4: Project to joint space
@@ -1181,15 +1175,18 @@ fn compute_rne_vel_derivative_gpu[
         )
         workspace[env, co_off + d * 6 + 3] = (
             rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 3])
-            + ay * sz - az * sy
+            + ay * sz
+            - az * sy
         )
         workspace[env, co_off + d * 6 + 4] = (
             rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 4])
-            + az * sx - ax * sz
+            + az * sx
+            - ax * sz
         )
         workspace[env, co_off + d * 6 + 5] = (
             rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 5])
-            + ax * sy - ay * sx
+            + ax * sy
+            - ay * sx
         )
 
     # --- cvel at subtree COM + cdof_dot at subtree COM ---
@@ -1216,19 +1213,33 @@ fn compute_rne_vel_derivative_gpu[
         var cv_vy: Scalar[DTYPE] = 0
         var cv_vz: Scalar[DTYPE] = 0
         if parent >= 0:
-            cv_wx = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 0])
-            cv_wy = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 1])
-            cv_wz = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 2])
-            cv_vx = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 3])
-            cv_vy = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 4])
-            cv_vz = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 5])
+            cv_wx = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 0]
+            )
+            cv_wy = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 1]
+            )
+            cv_wz = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 2]
+            )
+            cv_vx = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 3]
+            )
+            cv_vy = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 4]
+            )
+            cv_vz = rebind[Scalar[DTYPE]](
+                workspace[env, cv_off + parent * 6 + 5]
+            )
 
         # Process each joint of this body
         if body_dofadr[b] >= 0:
             for j in range(NJOINT):
                 var joint_off = model_joint_offset[NBODY](j)
                 var j_body = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_BODY_ID]
+                    )
                 )
                 if j_body != b:
                     continue
@@ -1237,7 +1248,9 @@ fn compute_rne_vel_derivative_gpu[
                     rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
                 )
                 var dof_adr = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_DOF_ADR]
+                    )
                 )
 
                 if jnt_type == JNT_FREE:
@@ -1245,29 +1258,83 @@ fn compute_rne_vel_derivative_gpu[
                     for d in range(3):
                         var dof = dof_adr + d
                         var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
-                        cv_wx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0]) * qv
-                        cv_wy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1]) * qv
-                        cv_wz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2]) * qv
-                        cv_vx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3]) * qv
-                        cv_vy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4]) * qv
-                        cv_vz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5]) * qv
+                        cv_wx += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 0]
+                            )
+                            * qv
+                        )
+                        cv_wy += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 1]
+                            )
+                            * qv
+                        )
+                        cv_wz += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 2]
+                            )
+                            * qv
+                        )
+                        cv_vx += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 3]
+                            )
+                            * qv
+                        )
+                        cv_vy += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 4]
+                            )
+                            * qv
+                        )
+                        cv_vz += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 5]
+                            )
+                            * qv
+                        )
 
                     # Rotation DOFs: compute cdof_dot, then update cvel
                     for d in range(3, 6):
                         var dof = dof_adr + d
-                        var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
-                        var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
-                        var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
-                        var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
-                        var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
-                        var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+                        var s_ax = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 0]
+                        )
+                        var s_ay = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 1]
+                        )
+                        var s_az = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 2]
+                        )
+                        var s_lx = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 3]
+                        )
+                        var s_ly = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 4]
+                        )
+                        var s_lz = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 5]
+                        )
 
-                        workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
-                        workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
-                        workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
-                        workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
-                        workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
-                        workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+                        workspace[env, cd_off + dof * 6 + 0] = (
+                            cv_wy * s_az - cv_wz * s_ay
+                        )
+                        workspace[env, cd_off + dof * 6 + 1] = (
+                            cv_wz * s_ax - cv_wx * s_az
+                        )
+                        workspace[env, cd_off + dof * 6 + 2] = (
+                            cv_wx * s_ay - cv_wy * s_ax
+                        )
+                        workspace[env, cd_off + dof * 6 + 3] = (
+                            cv_wy * s_lz - cv_wz * s_ly
+                        ) + (cv_vy * s_az - cv_vz * s_ay)
+                        workspace[env, cd_off + dof * 6 + 4] = (
+                            cv_wz * s_lx - cv_wx * s_lz
+                        ) + (cv_vz * s_ax - cv_vx * s_az)
+                        workspace[env, cd_off + dof * 6 + 5] = (
+                            cv_wx * s_ly - cv_wy * s_lx
+                        ) + (cv_vx * s_ay - cv_vy * s_ax)
 
                         var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
                         cv_wx += s_ax * qv
@@ -1280,46 +1347,124 @@ fn compute_rne_vel_derivative_gpu[
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
                         var dof = dof_adr + d
-                        var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
-                        var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
-                        var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
-                        var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
-                        var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
-                        var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+                        var s_ax = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 0]
+                        )
+                        var s_ay = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 1]
+                        )
+                        var s_az = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 2]
+                        )
+                        var s_lx = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 3]
+                        )
+                        var s_ly = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 4]
+                        )
+                        var s_lz = rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof * 6 + 5]
+                        )
 
-                        workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
-                        workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
-                        workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
-                        workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
-                        workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
-                        workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+                        workspace[env, cd_off + dof * 6 + 0] = (
+                            cv_wy * s_az - cv_wz * s_ay
+                        )
+                        workspace[env, cd_off + dof * 6 + 1] = (
+                            cv_wz * s_ax - cv_wx * s_az
+                        )
+                        workspace[env, cd_off + dof * 6 + 2] = (
+                            cv_wx * s_ay - cv_wy * s_ax
+                        )
+                        workspace[env, cd_off + dof * 6 + 3] = (
+                            cv_wy * s_lz - cv_wz * s_ly
+                        ) + (cv_vy * s_az - cv_vz * s_ay)
+                        workspace[env, cd_off + dof * 6 + 4] = (
+                            cv_wz * s_lx - cv_wx * s_lz
+                        ) + (cv_vz * s_ax - cv_vx * s_az)
+                        workspace[env, cd_off + dof * 6 + 5] = (
+                            cv_wx * s_ly - cv_wy * s_lx
+                        ) + (cv_vx * s_ay - cv_vy * s_ax)
 
                     for d in range(3):
                         var dof = dof_adr + d
                         var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
-                        cv_wx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0]) * qv
-                        cv_wy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1]) * qv
-                        cv_wz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2]) * qv
-                        cv_vx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3]) * qv
-                        cv_vy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4]) * qv
-                        cv_vz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5]) * qv
+                        cv_wx += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 0]
+                            )
+                            * qv
+                        )
+                        cv_wy += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 1]
+                            )
+                            * qv
+                        )
+                        cv_wz += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 2]
+                            )
+                            * qv
+                        )
+                        cv_vx += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 3]
+                            )
+                            * qv
+                        )
+                        cv_vy += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 4]
+                            )
+                            * qv
+                        )
+                        cv_vz += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof * 6 + 5]
+                            )
+                            * qv
+                        )
 
                 else:
                     # HINGE or SLIDE: single DOF
                     var dof = dof_adr
-                    var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
-                    var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
-                    var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
-                    var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
-                    var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
-                    var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+                    var s_ax = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 0]
+                    )
+                    var s_ay = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 1]
+                    )
+                    var s_az = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 2]
+                    )
+                    var s_lx = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 3]
+                    )
+                    var s_ly = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 4]
+                    )
+                    var s_lz = rebind[Scalar[DTYPE]](
+                        workspace[env, co_off + dof * 6 + 5]
+                    )
 
-                    workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
-                    workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
-                    workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
-                    workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
-                    workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
-                    workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+                    workspace[env, cd_off + dof * 6 + 0] = (
+                        cv_wy * s_az - cv_wz * s_ay
+                    )
+                    workspace[env, cd_off + dof * 6 + 1] = (
+                        cv_wz * s_ax - cv_wx * s_az
+                    )
+                    workspace[env, cd_off + dof * 6 + 2] = (
+                        cv_wx * s_ay - cv_wy * s_ax
+                    )
+                    workspace[env, cd_off + dof * 6 + 3] = (
+                        cv_wy * s_lz - cv_wz * s_ly
+                    ) + (cv_vy * s_az - cv_vz * s_ay)
+                    workspace[env, cd_off + dof * 6 + 4] = (
+                        cv_wz * s_lx - cv_wx * s_lz
+                    ) + (cv_vz * s_ax - cv_vx * s_az)
+                    workspace[env, cd_off + dof * 6 + 5] = (
+                        cv_wx * s_ly - cv_wy * s_lx
+                    ) + (cv_vx * s_ay - cv_vy * s_ax)
 
                     var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
                     cv_wx += s_ax * qv
@@ -1389,15 +1534,22 @@ fn compute_rne_vel_derivative_gpu[
                         workspace[
                             env, dcv_off + b * 6 * NV + k * NV + dof_adr + td
                         ] = rebind[Scalar[DTYPE]](
-                            workspace[env, dcv_off + b * 6 * NV + k * NV + dof_adr + td]
-                        ) + rebind[Scalar[DTYPE]](
+                            workspace[
+                                env,
+                                dcv_off + b * 6 * NV + k * NV + dof_adr + td,
+                            ]
+                        ) + rebind[
+                            Scalar[DTYPE]
+                        ](
                             workspace[env, co_off + (dof_adr + td) * 6 + k]
                         )
 
                 # Rotation DOFs
                 for rot_d in range(3):
                     var dof_rot = dof_adr + 3 + rot_d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
+                        uninitialized=True
+                    )
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             workspace[env, co_off + dof_rot * 6 + kk]
@@ -1409,23 +1561,33 @@ fn compute_rne_vel_derivative_gpu[
                             var s: Scalar[DTYPE] = 0
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
+                                    workspace[
+                                        env, dcv_off + b * 6 * NV + jj * NV + kk
+                                    ]
                                 )
-                            workspace[env, dcd_off + dof_rot * 6 * NV + ii * NV + kk] = s
+                            workspace[
+                                env, dcd_off + dof_rot * 6 * NV + ii * NV + kk
+                            ] = s
 
                     for kk in range(6):
-                        workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot] = (
-                            rebind[Scalar[DTYPE]](
-                                workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot]
-                            ) + rebind[Scalar[DTYPE]](
-                                workspace[env, co_off + dof_rot * 6 + kk]
-                            )
+                        workspace[
+                            env, dcv_off + b * 6 * NV + kk * NV + dof_rot
+                        ] = rebind[Scalar[DTYPE]](
+                            workspace[
+                                env, dcv_off + b * 6 * NV + kk * NV + dof_rot
+                            ]
+                        ) + rebind[
+                            Scalar[DTYPE]
+                        ](
+                            workspace[env, co_off + dof_rot * 6 + kk]
                         )
 
             elif jnt_type == JNT_BALL:
                 for rot_d in range(3):
                     var dof_rot = dof_adr + rot_d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
+                        uninitialized=True
+                    )
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             workspace[env, co_off + dof_rot * 6 + kk]
@@ -1437,17 +1599,25 @@ fn compute_rne_vel_derivative_gpu[
                             var s: Scalar[DTYPE] = 0
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
+                                    workspace[
+                                        env, dcv_off + b * 6 * NV + jj * NV + kk
+                                    ]
                                 )
-                            workspace[env, dcd_off + dof_rot * 6 * NV + ii * NV + kk] = s
+                            workspace[
+                                env, dcd_off + dof_rot * 6 * NV + ii * NV + kk
+                            ] = s
 
                     for kk in range(6):
-                        workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot] = (
-                            rebind[Scalar[DTYPE]](
-                                workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot]
-                            ) + rebind[Scalar[DTYPE]](
-                                workspace[env, co_off + dof_rot * 6 + kk]
-                            )
+                        workspace[
+                            env, dcv_off + b * 6 * NV + kk * NV + dof_rot
+                        ] = rebind[Scalar[DTYPE]](
+                            workspace[
+                                env, dcv_off + b * 6 * NV + kk * NV + dof_rot
+                            ]
+                        ) + rebind[
+                            Scalar[DTYPE]
+                        ](
+                            workspace[env, co_off + dof_rot * 6 + kk]
                         )
 
             else:
@@ -1464,17 +1634,23 @@ fn compute_rne_vel_derivative_gpu[
                         var s: Scalar[DTYPE] = 0
                         for jj in range(6):
                             s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
+                                workspace[
+                                    env, dcv_off + b * 6 * NV + jj * NV + kk
+                                ]
                             )
-                        workspace[env, dcd_off + dof_adr * 6 * NV + ii * NV + kk] = s
+                        workspace[
+                            env, dcd_off + dof_adr * 6 * NV + ii * NV + kk
+                        ] = s
 
                 for kk in range(6):
-                    workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_adr] = (
-                        rebind[Scalar[DTYPE]](
-                            workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_adr]
-                        ) + rebind[Scalar[DTYPE]](
-                            workspace[env, co_off + dof_adr * 6 + kk]
-                        )
+                    workspace[
+                        env, dcv_off + b * 6 * NV + kk * NV + dof_adr
+                    ] = rebind[Scalar[DTYPE]](
+                        workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_adr]
+                    ) + rebind[
+                        Scalar[DTYPE]
+                    ](
+                        workspace[env, co_off + dof_adr * 6 + kk]
                     )
 
     # =========================================================================
@@ -1515,7 +1691,9 @@ fn compute_rne_vel_derivative_gpu[
                         env, dca_off + b * 6 * NV + k * NV + j_dof
                     ] = rebind[Scalar[DTYPE]](
                         workspace[env, dca_off + b * 6 * NV + k * NV + j_dof]
-                    ) + rebind[Scalar[DTYPE]](
+                    ) + rebind[
+                        Scalar[DTYPE]
+                    ](
                         workspace[env, cd_off + j_dof * 6 + k]
                     )
 

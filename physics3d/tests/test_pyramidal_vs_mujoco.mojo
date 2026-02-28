@@ -41,7 +41,10 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
 )
 from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
+from physics3d.constraints.constraint_builder import (
+    build_constraints,
+    writeback_forces,
+)
 from physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -138,12 +141,23 @@ fn compare_vector(
 
     if all_ok:
         print(
-            "  ", label, " ALL OK  max_abs=", max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " ALL OK  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     else:
         print(
-            "  ", label, " FAILED", fail_count, " elements  max_abs=",
-            max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " FAILED",
+            fail_count,
+            " elements  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     return all_ok
 
@@ -164,13 +178,29 @@ fn compare_scalar(
     var ok = abs_err < abs_tol or rel_err < rel_tol
     if ok:
         print(
-            "    OK  ", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    OK  ",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     else:
         print(
-            "    FAIL", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    FAIL",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     return ok
 
@@ -180,19 +210,33 @@ fn compare_scalar(
 # =============================================================================
 
 
+@no_inline
 fn compare_pyramidal_solver(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
 ) raises:
-    """Run full pipeline + solver with PYRAMIDAL cone in both engines, compare."""
+    """Run full pipeline + solver with PYRAMIDAL cone in both engines, compare.
+    """
     print("--- Test:", test_name, "---")
 
     # === Our engine (PYRAMIDAL) ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, ConeType.PYRAMIDAL, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        ConeType.PYRAMIDAL,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
@@ -205,10 +249,10 @@ fn compare_pyramidal_solver(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-        model, data, cdof
-    )
+    var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+    for _ in range(CDOF_SIZE):
+        cdof.append(Scalar[DTYPE](0))
+    compute_cdof(model, data, cdof)
 
     # 2. Contact detection
     detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
@@ -216,14 +260,14 @@ fn compare_pyramidal_solver(
     )
 
     # 3. Composite inertia + Mass matrix
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
     compute_composite_inertia(model, data, crb)
 
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M.append(Scalar[DTYPE](0))
     compute_mass_matrix_full(model, data, cdof, crb, M)
 
     # 4. Add armature only to M diagonal
@@ -242,27 +286,29 @@ fn compare_pyramidal_solver(
             M[dof_adr * NV + dof_adr] += arm
 
     # 5. LDL factorize + M_inv
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D_ldl.append(Scalar[DTYPE](0))
+    ldl_factor[DTYPE, NV](M, L, D_ldl)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
+    var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        M_inv.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](L, D_ldl, M_inv)
 
     # 6. Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
-    compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-    ](model, data, cdof, bias)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
+    compute_bias_forces_rne(model, data, cdof, bias)
 
     # 7. f_net = qfrc - bias
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        f_net[i] = data.qfrc[i] - bias[i]
+        f_net.append(data.qfrc[i] - bias[i])
 
     # 8. Apply passive forces (damping + stiffness + frictionloss)
     for j in range(model.num_joints):
@@ -323,15 +369,15 @@ fn compare_pyramidal_solver(
                     f_net[dof_adr] += floss
 
     # 9. qacc = M^{-1} * f_net via LDL solve
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, f_net, qacc)
+    var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        qacc.append(Scalar[DTYPE](0))
+    ldl_solve[DTYPE, NV](L, D_ldl, f_net, qacc)
 
     # 10. Build constraints (PYRAMIDAL cone)
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=ConeType.PYRAMIDAL](
-        model, data, cdof, M_inv, qacc, dt, constraints
+    build_constraints[CONE_TYPE = ConeType.PYRAMIDAL](
+        model, data, cdof, M_inv, dt, constraints
     )
 
     # 11. Fill M_hat and qfrc_smooth for primal solver
@@ -341,15 +387,24 @@ fn compare_pyramidal_solver(
         constraints.qfrc_smooth[i] = f_net[i]
 
     var our_ncon = data.num_contacts
-    var our_nnorm = constraints.num_normals  # For pyramidal, this includes ALL edge rows
+    var our_nnorm = (
+        constraints.num_normals
+    )  # For pyramidal, this includes ALL edge rows
     var our_nfric = constraints.num_friction  # Should be 0 for pyramidal
     var our_nlim = constraints.num_limits
     print(
-        "  Our: contacts=", our_ncon,
-        " rows=", constraints.num_rows,
-        " (edges:", our_nnorm, " F:", our_nfric, " L:", our_nlim, ")",
+        "  Our: contacts=",
+        our_ncon,
+        " rows=",
+        constraints.num_rows,
+        " (edges:",
+        our_nnorm,
+        " F:",
+        our_nfric,
+        " L:",
+        our_nlim,
+        ")",
     )
-
 
     # Print row details
     for r in range(constraints.num_rows):
@@ -361,7 +416,9 @@ fn compare_pyramidal_solver(
             var td = src_dof // 2
             var sign_idx = src_dof % 2
             var sign_str = "+" if sign_idx == 0 else "-"
-            ctype_str = "PE(c" + String(src_c) + ",t" + String(td) + sign_str + ")"
+            ctype_str = (
+                "PE(c" + String(src_c) + ",t" + String(td) + sign_str + ")"
+            )
         elif ct == CNSTR_LIMIT:
             ctype_str = "L "
         elif ct == CNSTR_NORMAL:
@@ -369,19 +426,25 @@ fn compare_pyramidal_solver(
         else:
             ctype_str = "? "
         print(
-            "    row[", r, "] type=", ctype_str,
-            " K=", Float64(constraints.rows[r].K),
-            " bias=", Float64(constraints.rows[r].bias),
-            " inv_K_imp=", Float64(constraints.rows[r].inv_K_imp),
+            "    row[",
+            r,
+            "] type=",
+            ctype_str,
+            " K=",
+            Float64(constraints.rows[r].K),
+            " bias=",
+            Float64(constraints.rows[r].bias),
+            " inv_K_imp=",
+            Float64(constraints.rows[r].inv_K_imp),
         )
 
     # Save qacc0 before solver modifies it
-    var qacc0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc0 = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        qacc0[i] = qacc[i]
+        qacc0.append(qacc[i])
 
     # 12. Solve constraints (modifies qacc in-place)
-    NewtonSolver.solve[CONE_TYPE=ConeType.PYRAMIDAL](
+    NewtonSolver.solve[CONE_TYPE = ConeType.PYRAMIDAL](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -406,9 +469,9 @@ fn compare_pyramidal_solver(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our solver: PYRAMIDAL cone, Newton solver, Euler integrator
-    mj_model.opt.cone = 0       # pyramidal (mjCONE_PYRAMIDAL)
-    mj_model.opt.solver = 2     # Newton
-    mj_model.opt.integrator = 0 # Euler
+    mj_model.opt.cone = 0  # pyramidal (mjCONE_PYRAMIDAL)
+    mj_model.opt.solver = 2  # Newton
+    mj_model.opt.integrator = 0  # Euler
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -451,8 +514,10 @@ fn compare_pyramidal_solver(
         elif t == 3:  # mjCNSTR_LIMIT_JOINT
             mj_limit_count += 1
     print(
-        "  MJ:  pyramid_rows=", mj_pyramid_count,
-        " limit_rows=", mj_limit_count,
+        "  MJ:  pyramid_rows=",
+        mj_pyramid_count,
+        " limit_rows=",
+        mj_limit_count,
     )
 
     # Print MuJoCo row details
@@ -466,45 +531,75 @@ fn compare_pyramidal_solver(
         else:
             tstr = String(t)
         print(
-            "    mj [", r, "] type=", tstr,
-            " force=", Float64(py=mj_efc_force_flat[r]),
-            " D=", Float64(py=mj_efc_D_flat[r]),
-            " R=", Float64(py=mj_efc_R_flat[r]),
-            " b=", Float64(py=mj_efc_b_flat[r]),
+            "    mj [",
+            r,
+            "] type=",
+            tstr,
+            " force=",
+            Float64(py=mj_efc_force_flat[r]),
+            " D=",
+            Float64(py=mj_efc_D_flat[r]),
+            " R=",
+            Float64(py=mj_efc_R_flat[r]),
+            " b=",
+            Float64(py=mj_efc_b_flat[r]),
         )
 
     # Print our D/R for comparison
     print("  --- D/R comparison ---")
     for r in range(constraints.num_rows):
-        var our_D = Float64(primal_D(constraints.rows[r].inv_K_imp, constraints.rows[r].K))
-        var our_R = Float64(Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K)
+        var our_D = Float64(
+            primal_D(constraints.rows[r].inv_K_imp, constraints.rows[r].K)
+        )
+        var our_R = Float64(
+            Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+            - constraints.rows[r].K
+        )
         print(
-            "    our[", r, "]  D=", our_D,
-            " R=", our_R,
-            " K=", Float64(constraints.rows[r].K),
+            "    our[",
+            r,
+            "]  D=",
+            our_D,
+            " R=",
+            our_R,
+            " K=",
+            Float64(constraints.rows[r].K),
         )
 
     # === Cost comparison ===
     comptime MR = _max_one[MAX_ROWS]()
 
-    var D_vals_cmp = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
-    for r_cmp in range(constraints.num_rows):
-        D_vals_cmp[r_cmp] = primal_D(
-            constraints.rows[r_cmp].inv_K_imp,
-            constraints.rows[r_cmp].K,
-        )
+    var D_vals_cmp = List[Scalar[DTYPE]](capacity=MR)
+    for r_cmp in range(MAX_ROWS):
+        if r_cmp < constraints.num_rows:
+            D_vals_cmp.append(primal_D(
+                constraints.rows[r_cmp].inv_K_imp,
+                constraints.rows[r_cmp].K,
+            ))
+        else:
+            D_vals_cmp.append(Scalar[DTYPE](0))
 
     # Cost at our solution
     var our_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, qacc, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        qacc,
+        qacc0,
+        f_net,
+        M,
     )
 
     # Cost at MuJoCo's solution
-    var mj_qacc_typed = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var mj_qacc_typed = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
-        mj_qacc_typed[i] = Scalar[DTYPE](mj_qacc[i])
+        mj_qacc_typed.append(Scalar[DTYPE](mj_qacc[i]))
     var mj_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, mj_qacc_typed, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        mj_qacc_typed,
+        qacc0,
+        f_net,
+        M,
     )
 
     print("  --- Cost comparison ---")
@@ -563,7 +658,12 @@ fn compare_pyramidal_solver(
     print("    Our edge rows:", our_nnorm, " expected:", expected_pyramid_rows)
     print("    Our limit rows:", our_nlim, " MJ limit rows:", mj_limit_count)
     if our_nnorm != mj_pyramid_count:
-        print("    WARNING: pyramid row count mismatch! ours=", our_nnorm, " mj=", mj_pyramid_count)
+        print(
+            "    WARNING: pyramid row count mismatch! ours=",
+            our_nnorm,
+            " mj=",
+            mj_pyramid_count,
+        )
 
     # Print per-row lambda values
     print()
@@ -605,7 +705,7 @@ fn test_low_pose_moving() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 2.0   # moving forward
+    qvel[0] = 2.0  # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # bthigh rotating
     compare_pyramidal_solver("Low pose moving", qpos, qvel)
@@ -623,10 +723,10 @@ fn test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
-    qpos[3] = -0.5   # bthigh bent
-    qpos[4] = 0.8    # bshin extended
-    qpos[6] = 0.5    # fthigh bent
-    qpos[7] = -0.8   # fshin extended
+    qpos[3] = -0.5  # bthigh bent
+    qpos[4] = 0.8  # bshin extended
+    qpos[6] = 0.5  # fthigh bent
+    qpos[7] = -0.8  # fshin extended
     var qvel = InlineArray[Float64, NV](fill=0.0)
     compare_pyramidal_solver("Bent legs", qpos, qvel)
 

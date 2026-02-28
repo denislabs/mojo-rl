@@ -228,19 +228,23 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             print("  [FK] contacts:", data.num_contacts)
 
         # 3. Compute cdof (spatial motion axes per DOF)
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+        var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+        for _ in range(CDOF_SIZE):
+            cdof.append(Scalar[DTYPE](0))
         compute_cdof(model, data, cdof)
 
         # 4. Compute composite rigid body inertia
-        var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
+        var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+        for _ in range(CRB_SIZE):
+            crb.append(Scalar[DTYPE](0))
         for i in range(CRB_SIZE):
             crb[i] = Scalar[DTYPE](0)
         compute_composite_inertia(model, data, crb)
 
         # 5. Compute full mass matrix using CRBA
-        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M[i] = Scalar[DTYPE](0)
+        var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M.append(Scalar[DTYPE](0))
         compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Compute FULL qDeriv and modify mass matrix
@@ -251,9 +255,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         # (b) RNE velocity derivative: d(bias)/d(qvel)  (dense, non-symmetric)
         #
         # Initialize qDeriv with passive damping (diagonal)
-        var qDeriv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            qDeriv[i] = Scalar[DTYPE](0)
+        var qDeriv = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            qDeriv.append(Scalar[DTYPE](0))
 
         # (a) Passive damping: qDeriv[i,i] = -damping[i]
         for j in range(model.num_joints):
@@ -318,25 +322,30 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 6. LU factorize M_hat (non-symmetric) and solve for qacc
         # M_hat is stored in M after the modifications above
-        var M_lu = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var M_lu = List[Scalar[DTYPE]](capacity=M_SIZE)
         for i in range(M_SIZE):
-            M_lu[i] = M[i]  # Copy for LU (in-place)
+            M_lu.append(M[i])  # Copy for LU (in-place)
 
-        var piv = InlineArray[Int, V_SIZE](uninitialized=True)
+        var piv = List[Int](capacity=V_SIZE)
         for i in range(NV):
-            piv[i] = i
+            piv.append(i)
         lu_factor[DTYPE, NV, M_SIZE, V_SIZE](M_lu, piv)
 
-        var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(V_SIZE):
-            bias[i] = Scalar[DTYPE](0)
+        var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            bias.append(Scalar[DTYPE](0))
         compute_bias_forces_rne[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
         ](model, data, cdof, bias)
 
-        var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
         for i in range(NV):
-            f_net[i] = data.qfrc[i] - bias[i]
+            f_net.append(data.qfrc[i] - bias[i])
 
         # 6b. Apply passive joint forces: damping + stiffness + frictionloss
         for j in range(model.num_joints):
@@ -409,15 +418,15 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                         f_net[dof_adr] = f_net[dof_adr] + floss
 
         # qacc = M_hat^-1 * f_net via LU solve
-        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            qacc[i] = Scalar[DTYPE](0)
+        var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qacc.append(Scalar[DTYPE](0))
         lu_solve[DTYPE, NV, M_SIZE, V_SIZE](M_lu, piv, f_net, qacc)
 
         # 7. Compute full M_inv from LU factors for constraint solver
-        var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M_inv[i] = Scalar[DTYPE](0)
+        var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M_inv.append(Scalar[DTYPE](0))
         compute_M_inv_from_lu[DTYPE, NV, M_SIZE, V_SIZE](M_lu, piv, M_inv)
 
         if verbose:
@@ -435,7 +444,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY + MAX_TENDON
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[CONE_TYPE=CONE_TYPE, MAX_TENDON=MAX_TENDON](
-            model, data, cdof, M_inv, qacc, dt, constraints
+            model, data, cdof, M_inv, dt, constraints
         )
 
         if verbose:
@@ -472,7 +481,16 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # Compute cfrc_ext: contact forces per body in subtree CoM frame
         compute_cfrc_ext[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
         ](model, data)
 
         # 9. Integrate: semi-implicit (symplectic) Euler
@@ -494,8 +512,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             if joint.jnt_type == JNT_FREE:
                 for d in range(3):
                     data.qpos[qpos_adr + d] = (
-                        data.qpos[qpos_adr + d]
-                        + data.qvel[dof_adr + d] * dt
+                        data.qpos[qpos_adr + d] + data.qvel[dof_adr + d] * dt
                     )
                 var qx = data.qpos[qpos_adr + 3]
                 var qy = data.qpos[qpos_adr + 4]
@@ -504,9 +521,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var wx = data.qvel[dof_adr + 3]
                 var wy = data.qvel[dof_adr + 4]
                 var wz = data.qvel[dof_adr + 5]
-                var result = quat_integrate(
-                    qx, qy, qz, qw, wx, wy, wz, dt
-                )
+                var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
                 var norm = quat_normalize(
                     result[0], result[1], result[2], result[3]
                 )
@@ -1133,8 +1148,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](

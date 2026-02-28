@@ -1,4 +1,5 @@
 from physics3d.parser import parse_xml, ModelDefFromXML
+from physics3d.types import ConeType
 
 comptime half_cheetah_xml = """
 <mujoco model="cheetah">
@@ -84,4 +85,5 @@ comptime HalfCheetahModel = ModelDefFromXML[
     max_contacts=20,
     obs_qpos_skip=1,
     timestep = pm.TIMESTEP,
+    cone_type = ConeType.PYRAMIDAL,  # MuJoCo default (XML has no <option cone=...>)
 ]

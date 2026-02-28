@@ -180,6 +180,7 @@ fn compare_scalar(
 # =============================================================================
 
 
+@no_inline
 fn compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
@@ -406,7 +407,7 @@ fn compare_solver_forces(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our solver: pyramidal cone, Newton solver, Euler integrator
-    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel)
+    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel, MuJoCo default)
     mj_model.opt.solver = 2     # Newton
     mj_model.opt.integrator = 0 # Euler (match our M_hat = M + arm + dt*damp)
 

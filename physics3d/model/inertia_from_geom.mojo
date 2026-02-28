@@ -51,6 +51,9 @@ from ..gpu.constants import (
 # Pi constant
 comptime PI: Float64 = 3.14159265358979323846
 
+# MuJoCo default geom density (kg/m³) — used when geom has no explicit mass
+comptime MJ_DEFAULT_DENSITY: Float64 = 1000.0
+
 
 # =============================================================================
 # Volume computation
@@ -89,6 +92,28 @@ fn geom_volume[
     else:
         # Plane or unknown: zero volume
         return Scalar[DTYPE](0.0)
+
+
+fn geom_effective_mass[
+    DTYPE: DType
+](
+    geom_type: Int,
+    stored_mass: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """Return effective geom mass: explicit if >= 0, else density * volume.
+
+    MuJoCo stores -1.0 when mass is absent (inertiafromgeom uses density).
+    """
+    if stored_mass >= Scalar[DTYPE](0):
+        return stored_mass
+    # Compute from default density (1000 kg/m³)
+    var vol = geom_volume(geom_type, radius, half_length, half_x, half_y, half_z)
+    return Scalar[DTYPE](MJ_DEFAULT_DENSITY) * vol
 
 
 # =============================================================================
@@ -567,14 +592,23 @@ fn compute_inertia_from_geoms[
     """
     # For each body (skip worldbody at index 0)
     for body_id in range(1, NBODY):
-        # Collect geoms for this body and count those with non-trivial mass
+        # Collect geoms for this body and count those with non-trivial mass.
+        # geom_mass may be -1.0 (no explicit mass) — use density*volume in that case.
         var total_mass = Scalar[DTYPE](0)
         var num_contributing = 0
 
         # First pass: count contributing geoms and total mass
         for g in range(NGEOM):
             if model.geom_body[g] == body_id:
-                var gm = model.geom_mass[g]
+                var gm = geom_effective_mass[DTYPE](
+                    model.geom_type[g],
+                    model.geom_mass[g],
+                    model.geom_radius[g],
+                    model.geom_half_length[g],
+                    model.geom_half_x[g],
+                    model.geom_half_y[g],
+                    model.geom_half_z[g],
+                )
                 if gm > Scalar[DTYPE](1e-10):
                     num_contributing += 1
                     total_mass += gm
@@ -585,39 +619,8 @@ fn compute_inertia_from_geoms[
         if num_contributing == 1:
             # Single geom: find it and copy directly
             for g in range(NGEOM):
-                if model.geom_body[g] == body_id and model.geom_mass[
-                    g
-                ] > Scalar[DTYPE](1e-10):
-                    # Copy pos as ipos
-                    model.body_ipos[body_id * 3 + 0] = model.geom_pos[
-                        g * 3 + 0
-                    ]
-                    model.body_ipos[body_id * 3 + 1] = model.geom_pos[
-                        g * 3 + 1
-                    ]
-                    model.body_ipos[body_id * 3 + 2] = model.geom_pos[
-                        g * 3 + 2
-                    ]
-                    # Copy quat as iquat
-                    model.body_iquat[body_id * 4 + 0] = model.geom_quat[
-                        g * 4 + 0
-                    ]
-                    model.body_iquat[body_id * 4 + 1] = model.geom_quat[
-                        g * 4 + 1
-                    ]
-                    model.body_iquat[body_id * 4 + 2] = model.geom_quat[
-                        g * 4 + 2
-                    ]
-                    model.body_iquat[body_id * 4 + 3] = model.geom_quat[
-                        g * 4 + 3
-                    ]
-                    # Set mass
-                    model.body_mass[body_id] = model.geom_mass[g]
-                    model.body_inv_mass[body_id] = Scalar[DTYPE](
-                        1.0
-                    ) / model.geom_mass[g]
-                    # Compute diagonal inertia
-                    var inertia = geom_inertia[DTYPE](
+                if model.geom_body[g] == body_id:
+                    var gm = geom_effective_mass[DTYPE](
                         model.geom_type[g],
                         model.geom_mass[g],
                         model.geom_radius[g],
@@ -626,19 +629,56 @@ fn compute_inertia_from_geoms[
                         model.geom_half_y[g],
                         model.geom_half_z[g],
                     )
-                    model.body_inertia[body_id * 3 + 0] = inertia[0]
-                    model.body_inertia[body_id * 3 + 1] = inertia[1]
-                    model.body_inertia[body_id * 3 + 2] = inertia[2]
-                    model.body_inv_inertia[body_id * 3 + 0] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[0]
-                    model.body_inv_inertia[body_id * 3 + 1] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[1]
-                    model.body_inv_inertia[body_id * 3 + 2] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[2]
-                    break
+                    if gm > Scalar[DTYPE](1e-10):
+                        # Copy pos as ipos
+                        model.body_ipos[body_id * 3 + 0] = model.geom_pos[
+                            g * 3 + 0
+                        ]
+                        model.body_ipos[body_id * 3 + 1] = model.geom_pos[
+                            g * 3 + 1
+                        ]
+                        model.body_ipos[body_id * 3 + 2] = model.geom_pos[
+                            g * 3 + 2
+                        ]
+                        # Copy quat as iquat
+                        model.body_iquat[body_id * 4 + 0] = model.geom_quat[
+                            g * 4 + 0
+                        ]
+                        model.body_iquat[body_id * 4 + 1] = model.geom_quat[
+                            g * 4 + 1
+                        ]
+                        model.body_iquat[body_id * 4 + 2] = model.geom_quat[
+                            g * 4 + 2
+                        ]
+                        model.body_iquat[body_id * 4 + 3] = model.geom_quat[
+                            g * 4 + 3
+                        ]
+                        # Set mass
+                        model.body_mass[body_id] = gm
+                        model.body_inv_mass[body_id] = Scalar[DTYPE](1.0) / gm
+                        # Compute diagonal inertia
+                        var inertia = geom_inertia[DTYPE](
+                            model.geom_type[g],
+                            gm,
+                            model.geom_radius[g],
+                            model.geom_half_length[g],
+                            model.geom_half_x[g],
+                            model.geom_half_y[g],
+                            model.geom_half_z[g],
+                        )
+                        model.body_inertia[body_id * 3 + 0] = inertia[0]
+                        model.body_inertia[body_id * 3 + 1] = inertia[1]
+                        model.body_inertia[body_id * 3 + 2] = inertia[2]
+                        model.body_inv_inertia[body_id * 3 + 0] = Scalar[DTYPE](
+                            1.0
+                        ) / inertia[0]
+                        model.body_inv_inertia[body_id * 3 + 1] = Scalar[DTYPE](
+                            1.0
+                        ) / inertia[1]
+                        model.body_inv_inertia[body_id * 3 + 2] = Scalar[DTYPE](
+                            1.0
+                        ) / inertia[2]
+                        break
         else:
             # Multiple geoms: accumulate
             # Compute center of mass (mass-weighted average of geom positions)
@@ -646,13 +686,20 @@ fn compute_inertia_from_geoms[
             var com_y = Scalar[DTYPE](0)
             var com_z = Scalar[DTYPE](0)
             for g in range(NGEOM):
-                if model.geom_body[g] == body_id and model.geom_mass[
-                    g
-                ] > Scalar[DTYPE](1e-10):
-                    var gm = model.geom_mass[g]
-                    com_x += gm * model.geom_pos[g * 3 + 0]
-                    com_y += gm * model.geom_pos[g * 3 + 1]
-                    com_z += gm * model.geom_pos[g * 3 + 2]
+                if model.geom_body[g] == body_id:
+                    var gm = geom_effective_mass[DTYPE](
+                        model.geom_type[g],
+                        model.geom_mass[g],
+                        model.geom_radius[g],
+                        model.geom_half_length[g],
+                        model.geom_half_x[g],
+                        model.geom_half_y[g],
+                        model.geom_half_z[g],
+                    )
+                    if gm > Scalar[DTYPE](1e-10):
+                        com_x += gm * model.geom_pos[g * 3 + 0]
+                        com_y += gm * model.geom_pos[g * 3 + 1]
+                        com_z += gm * model.geom_pos[g * 3 + 2]
             com_x /= total_mass
             com_y /= total_mass
             com_z /= total_mass
@@ -670,49 +717,55 @@ fn compute_inertia_from_geoms[
             var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
 
             for g in range(NGEOM):
-                if model.geom_body[g] == body_id and model.geom_mass[
-                    g
-                ] > Scalar[DTYPE](1e-10):
-                    var gm = model.geom_mass[g]
-
-                    # Compute diagonal inertia for this geom
-                    var diag = geom_inertia[DTYPE](
+                if model.geom_body[g] == body_id:
+                    var gm = geom_effective_mass[DTYPE](
                         model.geom_type[g],
-                        gm,
+                        model.geom_mass[g],
                         model.geom_radius[g],
                         model.geom_half_length[g],
                         model.geom_half_x[g],
                         model.geom_half_y[g],
                         model.geom_half_z[g],
                     )
+                    if gm > Scalar[DTYPE](1e-10):
+                        # Compute diagonal inertia for this geom
+                        var diag = geom_inertia[DTYPE](
+                            model.geom_type[g],
+                            gm,
+                            model.geom_radius[g],
+                            model.geom_half_length[g],
+                            model.geom_half_x[g],
+                            model.geom_half_y[g],
+                            model.geom_half_z[g],
+                        )
 
-                    # Rotate to global frame
-                    var inert_global = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    globalinertia(
-                        diag[0],
-                        diag[1],
-                        diag[2],
-                        model.geom_quat[g * 4 + 0],
-                        model.geom_quat[g * 4 + 1],
-                        model.geom_quat[g * 4 + 2],
-                        model.geom_quat[g * 4 + 3],
-                        inert_global,
-                    )
+                        # Rotate to global frame
+                        var inert_global = InlineArray[Scalar[DTYPE], 6](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        globalinertia(
+                            diag[0],
+                            diag[1],
+                            diag[2],
+                            model.geom_quat[g * 4 + 0],
+                            model.geom_quat[g * 4 + 1],
+                            model.geom_quat[g * 4 + 2],
+                            model.geom_quat[g * 4 + 3],
+                            inert_global,
+                        )
 
-                    # Parallel axis theorem (offset from body CoM)
-                    var dx = model.geom_pos[g * 3 + 0] - com_x
-                    var dy = model.geom_pos[g * 3 + 1] - com_y
-                    var dz = model.geom_pos[g * 3 + 2] - com_z
-                    var inert_offset = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    offcenter(gm, dx, dy, dz, inert_offset)
+                        # Parallel axis theorem (offset from body CoM)
+                        var dx = model.geom_pos[g * 3 + 0] - com_x
+                        var dy = model.geom_pos[g * 3 + 1] - com_y
+                        var dz = model.geom_pos[g * 3 + 2] - com_z
+                        var inert_offset = InlineArray[Scalar[DTYPE], 6](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        offcenter(gm, dx, dy, dz, inert_offset)
 
-                    # Accumulate
-                    for j in range(6):
-                        toti[j] += inert_global[j] + inert_offset[j]
+                        # Accumulate
+                        for j in range(6):
+                            toti[j] += inert_global[j] + inert_offset[j]
 
             # Eigendecompose to get principal axes and moments
             var eig = eig3_symmetric(toti)

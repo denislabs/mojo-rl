@@ -127,10 +127,10 @@ fn _build_hessian[
     M_SIZE: Int,
 ](
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    D_vals: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
-    jar: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
-    cstate: InlineArray[Int, _max_one[MAX_ROWS]()],
-    mut H: InlineArray[Scalar[DTYPE], M_SIZE],
+    D_vals: List[Scalar[DTYPE]],
+    jar: List[Scalar[DTYPE]],
+    cstate: List[Int],
+    mut H: List[Scalar[DTYPE]],
 ):
     """Build Hessian contributions from active constraints.
 
@@ -172,16 +172,17 @@ fn _build_hessian[
         if cstate[n] == PRIMAL_CONE and group_size > 0:
             # Cone state: build full dim x dim Hessian
             var D_n = D_vals[n]
-            var mu = constraints.rows[
-                friction_start + fric_idx
-            ].friction_coef
+            var mu = constraints.rows[friction_start + fric_idx].friction_coef
             # Dm = D_n / (1 + mu^2) in jar-space (no group_size factor)
             var Dm = D_n / (Scalar[DTYPE](1) + mu * mu)
 
             var N = jar[n]
             var T_sq: Scalar[DTYPE] = 0
             for g in range(group_size):
-                T_sq += jar[friction_start + fric_idx + g] * jar[friction_start + fric_idx + g]
+                T_sq += (
+                    jar[friction_start + fric_idx + g]
+                    * jar[friction_start + fric_idx + g]
+                )
             var T = sqrt(T_sq)
             var T_safe = T
             if T_safe < Scalar[DTYPE](MINVAL):
@@ -209,8 +210,10 @@ fn _build_hessian[
                     for j in range(NV):
                         # J_n^T * h_cross * J_fr + J_fr^T * h_cross * J_n (symmetric)
                         H[i * NV + j] += h_cross * (
-                            constraints.J[n * NV + i] * constraints.J[fr * NV + j]
-                            + constraints.J[fr * NV + i] * constraints.J[n * NV + j]
+                            constraints.J[n * NV + i]
+                            * constraints.J[fr * NV + j]
+                            + constraints.J[fr * NV + i]
+                            * constraints.J[n * NV + j]
                         )
 
             # H_cone[g1+1,g2+1]: friction-friction block
@@ -219,10 +222,16 @@ fn _build_hessian[
                 for g2 in range(group_size):
                     var fr2 = friction_start + fric_idx + g2
                     # Outer product term: Dm * mu^2 * jar_f1*jar_f2 / T^2
-                    var h_ff = Dm * mu * mu * jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    var h_ff = (
+                        Dm * mu * mu * jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    )
                     # Rank-correction: Dm * mu * s / T * (jar_f1*jar_f2/T^2 - delta)
-                    h_ff += Dm * mu * s / T_safe * (
-                        jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    h_ff += (
+                        Dm
+                        * mu
+                        * s
+                        / T_safe
+                        * (jar[fr1] * jar[fr2] / (T_safe * T_safe))
                     )
                     if g1 == g2:
                         h_ff -= Dm * mu * s / T_safe
@@ -250,9 +259,7 @@ fn _build_hessian[
         for i in range(NV):
             for j in range(NV):
                 H[i * NV + j] += (
-                    D_r
-                    * constraints.J[r * NV + i]
-                    * constraints.J[r * NV + j]
+                    D_r * constraints.J[r * NV + i] * constraints.J[r * NV + j]
                 )
 
 
@@ -277,6 +284,7 @@ struct NewtonSolver(ConstraintSolver):
         comptime MC = _max_one[MAX_CONTACTS]()
         return 84 * MC + 12 * MC * NV + MC * MC
 
+    @no_inline
     @staticmethod
     fn solve[
         DTYPE: DType,
@@ -286,8 +294,6 @@ struct NewtonSolver(ConstraintSolver):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         MAX_ROWS: Int,
-        V_SIZE: Int,
-        M_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -304,13 +310,13 @@ struct NewtonSolver(ConstraintSolver):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+        M_inv: List[Scalar[DTYPE]],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: List[Scalar[DTYPE]],
         dt: Scalar[DTYPE],
     ):
         """Solve constraints using Newton on CPU.
@@ -321,6 +327,8 @@ struct NewtonSolver(ConstraintSolver):
         if constraints.num_rows == 0:
             return
 
+        comptime V_SIZE = _max_one[NV]()
+        comptime M_SIZE = _max_one[NV * NV]()
         comptime MR = _max_one[MAX_ROWS]()
 
         var num_rows = constraints.num_rows
@@ -331,7 +339,9 @@ struct NewtonSolver(ConstraintSolver):
         # Compute D values from stored diagApprox and inv_K_imp
         # D = 1/R where R = 1/inv_K_imp - K = (1-imp)/imp * diagApprox
         # All constraint types now store diagApprox, so primal_D works correctly.
-        var D_vals = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
+        var D_vals = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            D_vals.append(Scalar[DTYPE](0))
         for r in range(num_rows):
             D_vals[r] = primal_D(
                 constraints.rows[r].inv_K_imp,
@@ -342,9 +352,9 @@ struct NewtonSolver(ConstraintSolver):
         # In CONE zone, Dm = D_n/(1+mu²) handles normal-friction coupling.
 
         # Save qacc_smooth (unconstrained acceleration)
-        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var qacc_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
         for i in range(NV):
-            qacc_smooth[i] = qacc[i]
+            qacc_smooth.append(qacc[i])
 
         # MuJoCo-style warm-start: compare cost(qacc_warmstart) vs cost(qacc_smooth)
         # and use whichever is lower as the Newton starting point.
@@ -368,29 +378,34 @@ struct NewtonSolver(ConstraintSolver):
                 qacc[i] = data.qacc_warmstart[i]
 
         # qfrc_smooth from constraints (filled by integrator)
-        var qfrc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
+        var qfrc_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qfrc_smooth.append(Scalar[DTYPE](0))
+        for i in range(V_SIZE):
             qfrc_smooth[i] = constraints.qfrc_smooth[i]
 
         # Compute Ma = M * qacc
-        var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var Ma = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            Ma.append(Scalar[DTYPE](0))
         for i in range(NV):
             Ma[i] = Scalar[DTYPE](0)
             for j in range(NV):
                 Ma[i] += constraints.M_hat[i * NV + j] * qacc[j]
 
         # Compute jar = J * qacc - aref (aref = -bias)
-        var jar = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        for i in range(MR):
-            jar[i] = Scalar[DTYPE](0)
-        compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](constraints, qacc, jar)
+        var jar = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            jar.append(Scalar[DTYPE](0))
+        compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
         # Compute initial force, state, cost (cone-aware with MuJoCo D)
-        var force = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        var cstate = InlineArray[Int, MR](uninitialized=True)
-        for i in range(MR):
-            force[i] = Scalar[DTYPE](0)
-            cstate[i] = PRIMAL_SATISFIED
+        var force = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            force.append(Scalar[DTYPE](0))
+        var cstate = List[Int](capacity=MR)
+        for _ in range(MR):
+            cstate.append(PRIMAL_SATISFIED)
         var constraint_cost: Scalar[DTYPE] = 0
         constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
             constraints, jar, D_vals, force, cstate, constraint_cost
@@ -398,33 +413,65 @@ struct NewtonSolver(ConstraintSolver):
 
         @parameter
         if NEWTON_CPU_DEBUG:
-            print("  [PRIMAL] num_rows=", num_rows, " normals=", constraints.num_normals, " friction=", constraints.num_friction, " limits=", constraints.num_limits)
+            print(
+                "  [PRIMAL] num_rows=",
+                num_rows,
+                " normals=",
+                constraints.num_normals,
+                " friction=",
+                constraints.num_friction,
+                " limits=",
+                constraints.num_limits,
+            )
             for r in range(num_rows):
                 var state_str = "SAT"
                 if cstate[r] == PRIMAL_QUADRATIC:
                     state_str = "QUAD"
                 elif cstate[r] == PRIMAL_CONE:
                     state_str = "CONE"
-                print("  row", r, " type=", constraints.rows[r].constraint_type, " D_mj=", Float64(D_vals[r]), " jar=", Float64(jar[r]), " force=", Float64(force[r]), " state=", state_str, " bias=", Float64(constraints.rows[r].bias), " mu=", Float64(constraints.rows[r].friction_coef), " parent=", constraints.rows[r].friction_parent)
+                print(
+                    "  row",
+                    r,
+                    " type=",
+                    constraints.rows[r].constraint_type,
+                    " D_mj=",
+                    Float64(D_vals[r]),
+                    " jar=",
+                    Float64(jar[r]),
+                    " force=",
+                    Float64(force[r]),
+                    " state=",
+                    state_str,
+                    " bias=",
+                    Float64(constraints.rows[r].bias),
+                    " mu=",
+                    Float64(constraints.rows[r].friction_coef),
+                    " parent=",
+                    constraints.rows[r].friction_parent,
+                )
 
         # Compute qfrc_constraint = J^T * force
-        var qfrc_constraint = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
+        var qfrc_constraint = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qfrc_constraint.append(Scalar[DTYPE](0))
+
         compute_qfrc_constraint[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
             constraints, force, qfrc_constraint
         )
 
         # Build Hessian H = M + J^T * D_active * J + cone Hessians
-        var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(NV * NV):
+        var H = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            H.append(Scalar[DTYPE](0))
+        for i in range(M_SIZE):
             H[i] = constraints.M_hat[i]
+        var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            L.append(Scalar[DTYPE](0))
 
-        _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                       MAX_ROWS, V_SIZE, M_SIZE](
-            constraints, D_vals, jar, cstate, H
-        )
+        _build_hessian[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS, V_SIZE, M_SIZE
+        ](constraints, D_vals, jar, cstate, H)
 
         # Cholesky factorize H
         chol_factor[DTYPE, NV, M_SIZE](H, L)
@@ -439,9 +486,15 @@ struct NewtonSolver(ConstraintSolver):
             scale = Scalar[DTYPE](1.0)
 
         # Main Newton iteration loop
-        var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var grad = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            grad.append(Scalar[DTYPE](0))
+        var search = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            search.append(Scalar[DTYPE](0))
+        var Mv = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            Mv.append(Scalar[DTYPE](0))
 
         var total_iter = 0
 
@@ -455,13 +508,25 @@ struct NewtonSolver(ConstraintSolver):
 
             @parameter
             if NEWTON_CPU_DEBUG:
-                print("    [PRIMAL_NEWTON] iter_start", total_iter, " grad_norm=", Float64(sqrt(grad_norm)), " scaled=", Float64(scale * sqrt(grad_norm)))
+                print(
+                    "    [PRIMAL_NEWTON] iter_start",
+                    total_iter,
+                    " grad_norm=",
+                    Float64(sqrt(grad_norm)),
+                    " scaled=",
+                    Float64(scale * sqrt(grad_norm)),
+                )
 
             # Check gradient convergence
             if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_CPU_TOLERANCE):
+
                 @parameter
                 if NEWTON_CPU_DEBUG:
-                    print("    [PRIMAL_NEWTON] CONVERGED at iter", total_iter, " (gradient)")
+                    print(
+                        "    [PRIMAL_NEWTON] CONVERGED at iter",
+                        total_iter,
+                        " (gradient)",
+                    )
                 break
 
             # Newton direction: search = -H^{-1} * grad via Cholesky solve
@@ -476,7 +541,9 @@ struct NewtonSolver(ConstraintSolver):
                     Mv[i] += constraints.M_hat[i * NV + j] * search[j]
 
             # Forward-exploring linesearch with MuJoCo D
-            var alpha = primal_linesearch_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+            var alpha = primal_linesearch_with_D[
+                DTYPE, MAX_ROWS, NV, V_SIZE, MR
+            ](
                 constraints,
                 D_vals,
                 qacc,
@@ -491,19 +558,26 @@ struct NewtonSolver(ConstraintSolver):
             )
 
             if alpha == Scalar[DTYPE](0):
+
                 @parameter
                 if NEWTON_CPU_DEBUG:
-                    print("    [PRIMAL_NEWTON] STOPPED at iter", total_iter, " (alpha=0)")
+                    print(
+                        "    [PRIMAL_NEWTON] STOPPED at iter",
+                        total_iter,
+                        " (alpha=0)",
+                    )
                 break
 
             # Save old state, cost, qacc, Ma
-            var old_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
-                Ma, qfrc_smooth, qacc, qacc_smooth
-            )
+            var old_cost = constraint_cost + compute_gauss_cost[
+                DTYPE, NV, V_SIZE
+            ](Ma, qfrc_smooth, qacc, qacc_smooth)
             var old_state = InlineArray[Int, MR](uninitialized=True)
             for i in range(num_rows):
                 old_state[i] = cstate[i]
-            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
             var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             for i in range(NV):
                 old_qacc[i] = qacc[i]
@@ -515,9 +589,7 @@ struct NewtonSolver(ConstraintSolver):
                 Ma[i] += alpha * Mv[i]
 
             # Recompute jar
-            compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-                constraints, qacc, jar
-            )
+            compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
             # Recompute force, state, cost (cone-aware with MuJoCo D)
             constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
@@ -530,9 +602,9 @@ struct NewtonSolver(ConstraintSolver):
             )
 
             # Check improvement
-            var new_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
-                Ma, qfrc_smooth, qacc, qacc_smooth
-            )
+            var new_cost = constraint_cost + compute_gauss_cost[
+                DTYPE, NV, V_SIZE
+            ](Ma, qfrc_smooth, qacc, qacc_smooth)
             var improvement = scale * (old_cost - new_cost)
 
             @parameter
@@ -557,9 +629,7 @@ struct NewtonSolver(ConstraintSolver):
                         qacc[i] = old_qacc[i]
                         Ma[i] = old_Ma[i]
                     # Recompute jar/force at restored point
-                    compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-                        constraints, qacc, jar
-                    )
+                    compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
                     constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
                         constraints, jar, D_vals, force, cstate, constraint_cost
                     )
@@ -578,10 +648,17 @@ struct NewtonSolver(ConstraintSolver):
             if state_changed:
                 for i in range(NV * NV):
                     H[i] = constraints.M_hat[i]
-                _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                               MAX_ROWS, V_SIZE, M_SIZE](
-                    constraints, D_vals, jar, cstate, H
-                )
+                _build_hessian[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    MAX_ROWS,
+                    V_SIZE,
+                    M_SIZE,
+                ](constraints, D_vals, jar, cstate, H)
                 chol_factor[DTYPE, NV, M_SIZE](H, L)
 
         @parameter
@@ -593,7 +670,16 @@ struct NewtonSolver(ConstraintSolver):
                     state_str = "QUAD"
                 elif cstate[r] == PRIMAL_CONE:
                     state_str = "CONE"
-                print("    row", r, " state=", state_str, " jar=", Float64(jar[r]), " force=", Float64(force[r]))
+                print(
+                    "    row",
+                    r,
+                    " state=",
+                    state_str,
+                    " jar=",
+                    Float64(jar[r]),
+                    " force=",
+                    Float64(force[r]),
+                )
 
         # Write forces back to constraint lambda_val for warm-starting
         for r in range(num_rows):
@@ -689,9 +775,7 @@ struct NewtonSolver(ConstraintSolver):
             workspace[env, ws_ltrial_idx + contact_tid] = 0
             workspace[env, ws_fmap_idx + contact_tid] = -1
             for c2 in range(MC):
-                workspace[
-                    env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
-                ] = 0
+                workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + c2] = 0
 
         # Read metadata
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
@@ -720,47 +804,31 @@ struct NewtonSolver(ConstraintSolver):
             if nc > MAX_CONTACTS:
                 nc = MAX_CONTACTS
             var sr_tc = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
             )
             var sr_dr = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
             )
             si_dmin = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
             )
             si_dmax = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
             )
             si_width = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
             )
             si_midpoint = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3]
             )
             si_power = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4]
             )
             if si_width < Scalar[DTYPE](1e-6):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (
-                sr_tc * sr_tc * si_dmax * si_dmax
-            )
+            K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
             B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
@@ -801,20 +869,14 @@ struct NewtonSolver(ConstraintSolver):
 
         # === PARALLEL DELASSUS BUILD ===
         if valid_env and contact_tid < nc:
-            if workspace[env, ws_c_dist_idx + contact_tid] < Scalar[DTYPE](
-                0
-            ):
+            if workspace[env, ws_c_dist_idx + contact_tid] < Scalar[DTYPE](0):
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
-                        0
-                    ):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
                     var a_val: workspace.element_type = 0
                     for i in range(NV):
                         a_val += (
-                            workspace[
-                                env, ws_J_n_idx + contact_tid * NV + i
-                            ]
+                            workspace[env, ws_J_n_idx + contact_tid * NV + i]
                             * workspace[env, ws_MinvJn_idx + c2 * NV + i]
                         )
                     workspace[
@@ -829,9 +891,7 @@ struct NewtonSolver(ConstraintSolver):
                 )
                 workspace[
                     env,
-                    ws_A_idx
-                    + contact_tid * MAX_CONTACTS
-                    + contact_tid,
+                    ws_A_idx + contact_tid * MAX_CONTACTS + contact_tid,
                 ] += R_c
 
         barrier()
@@ -862,18 +922,12 @@ struct NewtonSolver(ConstraintSolver):
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     workspace[env, ws_grad_idx + c] = Scalar[DTYPE](0)
                     continue
-                var g: workspace.element_type = workspace[
-                    env, ws_rhs_idx + c
-                ]
+                var g: workspace.element_type = workspace[env, ws_rhs_idx + c]
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
-                        0
-                    ):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
                     g += (
-                        workspace[
-                            env, ws_A_idx + c * MAX_CONTACTS + c2
-                        ]
+                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
                         * workspace[env, ws_lambda_n_idx + c2]
                     )
                 workspace[env, ws_grad_idx + c] = g
@@ -882,9 +936,9 @@ struct NewtonSolver(ConstraintSolver):
             for c in range(nc):
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](
-                    0
-                ) or (workspace[env, ws_grad_idx + c]) < Scalar[DTYPE](0):
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
+                    workspace[env, ws_grad_idx + c]
+                ) < Scalar[DTYPE](0):
                     grad_norm += (
                         workspace[env, ws_grad_idx + c]
                         * workspace[env, ws_grad_idx + c]
@@ -898,12 +952,10 @@ struct NewtonSolver(ConstraintSolver):
                 workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](-1)
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](
-                    0
-                ) or (workspace[env, ws_grad_idx + c]) < Scalar[DTYPE](0):
-                    workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](
-                        free_count
-                    )
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
+                    workspace[env, ws_grad_idx + c]
+                ) < Scalar[DTYPE](0):
+                    workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](free_count)
                     free_count += 1
 
             if free_count == 0:
@@ -915,9 +967,7 @@ struct NewtonSolver(ConstraintSolver):
             for c in range(nc):
                 if workspace[env, ws_fmap_idx + c] < Scalar[DTYPE](0):
                     continue
-                var AR_diag = workspace[
-                    env, ws_A_idx + c * MAX_CONTACTS + c
-                ]
+                var AR_diag = workspace[env, ws_A_idx + c * MAX_CONTACTS + c]
                 if AR_diag > Scalar[DTYPE](1e-14):
                     workspace[env, ws_d_idx + c] = (
                         -(workspace[env, ws_grad_idx + c]) / AR_diag
@@ -931,18 +981,14 @@ struct NewtonSolver(ConstraintSolver):
                     for c2 in range(nc):
                         if c2 == c:
                             continue
-                        if workspace[env, ws_fmap_idx + c2] < Scalar[
-                            DTYPE
-                        ](0):
+                        if workspace[env, ws_fmap_idx + c2] < Scalar[DTYPE](0):
                             continue
                         sum_off_diag += workspace[
                             env, ws_A_idx + c * MAX_CONTACTS + c2
                         ] * (workspace[env, ws_d_idx + c2])
                     workspace[env, ws_d_idx + c] = (
                         -(workspace[env, ws_grad_idx + c]) - sum_off_diag
-                    ) / (
-                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c]
-                    )
+                    ) / (workspace[env, ws_A_idx + c * MAX_CONTACTS + c])
 
             var f_current: workspace.element_type = 0
             for c in range(nc):
@@ -953,16 +999,12 @@ struct NewtonSolver(ConstraintSolver):
                     * workspace[env, ws_lambda_n_idx + c]
                 )
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
-                        0
-                    ):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
                     f_current += (
                         Scalar[DTYPE](0.5)
                         * workspace[env, ws_lambda_n_idx + c]
-                        * workspace[
-                            env, ws_A_idx + c * MAX_CONTACTS + c2
-                        ]
+                        * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
                         * workspace[env, ws_lambda_n_idx + c2]
                     )
 
@@ -987,34 +1029,26 @@ struct NewtonSolver(ConstraintSolver):
                         workspace[env, ws_ltrial_idx + c] = workspace[
                             env, ws_lambda_n_idx + c
                         ] + step * (workspace[env, ws_d_idx + c])
-                    if workspace[env, ws_ltrial_idx + c] < Scalar[DTYPE](
-                        0
-                    ):
-                        workspace[env, ws_ltrial_idx + c] = Scalar[DTYPE](
-                            0
-                        )
+                    if workspace[env, ws_ltrial_idx + c] < Scalar[DTYPE](0):
+                        workspace[env, ws_ltrial_idx + c] = Scalar[DTYPE](0)
 
                 var f_trial: workspace.element_type = 0
                 for c in range(nc):
-                    if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](
-                        0
-                    ):
+                    if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                         continue
                     f_trial += (
                         workspace[env, ws_rhs_idx + c]
                         * workspace[env, ws_ltrial_idx + c]
                     )
                     for c2 in range(nc):
-                        if workspace[
-                            env, ws_c_dist_idx + c2
-                        ] >= Scalar[DTYPE](0):
+                        if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
+                            0
+                        ):
                             continue
                         f_trial += (
                             Scalar[DTYPE](0.5)
                             * workspace[env, ws_ltrial_idx + c]
-                            * workspace[
-                                env, ws_A_idx + c * MAX_CONTACTS + c2
-                            ]
+                            * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
                             * workspace[env, ws_ltrial_idx + c2]
                         )
 
@@ -1108,8 +1142,8 @@ struct NewtonSolver(ConstraintSolver):
             WS_SIZE,
             FRICTION_WS_OFFSET,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ](
             env,
             state,

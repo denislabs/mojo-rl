@@ -87,7 +87,10 @@ from .xml_parser import (
     _xml_nth_joint_limited,
     _xml_nth_joint_range_min,
     _xml_nth_joint_range_max,
+    _xml_compiler_inertiafromgeom,
+    _xml_compiler_settotalmass,
 )
+from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
 # Type aliases matching model_def.mojo module scope (required for trait conformance)
 comptime _RVec3 = _Vec3G[DType.float64]
@@ -219,6 +222,23 @@ struct ModelDefFromXML[
             Self.MAX_TENDON,
             Self.NSITE,  # MODEL_NSITE in setup_model's renamed param
         ](model)
+        @parameter
+        if _xml_compiler_inertiafromgeom[Self.xml]():
+            compute_inertia_from_geoms(model)
+            comptime settotalmass = _xml_compiler_settotalmass[Self.xml]()
+            @parameter
+            if settotalmass > 0.0:
+                var total_mass = Scalar[DTYPE](0)
+                for i in range(1, Self.NBODY):
+                    total_mass += model.body_mass[i]
+                if total_mass > Scalar[DTYPE](0):
+                    var scale = Scalar[DTYPE](settotalmass) / total_mass
+                    for i in range(1, Self.NBODY):
+                        model.body_mass[i] *= scale
+                        model.body_inv_mass[i] = Scalar[DTYPE](1.0) / model.body_mass[i]
+                        for k in range(3):
+                            model.body_inertia[i * 3 + k] *= scale
+                            model.body_inv_inertia[i * 3 + k] = Scalar[DTYPE](1.0) / model.body_inertia[i * 3 + k]
         forward_kinematics(model, data)
         compute_body_invweight0(model, data)
 

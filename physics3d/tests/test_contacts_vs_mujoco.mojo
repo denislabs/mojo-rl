@@ -55,13 +55,10 @@ comptime NORMAL_DOT_MIN: Float64 = 0.99  # Normal direction (dot product)
 fn _geom_body_from_mujoco(mj_model: PythonObject, geom_id: Int) raises -> Int:
     """Map MuJoCo geom index to our body index.
 
-    MuJoCo has 1 worldbody (geom 0 = floor), then bodies 1-7 match our 0-6.
-    But geom ordering may differ — look up via body id.
+    Both MuJoCo and our engine use 0-indexed bodies with worldbody=0.
+    Direct mapping: MuJoCo body N = our body N.
     """
-    var mj_body_id = Int(py=mj_model.geom_bodyid[geom_id])
-    if mj_body_id == 0:
-        return -1  # worldbody = ground
-    return mj_body_id - 1  # MuJoCo body 1 = our body 0
+    return Int(py=mj_model.geom_bodyid[geom_id])
 
 
 # =============================================================================

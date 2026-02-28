@@ -258,21 +258,25 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 )
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
+        var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+        for _ in range(CDOF_SIZE):
+            cdof.append(Scalar[DTYPE](0))
+        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
             model, data, cdof
         )
 
         # 4. Compute composite rigid body inertia
-        var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-        for i in range(CRB_SIZE):
-            crb[i] = Scalar[DTYPE](0)
-        compute_composite_inertia[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-        ](model, data, crb)
+        var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+        for _ in range(CRB_SIZE):
+            crb.append(Scalar[DTYPE](0))
+        compute_composite_inertia[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+            model, data, crb
+        )
 
         # 5. Compute mass matrix using CRBA
-        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M.append(Scalar[DTYPE](0))
         var sM = SparseMassMatrix[DTYPE, NV, NM]()
 
         @parameter
@@ -308,8 +312,6 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 NSITE,
             ](model, data, cdof, crb, sM)
         else:
-            for i in range(M_SIZE):
-                M[i] = Scalar[DTYPE](0)
             compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Add armature only to mass matrix diagonal
@@ -347,28 +349,32 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 5c. Expand sparse to dense for M_hat (must be before ldl_factor_sparse mutates sM)
         @parameter
         if SPARSE:
-            sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M)
+            sparse_to_dense[DTYPE, NV, NM](sM, M)
 
         # 6. LDL factorize M and solve for qacc
-        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            L.append(Scalar[DTYPE](0))
+        var D = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            D.append(Scalar[DTYPE](0))
 
         @parameter
         if SPARSE:
             ldl_factor_sparse(sM)
         else:
-            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+            ldl_factor[DTYPE, NV](M, L, D)
 
-        var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(V_SIZE):
-            bias[i] = Scalar[DTYPE](0)
-        compute_bias_forces_rne[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](model, data, cdof, bias)
+        var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            bias.append(Scalar[DTYPE](0))
+        compute_bias_forces_rne[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+            model, data, cdof, bias
+        )
 
-        var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
         for i in range(NV):
-            f_net[i] = data.qfrc[i] - bias[i]
+            f_net.append(data.qfrc[i] - bias[i])
 
         # 6b. Apply passive joint forces: damping + stiffness + frictionloss
         # Damping force: f -= damping * qvel (purely explicit in MuJoCo 3.3.6)
@@ -444,40 +450,40 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                         f_net[dof_adr] = f_net[dof_adr] + floss
 
         # qacc = M^-1 * f_net via LDL solve
-        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            qacc[i] = Scalar[DTYPE](0)
+        var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qacc.append(Scalar[DTYPE](0))
 
         @parameter
         if SPARSE:
-            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc)
+            ldl_solve_sparse[DTYPE, NV, NM](sM, f_net, qacc)
         else:
-            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
+            ldl_solve[DTYPE, NV](L, D, f_net, qacc)
 
         # 7. Compute full M_inv from LDL factors for constraint solver
-        var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M_inv[i] = Scalar[DTYPE](0)
+        var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M_inv.append(Scalar[DTYPE](0))
 
         @parameter
         if SPARSE:
             # Compute M_inv column-by-column: solve M * e_j = e_j for each j
-            var e_col = InlineArray[Scalar[DTYPE], V_SIZE](
-                fill=Scalar[DTYPE](0)
-            )
-            var col_result = InlineArray[Scalar[DTYPE], V_SIZE](
-                fill=Scalar[DTYPE](0)
-            )
+            var e_col = List[Scalar[DTYPE]](capacity=V_SIZE)
+            for _ in range(V_SIZE):
+                e_col.append(Scalar[DTYPE](0))
+            var col_result = List[Scalar[DTYPE]](capacity=V_SIZE)
+            for _ in range(V_SIZE):
+                col_result.append(Scalar[DTYPE](0))
             for col in range(NV):
                 for k in range(NV):
                     e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](
                         0
                     )
-                ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
+                ldl_solve_sparse[DTYPE, NV, NM](sM, e_col, col_result)
                 for row in range(NV):
                     M_inv[row * NV + col] = col_result[row]
         else:
-            compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+            compute_M_inv_from_ldl[DTYPE, NV](L, D, M_inv)
 
         if verbose:
             print("  [PRE-SOLVER]")
@@ -514,7 +520,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY + MAX_TENDON
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[CONE_TYPE=CONE_TYPE, MAX_TENDON=MAX_TENDON](
-            model, data, cdof, M_inv, qacc, dt, constraints
+            model, data, cdof, M_inv, dt, constraints
         )
 
         if verbose:
@@ -685,11 +691,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # This is equivalent to mj_implicitSkip in MuJoCo.
 
         # 9a. Compute qfrc_constraint = sum(J^T * lambda) for all constraints
-        var qfrc_constraint = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
-        for i in range(NV):
-            qfrc_constraint[i] = Scalar[DTYPE](0)
+        var qfrc_constraint = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qfrc_constraint.append(Scalar[DTYPE](0))
         for r in range(constraints.num_rows):
             var lam = constraints.rows[r].lambda_val
             for i in range(NV):
@@ -697,9 +701,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 9b. qfrc_total = qfrc_smooth + qfrc_constraint
         #     where qfrc_smooth = f_net (already computed: qfrc - bias - D*v - K*(q-qref))
-        var qfrc_total = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var qfrc_total = List[Scalar[DTYPE]](capacity=V_SIZE)
         for i in range(NV):
-            qfrc_total[i] = f_net[i] + qfrc_constraint[i]
+            qfrc_total.append(f_net[i] + qfrc_constraint[i])
 
         # 9c. Add dt*damping to M diagonal → M_hat = M + arm + dt*D
         @parameter
@@ -756,10 +760,10 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 else:
                     sM.values[sM.diag_pos(dof2)] += add2
             ldl_factor_sparse(sM)
-            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, qfrc_total, qacc)
+            ldl_solve_sparse[DTYPE, NV, NM](sM, qfrc_total, qacc)
         else:
-            ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
-            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, qfrc_total, qacc)
+            ldl_factor[DTYPE, NV](M, L, D)
+            ldl_solve[DTYPE, NV](L, D, qfrc_total, qacc)
 
         # 9e. Integrate: qvel += dt * qacc, qpos += dt * qvel
         for i in range(NV):

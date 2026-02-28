@@ -370,104 +370,84 @@ struct Model[
     ]  # [timeconst, dampratio]
     var solimp_limit: InlineArray[Scalar[Self.DTYPE], 5]  # [dmin, dmax, width, midpoint, power]
 
-    # Per-body properties
-    var body_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-    var body_name: InlineArray[String, Self.NBODY]
-    var body_inv_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-    # Diagonal inertia tensor (Ixx, Iyy, Izz) per body
-    var body_inertia: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
-    var body_inv_inertia: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
+    # Per-body properties (heap-allocated for scalability to large models)
+    var body_mass: List[Scalar[Self.DTYPE]]
+    var body_name: List[String]
+    var body_inv_mass: List[Scalar[Self.DTYPE]]
+    # Diagonal inertia tensor (Ixx, Iyy, Izz) per body — NBODY * 3 elements
+    var body_inertia: List[Scalar[Self.DTYPE]]
+    var body_inv_inertia: List[Scalar[Self.DTYPE]]
 
     # Body local frame (position and orientation relative to parent)
-    var body_pos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
-    var body_quat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
+    # body_pos: NBODY * 3,  body_quat: NBODY * 4
+    var body_pos: List[Scalar[Self.DTYPE]]
+    var body_quat: List[Scalar[Self.DTYPE]]
 
     # CoM offset from body origin (body frame) and inertia frame orientation
-    var body_ipos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
-    var body_iquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
+    # body_ipos: NBODY * 3,  body_iquat: NBODY * 4
+    var body_ipos: List[Scalar[Self.DTYPE]]
+    var body_iquat: List[Scalar[Self.DTYPE]]
 
     # Kinematic tree structure
-    var body_parent: InlineArray[Int, Self.NBODY]  # 0 for worldbody
+    var body_parent: List[Int]  # NBODY — 0 for worldbody
 
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
-    # [2*i] = translation, [2*i+1] = rotation  (precomputed model constant)
-    var body_invweight0: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2]
+    # [2*i] = translation, [2*i+1] = rotation  (NBODY * 2 elements)
+    var body_invweight0: List[Scalar[Self.DTYPE]]
 
-    # DOF inverse weights: dof_invweight0[d] = M_inv[d,d] (diagonal of inverse mass matrix)
-    # Used for joint limit diagApprox (MuJoCo uses this instead of body_invweight0 for limits)
-    var dof_invweight0: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
+    # DOF inverse weights: dof_invweight0[d] = M_inv[d,d] (NV elements)
+    var dof_invweight0: List[Scalar[Self.DTYPE]]
 
-    # Joint reference positions (MuJoCo qpos0): FK uses qpos - qpos0 for slide/hinge joints
-    # For slide joints with ref="X" in XML, qpos0 = X. For hinge joints, typically 0.
-    var qpos0: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NQ]()]
+    # Joint reference positions (MuJoCo qpos0) — NQ elements
+    var qpos0: List[Scalar[Self.DTYPE]]
 
-    # Unified geom arrays (NGEOM > 0)
-    var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_body: InlineArray[
-        Int, _max_one[Self.NGEOM]()
-    ]  # 0 for worldbody/static
-    var geom_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
-    var geom_quat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()]
-    var geom_radius: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_half_length: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-    ]
-    var geom_half_x: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_half_y: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_half_z: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_friction: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_condim: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_friction_spin: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-    ]
-    var geom_friction_roll: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-    ]
-    var geom_contype: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_rbound: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    # Unified geom arrays (NGEOM elements each unless noted)
+    var geom_type: List[Int]
+    var geom_body: List[Int]  # 0 for worldbody/static
+    var geom_pos: List[Scalar[Self.DTYPE]]  # NGEOM * 3
+    var geom_quat: List[Scalar[Self.DTYPE]]  # NGEOM * 4
+    var geom_radius: List[Scalar[Self.DTYPE]]
+    var geom_half_length: List[Scalar[Self.DTYPE]]
+    var geom_half_x: List[Scalar[Self.DTYPE]]
+    var geom_half_y: List[Scalar[Self.DTYPE]]
+    var geom_half_z: List[Scalar[Self.DTYPE]]
+    var geom_friction: List[Scalar[Self.DTYPE]]
+    var geom_condim: List[Int]
+    var geom_friction_spin: List[Scalar[Self.DTYPE]]
+    var geom_friction_roll: List[Scalar[Self.DTYPE]]
+    var geom_contype: List[Int]
+    var geom_conaffinity: List[Int]
+    var geom_rbound: List[Scalar[Self.DTYPE]]
 
     # Per-geom solref/solimp (MuJoCo-style per-geom impedance overrides)
-    var geom_solref: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()]
-    var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 5]()]
+    var geom_solref: List[Scalar[Self.DTYPE]]  # NGEOM * 2
+    var geom_solimp: List[Scalar[Self.DTYPE]]  # NGEOM * 5
 
-    # Per-geom contact margin (MuJoCo-style: contacts activate when dist < margin)
-    var geom_margin: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-
-    # Per-geom mass (computed from density * volume or explicit mass)
-    var geom_mass: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    # Per-geom contact margin and mass
+    var geom_margin: List[Scalar[Self.DTYPE]]
+    var geom_mass: List[Scalar[Self.DTYPE]]
 
     # Site arrays (body-attached reference points, zero mass)
-    # site_body[i]: which body site i is attached to
-    # site_pos[i*3 + 0/1/2]: local position of site i in body frame
-    var site_body: InlineArray[Int, _max_one[Self.NSITE]()]
-    var site_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()]
+    var site_body: List[Int]
+    var site_pos: List[Scalar[Self.DTYPE]]  # NSITE * 3
 
-    # Per-joint solref/solimp for limits (MuJoCo-style per-joint impedance overrides)
-    var joint_solref_limit: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
-    ]
-    var joint_solimp_limit: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 5]()
-    ]
+    # Per-joint solref/solimp for limits
+    var joint_solref_limit: List[Scalar[Self.DTYPE]]  # NJOINT * 2
+    var joint_solimp_limit: List[Scalar[Self.DTYPE]]  # NJOINT * 5
 
     # Friction cone model
     var impratio: Scalar[Self.DTYPE]  # MuJoCo impratio (default 1.0)
 
     # Joint definitions
-    var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
+    var joints: List[JointDef[Self.DTYPE]]
     var num_joints: Int
 
     # Equality constraints (connect/weld)
-    var equality_constraints: InlineArray[
-        EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
-    ]
+    var equality_constraints: List[EqualityConstraintDef[Self.DTYPE]]
     var num_equality: Int
 
     # Fixed tendons
-    var tendons: InlineArray[
-        TendonDef[Self.DTYPE], _max_one[Self.MAX_TENDON]()
-    ]
+    var tendons: List[TendonDef[Self.DTYPE]]
     var num_tendons: Int
 
     fn __init__(out self):
@@ -510,137 +490,104 @@ struct Model[
         self.solimp_limit[3] = Scalar[Self.DTYPE](0.5)
         self.solimp_limit[4] = Scalar[Self.DTYPE](2.0)
 
-        # Initialize body arrays
-        self.body_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
-            uninitialized=True
-        )
-        self.body_name = InlineArray[String, Self.NBODY](uninitialized=True)
-        self.body_inv_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
-            uninitialized=True
-        )
-        self.body_inertia = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        self.body_inv_inertia = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        self.body_pos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        self.body_quat = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4](
-            uninitialized=True
-        )
-        self.body_ipos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        self.body_iquat = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4](
-            uninitialized=True
-        )
-        self.body_parent = InlineArray[Int, Self.NBODY](uninitialized=True)
-        self.body_invweight0 = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2](
-            fill=Scalar[Self.DTYPE](0)
-        )
-        self.dof_invweight0 = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NV]()
-        ](fill=Scalar[Self.DTYPE](0))
-        self.qpos0 = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NQ]()
-        ](fill=Scalar[Self.DTYPE](0))
+        # Initialize body arrays (heap-allocated Lists)
+        self.body_mass = List[Scalar[Self.DTYPE]](capacity=Self.NBODY)
+        self.body_name = List[String](capacity=Self.NBODY)
+        self.body_inv_mass = List[Scalar[Self.DTYPE]](capacity=Self.NBODY)
+        self.body_inertia = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.body_inv_inertia = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.body_pos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.body_quat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
+        self.body_ipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.body_iquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
+        self.body_parent = List[Int](capacity=Self.NBODY)
+        self.body_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 2)
+        self.dof_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NV)
+        self.qpos0 = List[Scalar[Self.DTYPE]](capacity=Self.NQ)
+        for _ in range(Self.NBODY):
+            self.body_mass.append(Scalar[Self.DTYPE](0))
+            self.body_name.append("")
+            self.body_inv_mass.append(Scalar[Self.DTYPE](0))
+            self.body_parent.append(0)
+            self.body_invweight0.append(Scalar[Self.DTYPE](0))
+            self.body_invweight0.append(Scalar[Self.DTYPE](0))
+        for _ in range(Self.NBODY * 3):
+            self.body_inertia.append(Scalar[Self.DTYPE](0))
+            self.body_inv_inertia.append(Scalar[Self.DTYPE](0))
+            self.body_pos.append(Scalar[Self.DTYPE](0))
+            self.body_ipos.append(Scalar[Self.DTYPE](0))
+        for _ in range(Self.NBODY * 4):
+            self.body_quat.append(Scalar[Self.DTYPE](0))
+            self.body_iquat.append(Scalar[Self.DTYPE](0))
+        for _ in range(Self.NV):
+            self.dof_invweight0.append(Scalar[Self.DTYPE](0))
+        for _ in range(Self.NQ):
+            self.qpos0.append(Scalar[Self.DTYPE](0))
 
-        # Initialize geom arrays
-        self.geom_type = InlineArray[Int, _max_one[Self.NGEOM]()](
-            uninitialized=True
-        )
-        self.geom_body = InlineArray[Int, _max_one[Self.NGEOM]()](
-            uninitialized=True
-        )
-        self.geom_pos = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()
-        ](uninitialized=True)
-        self.geom_quat = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()
-        ](uninitialized=True)
-        self.geom_radius = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_half_length = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_half_x = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_half_y = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_half_z = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_friction = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_condim = InlineArray[Int, _max_one[Self.NGEOM]()](
-            uninitialized=True
-        )
-        self.geom_friction_spin = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_friction_roll = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_contype = InlineArray[Int, _max_one[Self.NGEOM]()](
-            uninitialized=True
-        )
-        self.geom_conaffinity = InlineArray[Int, _max_one[Self.NGEOM]()](
-            uninitialized=True
-        )
-        self.geom_rbound = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](uninitialized=True)
-        self.geom_solref = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()
-        ](fill=Scalar[Self.DTYPE](0))
-        self.geom_solimp = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 5]()
-        ](fill=Scalar[Self.DTYPE](0))
-        self.geom_margin = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](fill=Scalar[Self.DTYPE](0))
-        self.geom_mass = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
-        ](fill=Scalar[Self.DTYPE](0))
+        # Initialize geom arrays (heap-allocated Lists)
+        var ngeom = _max_one[Self.NGEOM]()
+        self.geom_type = List[Int](capacity=ngeom)
+        self.geom_body = List[Int](capacity=ngeom)
+        self.geom_radius = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_half_length = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_half_x = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_half_y = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_half_z = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_friction = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_condim = List[Int](capacity=ngeom)
+        self.geom_friction_spin = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_friction_roll = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_contype = List[Int](capacity=ngeom)
+        self.geom_conaffinity = List[Int](capacity=ngeom)
+        self.geom_rbound = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_margin = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_mass = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_pos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 3]())
+        self.geom_quat = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 4]())
+        self.geom_solref = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 2]())
+        self.geom_solimp = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 5]())
+        for _ in range(ngeom):
+            self.geom_type.append(0)
+            self.geom_body.append(0)
+            self.geom_radius.append(Scalar[Self.DTYPE](0))
+            self.geom_half_length.append(Scalar[Self.DTYPE](0))
+            self.geom_half_x.append(Scalar[Self.DTYPE](0))
+            self.geom_half_y.append(Scalar[Self.DTYPE](0))
+            self.geom_half_z.append(Scalar[Self.DTYPE](0))
+            self.geom_friction.append(Scalar[Self.DTYPE](0.5))
+            self.geom_condim.append(3)
+            self.geom_friction_spin.append(Scalar[Self.DTYPE](0.005))
+            self.geom_friction_roll.append(Scalar[Self.DTYPE](0.0001))
+            self.geom_contype.append(1)
+            self.geom_conaffinity.append(1)
+            self.geom_rbound.append(Scalar[Self.DTYPE](0))
+            self.geom_margin.append(Scalar[Self.DTYPE](0))
+            self.geom_mass.append(Scalar[Self.DTYPE](0))
+        for _ in range(_max_one[Self.NGEOM * 3]()):
+            self.geom_pos.append(Scalar[Self.DTYPE](0))
+        for _ in range(_max_one[Self.NGEOM * 4]()):
+            self.geom_quat.append(Scalar[Self.DTYPE](0))
+        for _ in range(_max_one[Self.NGEOM * 2]()):
+            self.geom_solref.append(Scalar[Self.DTYPE](0))
+        for _ in range(_max_one[Self.NGEOM * 5]()):
+            self.geom_solimp.append(Scalar[Self.DTYPE](0))
 
         # Initialize site arrays
-        self.site_body = InlineArray[Int, _max_one[Self.NSITE]()](fill=0)
-        self.site_pos = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()
-        ](fill=Scalar[Self.DTYPE](0))
+        var nsite = _max_one[Self.NSITE]()
+        self.site_body = List[Int](capacity=nsite)
+        self.site_pos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NSITE * 3]())
+        for _ in range(nsite):
+            self.site_body.append(0)
+        for _ in range(_max_one[Self.NSITE * 3]()):
+            self.site_pos.append(Scalar[Self.DTYPE](0))
 
-        self.joint_solref_limit = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
-        ](fill=Scalar[Self.DTYPE](0))
-        self.joint_solimp_limit = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 5]()
-        ](fill=Scalar[Self.DTYPE](0))
+        self.joint_solref_limit = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NJOINT * 2]())
+        self.joint_solimp_limit = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NJOINT * 5]())
+        for _ in range(_max_one[Self.NJOINT * 2]()):
+            self.joint_solref_limit.append(Scalar[Self.DTYPE](0))
+        for _ in range(_max_one[Self.NJOINT * 5]()):
+            self.joint_solimp_limit.append(Scalar[Self.DTYPE](0))
         self.impratio = Scalar[Self.DTYPE](1.0)
-        for i in range(_max_one[Self.NGEOM]()):
-            self.geom_type[i] = 0
-            self.geom_body[i] = 0
-            self.geom_radius[i] = Scalar[Self.DTYPE](0)
-            self.geom_half_length[i] = Scalar[Self.DTYPE](0)
-            self.geom_half_x[i] = Scalar[Self.DTYPE](0)
-            self.geom_half_y[i] = Scalar[Self.DTYPE](0)
-            self.geom_half_z[i] = Scalar[Self.DTYPE](0)
-            self.geom_friction[i] = Scalar[Self.DTYPE](0.5)
-            self.geom_condim[i] = 3
-            self.geom_friction_spin[i] = Scalar[Self.DTYPE](0.005)
-            self.geom_friction_roll[i] = Scalar[Self.DTYPE](0.0001)
-            self.geom_contype[i] = 1
-            self.geom_conaffinity[i] = 1
-            self.geom_rbound[i] = Scalar[Self.DTYPE](0)
-        for i in range(_max_one[Self.NGEOM * 3]()):
-            self.geom_pos[i] = Scalar[Self.DTYPE](0)
-        for i in range(_max_one[Self.NGEOM * 4]()):
-            self.geom_quat[i] = Scalar[Self.DTYPE](0)
 
         # Initialize with defaults
         for i in range(Self.NBODY):
@@ -687,29 +634,28 @@ struct Model[
             self.body_inv_inertia[k] = Scalar[Self.DTYPE](0)
 
         # Initialize joints
-        self.joints = InlineArray[
-            JointDef[Self.DTYPE], _max_one[Self.NJOINT]()
-        ](uninitialized=True)
-        for i in range(_max_one[Self.NJOINT]()):
-            self.joints[i] = JointDef[Self.DTYPE].empty()
+        var njoint_max = _max_one[Self.NJOINT]()
+        self.joints = List[JointDef[Self.DTYPE]](capacity=njoint_max)
+        for _ in range(njoint_max):
+            self.joints.append(JointDef[Self.DTYPE].empty())
         self.num_joints = 0
 
         # Initialize equality constraints
-        self.equality_constraints = InlineArray[
-            EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
-        ](uninitialized=True)
-        for i in range(_max_one[Self.MAX_EQUALITY]()):
-            self.equality_constraints[i] = EqualityConstraintDef[
-                Self.DTYPE
-            ].empty()
+        var neq_max = _max_one[Self.MAX_EQUALITY]()
+        self.equality_constraints = List[EqualityConstraintDef[Self.DTYPE]](
+            capacity=neq_max
+        )
+        for _ in range(neq_max):
+            self.equality_constraints.append(
+                EqualityConstraintDef[Self.DTYPE].empty()
+            )
         self.num_equality = 0
 
         # Initialize tendons
-        self.tendons = InlineArray[
-            TendonDef[Self.DTYPE], _max_one[Self.MAX_TENDON]()
-        ](uninitialized=True)
-        for i in range(_max_one[Self.MAX_TENDON]()):
-            self.tendons[i] = TendonDef[Self.DTYPE].empty()
+        var ntendon_max = _max_one[Self.MAX_TENDON]()
+        self.tendons = List[TendonDef[Self.DTYPE]](capacity=ntendon_max)
+        for _ in range(ntendon_max):
+            self.tendons.append(TendonDef[Self.DTYPE].empty())
         self.num_tendons = 0
 
     fn set_body(
@@ -1182,119 +1128,74 @@ struct Data[
     - xquat: World orientations of bodies
     """
 
-    # Primary state (joint space)
-    var qpos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NQ]()]
-    var qvel: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
-    var qacc: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
-    var qfrc: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.NV]()
-    ]  # Applied forces
+    # Primary state (joint space) — heap-allocated for scalability
+    var qpos: List[Scalar[Self.DTYPE]]  # NQ
+    var qvel: List[Scalar[Self.DTYPE]]  # NV
+    var qacc: List[Scalar[Self.DTYPE]]  # NV
+    var qfrc: List[Scalar[Self.DTYPE]]  # NV — applied forces
     # MuJoCo-style Newton warm-start: solved qacc saved at end of each step.
-    # Used to initialize the Newton solver in the next step (like qacc_warmstart).
-    var qacc_warmstart: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
+    var qacc_warmstart: List[Scalar[Self.DTYPE]]  # NV
 
     # Computed world-space state (via forward kinematics)
-    var xpos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
-    var xquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
-    var xipos: InlineArray[
-        Scalar[Self.DTYPE], Self.NBODY * 3
-    ]  # CoM world position
+    var xpos: List[Scalar[Self.DTYPE]]   # NBODY * 3
+    var xquat: List[Scalar[Self.DTYPE]]  # NBODY * 4
+    var xipos: List[Scalar[Self.DTYPE]]  # NBODY * 3 — CoM world position
 
     # Computed world-space velocities (for collision response)
-    var xvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Linear
-    var xangvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Angular
+    var xvel: List[Scalar[Self.DTYPE]]     # NBODY * 3 — linear
+    var xangvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — angular
 
-    # Contacts — heap-allocated to avoid stack overflow for large MAX_CONTACTS
+    # Contacts — heap-allocated
     var contacts: List[ContactInfo[Self.DTYPE]]
     var num_contacts: Int
 
     # External contact forces per body in subtree CoM-based world-oriented frame.
     # cfrc_ext[body * 6 + 0..5] = [torque_x, torque_y, torque_z, force_x, force_y, force_z]
-    # Computed after constraint solving by compute_cfrc_ext().
-    # Matches MuJoCo's d.cfrc_ext (mj_rnePostConstraint, contact section).
-    var cfrc_ext: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 6]
+    var cfrc_ext: List[Scalar[Self.DTYPE]]  # NBODY * 6
 
-    # Site world positions (computed during FK from site_body + site_pos in model)
-    # site_xpos[i*3 + 0/1/2] = world position of site i
-    # site_xpos = xpos[body] + rotate(site_pos, xquat[body])
-    var site_xpos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()]
+    # Site world positions — NSITE * 3 elements
+    var site_xpos: List[Scalar[Self.DTYPE]]
 
     fn __init__(out self):
         """Initialize with zero state."""
-        # Initialize qpos to zero (neutral position for all joints)
-        self.qpos = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NQ]()](
-            uninitialized=True
-        )
-        for i in range(_max_one[Self.NQ]()):
-            self.qpos[i] = Scalar[Self.DTYPE](0)
+        var nq = _max_one[Self.NQ]()
+        var nv = _max_one[Self.NV]()
 
-        # Initialize qvel to zero
-        self.qvel = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
-            uninitialized=True
-        )
-        for i in range(_max_one[Self.NV]()):
-            self.qvel[i] = Scalar[Self.DTYPE](0)
+        # Joint-space state vectors (all zeros)
+        self.qpos = List[Scalar[Self.DTYPE]](capacity=nq)
+        self.qvel = List[Scalar[Self.DTYPE]](capacity=nv)
+        self.qacc = List[Scalar[Self.DTYPE]](capacity=nv)
+        self.qacc_warmstart = List[Scalar[Self.DTYPE]](capacity=nv)
+        self.qfrc = List[Scalar[Self.DTYPE]](capacity=nv)
+        for _ in range(nq):
+            self.qpos.append(Scalar[Self.DTYPE](0))
+        for _ in range(nv):
+            self.qvel.append(Scalar[Self.DTYPE](0))
+            self.qacc.append(Scalar[Self.DTYPE](0))
+            self.qacc_warmstart.append(Scalar[Self.DTYPE](0))
+            self.qfrc.append(Scalar[Self.DTYPE](0))
 
-        # Initialize qacc to zero
-        self.qacc = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
-            uninitialized=True
-        )
-        for i in range(_max_one[Self.NV]()):
-            self.qacc[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize qacc_warmstart to zero
-        self.qacc_warmstart = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
-            uninitialized=True
-        )
-        for i in range(_max_one[Self.NV]()):
-            self.qacc_warmstart[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize qfrc to zero
-        self.qfrc = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
-            uninitialized=True
-        )
-        for i in range(_max_one[Self.NV]()):
-            self.qfrc[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize xpos to zero
-        self.xpos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        for i in range(Self.NBODY * 3):
-            self.xpos[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize xquat to identity
-        self.xquat = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4](
-            uninitialized=True
-        )
+        # World-space body state
+        self.xpos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.xquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
+        self.xipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.xvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.xangvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.cfrc_ext = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 6)
+        for _ in range(Self.NBODY * 3):
+            self.xpos.append(Scalar[Self.DTYPE](0))
+            self.xipos.append(Scalar[Self.DTYPE](0))
+            self.xvel.append(Scalar[Self.DTYPE](0))
+            self.xangvel.append(Scalar[Self.DTYPE](0))
         for i in range(Self.NBODY):
-            self.xquat[i * 4 + 0] = Scalar[Self.DTYPE](0)
-            self.xquat[i * 4 + 1] = Scalar[Self.DTYPE](0)
-            self.xquat[i * 4 + 2] = Scalar[Self.DTYPE](0)
-            self.xquat[i * 4 + 3] = Scalar[Self.DTYPE](1)
+            self.xquat.append(Scalar[Self.DTYPE](0))
+            self.xquat.append(Scalar[Self.DTYPE](0))
+            self.xquat.append(Scalar[Self.DTYPE](0))
+            self.xquat.append(Scalar[Self.DTYPE](1))  # identity quaternion
+        for _ in range(Self.NBODY * 6):
+            self.cfrc_ext.append(Scalar[Self.DTYPE](0))
 
-        # Initialize xipos to zero
-        self.xipos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        for i in range(Self.NBODY * 3):
-            self.xipos[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize xvel to zero
-        self.xvel = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        for i in range(Self.NBODY * 3):
-            self.xvel[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize xangvel to zero
-        self.xangvel = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
-            uninitialized=True
-        )
-        for i in range(Self.NBODY * 3):
-            self.xangvel[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize contacts (heap-allocated, pre-filled to MAX_CONTACTS)
+        # Contacts (heap-allocated, pre-filled to MAX_CONTACTS)
         self.contacts = List[ContactInfo[Self.DTYPE]](
             capacity=_max_one[Self.MAX_CONTACTS]()
         )
@@ -1302,17 +1203,10 @@ struct Data[
             self.contacts.append(ContactInfo[Self.DTYPE].empty())
         self.num_contacts = 0
 
-        # Initialize cfrc_ext to zero
-        self.cfrc_ext = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 6](
-            uninitialized=True
-        )
-        for i in range(Self.NBODY * 6):
-            self.cfrc_ext[i] = Scalar[Self.DTYPE](0)
-
-        # Initialize site_xpos to zero
-        self.site_xpos = InlineArray[
-            Scalar[Self.DTYPE], _max_one[Self.NSITE * 3]()
-        ](fill=Scalar[Self.DTYPE](0))
+        # Site world positions
+        self.site_xpos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NSITE * 3]())
+        for _ in range(_max_one[Self.NSITE * 3]()):
+            self.site_xpos.append(Scalar[Self.DTYPE](0))
 
     fn get_body_position(
         self, body_id: Int
@@ -1358,7 +1252,7 @@ struct Data[
 
     fn clear_forces(mut self):
         """Clear all applied forces."""
-        for i in range(_max_one[Self.NV]()):
+        for i in range(Self.NV):
             self.qfrc[i] = Scalar[Self.DTYPE](0)
 
 

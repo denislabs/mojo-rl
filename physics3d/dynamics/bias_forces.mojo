@@ -112,7 +112,14 @@ fn compute_bias_forces[
     NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
         NSITE,
@@ -349,7 +356,14 @@ fn _is_descendant[
     NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
         NSITE,
@@ -385,7 +399,14 @@ fn compute_coriolis_forces[
     NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
         NSITE,
@@ -689,8 +710,6 @@ fn compute_bias_forces_rne[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
-    V_SIZE: Int,
-    CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -707,12 +726,12 @@ fn compute_bias_forces_rne[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
-    NSITE,
+        MAX_TENDON,
+        NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
+    cdof: List[Scalar[DTYPE]],
+    mut bias: List[Scalar[DTYPE]],
 ):
     """Compute bias forces using full Recursive Newton-Euler Algorithm.
 

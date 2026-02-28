@@ -245,10 +245,10 @@ fn _forward_dynamics[
         NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    mut qacc_out: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut cdof_out: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    mut M_inv_out: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut M_out: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut qacc_out: List[Scalar[DTYPE]],
+    mut cdof_out: List[Scalar[DTYPE]],
+    mut M_inv_out: List[Scalar[DTYPE]],
+    mut M_out: List[Scalar[DTYPE]],
 ) where DTYPE.is_floating_point():
     """Compute unconstrained acceleration from current (qpos, qvel) in data.
 
@@ -267,31 +267,54 @@ fn _forward_dynamics[
     )
 
     # 3. Compute cdof
-    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
+    compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
         model, data, cdof_out
     )
 
     # 4. Composite rigid body inertia
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
-    compute_composite_inertia[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-    ](model, data, crb)
+    var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
+    for _ in range(CRB_SIZE):
+        crb.append(Scalar[DTYPE](0))
+    compute_composite_inertia[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+        model, data, crb
+    )
 
     comptime NM_SAFE = _ensure_positive[NM]()
 
     # 5. Full mass matrix
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
+
     @parameter
     if SPARSE:
         build_sparse_pattern[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NM,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ](model, sM)
         compute_mass_matrix_sparse[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-            CDOF_SIZE, CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NM,
+            CDOF_SIZE,
+            CRB_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ](model, data, cdof_out, crb, sM)
     else:
         for i in range(M_SIZE):
@@ -303,9 +326,6 @@ fn _forward_dynamics[
             NBODY,
             NJOINT,
             MAX_CONTACTS,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
         ](model, data, cdof_out, crb, M_out)
 
     # 5b. Armature only (no implicit damping for RK4 — damping is explicit)
@@ -313,6 +333,7 @@ fn _forward_dynamics[
         var joint = model.joints[j]
         var dof_adr = joint.dof_adr
         var arm = joint.armature
+
         @parameter
         if SPARSE:
             if joint.jnt_type == JNT_FREE:
@@ -335,32 +356,49 @@ fn _forward_dynamics[
                         M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
                     )
             else:
-                M_out[dof_adr * NV + dof_adr] = M_out[dof_adr * NV + dof_adr] + arm
+                M_out[dof_adr * NV + dof_adr] = (
+                    M_out[dof_adr * NV + dof_adr] + arm
+                )
 
     # 5c. Expand sparse to dense for M_out (must be before ldl_factor_sparse mutates sM)
     @parameter
     if SPARSE:
-        sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_out)
+        sparse_to_dense[DTYPE, NV, NM](sM, M_out)
 
     # 6. LDL factorize
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var L = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        L.append(Scalar[DTYPE](0))
+    var D = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        D.append(Scalar[DTYPE](0))
+
     @parameter
     if SPARSE:
         ldl_factor_sparse(sM)
     else:
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_out, L, D)
+        ldl_factor[
+            DTYPE,
+            NV,
+        ](M_out, L, D)
 
     # 7. Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
+    var bias = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        bias.append(Scalar[DTYPE](0))
     compute_bias_forces_rne[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
     ](model, data, cdof_out, bias)
 
     # 8. Net force = external - bias - passive
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_net = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        f_net.append(Scalar[DTYPE](0))
     for i in range(NV):
         f_net[i] = data.qfrc[i] - bias[i]
 
@@ -433,28 +471,34 @@ fn _forward_dynamics[
     # 9. qacc = M^-1 * f_net
     for i in range(NV):
         qacc_out[i] = Scalar[DTYPE](0)
+
     @parameter
     if SPARSE:
-        ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, f_net, qacc_out)
+        ldl_solve_sparse[DTYPE, NV, NM](sM, f_net, qacc_out)
     else:
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc_out)
+        ldl_solve[DTYPE, NV](L, D, f_net, qacc_out)
 
     # 10. M_inv for constraint solver
     for i in range(M_SIZE):
         M_inv_out[i] = Scalar[DTYPE](0)
+
     @parameter
     if SPARSE:
         # Compute M_inv column-by-column: solve M * e_j = e_j for each j
-        var e_col = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-        var col_result = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        var e_col = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            e_col.append(Scalar[DTYPE](0))
+        var col_result = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            col_result.append(Scalar[DTYPE](0))
         for col in range(NV):
             for k in range(NV):
                 e_col[k] = Scalar[DTYPE](1) if k == col else Scalar[DTYPE](0)
-            ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, e_col, col_result)
+            ldl_solve_sparse[DTYPE, NV, NM](sM, e_col, col_result)
             for row in range(NV):
                 M_inv_out[row * NV + col] = col_result[row]
     else:
-        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv_out)
+        compute_M_inv_from_ldl[DTYPE, NV](L, D, M_inv_out)
 
 
 fn _solve_constraints[
@@ -488,10 +532,10 @@ fn _solve_constraints[
         NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
-    M: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+    cdof: List[Scalar[DTYPE]],
+    M_inv: List[Scalar[DTYPE]],
+    M: List[Scalar[DTYPE]],
+    mut qacc: List[Scalar[DTYPE]],
     dt: Scalar[DTYPE],
     is_last_stage: Bool,
 ) where DTYPE.is_floating_point():
@@ -503,7 +547,7 @@ fn _solve_constraints[
     comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY + MAX_TENDON
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
     build_constraints[CONE_TYPE=CONE_TYPE, MAX_TENDON=MAX_TENDON](
-        model, data, cdof, M_inv, qacc, dt, constraints
+        model, data, cdof, M_inv, dt, constraints
     )
 
     # Fill M_hat and qfrc_smooth for primal solvers
@@ -556,10 +600,10 @@ fn _integrate_pos[
         MAX_TENDON,
         NSITE,
     ],
-    qpos_base: InlineArray[Scalar[DTYPE], _max_one[NQ]()],
-    vel: InlineArray[Scalar[DTYPE], _max_one[NV]()],
+    qpos_base: List[Scalar[DTYPE]],
+    vel: List[Scalar[DTYPE]],
     dt: Scalar[DTYPE],
-    mut qpos_out: InlineArray[Scalar[DTYPE], _max_one[NQ]()],
+    mut qpos_out: List[Scalar[DTYPE]],
 ) where DTYPE.is_floating_point():
     """Integrate position: qpos_out = qpos_base + vel * dt.
 
@@ -686,26 +730,46 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime CRB_SIZE = _max_one[NBODY * 10]()
 
         # Save initial state
-        var q0 = InlineArray[Scalar[DTYPE], Q_SIZE](uninitialized=True)
-        var v0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var q0 = List[Scalar[DTYPE]](capacity=Q_SIZE)
+        for _ in range(Q_SIZE):
+            q0.append(Scalar[DTYPE](0))
+        var v0 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            v0.append(Scalar[DTYPE](0))
         for i in range(NQ):
             q0[i] = data.qpos[i]
         for i in range(NV):
             v0[i] = data.qvel[i]
 
         # RK4 stage results: A[i] = constrained qacc, C[i] = velocity at stage
-        var a0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var a1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var a2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var a3 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var a0 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            a0.append(Scalar[DTYPE](0))
+        var a1 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            a1.append(Scalar[DTYPE](0))
+        var a2 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            a2.append(Scalar[DTYPE](0))
+        var a3 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            a3.append(Scalar[DTYPE](0))
 
         # Workspace reused across stages
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+        for _ in range(CDOF_SIZE):
+            cdof.append(Scalar[DTYPE](0))
+        var M_inv = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M_inv.append(Scalar[DTYPE](0))
+        var M = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M.append(Scalar[DTYPE](0))
 
         var half_dt = dt * Scalar[DTYPE](0.5)
-        var q_stage = InlineArray[Scalar[DTYPE], Q_SIZE](uninitialized=True)
+        var q_stage = List[Scalar[DTYPE]](capacity=Q_SIZE)
+        for _ in range(Q_SIZE):
+            q_stage.append(Scalar[DTYPE](0))
 
         # =================================================================
         # Stage 0: evaluate at (q0, v0) — full pipeline
@@ -799,7 +863,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Stage 2: evaluate at (q0 + dt/2*C[1], v0 + dt/2*A[1])
         # =================================================================
         # C[1] = v0 + dt/2*a0
-        var c1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var c1 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            c1.append(Scalar[DTYPE](0))
         for i in range(NV):
             c1[i] = v0[i] + half_dt * a0[i]
 
@@ -851,7 +917,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Stage 3: evaluate at (q0 + dt*C[2], v0 + dt*A[2])
         # =================================================================
         # C[2] = v0 + dt/2*a1
-        var c2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var c2 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            c2.append(Scalar[DTYPE](0))
         for i in range(NV):
             c2[i] = v0[i] + half_dt * a1[i]
 
@@ -917,11 +985,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # v_combined = (C[0] + 2*C[1] + 2*C[2] + C[3]) / 6
         # C[0] = v0, C[1] = v0+dt/2*a0, C[2] = v0+dt/2*a1, C[3] = v0+dt*a2
-        var c3 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var c3 = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            c3.append(Scalar[DTYPE](0))
         for i in range(NV):
             c3[i] = v0[i] + dt * a2[i]
 
-        var v_combined = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var v_combined = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            v_combined.append(Scalar[DTYPE](0))
         for i in range(NV):
             v_combined[i] = (
                 ONE_SIXTH * v0[i]

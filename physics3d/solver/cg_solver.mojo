@@ -126,8 +126,6 @@ struct CGSolver(ConstraintSolver):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         MAX_ROWS: Int,
-        V_SIZE: Int,
-        M_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
@@ -144,13 +142,13 @@ struct CGSolver(ConstraintSolver):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+        M_inv: List[Scalar[DTYPE]],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: List[Scalar[DTYPE]],
         dt: Scalar[DTYPE],
     ):
         """Solve constraints using CG on CPU.
@@ -162,12 +160,16 @@ struct CGSolver(ConstraintSolver):
         if constraints.num_rows == 0:
             return
 
+        comptime V_SIZE = _max_one[NV]()
+        comptime M_SIZE = _max_one[NV * NV]()
         comptime MR = _max_one[MAX_ROWS]()
 
         var num_rows = constraints.num_rows
 
         # Compute D values from stored diagApprox and inv_K_imp
-        var D_vals = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
+        var D_vals = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            D_vals.append(Scalar[DTYPE](0))
         for r in range(num_rows):
             D_vals[r] = primal_D(
                 constraints.rows[r].inv_K_imp,
@@ -175,44 +177,57 @@ struct CGSolver(ConstraintSolver):
             )
 
         # Save qacc_smooth (unconstrained acceleration)
-        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
+        var qacc_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qacc_smooth.append(Scalar[DTYPE](0))
+        for i in range(V_SIZE):
             qacc_smooth[i] = qacc[i]
 
         # qfrc_smooth from constraints (filled by integrator)
-        var qfrc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
+        var qfrc_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qfrc_smooth.append(Scalar[DTYPE](0))
+        for i in range(V_SIZE):
             qfrc_smooth[i] = constraints.qfrc_smooth[i]
 
         # Copy M_hat into local M_SIZE array for LDL factorization
-        var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var M_local = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            M_local.append(Scalar[DTYPE](0))
         for i in range(NV * NV):
             M_local[i] = constraints.M_hat[i]
 
         # LDL factorize M_hat (preconditioner for CG)
-        var L_ldl = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_local, L_ldl, D_ldl)
+        var L_ldl = List[Scalar[DTYPE]](capacity=M_SIZE)
+        for _ in range(M_SIZE):
+            L_ldl.append(Scalar[DTYPE](0))
+        var D_ldl = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            D_ldl.append(Scalar[DTYPE](0))
+        ldl_factor[DTYPE, NV](M_local, L_ldl, D_ldl)
 
         # Compute Ma = M * qacc
-        var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var Ma = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            Ma.append(Scalar[DTYPE](0))
         for i in range(NV):
             Ma[i] = Scalar[DTYPE](0)
             for j in range(NV):
                 Ma[i] += constraints.M_hat[i * NV + j] * qacc[j]
 
         # Compute jar = J * qacc - aref (aref = -bias)
-        var jar = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        for i in range(MR):
-            jar[i] = Scalar[DTYPE](0)
-        compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](constraints, qacc, jar)
+        var jar = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            jar.append(Scalar[DTYPE](0))
+        compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
         # Compute initial force, state, cost (cone-aware with MuJoCo D)
-        var force = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        var cstate = InlineArray[Int, MR](uninitialized=True)
-        for i in range(MR):
-            force[i] = Scalar[DTYPE](0)
-            cstate[i] = PRIMAL_SATISFIED
+        var force = List[Scalar[DTYPE]](capacity=MR)
+        for _ in range(MR):
+            force.append(Scalar[DTYPE](0))
+        var cstate = List[Int](capacity=MR)
+        for _ in range(MR):
+            cstate.append(PRIMAL_SATISFIED)
         var constraint_cost: Scalar[DTYPE] = 0
         constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
             constraints, jar, D_vals, force, cstate, constraint_cost
@@ -220,12 +235,22 @@ struct CGSolver(ConstraintSolver):
 
         @parameter
         if CG_CPU_DEBUG:
-            print("  [PRIMAL_CG] num_rows=", num_rows, " normals=", constraints.num_normals, " friction=", constraints.num_friction, " limits=", constraints.num_limits)
+            print(
+                "  [PRIMAL_CG] num_rows=",
+                num_rows,
+                " normals=",
+                constraints.num_normals,
+                " friction=",
+                constraints.num_friction,
+                " limits=",
+                constraints.num_limits,
+            )
 
         # Compute qfrc_constraint = J^T * force
-        var qfrc_constraint = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
+        var qfrc_constraint = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            qfrc_constraint.append(Scalar[DTYPE](0))
+
         compute_qfrc_constraint[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
             constraints, force, qfrc_constraint
         )
@@ -240,10 +265,18 @@ struct CGSolver(ConstraintSolver):
             scale = Scalar[DTYPE](1.0)
 
         # Compute initial gradient: grad = Ma - qfrc_smooth - qfrc_constraint
-        var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var Mgrad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var grad = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            grad.append(Scalar[DTYPE](0))
+        var Mgrad = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            Mgrad.append(Scalar[DTYPE](0))
+        var search = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            search.append(Scalar[DTYPE](0))
+        var Mv = List[Scalar[DTYPE]](capacity=V_SIZE)
+        for _ in range(V_SIZE):
+            Mv.append(Scalar[DTYPE](0))
 
         # CG-specific: arrays to track previous gradient for Polak-Ribiere
         var gradold = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -262,7 +295,7 @@ struct CGSolver(ConstraintSolver):
             return
 
         # Initial preconditioned gradient: Mgrad = M^{-1} * grad
-        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L_ldl, D_ldl, grad, Mgrad)
+        ldl_solve[DTYPE, NV](L_ldl, D_ldl, grad, Mgrad)
 
         # Initial search direction: search = -Mgrad
         for i in range(NV):
@@ -276,7 +309,14 @@ struct CGSolver(ConstraintSolver):
 
             @parameter
             if CG_CPU_DEBUG:
-                print("    [PRIMAL_CG] iter_start", total_iter, " grad_norm=", Float64(sqrt(grad_norm)), " scaled=", Float64(scale * sqrt(grad_norm)))
+                print(
+                    "    [PRIMAL_CG] iter_start",
+                    total_iter,
+                    " grad_norm=",
+                    Float64(sqrt(grad_norm)),
+                    " scaled=",
+                    Float64(scale * sqrt(grad_norm)),
+                )
 
             # Compute Mv = M * search (needed for line search)
             for i in range(NV):
@@ -285,7 +325,9 @@ struct CGSolver(ConstraintSolver):
                     Mv[i] += constraints.M_hat[i * NV + j] * search[j]
 
             # Forward-exploring linesearch with MuJoCo D
-            var alpha = primal_linesearch_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+            var alpha = primal_linesearch_with_D[
+                DTYPE, MAX_ROWS, NV, V_SIZE, MR
+            ](
                 constraints,
                 D_vals,
                 qacc,
@@ -300,16 +342,23 @@ struct CGSolver(ConstraintSolver):
             )
 
             if alpha == Scalar[DTYPE](0):
+
                 @parameter
                 if CG_CPU_DEBUG:
-                    print("    [PRIMAL_CG] STOPPED at iter", total_iter, " (alpha=0)")
+                    print(
+                        "    [PRIMAL_CG] STOPPED at iter",
+                        total_iter,
+                        " (alpha=0)",
+                    )
                 break
 
             # Save old cost, qacc, Ma
-            var old_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
-                Ma, qfrc_smooth, qacc, qacc_smooth
+            var old_cost = constraint_cost + compute_gauss_cost[
+                DTYPE, NV, V_SIZE
+            ](Ma, qfrc_smooth, qacc, qacc_smooth)
+            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
             )
-            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             for i in range(NV):
                 old_qacc[i] = qacc[i]
@@ -321,9 +370,7 @@ struct CGSolver(ConstraintSolver):
                 Ma[i] += alpha * Mv[i]
 
             # Recompute jar
-            compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-                constraints, qacc, jar
-            )
+            compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
 
             # Recompute force, state, cost (cone-aware with MuJoCo D)
             constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
@@ -336,9 +383,9 @@ struct CGSolver(ConstraintSolver):
             )
 
             # Check improvement
-            var new_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
-                Ma, qfrc_smooth, qacc, qacc_smooth
-            )
+            var new_cost = constraint_cost + compute_gauss_cost[
+                DTYPE, NV, V_SIZE
+            ](Ma, qfrc_smooth, qacc, qacc_smooth)
             var improvement = scale * (old_cost - new_cost)
 
             @parameter
@@ -363,9 +410,7 @@ struct CGSolver(ConstraintSolver):
                         qacc[i] = old_qacc[i]
                         Ma[i] = old_Ma[i]
                     # Recompute jar/force at restored point
-                    compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-                        constraints, qacc, jar
-                    )
+                    compute_jar[DTYPE, MAX_ROWS, NV](constraints, qacc, jar)
                     constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
                         constraints, jar, D_vals, force, cstate, constraint_cost
                     )
@@ -387,13 +432,18 @@ struct CGSolver(ConstraintSolver):
 
             # Check gradient convergence
             if scale * sqrt(grad_norm) < Scalar[DTYPE](CG_CPU_TOLERANCE):
+
                 @parameter
                 if CG_CPU_DEBUG:
-                    print("    [PRIMAL_CG] CONVERGED at iter", total_iter, " (gradient)")
+                    print(
+                        "    [PRIMAL_CG] CONVERGED at iter",
+                        total_iter,
+                        " (gradient)",
+                    )
                 break
 
             # Compute new preconditioned gradient: Mgrad = M^{-1} * grad
-            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L_ldl, D_ldl, grad, Mgrad)
+            ldl_solve[DTYPE, NV](L_ldl, D_ldl, grad, Mgrad)
 
             # Polak-Ribiere beta
             # beta = dot(grad, Mgrad - Mgradold) / max(MINVAL, dot(gradold, Mgradold))
@@ -523,47 +573,31 @@ struct CGSolver(ConstraintSolver):
             if nc > MAX_CONTACTS:
                 nc = MAX_CONTACTS
             var sr_tc = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
             )
             var sr_dr = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
             )
             si_dmin = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
             )
             si_dmax = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
             )
             si_width = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
             )
             si_midpoint = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3]
             )
             si_power = rebind[Scalar[DTYPE]](
-                model[
-                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4
-                ]
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4]
             )
             if si_width < Scalar[DTYPE](1e-6):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (
-                sr_tc * sr_tc * si_dmax * si_dmax
-            )
+            K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
             B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
@@ -625,18 +659,34 @@ struct CGSolver(ConstraintSolver):
                     continue
                 var a: workspace.element_type = workspace[env, ws_rhs_idx + c]
                 for k in range(NV):
-                    a += workspace[env, ws_J_n_idx + c * NV + k] * workspace[env, qacc_idx + k]
-                var R_c = Scalar[DTYPE](1.0) / workspace[env, inv_K_imp_idx + c] - workspace[env, ws_K_n_idx + c]
+                    a += (
+                        workspace[env, ws_J_n_idx + c * NV + k]
+                        * workspace[env, qacc_idx + k]
+                    )
+                var R_c = (
+                    Scalar[DTYPE](1.0) / workspace[env, inv_K_imp_idx + c]
+                    - workspace[env, ws_K_n_idx + c]
+                )
                 var residual = a + R_c * workspace[env, ws_lambda_n_idx + c]
                 var delta = -residual * workspace[env, inv_K_imp_idx + c]
                 var old_lambda = workspace[env, ws_lambda_n_idx + c]
-                workspace[env, ws_lambda_n_idx + c] = workspace[env, ws_lambda_n_idx + c] + delta
+                workspace[env, ws_lambda_n_idx + c] = (
+                    workspace[env, ws_lambda_n_idx + c] + delta
+                )
                 if workspace[env, ws_lambda_n_idx + c] < Scalar[DTYPE](0):
                     workspace[env, ws_lambda_n_idx + c] = Scalar[DTYPE](0)
-                var actual = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n_idx + c]) - rebind[Scalar[DTYPE]](old_lambda)
+                var actual = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_lambda_n_idx + c]
+                ) - rebind[Scalar[DTYPE]](old_lambda)
                 if actual != Scalar[DTYPE](0):
                     for k in range(NV):
-                        workspace[env, qacc_idx + k] = rebind[Scalar[DTYPE]](workspace[env, qacc_idx + k]) + rebind[Scalar[DTYPE]](workspace[env, ws_MinvJn_idx + c * NV + k]) * actual
+                        workspace[env, qacc_idx + k] = (
+                            rebind[Scalar[DTYPE]](workspace[env, qacc_idx + k])
+                            + rebind[Scalar[DTYPE]](
+                                workspace[env, ws_MinvJn_idx + c * NV + k]
+                            )
+                            * actual
+                        )
 
         apply_solved_normals_gpu[
             DTYPE,
@@ -718,8 +768,8 @@ struct CGSolver(ConstraintSolver):
             WS_SIZE,
             FRICTION_WS_OFFSET,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ](
             env,
             state,
