@@ -1,0 +1,390 @@
+# TDMPC2 Implementation Plan for mojo-rl
+
+> Based on: Hansen et al., 2023 — "TD-MPC2: Scalable, Robust World Models for Continuous Control"
+> Reference implementation: https://github.com/nicklashansen/tdmpc2
+
+---
+
+## Algorithm Overview
+
+TD-MPC2 is a **model-based RL** algorithm that simultaneously learns:
+- an **encoder** : observation → latent state `z`
+- a **dynamics model** : `(z, a) → z'` (next latent state prediction)
+- a **reward model** : `(z, a) → r` (distributional)
+- a **termination model** : `(z) → done`
+- a **policy** : `z → (μ, σ)` (Gaussian, used as prior for MPPI)
+- an **ensemble of Q-functions** : `(z, a) → Q` (distributional)
+
+At each timestep, TDMPC2 uses **MPPI** (Model Predictive Path Integral) to plan in
+latent space over a horizon H, using the world model to evaluate candidate trajectories.
+
+---
+
+## What Already Exists in mojo-rl ✅
+
+### Neural layers (`deep_rl/model/`)
+
+| Component | File | TDMPC2 usage |
+|-----------|------|--------------|
+| `Linear` | `linear.mojo` | Base layer for all MLPs |
+| `LayerNorm` | `layer_norm.mojo` | Used inside `NormedLinear` |
+| `Dropout` | `dropout.mojo` | Used inside `NormedLinear` (Q-functions) |
+| `ReLU`, `Tanh`, `Sigmoid`, `Softmax` | dedicated files | Base activations |
+| `StochasticActor` | `stochastic_actor.mojo` | Foundation for the policy head |
+| `Sequential` | `sequential.mojo` | MLP composition |
+
+### Optimizers (`deep_rl/optimizer/`)
+
+| Optimizer | TDMPC2 usage |
+|-----------|--------------|
+| `Adam` | World model + policy |
+| `AdamW` | Alternative for world model |
+
+### Losses (`deep_rl/loss/`)
+
+| Loss | TDMPC2 usage |
+|------|--------------|
+| `MSE` | Consistency loss (dynamics prediction) |
+| `CrossEntropy` | Foundation for soft cross-entropy (reward/value) |
+
+### Agents & Infrastructure
+
+| Component | TDMPC2 usage |
+|-----------|--------------|
+| `ReplayBuffer` | Transition storage |
+| `SAC` | Structural reference (twin Q-networks, stochastic actor, soft updates) |
+| `Network` (training) | Params + model wrapper |
+| Checkpoint system | Save/load trained models |
+
+---
+
+## What Needs to Be Built 🔨
+
+### 1. New Neural Layers
+
+#### `deep_rl/model/mish.mojo` — Mish Activation
+
+```
+Mish(x) = x * tanh(softplus(x)) = x * tanh(log(1 + eˣ))
+```
+
+Default activation for all `NormedLinear` blocks in TDMPC2.
+
+Gradient:
+```
+f'(x) = tanh(sp) + x * σ(x) * (2 - tanh²(sp))   where sp = softplus(x)
+```
+
+**Effort**: Low — simple elementwise activation, straightforward forward + backward.
+
+---
+
+#### `deep_rl/model/simnorm.mojo` — Simplicial Normalization
+
+```
+SimNorm(simplex_dim)(x):
+  1. Reshape x: [..., D] → [..., D / simplex_dim, simplex_dim]
+  2. Apply Softmax over the last dimension
+  3. Reshape back → [..., D]
+```
+
+Used in the **dynamics model output** to stabilize the latent space
+(replaces LayerNorm on the dynamics head's final layer).
+
+- **Parameters**: `simplex_dim` (group size, typically 8)
+- **No learned parameters** — pure normalization
+- **Effort**: Low — Softmax already exists in mojo-rl; this is a reshape + softmax.
+
+---
+
+#### `deep_rl/model/normed_linear.mojo` — NormedLinear Block
+
+```
+NormedLinear(in_dim, out_dim, dropout_rate=0., act=Mish):
+  Linear(in_dim, out_dim) → Dropout(dropout_rate) → LayerNorm(out_dim) → Mish
+```
+
+The **base building block** for all TDMPC2 MLPs (except final projection layers).
+Final layers use plain `Linear`, optionally followed by `SimNorm` (dynamics head).
+
+**Effort**: Low — composition of existing layers. Requires Mish first.
+
+---
+
+### 2. New Loss Functions
+
+#### `deep_rl/loss/two_hot.mojo` — Two-Hot Encoding
+
+TDMPC2 uses distributional RL: rewards and values are represented as distributions
+over `num_bins` evenly spaced bins in `[v_min, v_max]`.
+
+```
+two_hot(x, bins[num_bins]) → target[num_bins]:
+  Find adjacent bins: bins[k] ≤ x < bins[k+1]
+  target[k]   = (bins[k+1] - x) / (bins[k+1] - bins[k])   # upper weight
+  target[k+1] = (x - bins[k])   / (bins[k+1] - bins[k])   # lower weight
+  target[i]   = 0  for all other i
+```
+
+Produces a soft one-hot vector of size `num_bins`.
+Typical values: `num_bins=101`, `v_min=-10.0`, `v_max=10.0`.
+
+**Effort**: Medium — vector computation with careful boundary handling.
+
+---
+
+#### `deep_rl/loss/soft_cross_entropy.mojo` — Soft Cross-Entropy
+
+```
+L = -Σᵢ target_i * log(softmax(logits)_i)
+  = -Σᵢ target_i * log_softmax(logits)_i
+```
+
+Where `target` is the two-hot vector (soft, not hard one-hot).
+Used as the loss for both **reward** and **Q-value** heads (distributional).
+
+**Effort**: Low — extends existing `cross_entropy.mojo`.
+
+---
+
+### 3. Sequence Replay Buffer
+
+#### `deep_rl/replay/sequence_replay_buffer.mojo`
+
+The consistency loss requires **unrolling the world model over H steps**.
+The replay buffer must store and sample **contiguous sequences of length H+1**,
+not individual transitions.
+
+```
+Interface:
+  add(obs, action, reward, done)               // Continuous insertion
+  sample_sequence[BATCH, H]() →
+    (obs[H+1], actions[H], rewards[H], dones[H])
+```
+
+**Effort**: Medium — circular buffer with sequence handling
+(must avoid sequences that cross episode boundaries).
+
+---
+
+### 4. World Model
+
+#### `deep_agents/tdmpc2/world_model.mojo`
+
+```
+WorldModel[OBS_DIM, ACTION_DIM, LATENT_DIM, MLP_DIM, NUM_BINS, NUM_Q]:
+
+  encoder:      MLP(OBS_DIM → LATENT_DIM)
+                [NormedLinear(OBS_DIM, MLP_DIM),
+                 NormedLinear(MLP_DIM, LATENT_DIM)]
+
+  dynamics:     MLP(LATENT_DIM + ACTION_DIM → LATENT_DIM)
+                [NormedLinear(LATENT_DIM + ACTION_DIM, MLP_DIM),
+                 NormedLinear(MLP_DIM, LATENT_DIM),
+                 Linear(LATENT_DIM, LATENT_DIM) + SimNorm(simplex_dim=8)]
+
+  reward:       MLP(LATENT_DIM + ACTION_DIM → NUM_BINS)
+                [NormedLinear(LATENT_DIM + ACTION_DIM, MLP_DIM),
+                 NormedLinear(MLP_DIM, MLP_DIM),
+                 Linear(MLP_DIM, NUM_BINS)]
+
+  termination:  MLP(LATENT_DIM → 1)
+                [NormedLinear(LATENT_DIM, MLP_DIM),
+                 NormedLinear(MLP_DIM, MLP_DIM),
+                 Linear(MLP_DIM, 1) + Sigmoid]
+
+  policy:       MLP(LATENT_DIM → 2 * ACTION_DIM)   # mean + log_std
+                [NormedLinear(LATENT_DIM, MLP_DIM),
+                 NormedLinear(MLP_DIM, MLP_DIM),
+                 Linear(MLP_DIM, 2 * ACTION_DIM)]
+
+  Q_ensemble:   NUM_Q × MLP(LATENT_DIM + ACTION_DIM → NUM_BINS)
+                [NormedLinear(..., MLP_DIM, dropout on 1st layer),
+                 NormedLinear(MLP_DIM, MLP_DIM),
+                 Linear(MLP_DIM, NUM_BINS)]
+```
+
+Typical dimensions (single task): `LATENT_DIM=512`, `MLP_DIM=512`,
+`NUM_BINS=101`, `NUM_Q=5`.
+
+**Effort**: High — central piece. Requires all layers above.
+
+---
+
+### 5. MPPI Planner
+
+#### `deep_agents/tdmpc2/mppi.mojo`
+
+```
+plan(z0, world_model, num_iterations, horizon, num_samples, num_pi_trajs,
+     temperature) → action:
+
+  1. Initialization:
+     - Sample num_pi_trajs trajectories using the learned policy
+     - mean[H, ACTION_DIM] = 0 (or shifted from previous timestep if t > 0)
+     - std[H, ACTION_DIM]  = 0.5
+
+  2. For each iteration:
+     a. Sample candidates:
+        noise ~ N(0, 1)
+        actions = clamp(mean + std * noise, -1, 1)     # [num_samples, H, A]
+
+     b. For each candidate, roll out the world model over H steps:
+        z_t+1 = dynamics(z_t, a_t)
+        r_t   = decode_reward(reward_logits(z_t, a_t))
+        G     = Σ_t γ^t * r_t + γ^H * min_Q(z_H, π(z_H))
+
+     c. Top-k elites by return G
+
+     d. Softmax weights:
+        w = exp(temperature * (G - max(G)))
+        w = w / Σ w
+
+     e. Update distribution:
+        mean = Σ wᵢ * actionsᵢ
+        std  = sqrt(Σ wᵢ * (actionsᵢ - mean)²)
+        std  = clamp(std, std_min, std_max)
+
+  3. Action selection:
+     Gumbel-softmax sampling over elite scores → select action_0
+     (add exploration noise if not in eval mode)
+```
+
+**Effort**: High — nested planning loop with many world model forward passes.
+GPU-batched evaluation of `num_samples=512` trajectories is the key performance target.
+
+---
+
+### 6. TDMPC2 Agent
+
+#### `deep_agents/tdmpc2/tdmpc2.mojo`
+
+**Key hyperparameters:**
+```
+H                 = 3        # planning horizon
+gamma             = 0.99     # discount factor
+rho               = 0.5      # temporal weight decay in losses
+tau               = 0.01     # soft update coefficient for target Q-networks
+batch_size        = 256
+learning_rate     = 3e-4
+enc_lr_scale      = 0.3      # encoder LR multiplier (= 0.3 * lr)
+consistency_coef  = 2.0
+reward_coef       = 0.5
+value_coef        = 0.1
+entropy_coef      = 1e-4
+num_samples       = 512      # MPPI candidates
+num_pi_trajs      = 24       # policy rollout trajectories in MPPI
+num_iterations    = 6        # MPPI optimization iterations
+temperature       = 0.5      # MPPI softmax temperature
+```
+
+**Update step (1 gradient step):**
+
+```
+1. Encode initial observation:
+   z_0 = encode(obs_0)
+
+2. Compute TD targets (no gradient):
+   For each t in [0, H-1]:
+     z_next     = sg(encode(obs_t+1))       # stop-gradient
+     a_next     ~ policy(z_next)
+     Q_targets  = r_t + gamma * (1 - done_t) * min_Q(z_next, a_next)
+     td_target_dist[t] = two_hot(Q_targets)
+
+3. Latent rollout + loss accumulation:
+   z = z_0
+   For t in [0, H-1]:
+     z_pred  = dynamics(z, a_t)
+     z_enc   = sg(encode(obs_t+1))
+
+     L_consistency += rho^t * MSE(z_pred, z_enc)
+     L_reward      += rho^t * soft_CE(reward_logits(z, a_t), two_hot(r_t))
+     L_value       += rho^t * soft_CE(Q(z, a_t),             td_target_dist[t])
+     L_terminal    += rho^t * BCE(termination(z), done_t)   # if episodic
+
+     z = z_pred   # continue rollout with predicted latent
+
+4. World model update:
+   L_wm = consistency_coef * L_consistency
+        + reward_coef      * L_reward
+        + value_coef       * L_value
+        + terminal_coef    * L_terminal
+   backprop(L_wm) → Adam step (world_model params, exc. policy)
+
+5. Policy update:
+   L_pi = 0
+   z = sg(z_0)
+   For t in [0, H-1]:
+     a_pi ~ policy(z)
+     L_pi += -rho^t * (min_Q(z, a_pi) + entropy_coef * H(policy))
+     z     = sg(dynamics(z, a_pi))
+   Adam step (policy params only)
+
+6. Soft update of target Q-networks:
+   theta_target ← tau * theta + (1 - tau) * theta_target
+```
+
+---
+
+## Implementation Roadmap
+
+### Phase 1 — New Layers (1–2 days)
+- [ ] `deep_rl/model/mish.mojo`
+- [ ] `deep_rl/model/simnorm.mojo`
+- [ ] `deep_rl/model/normed_linear.mojo`
+
+### Phase 2 — Losses & Replay (1–2 days)
+- [ ] `deep_rl/loss/soft_cross_entropy.mojo`
+- [ ] `deep_rl/loss/two_hot.mojo`
+- [ ] `deep_rl/replay/sequence_replay_buffer.mojo`
+
+### Phase 3 — World Model (3–5 days)
+- [ ] `deep_agents/tdmpc2/world_model.mojo`
+  - [ ] Encoder head
+  - [ ] Dynamics head (with SimNorm output)
+  - [ ] Reward head (distributional)
+  - [ ] Termination head
+  - [ ] Policy head
+  - [ ] Q-function ensemble
+
+### Phase 4 — Planning & Agent (3–5 days)
+- [ ] `deep_agents/tdmpc2/mppi.mojo`
+- [ ] `deep_agents/tdmpc2/tdmpc2.mojo`
+
+### Phase 5 — Validation (2–3 days)
+- [ ] Test on `PendulumEnv` (simple baseline)
+- [ ] Benchmark on `HopperEnv`, `HalfCheetahEnv`
+- [ ] Sample efficiency comparison: SAC vs TDMPC2
+
+---
+
+## Technical Notes
+
+### Stop-Gradient
+The consistency loss requires stopping gradients on the encoded `obs_t+1` target.
+In mojo-rl this means calling `encode()` in inference mode (no activation caching)
+for the target, while the predicted `z_pred` flows through the full computational graph.
+
+### Q-Network Ensemble
+TDMPC2 uses 5 Q-networks and during the **policy update** randomly subsamples 2
+and takes their minimum. Implementation: an array of `Network[...]` instances with
+random index subsampling for `Q_min` computation.
+
+### Distributional RL — Scalar Decoding
+Q-functions output logits over `NUM_BINS=101` bins. The scalar value is recovered as:
+```
+value = Σᵢ softmax(logits)ᵢ * bins[i]
+```
+where `bins` is a fixed tensor of 101 evenly spaced values in `[v_min, v_max]`.
+
+### Two Separate Optimizers
+- **World model optimizer**: encoder + dynamics + reward + termination + Q-ensemble
+  with `enc_lr_scale=0.3` applied to encoder params (e.g., via separate param group or
+  learning rate masking)
+- **Policy optimizer**: policy head only, full `learning_rate`
+
+### MPPI Vectorization — Key Performance Opportunity
+The MPPI loop evaluates `num_samples=512` candidate trajectories per timestep.
+Running these as a batched GPU kernel (all 512 in parallel through the world model)
+is the single biggest performance lever over PyTorch-based TDMPC2 in LeRobot.
+Target: a single batched `dynamics_forward[512 * H]` call per MPPI iteration.

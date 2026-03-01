@@ -8,7 +8,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_fk_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -352,4 +352,9 @@ fn test_fk_large_rootx() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_fk_default_qpos()
+    test_fk_zero_qpos()
+    test_fk_nonzero_joints()
+    test_fk_extreme_joints()
+    test_fk_large_rootx()
+    print("All FK CPU vs GPU tests passed.")

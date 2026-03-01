@@ -6,7 +6,7 @@ Tests:
 3. Basic dynamics (gravity causes swinging)
 
 Run with:
-    pixi run mojo run physics3d/generalized/tests/test_pendulum.mojo
+    pixi run mojo run physics3d/tests/test_pendulum.mojo
 """
 
 from math import sqrt, pi, sin, cos
@@ -15,6 +15,29 @@ from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from testing import assert_true, TestSuite
+
+
+fn setup_pendulum(
+    mut model: Model[DType.float64, 1, 1, 2, 1, 5],
+    L: Float64,
+    m: Float64,
+    I_cm: Float64,
+):
+    """Set up a simple pendulum: pivot at body origin, CoM at (0,0,-L) via ipos.
+
+    MuJoCo-style convention: jnt_pos is in body frame.
+    With jnt_pos=(0,0,0) and body_pos=(0,0,0), the pivot is at the world origin.
+    ipos=(0,0,-L) places the CoM L metres below the pivot.
+    """
+    model.set_body(1, name="bob", mass=m, inertia=(I_cm, I_cm, I_cm))
+    model.set_body_parent(1, 0)
+    model.set_body_local_frame(1, pos=(0.0, 0.0, 0.0))  # body at pivot (origin)
+    model.set_body_ipos_iquat(1, ipos=(0.0, 0.0, -L))   # CoM at -L below pivot
+    _ = model.add_hinge_joint(
+        body_id=1,
+        pos=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+    )
 
 
 fn test_pendulum_period() raises:
@@ -36,24 +59,11 @@ fn test_pendulum_period() raises:
     var expected_period = Float64(2.0) * pi * sqrt(I_pivot / (m * g * L))
     print("  Expected period:", expected_period, "s")
 
-    # Create simple pendulum
-    # Mass at end of massless rod (approximated by body at distance L)
     var model = Model[DType.float64, 1, 1, 2, 1, 5]()
     model.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
     model.timestep = 0.001  # Small timestep for accuracy
 
-    model.set_body(1, name="bob", mass=1.0, inertia=(0.01, 0.01, 0.01))
-    model.set_body_parent(1, 0)
-
-    # Body at (0, 0, -L) relative to pivot at origin
-    model.set_body_local_frame(1, pos=(0.0, 0.0, -L))
-
-    # Hinge at origin, Y axis
-    _ = model.add_hinge_joint(
-        body_id=1,
-        pos=(0.0, 0.0, 0.0),
-        axis=(0.0, 1.0, 0.0),
-    )
+    setup_pendulum(model, L, m, I_cm)
 
     var data = Data[DType.float64, 1, 1, 2, 1, 5]()
 
@@ -125,50 +135,44 @@ fn test_energy_conservation() raises:
     var L = Float64(1.0)
     var g = Float64(9.81)
     var m = Float64(1.0)
+    var I_cm = Float64(0.01)
 
     var model = Model[DType.float64, 1, 1, 2, 1, 5]()
     model.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
     model.timestep = 0.001
 
-    model.set_body(1, name="bob", mass=m, inertia=(0.01, 0.01, 0.01))
-    model.set_body_parent(1, 0)
-    model.set_body_local_frame(1, pos=(0.0, 0.0, -L))
-
-    _ = model.add_hinge_joint(
-        body_id=1,
-        pos=(0.0, 0.0, 0.0),
-        axis=(0.0, 1.0, 0.0),
-    )
+    setup_pendulum(model, L, m, I_cm)
 
     var data = Data[DType.float64, 1, 1, 2, 1, 5]()
     data.qpos[0] = Float64(0.5)  # ~30 degrees
     data.qvel[0] = Float64(0.0)
 
-    # Initial forward kinematics to get xpos
+    # Initial forward kinematics to get xipos (CoM position)
     forward_kinematics(model, data)
 
     # Compute initial energy
-    # PE = m*g*h where h is height of mass relative to lowest point
-    # KE = 0.5 * I * omega^2 where I = m*L^2
+    # PE = m*g*h where h is CoM height relative to lowest point
+    # KE = 0.5 * I_pivot * omega^2 where I_pivot = I_cm + m*L^2
     fn compute_energy(
         data: Data[DType.float64, 1, 1, 2, 1, 5],
         m: Float64,
         g: Float64,
         L: Float64,
+        I_cm: Float64,
     ) -> Float64:
-        var z = data.xpos[5]  # body 1, z component
-        var h = z + L  # Height relative to lowest point (z = -L)
+        var z_com = data.xipos[5]  # body 1 CoM, z component
+        var h = z_com + L  # Height relative to lowest point (CoM z = -L at theta=0)
         var PE = m * g * h
         var omega = data.qvel[0]
-        var I = m * L * L
-        var KE = Float64(0.5) * I * omega * omega
+        var I_pivot = I_cm + m * L * L
+        var KE = Float64(0.5) * I_pivot * omega * omega
         return PE + KE
 
-    var initial_energy = compute_energy(data, m, g, L)
+    var initial_energy = compute_energy(data, m, g, L, I_cm)
     print("  Initial energy:", initial_energy, "J")
 
     # Run for 5 periods
-    var expected_period = Float64(2.0) * pi * sqrt(L / g)
+    var expected_period = Float64(2.0) * pi * sqrt((I_cm + m*L*L) / (m*g*L))
     var sim_time = Float64(5.0) * expected_period
     var steps = Int(sim_time / Float64(model.timestep))
 
@@ -178,12 +182,12 @@ fn test_energy_conservation() raises:
         DefaultIntegrator.step(model, data)
         forward_kinematics(model, data)
 
-        var current_energy = compute_energy(data, m, g, L)
+        var current_energy = compute_energy(data, m, g, L, I_cm)
         var deviation = abs(current_energy - initial_energy)
         if deviation > max_energy_deviation:
             max_energy_deviation = deviation
 
-    var drift_pct = max_energy_deviation / initial_energy * Float64(100.0)
+    var drift_pct = max_energy_deviation / abs(initial_energy) * Float64(100.0)
     print("  Max energy drift:", drift_pct, "%")
 
     if drift_pct < Float64(5.0):
@@ -197,17 +201,10 @@ fn test_gravity_swinging() raises:
     """Test that gravity causes the pendulum to swing."""
     print("Test gravity causes swinging...")
 
+    var L = Float64(1.0)
     var model = Model[DType.float64, 1, 1, 2, 1, 5]()
 
-    model.set_body(1, name="bob", mass=1.0, inertia=(0.1, 0.1, 0.1))
-    model.set_body_parent(1, 0)
-    model.set_body_local_frame(1, pos=(0.0, 0.0, -1.0))
-
-    _ = model.add_hinge_joint(
-        body_id=1,
-        pos=(0.0, 0.0, 0.0),
-        axis=(0.0, 1.0, 0.0),
-    )
+    setup_pendulum(model, L, Float64(1.0), Float64(0.1))
 
     var data = Data[DType.float64, 1, 1, 2, 1, 5]()
     data.qpos[0] = Float64(0.5)  # Initial angle
@@ -215,7 +212,7 @@ fn test_gravity_swinging() raises:
 
     var initial_angle = data.qpos[0]
 
-    # Run for 0.5 seconds
+    # Run for 0.5 seconds (default dt=0.01)
     for _ in range(50):
         DefaultIntegrator.step(model, data)
 

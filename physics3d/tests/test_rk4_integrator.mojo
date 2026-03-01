@@ -52,12 +52,12 @@ fn test_rk4_compiles_halfcheetah() raises:
     print("Test 5.1: RK4 compiles and runs with HalfCheetah...")
 
     comptime DTYPE = DType.float64
-    comptime NQ = 9
-    comptime NV = 9
-    comptime NBODY = 8  # 7 real bodies + worldbody
-    comptime NJOINT = 9
-    comptime NGEOM = 9
-    comptime MAX_CONTACTS = 20
+    comptime NQ = HC.NQ
+    comptime NV = HC.NV
+    comptime NBODY = HC.NBODY
+    comptime NJOINT = HC.NJOINT
+    comptime NGEOM = HC.NGEOM
+    comptime MAX_CONTACTS = HC.MAX_CONTACTS
 
     var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HC.MAX_EQUALITY, HC.CONE_TYPE, HC.MAX_TENDON, HC.NSITE]()
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HC.NSITE]()
@@ -119,8 +119,8 @@ fn test_energy_conservation_rk4_vs_euler() raises:
         L: Float64,
         I_cm: Float64,
     ) -> Float64:
-        # xipos has CoM world position
-        var z = data.xipos[2]
+        # xipos has CoM world position; body 1 CoM z = xipos[1*3+2] = xipos[5]
+        var z = data.xipos[5]
         var h = z + L  # Height relative to lowest point
         var PE = m * g * h
         var omega = data.qvel[0]

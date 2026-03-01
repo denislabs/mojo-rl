@@ -10,7 +10,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_mass_matrix_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -346,4 +346,8 @@ fn test_extreme_joints() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_default_qpos()
+    test_zero_qpos()
+    test_nonzero_joints()
+    test_extreme_joints()
+    print("All mass matrix CPU vs GPU tests passed.")

@@ -122,6 +122,8 @@ from ..gpu.constants import (
     ws_qacc_ws_offset,
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
+    metadata_offset,
+    META_IDX_NUM_CONTACTS,
 )
 
 
@@ -1248,16 +1250,26 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 env, workspace
             )
 
-        # 10. Warm-start: use previous step's constrained qacc if nonzero.
+        # 10. Warm-start: use previous step's constrained qacc if nonzero AND contacts exist.
         # state[env, qacc_off + i] still holds prev step's constrained qacc here
         # (written by step_finalize_kernel). Must read BEFORE overwriting below.
+        # IMPORTANT: Only warm-start when there are active contacts. Without contacts,
+        # warm-starting freezes qacc at the first step value (bias forces change with qpos
+        # but step_finalize uses M*qacc_constrained which never updates for nc=0).
+        comptime meta_off_ws = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        var nc_for_ws = Int(
+            rebind[Scalar[DTYPE]](state[env, meta_off_ws + META_IDX_NUM_CONTACTS])
+        )
+        if nc_for_ws > MAX_CONTACTS:
+            nc_for_ws = MAX_CONTACTS
         var has_warmstart = False
-        for i in range(NV):
-            if rebind[Scalar[DTYPE]](state[env, qacc_off + i]) != Scalar[DTYPE](
-                0
-            ):
-                has_warmstart = True
-                break
+        if nc_for_ws > 0:
+            for i in range(NV):
+                if rebind[Scalar[DTYPE]](
+                    state[env, qacc_off + i]
+                ) != Scalar[DTYPE](0):
+                    has_warmstart = True
+                    break
 
         if has_warmstart:
             for i in range(NV):

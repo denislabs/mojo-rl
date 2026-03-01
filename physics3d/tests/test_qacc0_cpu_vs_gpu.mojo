@@ -11,7 +11,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_qacc0_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -741,4 +741,9 @@ fn test_extreme_velocities() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_gravity_only()
+    test_with_actions()
+    test_nonzero_vel_coriolis_damping()
+    test_full_combo()
+    test_extreme_velocities()
+    print("All qacc0 CPU vs GPU tests passed.")

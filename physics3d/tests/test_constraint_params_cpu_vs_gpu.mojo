@@ -11,8 +11,8 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_constraint_params_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
-from math import abs, sqrt
+from testing import assert_true
+from math import abs, sqrt, pow
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
@@ -31,6 +31,7 @@ from physics3d.dynamics.jacobian import (
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
+    compute_contact_jacobian_row,
 )
 from physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne,
@@ -118,7 +119,10 @@ comptime BATCH = 1
 
 comptime MC = _max_one[MAX_CONTACTS]()
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+comptime MODEL_SIZE = model_size_with_invweight[
+    NBODY, NJOINT, NV, NGEOM,
+    HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+]()
 
 # Workspace layout: [integrator_temps | M_inv(NV*NV) | solver_workspace]
 # ws_solver_offset gives the start of solver workspace.
@@ -412,6 +416,10 @@ fn constraint_params_kernel[
         precompute_contact_normal_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
             STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE, NGEOM,
+            HalfCheetahModel.MAX_EQUALITY,
+            COMPUTE_RHS=False, RHS_IDX=0,
+            MAX_TENDON=HalfCheetahModel.MAX_TENDON,
+            NSITE=HalfCheetahModel.NSITE,
         ](
             env, c, nc, state, model, workspace,
             K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint, si_power,
@@ -609,10 +617,99 @@ fn run_constraint_params_test(
     var max_rel_err: Float64 = 0.0
     var fail_count = 0
 
+    # Solref/solimp from CPU model (must match GPU metadata values)
+    var sr_tc = model_cpu.solref_contact[0]
+    var sr_dr = model_cpu.solref_contact[1]
+    var si_dmin = model_cpu.solimp_contact[0]
+    var si_dmax = model_cpu.solimp_contact[1]
+    var si_width = model_cpu.solimp_contact[2]
+    var si_midpoint = model_cpu.solimp_contact[3]
+    var si_power = model_cpu.solimp_contact[4]
+    if si_width < Scalar[CPU_DTYPE](1e-6):
+        si_width = Scalar[CPU_DTYPE](1e-6)
+    if si_dmax < Scalar[CPU_DTYPE](1e-4):
+        si_dmax = Scalar[CPU_DTYPE](1e-4)
+    var K_spring_cpu = Scalar[CPU_DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
+    var B_damp_cpu = Scalar[CPU_DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+
     for c in range(compare_count):
-        var cpu_K = Float64(constraints.rows[c].K)
-        var cpu_bias = Float64(constraints.rows[c].bias)
-        var cpu_inv_K_imp = Float64(constraints.rows[c].inv_K_imp)
+        var ci = data_cpu.contacts[c]
+
+        # Compute J_n directly (bypasses pyramidal edge rows in constraints.rows)
+        var J_n_cpu = InlineArray[Scalar[CPU_DTYPE], V_SIZE](fill=Scalar[CPU_DTYPE](0))
+        compute_contact_jacobian_row[
+            CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE,
+            NGEOM, HalfCheetahModel.MAX_EQUALITY,
+            HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON,
+            HalfCheetahModel.NSITE,
+        ](
+            model_cpu, data_cpu, cdof,
+            ci.body_a, ci.body_b,
+            ci.pos_x, ci.pos_y, ci.pos_z,
+            ci.normal_x, ci.normal_y, ci.normal_z,
+            J_n_cpu,
+        )
+
+        # K_n = J_n^T @ M_inv @ J_n,  v_n = J_n @ qvel
+        var K_n: Scalar[CPU_DTYPE] = 0
+        var v_n: Scalar[CPU_DTYPE] = 0
+        for i in range(NV):
+            var mi_j_sum: Scalar[CPU_DTYPE] = 0
+            for j in range(NV):
+                mi_j_sum += M_inv[i * NV + j] * J_n_cpu[j]
+            K_n += J_n_cpu[i] * mi_j_sum
+            v_n += J_n_cpu[i] * data_cpu.qvel[i]
+        if K_n < Scalar[CPU_DTYPE](1e-10):
+            K_n = Scalar[CPU_DTYPE](1e-10)
+
+        # Impedance (MuJoCo piecewise power formula — same as GPU)
+        var penetration = -ci.dist
+        var imp: Scalar[CPU_DTYPE]
+        if si_dmin == si_dmax or si_width <= Scalar[CPU_DTYPE](0):
+            imp = Scalar[CPU_DTYPE](0.5) * (si_dmin + si_dmax)
+        else:
+            var x = penetration / si_width
+            var y: Scalar[CPU_DTYPE]
+            if x <= Scalar[CPU_DTYPE](0):
+                y = Scalar[CPU_DTYPE](0)
+            elif x >= Scalar[CPU_DTYPE](1):
+                y = Scalar[CPU_DTYPE](1)
+            elif si_power == Scalar[CPU_DTYPE](1):
+                y = x
+            elif x <= si_midpoint:
+                var a = Scalar[CPU_DTYPE](1) / pow(
+                    si_midpoint, si_power - Scalar[CPU_DTYPE](1)
+                )
+                y = a * pow(x, si_power)
+            else:
+                var b = Scalar[CPU_DTYPE](1) / pow(
+                    Scalar[CPU_DTYPE](1) - si_midpoint,
+                    si_power - Scalar[CPU_DTYPE](1),
+                )
+                y = Scalar[CPU_DTYPE](1) - b * pow(
+                    Scalar[CPU_DTYPE](1) - x, si_power
+                )
+            imp = si_dmin + y * (si_dmax - si_dmin)
+        if imp < Scalar[CPU_DTYPE](1e-6):
+            imp = Scalar[CPU_DTYPE](1e-6)
+
+        # bias = -K_spring * imp * penetration + B_damp * v_n
+        var bias_cpu = -K_spring_cpu * imp * penetration + B_damp_cpu * v_n
+
+        # diagApprox = sum of body_invweight0 (translation) for each contact body
+        var diag_n: Scalar[CPU_DTYPE] = 0
+        if ci.body_a > 0 and ci.body_a < NBODY:
+            diag_n += model_cpu.body_invweight0[ci.body_a * 2]
+        if ci.body_b > 0 and ci.body_b < NBODY:
+            diag_n += model_cpu.body_invweight0[ci.body_b * 2]
+        if diag_n < Scalar[CPU_DTYPE](1e-10):
+            diag_n = K_n
+        var R_n = (Scalar[CPU_DTYPE](1.0) - imp) / imp * diag_n
+        var inv_K_imp_cpu = Scalar[CPU_DTYPE](1.0) / (K_n + R_n)
+
+        var cpu_K = Float64(K_n)
+        var cpu_bias = Float64(bias_cpu)
+        var cpu_inv_K_imp = Float64(inv_K_imp_cpu)
 
         var gpu_K = Float64(result_host[c])
         var gpu_bias = Float64(result_host[MC + c])
@@ -713,4 +810,8 @@ fn test_bent_legs() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_low_static()
+    test_low_moving()
+    test_very_low()
+    test_bent_legs()
+    print("All constraint params CPU vs GPU tests passed.")

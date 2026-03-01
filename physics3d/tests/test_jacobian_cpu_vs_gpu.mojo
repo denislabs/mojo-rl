@@ -13,7 +13,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_jacobian_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs, sqrt
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -33,6 +33,7 @@ from physics3d.dynamics.jacobian import (
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
+    compute_contact_jacobian_row,
 )
 from physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne,
@@ -115,7 +116,10 @@ comptime BATCH = 1
 
 comptime MC = _max_one[MAX_CONTACTS]()
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+comptime MODEL_SIZE = model_size_with_invweight[
+    NBODY, NJOINT, NV, NGEOM,
+    HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+]()
 
 # Workspace: integrator temps + M_inv + solver common normal block
 comptime COMMON_NORMAL_SIZE = 13 * MC + 2 * MC * NV
@@ -338,6 +342,10 @@ fn jacobian_kernel[
         precompute_contact_normal_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
             STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE, NGEOM,
+            HalfCheetahModel.MAX_EQUALITY,
+            COMPUTE_RHS=False, RHS_IDX=0,
+            MAX_TENDON=HalfCheetahModel.MAX_TENDON,
+            NSITE=HalfCheetahModel.NSITE,
         ](
             env, c, nc, state, model, workspace,
             K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint, si_power,
@@ -515,8 +523,26 @@ fn compare_jacobian(
         var row_max_abs: Float64 = 0.0
         var row_max_rel: Float64 = 0.0
 
+        # Compute J_n directly from contact normal.
+        # For pyramidal cone, constraints.J stores edge rows (J_n ± μ*J_t),
+        # not pure J_n. GPU stores pure J_n, so we must compute J_n here.
+        var ci = data_cpu.contacts[c]
+        var J_n_cpu = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+        compute_contact_jacobian_row[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE,
+            NGEOM, HalfCheetahModel.MAX_EQUALITY,
+            HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON,
+            HalfCheetahModel.NSITE,
+        ](
+            model_cpu, data_cpu, cdof,
+            ci.body_a, ci.body_b,
+            ci.pos_x, ci.pos_y, ci.pos_z,
+            ci.normal_x, ci.normal_y, ci.normal_z,
+            J_n_cpu,
+        )
+
         for v in range(NV):
-            var cpu_val = Float64(constraints.J[c * NV + v])
+            var cpu_val = Float64(J_n_cpu[v])
             var gpu_val = Float64(result_host[c * NV + v])
 
             var abs_err = abs(cpu_val - gpu_val)
@@ -549,11 +575,11 @@ fn compare_jacobian(
                 "  J_n[", c, "] FAIL  max_abs=", row_max_abs,
                 " max_rel=", row_max_rel,
             )
-            print("    CPU:", end="")
+            print("    CPU J_n:", end="")
             for v in range(NV):
-                print(" ", Float64(constraints.J[c * NV + v]), end="")
+                print(" ", Float64(J_n_cpu[v]), end="")
             print()
-            print("    GPU:", end="")
+            print("    GPU J_n:", end="")
             for v in range(NV):
                 print(" ", Float64(result_host[c * NV + v]), end="")
             print()
@@ -650,7 +676,11 @@ fn test_very_low() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_low_static()
+    test_low_moving()
+    test_very_low()
+    test_bent_legs()
+    print("All jacobian CPU vs GPU tests passed.")
 
 fn test_bent_legs() raises:
     var ctx = DeviceContext()

@@ -410,7 +410,7 @@ struct DeepSACAgent[
             for i in range(Self.action_dim):
                 action_result[i] = Float64(action_tensor[i]) * self.action_scale
 
-        return action_result
+        return action_result^
 
     fn store_transition(
         mut self,
@@ -1022,14 +1022,14 @@ struct DeepSACAgent[
 
         return total_critic_loss
 
-    fn _list_to_simd(
-        self, obs_list: List[Float64]
-    ) -> SIMD[DType.float64, Self.obs_dim]:
+    fn _list_to_simd[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[DType.float64, Self.obs_dim]:
         """Convert List[Float64] to SIMD for internal use."""
         var obs = SIMD[DType.float64, Self.obs_dim]()
         for i in range(Self.obs_dim):
             if i < len(obs_list):
-                obs[i] = obs_list[i]
+                obs[i] = Float64(obs_list[i])
             else:
                 obs[i] = 0.0
         return obs

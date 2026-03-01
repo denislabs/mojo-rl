@@ -21,32 +21,24 @@ fn test_lu_factorization() raises:
     comptime M_SIZE = 9
     comptime V_SIZE = 3
 
-    var A = InlineArray[Scalar[DType.float64], M_SIZE](uninitialized=True)
-    A[0] = 2
-    A[1] = 1
-    A[2] = 1
-    A[3] = 4
-    A[4] = 3
-    A[5] = 3
-    A[6] = 8
-    A[7] = 7
-    A[8] = 9
+    var A = List[Scalar[DType.float64]](capacity=M_SIZE)
+    A.append(2); A.append(1); A.append(1)
+    A.append(4); A.append(3); A.append(3)
+    A.append(8); A.append(7); A.append(9)
 
-    var piv = InlineArray[Int, V_SIZE](uninitialized=True)
+    var piv = List[Int](capacity=V_SIZE)
     for i in range(NV):
-        piv[i] = i
+        piv.append(i)
 
     lu_factor[DType.float64, NV, M_SIZE, V_SIZE](A, piv)
 
     # Solve A * x = [1, 3, 5]
-    var b = InlineArray[Scalar[DType.float64], V_SIZE](uninitialized=True)
-    b[0] = 1
-    b[1] = 3
-    b[2] = 5
+    var b = List[Scalar[DType.float64]](capacity=V_SIZE)
+    b.append(1); b.append(3); b.append(5)
 
-    var x = InlineArray[Scalar[DType.float64], V_SIZE](uninitialized=True)
+    var x = List[Scalar[DType.float64]](capacity=V_SIZE)
     for i in range(NV):
-        x[i] = 0
+        x.append(0)
     lu_solve[DType.float64, NV, M_SIZE, V_SIZE](A, piv, b, x)
 
     # Expected solution: x = [-1, 1, 2] (verified manually)

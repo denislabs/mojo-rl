@@ -1276,7 +1276,7 @@ fn detect_contacts_gpu[
                             gj_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = e1_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = e1_y
@@ -1314,7 +1314,7 @@ fn detect_contacts_gpu[
                             gj_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = e2_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = e2_y
@@ -1355,7 +1355,7 @@ fn detect_contacts_gpu[
                             gj_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
                         state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
@@ -1385,7 +1385,7 @@ fn detect_contacts_gpu[
                             gj_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = pj_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = pj_y
@@ -1435,7 +1435,7 @@ fn detect_contacts_gpu[
                             gi_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = e1_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = e1_y
@@ -1473,7 +1473,7 @@ fn detect_contacts_gpu[
                             gi_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = e2_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = e2_y
@@ -1514,7 +1514,7 @@ fn detect_contacts_gpu[
                             gi_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
                         state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
@@ -1544,7 +1544,7 @@ fn detect_contacts_gpu[
                             gi_body
                         )
                         state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            -1
+                            0
                         )
                         state[env, c_off + CONTACT_IDX_POS_X] = pi_x
                         state[env, c_off + CONTACT_IDX_POS_Y] = pi_y

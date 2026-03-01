@@ -188,6 +188,8 @@ fn precompute_contact_normal_gpu[
     MAX_EQUALITY: Int = 0,
     COMPUTE_RHS: Bool = False,
     RHS_IDX: Int = 0,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     contact_tid: Int,
@@ -352,7 +354,7 @@ fn precompute_contact_normal_gpu[
             # MuJoCo: R = (1-imp)/imp * diagApprox, inv_K_imp = 1/(K + R)
             # diagApprox = body_invweight0[2*body_a] + body_invweight0[2*body_b]
             comptime bw_off = model_body_invweight0_offset[
-                NBODY, NJOINT, NGEOM, MAX_EQUALITY
+                NBODY, NJOINT, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE
             ]()
             var diag_n: Scalar[DTYPE] = 0
             if body > 0 and body < NBODY:

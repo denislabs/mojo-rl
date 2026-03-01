@@ -10,9 +10,8 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_bias_forces_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs
-from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from gpu import block_idx
@@ -151,8 +150,8 @@ fn bias_forces_kernel[
 fn compare_bias_forces(
     ctx: DeviceContext,
     test_name: String,
-    test_qpos: InlineArray[Float64, NQ],
-    test_qvel: InlineArray[Float64, NV],
+    test_qpos: List[Float64],
+    test_qvel: List[Float64],
     model_cpu: Model[
         DTYPE,
         NQ,
@@ -350,9 +349,13 @@ fn test_default_qpos_zero_vel() raises:
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
 
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = List[Float64](capacity=NQ)
+    for _ in range(NQ):
+        qpos.append(0.0)
     qpos[1] = 0.7
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var qvel = List[Float64](capacity=NV)
+    for _ in range(NV):
+        qvel.append(0.0)
     compare_bias_forces(
         ctx,
         "Default qpos, zero vel (gravity only)",
@@ -397,8 +400,12 @@ fn test_zero_qpos_zero_vel() raises:
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
 
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var qpos = List[Float64](capacity=NQ)
+    for _ in range(NQ):
+        qpos.append(0.0)
+    var qvel = List[Float64](capacity=NV)
+    for _ in range(NV):
+        qvel.append(0.0)
     compare_bias_forces(
         ctx,
         "Zero qpos, zero vel",
@@ -443,7 +450,9 @@ fn test_nonzero_joints_zero_vel() raises:
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
 
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = List[Float64](capacity=NQ)
+    for _ in range(NQ):
+        qpos.append(0.0)
     qpos[0] = 1.0
     qpos[1] = 0.7
     qpos[2] = 0.3
@@ -453,7 +462,9 @@ fn test_nonzero_joints_zero_vel() raises:
     qpos[6] = 0.6
     qpos[7] = -0.8
     qpos[8] = 0.3
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var qvel = List[Float64](capacity=NV)
+    for _ in range(NV):
+        qvel.append(0.0)
     compare_bias_forces(
         ctx,
         "Non-zero joints, zero vel",
@@ -498,12 +509,16 @@ fn test_nonzero_vel_gravity_coriolis() raises:
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
 
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = List[Float64](capacity=NQ)
+    for _ in range(NQ):
+        qpos.append(0.0)
     qpos[1] = 0.7
     qpos[2] = 0.1
     qpos[3] = -0.3
     qpos[6] = 0.4
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var qvel = List[Float64](capacity=NV)
+    for _ in range(NV):
+        qvel.append(0.0)
     qvel[0] = 2.0
     qvel[2] = 0.5
     qvel[3] = -1.0
@@ -554,11 +569,15 @@ fn test_extreme_velocities() raises:
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
 
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = List[Float64](capacity=NQ)
+    for _ in range(NQ):
+        qpos.append(0.0)
     qpos[1] = 0.7
     qpos[3] = -0.52
     qpos[6] = -1.0
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var qvel = List[Float64](capacity=NV)
+    for _ in range(NV):
+        qvel.append(0.0)
     qvel[0] = 5.0
     qvel[1] = -2.0
     qvel[2] = 3.0
@@ -584,4 +603,9 @@ fn test_extreme_velocities() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_default_qpos_zero_vel()
+    test_zero_qpos_zero_vel()
+    test_nonzero_joints_zero_vel()
+    test_nonzero_vel_gravity_coriolis()
+    test_extreme_velocities()
+    print("All bias forces CPU vs GPU tests passed.")

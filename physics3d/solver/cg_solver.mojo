@@ -694,6 +694,8 @@ struct CGSolver(ConstraintSolver):
                 MAX_EQUALITY,
                 COMPUTE_RHS=False,
                 RHS_IDX=0,
+                MAX_TENDON=MAX_TENDON,
+                NSITE=NSITE,
             ](
                 env,
                 contact_tid,

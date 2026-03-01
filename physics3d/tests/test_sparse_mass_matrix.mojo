@@ -61,7 +61,7 @@ comptime TOL: Float64 = 1e-12
 # =============================================================================
 
 
-fn test_sparse_pattern(
+fn check_sparse_pattern(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]
 ) raises:
     """Verify: actual_nnz == count_sparse_nnz, all positions in lower triangle,
@@ -106,7 +106,7 @@ fn test_sparse_pattern(
 # =============================================================================
 
 
-fn test_sparse_values_match_dense(
+fn check_sparse_values_match_dense(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
@@ -149,7 +149,7 @@ fn test_sparse_values_match_dense(
     var M_from_sparse = List[Scalar[DTYPE]](capacity=M_SIZE)
     for _ in range(M_SIZE):
         M_from_sparse.append(Scalar[DTYPE](0))
-    sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_from_sparse)
+    sparse_to_dense[DTYPE, NV, NM](sM, M_from_sparse)
 
     # Compare lower triangle (upper is symmetric copy)
     var max_err: Float64 = 0.0
@@ -181,7 +181,7 @@ fn test_sparse_values_match_dense(
 # =============================================================================
 
 
-fn test_sparse_solve_matches_dense(
+fn check_sparse_solve_matches_dense(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
@@ -261,7 +261,7 @@ fn test_sparse_solve_matches_dense(
             x_sparse.append(Scalar[DTYPE](0))
 
         ldl_solve[DTYPE, NV](L, D, b, x_dense)
-        ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, b, x_sparse)
+        ldl_solve_sparse[DTYPE, NV, NM](sM, b, x_sparse)
 
         for i in range(NV):
             var err = abs(Float64(x_dense[i]) - Float64(x_sparse[i]))
@@ -289,7 +289,7 @@ fn test_sparse_solve_matches_dense(
 # =============================================================================
 
 
-fn test_sparse_solve_residual(
+fn check_sparse_solve_residual(
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
@@ -327,7 +327,7 @@ fn test_sparse_solve_residual(
     var M_dense = List[Scalar[DTYPE]](capacity=M_SIZE)
     for _ in range(M_SIZE):
         M_dense.append(Scalar[DTYPE](0))
-    sparse_to_dense[DTYPE, NV, NM, M_SIZE](sM, M_dense)
+    sparse_to_dense[DTYPE, NV, NM](sM, M_dense)
 
     ldl_factor_sparse[DTYPE, NV, NM](sM)
 
@@ -340,7 +340,7 @@ fn test_sparse_solve_residual(
     var x = List[Scalar[DTYPE]](capacity=V_SIZE)
     for _ in range(V_SIZE):
         x.append(Scalar[DTYPE](0))
-    ldl_solve_sparse[DTYPE, NV, NM, V_SIZE](sM, b, x)
+    ldl_solve_sparse[DTYPE, NV, NM](sM, b, x)
 
     # Compute residual r = M * x - b
     var max_res: Float64 = 0.0
@@ -377,14 +377,14 @@ fn test_sparse_mass_matrix_all() raises:
     HalfCheetahModel.setup_model_and_data[DTYPE](model, _setup_data)
 
     # --- Pattern test ---
-    test_sparse_pattern(model)
+    check_sparse_pattern(model)
     print()
 
     # --- Sparse values == dense values ---
     var qpos_default = InlineArray[Float64, NQ](fill=0.0)
     qpos_default[1] = 0.7
 
-    test_sparse_values_match_dense(model, "default qpos", qpos_default)
+    check_sparse_values_match_dense(model, "default qpos", qpos_default)
     print()
 
     var qpos_joints = InlineArray[Float64, NQ](fill=0.0)
@@ -398,21 +398,21 @@ fn test_sparse_mass_matrix_all() raises:
     qpos_joints[7] = -0.8
     qpos_joints[8] = 0.3
 
-    test_sparse_values_match_dense(model, "non-zero joints", qpos_joints)
+    check_sparse_values_match_dense(model, "non-zero joints", qpos_joints)
     print()
 
     # --- Sparse LDL solve == Dense LDL solve ---
-    test_sparse_solve_matches_dense(model, "default qpos", qpos_default)
+    check_sparse_solve_matches_dense(model, "default qpos", qpos_default)
     print()
 
-    test_sparse_solve_matches_dense(model, "non-zero joints", qpos_joints)
+    check_sparse_solve_matches_dense(model, "non-zero joints", qpos_joints)
     print()
 
     # --- Residual test ---
-    test_sparse_solve_residual(model, "default qpos", qpos_default)
+    check_sparse_solve_residual(model, "default qpos", qpos_default)
     print()
 
-    test_sparse_solve_residual(model, "non-zero joints", qpos_joints)
+    check_sparse_solve_residual(model, "non-zero joints", qpos_joints)
     print()
 
     print("=" * 60)

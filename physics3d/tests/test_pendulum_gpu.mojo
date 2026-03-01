@@ -12,7 +12,7 @@ Run with:
     pixi run -e apple mojo run physics3d/tests/test_pendulum_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import sqrt, sin, cos, pi
 from gpu.host import DeviceContext, DeviceBuffer
 
@@ -95,13 +95,18 @@ fn test_pendulum_gpu() raises:
     # Set body properties
     model.set_body(
         1,
+        name="bob",
         mass=Scalar[DTYPE](mass),
         inertia=(Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm)),
     )
     model.set_body_parent(1, 0)  # Parent is worldbody
     model.set_body_local_frame(
         1,
-        pos=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](-L)),
+        pos=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](0.0)),
+    )
+    model.set_body_ipos_iquat(
+        1,
+        ipos=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](-L)),
     )
 
     # Add hinge joint at origin with Y axis
@@ -303,7 +308,7 @@ fn test_pendulum_gpu() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_pendulum_gpu()
 
 
 fn abs_f32(x: Float32) -> Float32:

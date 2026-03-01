@@ -17,14 +17,20 @@ Run with:
 """
 
 from physics3d.constraints.constraint_data import ConstraintData, ConstraintRow
-from physics3d.solver.island_detection import detect_islands, IslandData, MAX_ISLANDS
-from testing import assert_true, TestSuite
+from physics3d.solver.island_detection import (
+    detect_islands,
+    IslandData,
+    MAX_ISLANDS,
+)
+from testing import assert_true
 
 
 # ---------------------------------------------------------------------------
 # Helper: set one Jacobian entry in-place
 # ---------------------------------------------------------------------------
-fn set_j[DTYPE: DType, MAX_ROWS: Int, NV: Int](
+fn set_j[
+    DTYPE: DType, MAX_ROWS: Int, NV: Int
+](
     mut cd: ConstraintData[DTYPE, MAX_ROWS, NV],
     row: Int,
     dof: Int,
@@ -44,7 +50,11 @@ fn test_no_constraints() raises:
     var islands = detect_islands[DType.float64, 4, 4](cd)
     if islands.num_islands != 0:
         print("FAIL (got", islands.num_islands, "islands)")
-        assert_true(False, "No constraints test failed: expected 0 islands, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "No constraints test failed: expected 0 islands, got "
+            + String(islands.num_islands),
+        )
     print("PASS")
 
 
@@ -67,12 +77,21 @@ fn test_single_island() raises:
     var islands = detect_islands[DType.float64, 8, 4](cd)
     if islands.num_islands != 1:
         print("FAIL (got", islands.num_islands, "islands)")
-        assert_true(False, "Single island test failed: expected 1 island, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Single island test failed: expected 1 island, got "
+            + String(islands.num_islands),
+        )
     # All rows must be in island 0
     for r in range(3):
         if islands.row_island[r] != 0:
             print("FAIL: row", r, "in island", islands.row_island[r])
-            assert_true(False, "Single island test failed: row " + String(r) + " not in island 0")
+            assert_true(
+                False,
+                "Single island test failed: row "
+                + String(r)
+                + " not in island 0",
+            )
     print("PASS")
 
 
@@ -100,7 +119,11 @@ fn test_two_islands() raises:
     var islands = detect_islands[DType.float64, 8, 6](cd)
     if islands.num_islands != 2:
         print("FAIL (got", islands.num_islands, "islands)")
-        assert_true(False, "Two islands test failed: expected 2 islands, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Two islands test failed: expected 2 islands, got "
+            + String(islands.num_islands),
+        )
 
     # Rows 0,1 must share an island; rows 2,3 must share a different island
     var ia = islands.row_island[0]
@@ -110,7 +133,10 @@ fn test_two_islands() raises:
         assert_true(False, "Two islands test failed: negative island id")
     if ia == ib:
         print("FAIL: both groups in same island", ia)
-        assert_true(False, "Two islands test failed: both groups in same island " + String(ia))
+        assert_true(
+            False,
+            "Two islands test failed: both groups in same island " + String(ia),
+        )
     if islands.row_island[1] != ia:
         print("FAIL: row 1 not in island A")
         assert_true(False, "Two islands test failed: row 1 not in island A")
@@ -119,18 +145,34 @@ fn test_two_islands() raises:
         assert_true(False, "Two islands test failed: row 3 not in island B")
     # DOF counts
     if islands.island_num_dofs[ia] != 3:
-        print("FAIL: island A has", islands.island_num_dofs[ia], "DOFs (want 3)")
-        assert_true(False, "Two islands test failed: island A has wrong DOF count")
+        print(
+            "FAIL: island A has", islands.island_num_dofs[ia], "DOFs (want 3)"
+        )
+        assert_true(
+            False, "Two islands test failed: island A has wrong DOF count"
+        )
     if islands.island_num_dofs[ib] != 3:
-        print("FAIL: island B has", islands.island_num_dofs[ib], "DOFs (want 3)")
-        assert_true(False, "Two islands test failed: island B has wrong DOF count")
+        print(
+            "FAIL: island B has", islands.island_num_dofs[ib], "DOFs (want 3)"
+        )
+        assert_true(
+            False, "Two islands test failed: island B has wrong DOF count"
+        )
     # Row counts
     if islands.island_num_rows[ia] != 2:
-        print("FAIL: island A has", islands.island_num_rows[ia], "rows (want 2)")
-        assert_true(False, "Two islands test failed: island A has wrong row count")
+        print(
+            "FAIL: island A has", islands.island_num_rows[ia], "rows (want 2)"
+        )
+        assert_true(
+            False, "Two islands test failed: island A has wrong row count"
+        )
     if islands.island_num_rows[ib] != 2:
-        print("FAIL: island B has", islands.island_num_rows[ib], "rows (want 2)")
-        assert_true(False, "Two islands test failed: island B has wrong row count")
+        print(
+            "FAIL: island B has", islands.island_num_rows[ib], "rows (want 2)"
+        )
+        assert_true(
+            False, "Two islands test failed: island B has wrong row count"
+        )
     print("PASS")
 
 
@@ -150,7 +192,11 @@ fn test_three_islands() raises:
     var islands = detect_islands[DType.float64, 4, 6](cd)
     if islands.num_islands != 3:
         print("FAIL (got", islands.num_islands, "islands)")
-        assert_true(False, "Three islands test failed: expected 3 islands, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Three islands test failed: expected 3 islands, got "
+            + String(islands.num_islands),
+        )
     # Each row is in a distinct island
     var i0 = islands.row_island[0]
     var i1 = islands.row_island[1]
@@ -160,7 +206,9 @@ fn test_three_islands() raises:
         assert_true(False, "Three islands test failed: negative island id")
     if i0 == i1 or i0 == i2 or i1 == i2:
         print("FAIL: rows share islands unexpectedly:", i0, i1, i2)
-        assert_true(False, "Three islands test failed: rows share islands unexpectedly")
+        assert_true(
+            False, "Three islands test failed: rows share islands unexpectedly"
+        )
     print("PASS")
 
 
@@ -184,10 +232,16 @@ fn test_chain_merges() raises:
     var islands = detect_islands[DType.float64, 4, 4](cd)
     if islands.num_islands != 1:
         print("FAIL (got", islands.num_islands, "islands)")
-        assert_true(False, "Chain merges test failed: expected 1 island, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Chain merges test failed: expected 1 island, got "
+            + String(islands.num_islands),
+        )
     if islands.row_island[0] != islands.row_island[1]:
         print("FAIL: rows 0 and 1 in different islands")
-        assert_true(False, "Chain merges test failed: rows 0 and 1 in different islands")
+        assert_true(
+            False, "Chain merges test failed: rows 0 and 1 in different islands"
+        )
     print("PASS")
 
 
@@ -206,17 +260,33 @@ fn test_unconstrained_dofs() raises:
     var islands = detect_islands[DType.float64, 4, 4](cd)
     if islands.num_islands != 1:
         print("FAIL: expected 1 island, got", islands.num_islands)
-        assert_true(False, "Unconstrained DOFs test failed: expected 1 island, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Unconstrained DOFs test failed: expected 1 island, got "
+            + String(islands.num_islands),
+        )
     if islands.dof_island[0] < 0 or islands.dof_island[1] < 0:
         print("FAIL: touched DOFs have negative island id")
-        assert_true(False, "Unconstrained DOFs test failed: touched DOFs have negative island id")
+        assert_true(
+            False,
+            (
+                "Unconstrained DOFs test failed: touched DOFs have negative"
+                " island id"
+            ),
+        )
     if islands.dof_island[2] != -1 or islands.dof_island[3] != -1:
         print(
             "FAIL: free DOFs should be -1, got",
             islands.dof_island[2],
             islands.dof_island[3],
         )
-        assert_true(False, "Unconstrained DOFs test failed: free DOFs should have dof_island == -1")
+        assert_true(
+            False,
+            (
+                "Unconstrained DOFs test failed: free DOFs should have"
+                " dof_island == -1"
+            ),
+        )
     print("PASS")
 
 
@@ -235,12 +305,27 @@ fn test_negative_j() raises:
     var islands = detect_islands[DType.float64, 4, 4](cd)
     if islands.num_islands != 1:
         print("FAIL: expected 1 island, got", islands.num_islands)
-        assert_true(False, "Negative J test failed: expected 1 island, got " + String(islands.num_islands))
+        assert_true(
+            False,
+            "Negative J test failed: expected 1 island, got "
+            + String(islands.num_islands),
+        )
     if islands.dof_island[0] != islands.dof_island[1]:
         print("FAIL: DOFs 0 and 1 in different islands")
-        assert_true(False, "Negative J test failed: DOFs 0 and 1 should be in the same island")
+        assert_true(
+            False,
+            "Negative J test failed: DOFs 0 and 1 should be in the same island",
+        )
     print("PASS")
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    # TestSuite.discover_tests[__functions_in_module()]().run()
+    test_no_constraints()
+    test_single_island()
+    test_two_islands()
+    test_three_islands()
+    test_chain_merges()
+    test_unconstrained_dofs()
+    test_negative_j()
+    print("All island detection tests passed.")

@@ -10,7 +10,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_contacts_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true, TestSuite
+from testing import assert_true
 from math import abs, sqrt
 from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -401,4 +401,10 @@ fn test_tilted() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_high_above_ground()
+    test_default_pose()
+    test_low_static()
+    test_very_low()
+    test_bent_legs()
+    test_tilted()
+    print("All contacts CPU vs GPU tests passed.")

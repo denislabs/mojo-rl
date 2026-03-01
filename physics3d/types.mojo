@@ -354,7 +354,7 @@ struct Model[
 
     # Fluid dynamics options (MuJoCo option.density / option.viscosity)
     # Set to 0 (default) to disable fluid forces.
-    var opt_density: Scalar[Self.DTYPE]    # Fluid mass density (kg/m³)
+    var opt_density: Scalar[Self.DTYPE]  # Fluid mass density (kg/m³)
     var opt_viscosity: Scalar[Self.DTYPE]  # Fluid dynamic viscosity (Pa·s)
 
     # MuJoCo solref/solimp impedance parameters (contact)
@@ -368,7 +368,9 @@ struct Model[
     var solref_limit: InlineArray[
         Scalar[Self.DTYPE], 2
     ]  # [timeconst, dampratio]
-    var solimp_limit: InlineArray[Scalar[Self.DTYPE], 5]  # [dmin, dmax, width, midpoint, power]
+    var solimp_limit: InlineArray[
+        Scalar[Self.DTYPE], 5
+    ]  # [dmin, dmax, width, midpoint, power]
 
     # Per-body properties (heap-allocated for scalability to large models)
     var body_mass: List[Scalar[Self.DTYPE]]
@@ -495,7 +497,9 @@ struct Model[
         self.body_name = List[String](capacity=Self.NBODY)
         self.body_inv_mass = List[Scalar[Self.DTYPE]](capacity=Self.NBODY)
         self.body_inertia = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
-        self.body_inv_inertia = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.body_inv_inertia = List[Scalar[Self.DTYPE]](
+            capacity=Self.NBODY * 3
+        )
         self.body_pos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.body_quat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.body_ipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
@@ -542,10 +546,18 @@ struct Model[
         self.geom_rbound = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_margin = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_mass = List[Scalar[Self.DTYPE]](capacity=ngeom)
-        self.geom_pos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 3]())
-        self.geom_quat = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 4]())
-        self.geom_solref = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 2]())
-        self.geom_solimp = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NGEOM * 5]())
+        self.geom_pos = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NGEOM * 3]()
+        )
+        self.geom_quat = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NGEOM * 4]()
+        )
+        self.geom_solref = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NGEOM * 2]()
+        )
+        self.geom_solimp = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NGEOM * 5]()
+        )
         for _ in range(ngeom):
             self.geom_type.append(0)
             self.geom_body.append(0)
@@ -575,14 +587,20 @@ struct Model[
         # Initialize site arrays
         var nsite = _max_one[Self.NSITE]()
         self.site_body = List[Int](capacity=nsite)
-        self.site_pos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NSITE * 3]())
+        self.site_pos = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NSITE * 3]()
+        )
         for _ in range(nsite):
             self.site_body.append(0)
         for _ in range(_max_one[Self.NSITE * 3]()):
             self.site_pos.append(Scalar[Self.DTYPE](0))
 
-        self.joint_solref_limit = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NJOINT * 2]())
-        self.joint_solimp_limit = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NJOINT * 5]())
+        self.joint_solref_limit = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NJOINT * 2]()
+        )
+        self.joint_solimp_limit = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NJOINT * 5]()
+        )
         for _ in range(_max_one[Self.NJOINT * 2]()):
             self.joint_solref_limit.append(Scalar[Self.DTYPE](0))
         for _ in range(_max_one[Self.NJOINT * 5]()):
@@ -1137,12 +1155,12 @@ struct Data[
     var qacc_warmstart: List[Scalar[Self.DTYPE]]  # NV
 
     # Computed world-space state (via forward kinematics)
-    var xpos: List[Scalar[Self.DTYPE]]   # NBODY * 3
+    var xpos: List[Scalar[Self.DTYPE]]  # NBODY * 3
     var xquat: List[Scalar[Self.DTYPE]]  # NBODY * 4
     var xipos: List[Scalar[Self.DTYPE]]  # NBODY * 3 — CoM world position
 
     # Computed world-space velocities (for collision response)
-    var xvel: List[Scalar[Self.DTYPE]]     # NBODY * 3 — linear
+    var xvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — linear
     var xangvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — angular
 
     # Contacts — heap-allocated
@@ -1204,7 +1222,9 @@ struct Data[
         self.num_contacts = 0
 
         # Site world positions
-        self.site_xpos = List[Scalar[Self.DTYPE]](capacity=_max_one[Self.NSITE * 3]())
+        self.site_xpos = List[Scalar[Self.DTYPE]](
+            capacity=_max_one[Self.NSITE * 3]()
+        )
         for _ in range(_max_one[Self.NSITE * 3]()):
             self.site_xpos.append(Scalar[Self.DTYPE](0))
 
