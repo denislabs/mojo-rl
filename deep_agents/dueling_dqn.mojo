@@ -39,7 +39,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq
+from deep_rl.model import Linear, LinearReLU, Sequential
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
@@ -86,103 +86,45 @@ struct DuelingDQNAgent[
     comptime STREAM_H = Self.stream_hidden_dim
     comptime BATCH = Self.batch_size
 
-    # Cache sizes for networks
-    # Backbone: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h]
-    # Cache: OBS + HIDDEN + HIDDEN + HIDDEN
-    comptime BACKBONE_CACHE_SIZE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
-    # Value head: Linear[h, stream_h] + ReLU[stream_h] + Linear[stream_h, 1]
-    # Cache: HIDDEN + STREAM_H + STREAM_H
-    comptime VALUE_CACHE_SIZE: Int = Self.HIDDEN + Self.STREAM_H + Self.STREAM_H
-
-    # Advantage head: Linear[h, stream_h] + ReLU[stream_h] + Linear[stream_h, num_actions]
-    # Cache: HIDDEN + STREAM_H + STREAM_H
-    comptime ADV_CACHE_SIZE: Int = Self.HIDDEN + Self.STREAM_H + Self.STREAM_H
-
     # =========================================================================
-    # Online Networks
+    # Network type aliases
     # =========================================================================
 
     # Shared backbone: obs -> hidden (ReLU) -> hidden (ReLU)
-    var backbone: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-            )
-        ),
+    comptime BackboneNetwork = Network[
+        Sequential[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        ],
         Adam,
         Kaiming,
     ]
+    var backbone: Self.BackboneNetwork
+    var backbone_target: Self.BackboneNetwork
 
     # Value head: hidden -> stream_hidden (ReLU) -> 1
-    var value_head: Network[
-        type_of(
-            seq(
-                Linear[Self.HIDDEN, Self.STREAM_H](),
-                ReLU[Self.STREAM_H](),
-                Linear[Self.STREAM_H, 1](),
-            )
-        ),
+    comptime ValueNetwork = Network[
+        Sequential[
+            LinearReLU[Self.HIDDEN, Self.STREAM_H],
+            Linear[Self.STREAM_H, 1],
+        ],
         Adam,
         Kaiming,
     ]
+    var value_head: Self.ValueNetwork
+    var value_head_target: Self.ValueNetwork
 
     # Advantage head: hidden -> stream_hidden (ReLU) -> num_actions
-    var advantage_head: Network[
-        type_of(
-            seq(
-                Linear[Self.HIDDEN, Self.STREAM_H](),
-                ReLU[Self.STREAM_H](),
-                Linear[Self.STREAM_H, Self.ACTIONS](),
-            )
-        ),
+    comptime AdvantageNetwork = Network[
+        Sequential[
+            LinearReLU[Self.HIDDEN, Self.STREAM_H],
+            Linear[Self.STREAM_H, Self.ACTIONS],
+        ],
         Adam,
         Kaiming,
     ]
-
-    # =========================================================================
-    # Target Networks
-    # =========================================================================
-
-    var backbone_target: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
-
-    var value_head_target: Network[
-        type_of(
-            seq(
-                Linear[Self.HIDDEN, Self.STREAM_H](),
-                ReLU[Self.STREAM_H](),
-                Linear[Self.STREAM_H, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
-
-    var advantage_head_target: Network[
-        type_of(
-            seq(
-                Linear[Self.HIDDEN, Self.STREAM_H](),
-                ReLU[Self.STREAM_H](),
-                Linear[Self.STREAM_H, Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var advantage_head: Self.AdvantageNetwork
+    var advantage_head_target: Self.AdvantageNetwork
 
     # Replay buffer (action_dim=1 for discrete actions stored as scalar)
     var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
@@ -218,37 +160,15 @@ struct DuelingDQNAgent[
             epsilon_min: Minimum exploration rate (default: 0.01).
             epsilon_decay: Epsilon decay per episode (default: 0.995).
         """
-        # Build models
-        var backbone_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-        )
-
-        var value_model = seq(
-            Linear[Self.HIDDEN, Self.STREAM_H](),
-            ReLU[Self.STREAM_H](),
-            Linear[Self.STREAM_H, 1](),
-        )
-
-        var advantage_model = seq(
-            Linear[Self.HIDDEN, Self.STREAM_H](),
-            ReLU[Self.STREAM_H](),
-            Linear[Self.STREAM_H, Self.ACTIONS](),
-        )
-
         # Initialize online networks
-        self.backbone = Network(backbone_model, Adam(lr=lr), Kaiming())
-        self.value_head = Network(value_model, Adam(lr=lr), Kaiming())
-        self.advantage_head = Network(advantage_model, Adam(lr=lr), Kaiming())
+        self.backbone = Self.BackboneNetwork(Adam(lr=lr), Kaiming())
+        self.value_head = Self.ValueNetwork(Adam(lr=lr), Kaiming())
+        self.advantage_head = Self.AdvantageNetwork(Adam(lr=lr), Kaiming())
 
         # Initialize target networks
-        self.backbone_target = Network(backbone_model, Adam(lr=lr), Kaiming())
-        self.value_head_target = Network(value_model, Adam(lr=lr), Kaiming())
-        self.advantage_head_target = Network(
-            advantage_model, Adam(lr=lr), Kaiming()
-        )
+        self.backbone_target = Self.BackboneNetwork(Adam(lr=lr), Kaiming())
+        self.value_head_target = Self.ValueNetwork(Adam(lr=lr), Kaiming())
+        self.advantage_head_target = Self.AdvantageNetwork(Adam(lr=lr), Kaiming())
 
         # Copy weights to target networks
         self.backbone_target.copy_params_from(self.backbone)
@@ -478,7 +398,7 @@ struct DuelingDQNAgent[
             uninitialized=True
         )
         var backbone_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.BACKBONE_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.BackboneNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.backbone.forward_with_cache[Self.BATCH](
             batch_obs, h2, backbone_cache
@@ -487,7 +407,7 @@ struct DuelingDQNAgent[
         # Value head forward with cache
         var value = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         var value_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.VALUE_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.ValueNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.value_head.forward_with_cache[Self.BATCH](h2, value, value_cache)
 
@@ -496,7 +416,7 @@ struct DuelingDQNAgent[
             uninitialized=True
         )
         var adv_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ADV_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.AdvantageNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.advantage_head.forward_with_cache[Self.BATCH](
             h2, advantage, adv_cache
@@ -617,15 +537,15 @@ struct DuelingDQNAgent[
         if self.epsilon < self.epsilon_min:
             self.epsilon = self.epsilon_min
 
-    fn _list_to_inline(
-        self, obs_list: List[Float64]
+    fn _list_to_inline[T: DType](
+        self, obs_list: List[Scalar[T]]
     ) -> InlineArray[Scalar[dtype], Self.OBS]:
-        """Convert List[Float64] to InlineArray."""
+        """Convert List[Scalar[T]] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
         for i in range(Self.OBS):
             if i < len(obs_list):
                 obs[i] = Scalar[dtype](obs_list[i])
-        return obs
+        return obs^
 
     fn get_epsilon(self) -> Float64:
         """Get current exploration rate."""
@@ -688,9 +608,9 @@ struct DuelingDQNAgent[
             var done = result[2]
 
             var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(warmup_obs, action, reward, next_obs, done)
+            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
 
-            warmup_obs = next_obs
+            warmup_obs = next_obs^
             warmup_count += 1
 
             if done:
@@ -724,14 +644,14 @@ struct DuelingDQNAgent[
                 var next_obs = self._list_to_inline(next_obs_list)
 
                 # Store transition
-                self.store_transition(obs, action, reward, next_obs, done)
+                self.store_transition(obs, action, Float64(reward), next_obs, done)
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:
                     _ = self.train_step()
 
-                episode_reward += reward
-                obs = next_obs
+                episode_reward += Float64(reward)
+                obs = next_obs^
                 total_train_steps += 1
                 episode_steps += 1
 
@@ -818,7 +738,7 @@ struct DuelingDQNAgent[
                         quit_requested = True
                         break
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 obs = self._list_to_inline(next_obs_list)
                 episode_steps += 1
 

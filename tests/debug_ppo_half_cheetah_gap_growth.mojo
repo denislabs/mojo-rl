@@ -16,7 +16,7 @@ from gpu.host import DeviceContext
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.half_cheetah import (
     HalfCheetah,
-    HalfCheetahParams,
+    HalfCheetahConfig,
     HalfCheetahCurriculum,
 )
 from deep_rl import dtype as gpu_dtype
@@ -26,9 +26,8 @@ from deep_rl import dtype as gpu_dtype
 # Constants (matching test_ppo_half_cheetah_continuous_gpu.mojo)
 # =============================================================================
 
-comptime C = HalfCheetahParams[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 17
-comptime ACTION_DIM = C.ACTION_DIM  # 6
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256
@@ -141,7 +140,7 @@ fn main() raises:
             )
 
             var metrics = agent.train_gpu[
-                HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=False],
                 HalfCheetahCurriculum,
             ](
                 ctx,

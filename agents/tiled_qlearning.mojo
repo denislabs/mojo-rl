@@ -45,7 +45,7 @@ struct TiledQLearningAgent:
     where n = number of tilings (active tiles per state).
     """
 
-    var weights: TiledWeights
+    var weights: TiledWeights[DType.float64]
     var num_actions: Int
     var num_tilings: Int
     var learning_rate: Float64
@@ -56,7 +56,7 @@ struct TiledQLearningAgent:
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -79,7 +79,7 @@ struct TiledQLearningAgent:
         """
         self.num_actions = num_actions
         self.num_tilings = tile_coding.get_num_tilings()
-        self.weights = TiledWeights(
+        self.weights = TiledWeights[DType.float64](
             num_tiles=tile_coding.get_num_tiles(),
             num_actions=num_actions,
             init_value=init_value,
@@ -188,7 +188,7 @@ struct TiledQLearningAgent:
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -215,25 +215,25 @@ struct TiledQLearningAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles(next_obs)
-                self.update(tiles, action, reward, next_tiles, done)
+                var next_obs_f64 = _obs_to_f64(result[0])
+                var next_tiles = tile_coding.get_tiles(next_obs_f64)
+                self.update(tiles, action, Float64(reward), next_tiles, done)
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
 
                 if done:
                     break
@@ -251,7 +251,7 @@ struct TiledQLearningAgent:
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -280,15 +280,14 @@ struct TiledQLearningAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -299,8 +298,8 @@ struct TiledQLearningAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _obs_to_f64(result[0])^
 
                 if done:
                     break
@@ -320,7 +319,7 @@ struct TiledSARSAAgent:
     Q(s, a) += α * (r + γ * Q(s', a') - Q(s, a))
     """
 
-    var weights: TiledWeights
+    var weights: TiledWeights[DType.float64]
     var num_actions: Int
     var num_tilings: Int
     var learning_rate: Float64
@@ -331,7 +330,7 @@ struct TiledSARSAAgent:
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -343,7 +342,7 @@ struct TiledSARSAAgent:
         """Initialize tiled SARSA agent."""
         self.num_actions = num_actions
         self.num_tilings = tile_coding.get_num_tilings()
-        self.weights = TiledWeights(
+        self.weights = TiledWeights[DType.float64](
             num_tiles=tile_coding.get_num_tiles(),
             num_actions=num_actions,
             init_value=init_value,
@@ -415,7 +414,7 @@ struct TiledSARSAAgent:
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -442,29 +441,29 @@ struct TiledSARSAAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
-            var action = self.select_action(tile_coding.get_tiles(obs))
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
+            var action = self.select_action(tile_coding.get_tiles(obs_f64))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles(next_obs)
+                var next_obs_f64 = _obs_to_f64(result[0])
+                var next_tiles = tile_coding.get_tiles(next_obs_f64)
                 var next_action = self.select_action(next_tiles)
 
                 self.update(
-                    tiles, action, reward, next_tiles, next_action, done
+                    tiles, action, Float64(reward), next_tiles, next_action, done
                 )
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
                 action = next_action
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
 
                 if done:
                     break
@@ -482,7 +481,7 @@ struct TiledSARSAAgent:
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -511,15 +510,14 @@ struct TiledSARSAAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -530,8 +528,8 @@ struct TiledSARSAAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _obs_to_f64(result[0])^
 
                 if done:
                     break
@@ -551,7 +549,7 @@ struct TiledSARSALambdaAgent:
     Uses replacing traces (set to 1 when visited, decay otherwise).
     """
 
-    var weights: TiledWeights
+    var weights: TiledWeights[DType.float64]
     var traces: List[List[Float64]]  # Eligibility traces [action][tile]
     var num_actions: Int
     var num_tiles: Int
@@ -565,7 +563,7 @@ struct TiledSARSALambdaAgent:
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -591,7 +589,7 @@ struct TiledSARSALambdaAgent:
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
         self.num_tilings = tile_coding.get_num_tilings()
-        self.weights = TiledWeights(
+        self.weights = TiledWeights[DType.float64](
             num_tiles=self.num_tiles,
             num_actions=num_actions,
             init_value=init_value,
@@ -692,7 +690,7 @@ struct TiledSARSALambdaAgent:
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -720,29 +718,29 @@ struct TiledSARSALambdaAgent:
 
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
-            var obs = env.reset_obs_list()
-            var action = self.select_action(tile_coding.get_tiles(obs))
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
+            var action = self.select_action(tile_coding.get_tiles(obs_f64))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles(next_obs)
+                var next_obs_f64 = _obs_to_f64(result[0])
+                var next_tiles = tile_coding.get_tiles(next_obs_f64)
                 var next_action = self.select_action(next_tiles)
 
                 self.update(
-                    tiles, action, reward, next_tiles, next_action, done
+                    tiles, action, Float64(reward), next_tiles, next_action, done
                 )
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
                 action = next_action
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
 
                 if done:
                     break
@@ -760,7 +758,7 @@ struct TiledSARSALambdaAgent:
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -789,15 +787,14 @@ struct TiledSARSALambdaAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -808,8 +805,8 @@ struct TiledSARSALambdaAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _obs_to_f64(result[0])^
 
                 if done:
                     break
@@ -820,3 +817,11 @@ struct TiledSARSALambdaAgent:
             env.close_renderer()
 
         return total_reward / Float64(num_episodes)
+
+
+fn _obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+    """Convert observation list to Float64."""
+    var result = List[Scalar[DType.float64]](capacity=len(obs))
+    for i in range(len(obs)):
+        result.append(Scalar[DType.float64](obs[i]))
+    return result^

@@ -7,7 +7,7 @@ This module defines a modular renderer design where:
 
 Usage:
     # Create renderer externally
-    var renderer = HalfCheetah3DRenderer(width=1024, height=576)
+    var renderer = HalfCheetahRenderer(width=1024, height=576)
     renderer.init()
 
     # In evaluation loop, pass renderer by ref

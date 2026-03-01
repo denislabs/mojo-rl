@@ -84,7 +84,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_half_cheetah.ckpt")
+        agent.load_checkpoint("ppo_half_cheetah_backup.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")

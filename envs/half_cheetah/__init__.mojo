@@ -24,28 +24,5 @@ Example usage:
 from .half_cheetah import HalfCheetah
 from .curriculum import HalfCheetahCurriculum
 from .half_cheetah_xml import HalfCheetahModel
-from .half_cheetah_def import (
-    # Params struct
-    HalfCheetahParams,
-    HalfCheetahParamsCPU,
-    HalfCheetahParamsGPU,
-    # Body indices
-    BODY_TORSO,
-    BODY_BTHIGH,
-    BODY_BSHIN,
-    BODY_BFOOT,
-    BODY_FTHIGH,
-    BODY_FSHIN,
-    BODY_FFOOT,
-    # Joint indices
-    JOINT_ROOTX,
-    JOINT_ROOTZ,
-    JOINT_ROOTY,
-    JOINT_BTHIGH,
-    JOINT_BSHIN,
-    JOINT_BFOOT,
-    JOINT_FTHIGH,
-    JOINT_FSHIN,
-    JOINT_FFOOT,
-)
+
 from .half_cheetah_config import HalfCheetahConfig

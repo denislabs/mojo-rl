@@ -76,7 +76,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         actor_lr: Float64 = 0.001,
         critic_lr: Float64 = 0.01,
@@ -296,7 +296,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -324,21 +324,21 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
                 self.update(tiles, action, reward, next_tiles, done)
 
                 total_reward += reward
@@ -360,7 +360,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -390,16 +390,16 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
                 break
 
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -453,7 +453,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         actor_lr: Float64 = 0.001,
         critic_lr: Float64 = 0.01,
@@ -721,7 +721,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -750,21 +750,21 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
                 self.update(tiles, action, reward, next_tiles, done)
 
                 total_reward += reward
@@ -786,7 +786,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -816,16 +816,16 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 break
 
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
                 var done = result[2]
 
@@ -881,7 +881,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         actor_lr: Float64 = 0.001,
         critic_lr: Float64 = 0.01,
@@ -1176,7 +1176,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
@@ -1205,23 +1205,23 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         for episode in range(num_episodes):
             self.reset()  # Clear buffer
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
                 var done = result[2]
 
                 self.store_transition(tiles, action, reward)
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
                 self.update(next_tiles, done)
 
                 total_reward += reward
@@ -1243,7 +1243,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding[E.dtype],
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 10,
         max_steps: Int = 500,
         render: Bool = False,
@@ -1273,16 +1273,16 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 break
 
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4[E.dtype](obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
+                var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -1313,7 +1313,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 
 
 fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
-    """Convert a List[Float64] to SIMD[DType.float64, 4].
+    """Convert a List[Scalar[DTYPE]] to SIMD[DTYPE, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
     """
@@ -1321,4 +1321,17 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     var n = min(len(obs), 4)
     for i in range(n):
         result[i] = obs[i]
+    return result
+
+
+fn _list_to_simd4_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
+    """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].
+
+    Always returns float64, avoiding dependent type inference issues with E.dtype.
+    Pads with zeros if the list has fewer than 4 elements.
+    """
+    var result = SIMD[DType.float64, 4](0.0)
+    var n = min(len(obs), 4)
+    for i in range(n):
+        result[i] = obs[i].cast[DType.float64]()
     return result

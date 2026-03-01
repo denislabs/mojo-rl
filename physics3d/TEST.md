@@ -308,7 +308,7 @@ Wrong J means forces are applied in wrong directions.
 - K_spring formula: was 1/(tc*dr), should be 1/(tc*dmax) — dmax from solimp, not dr from solref
 - B_damp formula: was 2*dr/tc, should be 2*dr/(tc*dmax)
 - Limit solimp width: was 0.01 (geom default), should be 0.03 (joint default)
-- Test must set solref/solimp from HalfCheetahParams (like the actual environment does)
+- Test must set solref/solimp from HalfCheetahModel (like the actual environment does)
 - D/R for limits: MuJoCo uses `dof_invweight0` (per-DOF), not `body_invweight0` (per-body)
 - Friction aref: was `B * imp * v_t`, should be `B * v_t` (no impedance for friction bias)
 

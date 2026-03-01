@@ -14,7 +14,7 @@ alongside samples to correct for the bias introduced by non-uniform sampling.
 from random import random_float64
 
 
-trait ReplayBufferTrait:
+trait ReplayBufferTrait(ImplicitlyDestructible):
     """Trait for replay buffers."""
 
     comptime OBS_DIM: Int

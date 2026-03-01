@@ -85,14 +85,8 @@ struct DeepA2CAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime ROLLOUT = Self.rollout_len
 
-    # Cache sizes for actor and critic
-    # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, actions]
-    comptime ACTOR_CACHE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-    # Critic: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, 1]
-    comptime CRITIC_CACHE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
-    var actor: Network[
+    comptime ActorNetwork = Network[
         Sequential[
             Linear[Self.OBS, Self.HIDDEN],
             ReLU[Self.HIDDEN],
@@ -103,9 +97,10 @@ struct DeepA2CAgent[
         Adam,
         Xavier,
     ]
+    var actor: Self.ActorNetwork
 
     # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
-    var critic: Network[
+    comptime CriticNetwork = Network[
         Sequential[
             Linear[Self.OBS, Self.HIDDEN],
             ReLU[Self.HIDDEN],
@@ -116,6 +111,7 @@ struct DeepA2CAgent[
         Adam,
         Xavier,
     ]
+    var critic: Self.CriticNetwork
 
     # Hyperparameters
     var gamma: Float64
@@ -167,26 +163,9 @@ struct DeepA2CAgent[
             checkpoint_every: Save checkpoint every N episodes (0 = disabled).
             checkpoint_path: Path to save checkpoints.
         """
-        # Build actor and critic models
-        var actor_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-        )
-
-        var critic_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, 1](),
-        )
-
         # Initialize networks
-        self.actor = Network(actor_model, Adam(lr=actor_lr), Xavier())
-        self.critic = Network(critic_model, Adam(lr=critic_lr), Xavier())
+        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
+        self.critic = Self.CriticNetwork(Adam(lr=critic_lr), Xavier())
 
         # Store hyperparameters
         self.gamma = gamma
@@ -342,7 +321,7 @@ struct DeepA2CAgent[
             var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
                 uninitialized=True
             )
-            var actor_cache = InlineArray[Scalar[dtype], Self.ACTOR_CACHE](
+            var actor_cache = InlineArray[Scalar[dtype], Self.ActorNetwork.CACHE_SIZE](
                 uninitialized=True
             )
             self.actor.forward_with_cache[1](obs, logits, actor_cache)
@@ -391,7 +370,7 @@ struct DeepA2CAgent[
             # Critic forward with cache
             # =====================================================================
             var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-            var critic_cache = InlineArray[Scalar[dtype], Self.CRITIC_CACHE](
+            var critic_cache = InlineArray[Scalar[dtype], Self.CriticNetwork.CACHE_SIZE](
                 uninitialized=True
             )
             self.critic.forward_with_cache[1](obs, value_out, critic_cache)
@@ -429,15 +408,15 @@ struct DeepA2CAgent[
         )
         return Float64(total_loss)
 
-    fn _list_to_inline(
-        self, obs_list: List[Float64]
+    fn _list_to_inline[T: DType](
+        self, obs_list: List[Scalar[T]]
     ) -> InlineArray[Scalar[dtype], Self.OBS]:
-        """Convert List[Float64] to InlineArray."""
-        var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+        """Convert List[Scalar[T]] to InlineArray."""
+        var obs = InlineArray[Scalar[dtype], Self.OBS](fill=Scalar[dtype](0))
         for i in range(Self.OBS):
             if i < len(obs_list):
                 obs[i] = Scalar[dtype](obs_list[i])
-        return obs
+        return obs^
 
     fn train[
         E: BoxDiscreteActionEnv
@@ -493,11 +472,11 @@ struct DeepA2CAgent[
 
                 # Store transition
                 self.store_transition(
-                    obs, action, reward, log_prob, value, done
+                    obs, action, Float64(reward), log_prob, value, done
                 )
 
-                episode_reward += reward
-                obs = next_obs
+                episode_reward += Float64(reward)
+                obs = next_obs^
                 total_steps += 1
                 episode_steps += 1
 
@@ -556,23 +535,23 @@ struct DeepA2CAgent[
 
         # Actor params
         content += "actor_params:\n"
-        for i in range(Self.actor.PARAM_SIZE):
+        for i in range(self.actor.PARAM_SIZE):
             content += String(self.actor.params[i]) + "\n"
 
         # Actor optimizer state
         content += "\nactor_optimizer_state:\n"
-        for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
+        for i in range(self.actor.PARAM_SIZE * Adam.STATE_PER_PARAM):
             content += String(self.actor.optimizer_state[i]) + "\n"
 
         # Critic params
         content += "\ncritic_params:\n"
-        for i in range(Self.critic.PARAM_SIZE):
-            content += str(self.critic.params[i]) + "\n"
+        for i in range(self.critic.PARAM_SIZE):
+            content += String(self.critic.params[i]) + "\n"
 
         # Critic optimizer state
         content += "\ncritic_optimizer_state:\n"
-        for i in range(Self.critic.PARAM_SIZE * Self.critic.STATE_PER_PARAM):
-            content += str(self.critic.optimizer_state[i]) + "\n"
+        for i in range(self.critic.PARAM_SIZE * Adam.STATE_PER_PARAM):
+            content += String(self.critic.optimizer_state[i]) + "\n"
 
         # Hyperparameters
         content += "\nmetadata:\n"
@@ -609,7 +588,7 @@ struct DeepA2CAgent[
 
         # Load actor params
         var line_idx = actor_params_start
-        for i in range(Self.actor.PARAM_SIZE):
+        for i in range(self.actor.PARAM_SIZE):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.actor.params[i] = Scalar[dtype](
                     Float64(atof(lines[line_idx]))
@@ -618,7 +597,7 @@ struct DeepA2CAgent[
 
         # Load actor optimizer state
         line_idx = actor_opt_start
-        for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
+        for i in range(self.actor.PARAM_SIZE * Adam.STATE_PER_PARAM):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.actor.optimizer_state[i] = Scalar[dtype](
                     Float64(atof(lines[line_idx]))
@@ -627,7 +606,7 @@ struct DeepA2CAgent[
 
         # Load critic params
         line_idx = critic_params_start
-        for i in range(Self.critic.PARAM_SIZE):
+        for i in range(self.critic.PARAM_SIZE):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.critic.params[i] = Scalar[dtype](
                     Float64(atof(lines[line_idx]))
@@ -636,7 +615,7 @@ struct DeepA2CAgent[
 
         # Load critic optimizer state
         line_idx = critic_opt_start
-        for i in range(Self.critic.PARAM_SIZE * Self.critic.STATE_PER_PARAM):
+        for i in range(self.critic.PARAM_SIZE * Adam.STATE_PER_PARAM):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.critic.optimizer_state[i] = Scalar[dtype](
                     Float64(atof(lines[line_idx]))
@@ -647,11 +626,7 @@ struct DeepA2CAgent[
         line_idx = metadata_start
         while line_idx < len(lines) and lines[line_idx] != "":
             var line = lines[line_idx]
-            var eq_pos = -1
-            for i in range(len(line)):
-                if line[i] == "=":
-                    eq_pos = i
-                    break
+            var eq_pos = line.find("=")
 
             if eq_pos > 0:
                 var key = line[:eq_pos]
@@ -733,7 +708,7 @@ struct DeepA2CAgent[
                         quit_requested = True
                         break
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 obs = self._list_to_inline(next_obs_list)
                 episode_steps += 1
 

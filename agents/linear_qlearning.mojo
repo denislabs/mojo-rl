@@ -53,7 +53,7 @@ struct LinearQLearningAgent:
         w[a] += α * (r + γ * max_a' Q(s', a') - Q(s, a)) * φ(s)
     """
 
-    var weights: LinearWeights
+    var weights: LinearWeights[DType.float64]
     var num_actions: Int
     var num_features: Int
     var learning_rate: Float64
@@ -87,7 +87,7 @@ struct LinearQLearningAgent:
         """
         self.num_features = num_features
         self.num_actions = num_actions
-        self.weights = LinearWeights(
+        self.weights = LinearWeights[DType.float64](
             num_features=num_features,
             num_actions=num_actions,
             init_std=init_std,
@@ -224,25 +224,25 @@ struct LinearQLearningAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
                 var action = self.select_action(phi)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features(next_obs)
-                self.update(phi, action, reward, phi_next, done)
+                var next_obs_f64 = _linear_obs_to_f64(result[0])
+                var phi_next = _compute_phi_f64(next_obs_f64, features)
+                self.update(phi, action, Float64(reward), phi_next, done)
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
                 if done:
                     break
 
@@ -287,15 +287,14 @@ struct LinearQLearningAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
                 var action = self.get_best_action(phi)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -306,8 +305,8 @@ struct LinearQLearningAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _linear_obs_to_f64(result[0])^
                 if done:
                     break
 
@@ -326,7 +325,7 @@ struct LinearSARSAAgent:
         w[a] += α * (r + γ * Q(s', a') - Q(s, a)) * φ(s)
     """
 
-    var weights: LinearWeights
+    var weights: LinearWeights[DType.float64]
     var num_actions: Int
     var num_features: Int
     var learning_rate: Float64
@@ -349,7 +348,7 @@ struct LinearSARSAAgent:
         """Initialize linear SARSA agent."""
         self.num_features = num_features
         self.num_actions = num_actions
-        self.weights = LinearWeights(
+        self.weights = LinearWeights[DType.float64](
             num_features=num_features,
             num_actions=num_actions,
             init_std=init_std,
@@ -448,27 +447,27 @@ struct LinearSARSAAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
-            var action = self.select_action(features.get_features(obs))
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
+            var action = self.select_action(_compute_phi_f64(obs_f64, features))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features(next_obs)
+                var next_obs_f64 = _linear_obs_to_f64(result[0])
+                var phi_next = _compute_phi_f64(next_obs_f64, features)
                 var next_action = self.select_action(phi_next)
 
-                self.update(phi, action, reward, phi_next, next_action, done)
+                self.update(phi, action, Float64(reward), phi_next, next_action, done)
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
                 action = next_action
                 if done:
                     break
@@ -514,15 +513,14 @@ struct LinearSARSAAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
                 var action = self.get_best_action(phi)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -533,8 +531,8 @@ struct LinearSARSAAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _linear_obs_to_f64(result[0])^
                 if done:
                     break
 
@@ -558,7 +556,7 @@ struct LinearSARSALambdaAgent:
         w += αδe   (update all weights)
     """
 
-    var weights: LinearWeights
+    var weights: LinearWeights[DType.float64]
     var traces: List[List[Float64]]  # Eligibility traces [action][feature]
     var num_actions: Int
     var num_features: Int
@@ -596,7 +594,7 @@ struct LinearSARSALambdaAgent:
         """
         self.num_features = num_features
         self.num_actions = num_actions
-        self.weights = LinearWeights(
+        self.weights = LinearWeights[DType.float64](
             num_features=num_features,
             num_actions=num_actions,
             init_std=init_std,
@@ -721,27 +719,27 @@ struct LinearSARSALambdaAgent:
 
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
-            var obs = env.reset_obs_list()
-            var action = self.select_action(features.get_features(obs))
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
+            var action = self.select_action(_compute_phi_f64(obs_f64, features))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features(next_obs)
+                var next_obs_f64 = _linear_obs_to_f64(result[0])
+                var phi_next = _compute_phi_f64(next_obs_f64, features)
                 var next_action = self.select_action(phi_next)
 
-                self.update(phi, action, reward, phi_next, next_action, done)
+                self.update(phi, action, Float64(reward), phi_next, next_action, done)
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
                 action = next_action
                 if done:
                     break
@@ -787,15 +785,14 @@ struct LinearSARSALambdaAgent:
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _linear_obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features(obs)
+                var phi = _compute_phi_f64(obs_f64, features)
                 var action = self.get_best_action(phi)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -806,8 +803,8 @@ struct LinearSARSALambdaAgent:
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _linear_obs_to_f64(result[0])^
                 if done:
                     break
 
@@ -817,3 +814,28 @@ struct LinearSARSALambdaAgent:
             env.close_renderer()
 
         return total_reward / Float64(num_episodes)
+
+
+fn _linear_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+    """Convert observation list to Float64."""
+    var result = List[Scalar[DType.float64]](capacity=len(obs))
+    for i in range(len(obs)):
+        result.append(obs[i].cast[DType.float64]())
+    return result^
+
+
+fn _compute_phi_f64[F: FeatureExtractor](obs_f64: List[Float64], features: F) -> List[Float64]:
+    """Compute feature vector from Float64 obs, handling F.DTYPE conversion.
+
+    Converts Float64 obs to F.DTYPE, computes features, then converts back to Float64.
+    This bridges the gap between the concrete Float64 obs loop variable and the
+    generic F.DTYPE expected by FeatureExtractor.get_features().
+    """
+    var obs_fdtype = List[Scalar[F.DTYPE]](capacity=len(obs_f64))
+    for i in range(len(obs_f64)):
+        obs_fdtype.append(obs_f64[i].cast[F.DTYPE]())
+    var phi_fdtype = features.get_features(obs_fdtype)
+    var phi = List[Float64](capacity=len(phi_fdtype))
+    for i in range(len(phi_fdtype)):
+        phi.append(phi_fdtype[i].cast[DType.float64]())
+    return phi^

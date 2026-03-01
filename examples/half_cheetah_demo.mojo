@@ -18,7 +18,7 @@ fn main() raises:
     print("=" * 60)
 
     # Create environment
-    var env = HalfCheetah()
+    var env = HalfCheetah[DType.float64]()
     print("\nEnvironment created successfully!")
     print("  Observation dim:", env.obs_dim())
     print("  Action dim:", env.action_dim())

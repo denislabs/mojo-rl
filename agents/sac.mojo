@@ -432,7 +432,7 @@ struct SACAgent(Copyable, Movable):
     # Update Methods
     # ========================================================================
 
-    fn update(mut self, batch: List[ContinuousTransition]):
+    fn update(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update critics, actor, and optionally alpha from a batch.
 
         SAC update procedure:
@@ -460,7 +460,7 @@ struct SACAgent(Copyable, Movable):
         # Soft update target networks
         self._soft_update_targets()
 
-    fn _update_critics(mut self, batch: List[ContinuousTransition]):
+    fn _update_critics(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update both critics using soft Bellman residual.
 
         Target: y = r + γ * (min(Q1_target, Q2_target)(s', a') - α * log π(a'|s'))
@@ -527,7 +527,7 @@ struct SACAgent(Copyable, Movable):
                         step_size * td_error2 * critic_features[j]
                     )
 
-    fn _update_actor(mut self, batch: List[ContinuousTransition]):
+    fn _update_actor(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update actor to maximize expected Q-value minus entropy.
 
         Objective: max E[Q(s, a) - α * log π(a|s)] where a ~ π(·|s)
@@ -622,7 +622,7 @@ struct SACAgent(Copyable, Movable):
                         step_size * grad_logstd * transition.state[j]
                     )
 
-    fn _update_alpha(mut self, batch: List[ContinuousTransition]):
+    fn _update_alpha(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update entropy coefficient α to maintain target entropy.
 
         Objective: min α * E[-log π(a|s) - target_entropy]
@@ -687,8 +687,8 @@ struct SACAgent(Copyable, Movable):
     ](
         mut self,
         mut env: E,
-        features: PolynomialFeatures,
-        mut buffer: ContinuousReplayBuffer,
+        features: PolynomialFeatures[DType.float64],
+        mut buffer: ContinuousReplayBuffer[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 200,
         batch_size: Int = 64,
@@ -744,7 +744,7 @@ struct SACAgent(Copyable, Movable):
 
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var episode_reward: Float64 = 0.0
             var steps = 0
 
@@ -759,10 +759,10 @@ struct SACAgent(Copyable, Movable):
                     action = self.select_action(state_features)
 
                 # Take action
-                var result = env.step_continuous(action)
+                var result = _step_continuous_f64(env, action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
-                var reward = result[1]
+                var next_obs = _list_to_simd4_f64(next_obs_list)
+                var reward = Float64(result[1])
                 var done = result[2]
 
                 var next_features = features.get_features_simd4(next_obs)
@@ -825,7 +825,7 @@ struct SACAgent(Copyable, Movable):
     ](
         self,
         mut env: E,
-        features: PolynomialFeatures,
+        features: PolynomialFeatures[DType.float64],
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
         render: Bool = False,
@@ -855,17 +855,17 @@ struct SACAgent(Copyable, Movable):
                 break
 
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4_f64(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
                 var state_features = features.get_features_simd4(obs)
                 var action = self.select_action_deterministic(state_features)
 
-                var result = env.step_continuous(action)
+                var result = _step_continuous_f64(env, action)
                 var next_obs_list = result[0].copy()
-                var next_obs = _list_to_simd4(next_obs_list)
-                var reward = result[1]
+                var next_obs = _list_to_simd4_f64(next_obs_list)
+                var reward = Float64(result[1])
                 var done = result[2]
 
                 if render:
@@ -894,13 +894,39 @@ struct SACAgent(Copyable, Movable):
 # ============================================================================
 
 
-fn _list_to_simd4(obs: List[Float64]) -> SIMD[DType.float64, 4]:
-    """Convert a List[Float64] to SIMD[DType.float64, 4].
+fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
+    """Convert a List[Scalar[DTYPE]] to SIMD[DTYPE, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
     """
-    var result = SIMD[DType.float64, 4](0.0)
+    var result = SIMD[DTYPE, 4](0.0)
     var n = min(len(obs), 4)
     for i in range(n):
         result[i] = obs[i]
     return result
+
+
+fn _list_to_simd4_f64[DTYPE: DType](
+    obs: List[Scalar[DTYPE]]
+) -> SIMD[DType.float64, 4]:
+    """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].
+
+    Pads with zeros if the list has fewer than 4 elements.
+    Casts each element to Float64.
+    """
+    var result = SIMD[DType.float64, 4](0.0)
+    var n = min(len(obs), 4)
+    for i in range(n):
+        result[i] = Float64(obs[i])
+    return result
+
+
+fn _step_continuous_f64[E: BoxContinuousActionEnv](
+    mut env: E, action: Float64
+) -> Tuple[List[Scalar[E.dtype]], Scalar[E.dtype], Bool]:
+    """Step the environment with a Float64 action.
+
+    Using E: BoxContinuousActionEnv alone (not combined with RenderableEnv)
+    allows the Mojo compiler to unify E.dtype for action.cast and step_continuous.
+    """
+    return _step_continuous_f64(env, action)

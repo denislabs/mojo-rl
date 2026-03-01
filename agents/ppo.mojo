@@ -90,7 +90,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         actor_lr: Float64 = 0.0003,
         critic_lr: Float64 = 0.001,
@@ -502,7 +502,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         rollout_length: Int = 2048,
@@ -532,32 +532,32 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
 
         var total_steps = 0
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
+            var obs_f64 = _ppo_obs_to_f64(env.reset_obs_list())
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.select_action(tiles)
                 var log_prob = self.get_log_prob(tiles, action)
                 var value = self.get_value(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
+                var next_obs_f64 = _ppo_obs_to_f64(result[0])
                 var reward = result[1]
                 var done = result[2]
 
-                self.store_transition(tiles, action, reward, log_prob, value)
-                total_reward += reward
+                self.store_transition(tiles, action, Float64(reward), log_prob, value)
+                total_reward += Float64(reward)
                 steps += 1
                 total_steps += 1
 
                 # Update at rollout boundary or episode end
                 if total_steps % rollout_length == 0 or done:
-                    var next_tiles = tile_coding.get_tiles(next_obs)
+                    var next_tiles = tile_coding.get_tiles(next_obs_f64)
                     self.update(next_tiles, done)
 
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
                 if done:
                     break
 
@@ -572,7 +572,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
         render: Bool = False,
@@ -601,15 +601,14 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _ppo_obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -620,8 +619,8 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _ppo_obs_to_f64(result[0])^
                 if done:
                     break
 
@@ -669,7 +668,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
 
     fn __init__(
         out self,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_actions: Int,
         actor_lr: Float64 = 0.0003,
         critic_lr: Float64 = 0.001,
@@ -1015,7 +1014,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
     ](
         mut self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         rollout_length: Int = 2048,
@@ -1045,32 +1044,32 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
 
         var total_steps = 0
         for episode in range(num_episodes):
-            var obs = env.reset_obs_list()
+            var obs_f64 = _ppo_obs_to_f64(env.reset_obs_list())
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.select_action(tiles)
                 var log_prob = self.get_log_prob(tiles, action)
                 var value = self.get_value(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
+                var next_obs_f64 = _ppo_obs_to_f64(result[0])
                 var reward = result[1]
                 var done = result[2]
 
-                self.store_transition(tiles, action, reward, log_prob, value)
-                total_reward += reward
+                self.store_transition(tiles, action, Float64(reward), log_prob, value)
+                total_reward += Float64(reward)
                 steps += 1
                 total_steps += 1
 
                 # Update at rollout boundary or episode end
                 if total_steps % rollout_length == 0 or done:
-                    var next_tiles = tile_coding.get_tiles(next_obs)
+                    var next_tiles = tile_coding.get_tiles(next_obs_f64)
                     self.update(next_tiles, done)
 
-                obs = next_obs^
+                obs_f64 = next_obs_f64^
                 if done:
                     break
 
@@ -1085,7 +1084,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
     ](
         self,
         mut env: E,
-        tile_coding: TileCoding,
+        tile_coding: TileCoding[DType.float64],
         num_episodes: Int = 100,
         max_steps_per_episode: Int = 500,
         render: Bool = False,
@@ -1114,15 +1113,14 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             if quit_requested:
                 break
 
-            var obs = env.reset_obs_list()
+            var obs_f64 = _ppo_obs_to_f64(env.reset_obs_list())
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles(obs)
+                var tiles = tile_coding.get_tiles(obs_f64)
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -1133,8 +1131,8 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                         quit_requested = True
                         break
 
-                episode_reward += reward
-                obs = next_obs^
+                episode_reward += Float64(reward)
+                obs_f64 = _ppo_obs_to_f64(result[0])^
                 if done:
                     break
 
@@ -1144,3 +1142,11 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             env.close_renderer()
 
         return total_reward / Float64(num_episodes)
+
+
+fn _ppo_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+    """Convert observation list to Float64."""
+    var result = List[Scalar[DType.float64]](capacity=len(obs))
+    for i in range(len(obs)):
+        result.append(Scalar[DType.float64](obs[i]))
+    return result^

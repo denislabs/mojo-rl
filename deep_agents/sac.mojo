@@ -34,7 +34,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq, StochasticActor
+from deep_rl.model import Linear, LinearReLU, Sequential, StochasticActor
 from deep_rl.model.stochastic_actor import (
     rsample,
     rsample_with_cache,
@@ -111,87 +111,34 @@ struct DeepSACAgent[
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Cache sizes for networks
-    # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + StochasticActor[h, action]
-    # StochasticActor caches input (HIDDEN)
-    comptime ACTOR_CACHE_SIZE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
-    # Critic: Linear[critic_in, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, 1]
-    comptime CRITIC_CACHE_SIZE: Int = Self.CRITIC_IN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> StochasticActor
-    var actor: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                StochasticActor[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
+    comptime ActorNetwork = Network[
+        Sequential[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            StochasticActor[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Kaiming,
     ]
+    var actor: Self.ActorNetwork
 
-    # Critic 1: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    var critic1: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+    # Critic networks: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
+    comptime CriticNetwork = Network[
+        Sequential[
+            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Kaiming,
     ]
-
-    # Critic 2 (twin)
-    var critic2: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var critic1: Self.CriticNetwork
+    var critic2: Self.CriticNetwork
 
     # Target critics (no target actor in SAC)
-    var critic1_target: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
-
-    var critic2_target: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var critic1_target: Self.CriticNetwork
+    var critic2_target: Self.CriticNetwork
 
     # Replay buffer (stack-allocated, use DeepSACAgentHeap for large obs spaces)
     var buffer: Self.replay_buffer
@@ -247,35 +194,13 @@ struct DeepSACAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Build actor model
-        var actor_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            StochasticActor[Self.HIDDEN, Self.ACTIONS](),
-        )
-
-        # Build critic model
-        var critic_model = seq(
-            Linear[Self.CRITIC_IN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, 1](),
-        )
-
         # Initialize networks
-        self.actor = Network(actor_model, Adam(lr=actor_lr), Kaiming())
+        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Kaiming())
 
-        self.critic1 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic2 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic1_target = Network(
-            critic_model, Adam(lr=critic_lr), Kaiming()
-        )
-        self.critic2_target = Network(
-            critic_model, Adam(lr=critic_lr), Kaiming()
-        )
+        self.critic1 = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
+        self.critic2 = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
+        self.critic1_target = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
+        self.critic2_target = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
 
         # Initialize target networks with same weights as online networks
         self.critic1_target.copy_params_from(self.critic1)
@@ -306,11 +231,14 @@ struct DeepSACAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
+    fn __del__(deinit self):
+        _ = self.buffer^
+
     fn select_action(
         self,
-        obs: SIMD[DType.float64, Self.obs_dim],
+        obs: SIMD[dtype, Self.obs_dim],
         deterministic: Bool = False,
-    ) -> InlineArray[Float64, Self.action_dim]:
+    ) -> InlineArray[Scalar[dtype], Self.action_dim]:
         """Select action using the stochastic policy.
 
         Args:
@@ -325,7 +253,7 @@ struct DeepSACAgent[
             uninitialized=True
         )
         for i in range(Self.obs_dim):
-            obs_input[i] = Scalar[dtype](obs[i])
+            obs_input[i] = obs[i]
 
         # Forward pass through actor (batch_size=1)
         var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
@@ -369,7 +297,7 @@ struct DeepSACAgent[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](log_std_arr.unsafe_ptr())
 
-        var action_result = InlineArray[Float64, Self.action_dim](
+        var action_result = InlineArray[Scalar[dtype], Self.action_dim](
             uninitialized=True
         )
 
@@ -384,7 +312,7 @@ struct DeepSACAgent[
             get_deterministic_action[1, Self.ACTIONS](mean, action_layout)
 
             for i in range(Self.action_dim):
-                action_result[i] = Float64(action_tensor[i]) * self.action_scale
+                action_result[i] = Scalar[dtype](Float64(action_tensor[i]) * self.action_scale)
         else:
             # Sample with reparameterization
             var noise = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -408,16 +336,16 @@ struct DeepSACAgent[
             )
 
             for i in range(Self.action_dim):
-                action_result[i] = Float64(action_tensor[i]) * self.action_scale
+                action_result[i] = Scalar[dtype](Float64(action_tensor[i]) * self.action_scale)
 
         return action_result^
 
     fn store_transition(
         mut self,
-        obs: SIMD[DType.float64, Self.obs_dim],
-        action: InlineArray[Float64, Self.action_dim],
+        obs: SIMD[dtype, Self.obs_dim],
+        action: InlineArray[Scalar[dtype], Self.action_dim],
         reward: Float64,
-        next_obs: SIMD[DType.float64, Self.obs_dim],
+        next_obs: SIMD[dtype, Self.obs_dim],
         done: Bool,
     ):
         """Store transition in replay buffer.
@@ -449,7 +377,7 @@ struct DeepSACAgent[
         )
         for i in range(BUFFER_ACTION_DIM):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[BUFFER_DTYPE](action[i] / self.action_scale)
+            action_arr[i] = Scalar[BUFFER_DTYPE](Float64(action[i]) / self.action_scale)
 
         self.buffer.add(
             obs_arr,
@@ -700,10 +628,10 @@ struct DeepSACAgent[
             uninitialized=True
         )
         var critic1_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
         ](uninitialized=True)
         var critic2_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
         ](uninitialized=True)
 
         self.critic1.forward_with_cache[Self.BATCH](
@@ -779,7 +707,7 @@ struct DeepSACAgent[
             Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
         ](uninitialized=True)
         var actor_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTOR_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.ActorNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.actor.forward_with_cache[Self.BATCH](
             batch_obs, actor_output, actor_cache
@@ -885,7 +813,7 @@ struct DeepSACAgent[
         # Step 4: Forward critic1 WITH CACHE for backward pass
         var q1_new = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         var actor_critic_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.critic1.forward_with_cache[Self.BATCH](
             new_critic_input, q1_new, actor_critic_cache
@@ -1024,14 +952,14 @@ struct DeepSACAgent[
 
     fn _list_to_simd[
         T: DType
-    ](self, obs_list: List[Scalar[T]]) -> SIMD[DType.float64, Self.obs_dim]:
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
         """Convert List[Float64] to SIMD for internal use."""
-        var obs = SIMD[DType.float64, Self.obs_dim]()
+        var obs = SIMD[dtype, Self.obs_dim]()
         for i in range(Self.obs_dim):
             if i < len(obs_list):
-                obs[i] = Float64(obs_list[i])
+                obs[i] = Scalar[dtype](obs_list[i])
             else:
-                obs[i] = 0.0
+                obs[i] = Scalar[dtype](0.0)
         return obs
 
     fn train[
@@ -1075,13 +1003,13 @@ struct DeepSACAgent[
 
         while warmup_count < warmup_steps:
             # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Float64, Self.action_dim](
+            var action = InlineArray[Scalar[dtype], Self.action_dim](
                 uninitialized=True
             )
             var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
-                action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
-                action_list.append(action[i])
+                action[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * self.action_scale)
+                action_list.append(Float64(action[i]))
 
             # Step environment with full action vector
             var result = env.step_continuous_vec(action_list^)
@@ -1118,7 +1046,7 @@ struct DeepSACAgent[
                 # Convert action to List for step_continuous_vec
                 var action_list = List[Float64](capacity=Self.action_dim)
                 for i in range(Self.action_dim):
-                    action_list.append(action[i])
+                    action_list.append(Float64(action[i]))
 
                 # Step environment with full action vector
                 var result = env.step_continuous_vec(action_list^)
@@ -1222,7 +1150,7 @@ struct DeepSACAgent[
                 # Convert action to List for step_continuous_vec
                 var action_list = List[Float64](capacity=Self.action_dim)
                 for i in range(Self.action_dim):
-                    action_list.append(action[i])
+                    action_list.append(Float64(action[i]))
 
                 # Step environment with full action vector
                 var result = env.step_continuous_vec(action_list^)

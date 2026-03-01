@@ -102,9 +102,10 @@ fn softmax_inline[
             max_logit = logits[i]
 
     # Compute exp(logits - max) and sum
+    # Cast through Float64 to satisfy exp's floating-point constraint
     var sum_exp = Scalar[dtype](0.0)
     for i in range(N):
-        var e = exp(logits[i] - max_logit)
+        var e = Scalar[dtype](exp(Float64(logits[i] - max_logit)))
         probs[i] = e
         sum_exp += e
 
@@ -112,7 +113,7 @@ fn softmax_inline[
     for i in range(N):
         probs[i] /= sum_exp
 
-    return probs
+    return probs^
 
 
 fn log_softmax(logits: List[Float64]) -> List[Float64]:

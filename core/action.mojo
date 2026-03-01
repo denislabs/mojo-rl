@@ -1,4 +1,4 @@
-trait Action(Copyable, Movable):
+trait Action(Copyable, Movable, ImplicitlyDestructible):
     """Base trait for environment actions."""
 
     pass

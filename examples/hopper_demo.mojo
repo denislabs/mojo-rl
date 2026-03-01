@@ -64,7 +64,7 @@ fn main() raises:
     print()
 
     # Create environment
-    var env = Hopper()
+    var env = Hopper[DType.float64]()
 
     print("Environment created:")
     print("  Observation dim:", env.obs_dim())

@@ -31,7 +31,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, Tanh, seq
+from deep_rl.model import Linear, ReLU, LinearReLU, LinearTanh, Sequential
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
@@ -86,86 +86,32 @@ struct DeepDDPGAgent[
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Cache sizes for networks
-    # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, action] + Tanh[action]
-    # Cache: OBS + HIDDEN + HIDDEN + HIDDEN + HIDDEN + ACTIONS
-    comptime ACTOR_CACHE_SIZE: Int = (
-        Self.OBS
-        + Self.HIDDEN
-        + Self.HIDDEN
-        + Self.HIDDEN
-        + Self.HIDDEN
-        + Self.ACTIONS
-    )
-
-    # Critic: Linear[critic_in, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, 1]
-    # Cache: CRITIC_IN + HIDDEN + HIDDEN + HIDDEN + HIDDEN
-    comptime CRITIC_CACHE_SIZE: Int = (
-        Self.CRITIC_IN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-    )
-
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action (Tanh)
     # Deterministic policy with tanh-bounded output
-    var actor: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-                Tanh[Self.ACTIONS](),
-            )
-        ),
+    comptime ActorNetwork = Network[
+        Sequential[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            LinearTanh[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Xavier,  # Xavier is good for tanh activation
     ]
-
-    # Target actor network
-    var actor_target: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-                Tanh[Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Xavier,
-    ]
+    var actor: Self.ActorNetwork
+    var actor_target: Self.ActorNetwork
 
     # Critic network: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    var critic: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+    comptime CriticNetwork = Network[
+        Sequential[
+            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Kaiming,  # Kaiming is good for ReLU
     ]
-
-    # Target critic network
-    var critic_target: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var critic: Self.CriticNetwork
+    var critic_target: Self.CriticNetwork
 
     # Replay buffer
     var buffer: ReplayBuffer[
@@ -217,32 +163,11 @@ struct DeepDDPGAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Build actor model
-        var actor_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-            Tanh[Self.ACTIONS](),
-        )
-
-        # Build critic model
-        var critic_model = seq(
-            Linear[Self.CRITIC_IN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, 1](),
-        )
-
         # Initialize networks
-        self.actor = Network(actor_model, Adam(lr=actor_lr), Xavier())
-        self.actor_target = Network(actor_model, Adam(lr=actor_lr), Xavier())
-        self.critic = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic_target = Network(
-            critic_model, Adam(lr=critic_lr), Kaiming()
-        )
+        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
+        self.actor_target = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
+        self.critic = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
+        self.critic_target = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
 
         # Initialize target networks with same weights as online networks
         self.actor_target.copy_params_from(self.actor)
@@ -273,9 +198,9 @@ struct DeepDDPGAgent[
 
     fn select_action(
         self,
-        obs: SIMD[DType.float64, Self.obs_dim],
+        obs: SIMD[dtype, Self.obs_dim],
         add_noise: Bool = True,
-    ) -> InlineArray[Float64, Self.action_dim]:
+    ) -> InlineArray[Scalar[dtype], Self.action_dim]:
         """Select action using the deterministic policy with optional exploration noise.
 
         Args:
@@ -288,7 +213,7 @@ struct DeepDDPGAgent[
         # Convert obs to input array
         var obs_input = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
-            obs_input[i] = Scalar[dtype](obs[i])
+            obs_input[i] = obs[i]
 
         # Forward pass through actor (batch_size=1)
         var actor_output = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -297,7 +222,7 @@ struct DeepDDPGAgent[
         self.actor.forward[1](obs_input, actor_output)
 
         # Extract action and optionally add noise
-        var action_result = InlineArray[Float64, Self.action_dim](
+        var action_result = InlineArray[Scalar[dtype], Self.action_dim](
             uninitialized=True
         )
         for i in range(Self.action_dim):
@@ -313,16 +238,16 @@ struct DeepDDPGAgent[
             elif a < -self.action_scale:
                 a = -self.action_scale
 
-            action_result[i] = a
+            action_result[i] = Scalar[dtype](a)
 
-        return action_result
+        return action_result^
 
     fn store_transition(
         mut self,
-        obs: SIMD[DType.float64, Self.obs_dim],
-        action: InlineArray[Float64, Self.action_dim],
+        obs: SIMD[dtype, Self.obs_dim],
+        action: InlineArray[Scalar[dtype], Self.action_dim],
         reward: Float64,
-        next_obs: SIMD[DType.float64, Self.obs_dim],
+        next_obs: SIMD[dtype, Self.obs_dim],
         done: Bool,
     ):
         """Store transition in replay buffer.
@@ -334,15 +259,15 @@ struct DeepDDPGAgent[
             uninitialized=True
         )
         for i in range(Self.OBS):
-            obs_arr[i] = Scalar[dtype](obs[i])
-            next_obs_arr[i] = Scalar[dtype](next_obs[i])
+            obs_arr[i] = obs[i]
+            next_obs_arr[i] = next_obs[i]
 
         var action_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
         for i in range(Self.ACTIONS):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[dtype](action[i] / self.action_scale)
+            action_arr[i] = Scalar[dtype](Float64(action[i]) / self.action_scale)
 
         self.buffer.add(
             obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
@@ -462,7 +387,7 @@ struct DeepDDPGAgent[
             uninitialized=True
         )
         var critic_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.critic.forward_with_cache[Self.BATCH](
             critic_input, q_values, critic_cache
@@ -504,7 +429,7 @@ struct DeepDDPGAgent[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
         var actor_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTOR_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.ActorNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.actor.forward_with_cache[Self.BATCH](
             batch_obs, actor_actions, actor_cache
@@ -529,7 +454,7 @@ struct DeepDDPGAgent[
             uninitialized=True
         )
         var new_critic_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
         ](uninitialized=True)
         self.critic.forward_with_cache[Self.BATCH](
             new_critic_input, new_q_values, new_critic_cache
@@ -593,16 +518,16 @@ struct DeepDDPGAgent[
         if self.noise_std < self.noise_std_min:
             self.noise_std = self.noise_std_min
 
-    fn _list_to_simd(
-        self, obs_list: List[Float64]
-    ) -> SIMD[DType.float64, Self.obs_dim]:
-        """Convert List[Float64] to SIMD for internal use."""
-        var obs = SIMD[DType.float64, Self.obs_dim]()
+    fn _list_to_simd[T: DType](
+        self, obs_list: List[Scalar[T]]
+    ) -> SIMD[dtype, Self.obs_dim]:
+        """Convert List[Scalar[T]] to SIMD for internal use."""
+        var obs = SIMD[dtype, Self.obs_dim]()
         for i in range(Self.obs_dim):
             if i < len(obs_list):
-                obs[i] = obs_list[i]
+                obs[i] = Scalar[dtype](obs_list[i])
             else:
-                obs[i] = 0.0
+                obs[i] = Scalar[dtype](0.0)
         return obs
 
     fn get_noise_std(self) -> Float64:
@@ -654,13 +579,14 @@ struct DeepDDPGAgent[
 
         while warmup_count < warmup_steps:
             # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Float64, Self.action_dim](
+            var action = InlineArray[Scalar[dtype], Self.action_dim](
                 uninitialized=True
             )
             var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
-                action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
-                action_list.append(action[i])
+                var a = (random_float64() * 2.0 - 1.0) * self.action_scale
+                action[i] = Scalar[dtype](a)
+                action_list.append(a)
 
             # Step environment with full action vector
             var result = env.step_continuous_vec(action_list^)
@@ -668,7 +594,7 @@ struct DeepDDPGAgent[
             var done = result[2]
 
             var next_obs = self._list_to_simd(env.get_obs_list())
-            self.store_transition(warmup_obs, action, reward, next_obs, done)
+            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
 
             warmup_obs = next_obs
             warmup_count += 1
@@ -696,7 +622,7 @@ struct DeepDDPGAgent[
                 # Convert action to List for step_continuous_vec
                 var action_list = List[Float64](capacity=Self.action_dim)
                 for i in range(Self.action_dim):
-                    action_list.append(action[i])
+                    action_list.append(Float64(action[i]))
 
                 # Step environment with full action vector
                 var result = env.step_continuous_vec(action_list^)
@@ -706,13 +632,13 @@ struct DeepDDPGAgent[
                 var next_obs = self._list_to_simd(env.get_obs_list())
 
                 # Store transition
-                self.store_transition(obs, action, reward, next_obs, done)
+                self.store_transition(obs, action, Float64(reward), next_obs, done)
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:
                     _ = self.train_step()
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 obs = next_obs
                 total_train_steps += 1
                 episode_steps += 1
@@ -802,7 +728,7 @@ struct DeepDDPGAgent[
                 # Convert action to List for step_continuous_vec
                 var action_list = List[Float64](capacity=Self.action_dim)
                 for i in range(Self.action_dim):
-                    action_list.append(action[i])
+                    action_list.append(Float64(action[i]))
 
                 # Step environment with full action vector
                 var result = env.step_continuous_vec(action_list^)
@@ -816,7 +742,7 @@ struct DeepDDPGAgent[
                         quit_requested = True
                         break
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 obs = self._list_to_simd(env.get_obs_list())
                 episode_steps += 1
 

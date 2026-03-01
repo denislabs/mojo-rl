@@ -341,7 +341,7 @@ struct DQNAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
-    fn select_action(self, obs: SIMD[DType.float64, Self.obs_dim]) -> Int:
+    fn select_action(self, obs: SIMD[dtype, Self.obs_dim]) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
@@ -378,10 +378,10 @@ struct DQNAgent[
 
     fn store_transition(
         mut self,
-        obs: SIMD[DType.float64, Self.obs_dim],
+        obs: SIMD[dtype, Self.obs_dim],
         action: Int,
         reward: Float64,
-        next_obs: SIMD[DType.float64, Self.obs_dim],
+        next_obs: SIMD[dtype, Self.obs_dim],
         done: Bool,
     ):
         """Store transition in replay buffer.
@@ -400,8 +400,8 @@ struct DQNAgent[
             uninitialized=True
         )
         for i in range(Self.obs_dim):
-            obs_arr[i] = Scalar[dtype](obs[i])
-            next_obs_arr[i] = Scalar[dtype](next_obs[i])
+            obs_arr[i] = obs[i]
+            next_obs_arr[i] = next_obs[i]
 
         var action_arr = InlineArray[Scalar[dtype], 1](
             fill=Scalar[dtype](action)
@@ -460,7 +460,7 @@ struct DQNAgent[
             Scalar[dtype], Self.batch_size * Self.num_actions
         ](uninitialized=True)
         var cache = InlineArray[
-            Scalar[dtype], Self.batch_size * Self.NETWORK_CACHE_SIZE
+            Scalar[dtype], Self.batch_size * Self.Q_Model.CACHE_SIZE
         ](uninitialized=True)
         self.online_model.forward_with_cache[Self.batch_size](
             batch_obs, q_values, cache
@@ -592,14 +592,14 @@ struct DQNAgent[
 
     fn _list_to_simd[
         T: DType
-    ](self, obs_list: List[Scalar[T]]) -> SIMD[DType.float64, Self.obs_dim]:
-        """Convert List[Scalar[T]] to SIMD[float64] for internal use.
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
+        """Convert List[Scalar[T]] to SIMD[dtype] for internal use.
 
         Works with any scalar dtype (float32, float64, etc).
         """
-        var obs = SIMD[DType.float64, Self.obs_dim]()
+        var obs = SIMD[dtype, Self.obs_dim]()
         for i in range(Self.obs_dim):
-            obs[i] = Float64(obs_list[i])
+            obs[i] = Scalar[dtype](obs_list[i])
         return obs
 
     fn train[
@@ -954,9 +954,9 @@ struct DQNAgent[
 
             # Convert environment obs list to SIMD (handles any dtype)
             var obs_list = env.reset_obs_list()
-            var obs = SIMD[DType.float64, Self.obs_dim]()
+            var obs = SIMD[dtype, Self.obs_dim]()
             for i in range(Self.obs_dim):
-                obs[i] = Float64(obs_list[i])
+                obs[i] = Scalar[dtype](obs_list[i])
 
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
@@ -997,7 +997,7 @@ struct DQNAgent[
 
                 # Convert next obs to SIMD (handles any dtype)
                 for i in range(Self.obs_dim):
-                    obs[i] = Float64(result[0][i])
+                    obs[i] = Scalar[dtype](result[0][i])
 
                 episode_steps += 1
 
@@ -1391,7 +1391,7 @@ struct DQNAgent[
         # Training buffers (batch_size samples for gradient updates)
         comptime BATCH_OBS_SIZE = Self.batch_size * Self.obs_dim
         comptime BATCH_Q_SIZE = Self.batch_size * Self.num_actions
-        comptime BATCH_CACHE_SIZE = Self.batch_size * Self.NETWORK_CACHE_SIZE
+        comptime BATCH_CACHE_SIZE = Self.batch_size * Self.Q_Model.CACHE_SIZE
 
         # Workspace sizes for forward passes (5-layer network = 4*HIDDEN intermediates)
         # This prevents GPU memory leaks from repeated internal buffer allocations
@@ -1410,6 +1410,9 @@ struct DQNAgent[
         # =====================================================================
         var prev_obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
         var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
+        var state_buf = ctx.enqueue_create_buffer[dtype](
+            Self.n_envs * EnvType.STATE_SIZE
+        )
         var obs = LayoutTensor[
             dtype,
             Layout.row_major(Self.n_envs, Self.obs_dim),
@@ -1885,8 +1888,8 @@ struct DQNAgent[
             )
 
             # Step environments
-            EnvType.step_kernel_gpu[Self.n_envs, Self.obs_dim](
-                ctx, obs_buf, actions_buf, rewards_buf, dones_buf
+            EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim](
+                ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf
             )
 
             # Store transitions to replay buffer
@@ -1980,8 +1983,8 @@ struct DQNAgent[
             # Step all environments on GPU (n_envs environments)
             # After step, obs_buf contains next_obs
             # =================================================================
-            EnvType.step_kernel_gpu[Self.n_envs, Self.obs_dim](
-                ctx, obs_buf, actions_buf, rewards_buf, dones_buf
+            EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim](
+                ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf
             )
             ctx.synchronize()
             var t2 = perf_counter_ns()

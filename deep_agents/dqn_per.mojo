@@ -35,7 +35,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq
+from deep_rl.model import Linear, LinearReLU, Sequential
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
@@ -82,40 +82,18 @@ struct DQNPERAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime BATCH = Self.batch_size
 
-    # Cache size for network
-    # Q-network: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, actions]
-    # Cache: OBS + HIDDEN + HIDDEN + HIDDEN + HIDDEN
-    comptime CACHE_SIZE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
     # Q-network: obs -> hidden (ReLU) -> hidden (ReLU) -> num_actions
-    var q_network: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
+    comptime QNetwork = Network[
+        Sequential[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Kaiming,
     ]
-
-    # Target Q-network
-    var target_network: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var q_network: Self.QNetwork
+    var target_network: Self.QNetwork
 
     # Prioritized Replay Buffer (action_dim=1 for discrete actions stored as scalar)
     var buffer: PrioritizedReplayBuffer[
@@ -164,18 +142,9 @@ struct DQNPERAgent[
             beta_start: Initial IS correction exponent (default: 0.4).
             beta_frames: Frames to anneal beta from beta_start to 1.0 (default: 100000).
         """
-        # Build Q-network model
-        var q_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-        )
-
         # Initialize networks
-        self.q_network = Network(q_model, Adam(lr=lr), Kaiming())
-        self.target_network = Network(q_model, Adam(lr=lr), Kaiming())
+        self.q_network = Self.QNetwork(Adam(lr=lr), Kaiming())
+        self.target_network = Self.QNetwork(Adam(lr=lr), Kaiming())
 
         # Copy weights to target network
         self.target_network.copy_params_from(self.q_network)
@@ -364,7 +333,7 @@ struct DQNPERAgent[
         var q_values = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var cache = InlineArray[Scalar[dtype], Self.BATCH * Self.CACHE_SIZE](
+        var cache = InlineArray[Scalar[dtype], Self.BATCH * Self.QNetwork.CACHE_SIZE](
             uninitialized=True
         )
         self.q_network.forward_with_cache[Self.BATCH](
@@ -438,15 +407,15 @@ struct DQNPERAgent[
         if self.epsilon < self.epsilon_min:
             self.epsilon = self.epsilon_min
 
-    fn _list_to_inline(
-        self, obs_list: List[Float64]
+    fn _list_to_inline[T: DType](
+        self, obs_list: List[Scalar[T]]
     ) -> InlineArray[Scalar[dtype], Self.OBS]:
-        """Convert List[Float64] to InlineArray."""
+        """Convert List[Scalar[T]] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
         for i in range(Self.OBS):
             if i < len(obs_list):
                 obs[i] = Scalar[dtype](obs_list[i])
-        return obs
+        return obs^
 
     fn get_epsilon(self) -> Float64:
         """Get current exploration rate."""
@@ -513,9 +482,9 @@ struct DQNPERAgent[
             var done = result[2]
 
             var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(warmup_obs, action, reward, next_obs, done)
+            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
 
-            warmup_obs = next_obs
+            warmup_obs = next_obs^
             warmup_count += 1
 
             if done:
@@ -549,14 +518,14 @@ struct DQNPERAgent[
                 var next_obs = self._list_to_inline(next_obs_list)
 
                 # Store transition (with max priority initially)
-                self.store_transition(obs, action, reward, next_obs, done)
+                self.store_transition(obs, action, Float64(reward), next_obs, done)
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:
                     _ = self.train_step()
 
-                episode_reward += reward
-                obs = next_obs
+                episode_reward += Float64(reward)
+                obs = next_obs^
                 total_train_steps += 1
                 episode_steps += 1
 
@@ -645,7 +614,7 @@ struct DQNPERAgent[
                         quit_requested = True
                         break
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 obs = self._list_to_inline(next_obs_list)
                 episode_steps += 1
 

@@ -265,7 +265,7 @@ fn read_float_section[
         # Section not found, return zeros
         for i in range(SIZE):
             result[i] = 0
-        return result
+        return result^
 
     for i in range(SIZE):
         var line_idx = start_idx + i
@@ -278,7 +278,7 @@ fn read_float_section[
             else:
                 result[i] = Scalar[dtype](atof(line))
 
-    return result
+    return result^
 
 
 fn read_float_section_list(

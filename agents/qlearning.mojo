@@ -210,15 +210,15 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var action_idx = self.select_action(state_idx)
                 var action = env.action_from_index(action_idx)
 
-                var result = env.step(action)
+                var result = env.step(action^)
                 var next_state = result[0]
                 var reward = result[1]
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, reward, next_state_idx, done)
+                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
 
-                total_reward += reward
+                total_reward += Float64(reward)
                 steps += 1
                 state = next_state
 
@@ -270,7 +270,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var action_idx = self.get_best_action(state_idx)
                 var action = env.action_from_index(action_idx)
 
-                var result = env.step(action)
+                var result = env.step(action^)
                 var next_state = result[0]
                 var reward = result[1]
                 var done = result[2]
@@ -282,7 +282,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                         quit_requested = True
                         break
 
-                episode_reward += reward
+                episode_reward += Float64(reward)
                 state = next_state
 
                 if done:
