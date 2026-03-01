@@ -690,9 +690,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_springref: Float64 = 0.0,
         joint_solref_limit_0: Float64 = 0.02,
         joint_solref_limit_1: Float64 = 1.0,
-        joint_solimp_limit_0: Float64 = 0.0,
-        joint_solimp_limit_1: Float64 = 0.8,
-        joint_solimp_limit_2: Float64 = 0.03,
+        joint_solimp_limit_0: Float64 = 0.9,
+        joint_solimp_limit_1: Float64 = 0.95,
+        joint_solimp_limit_2: Float64 = 0.001,
         joint_solimp_limit_3: Float64 = 0.5,
         joint_solimp_limit_4: Float64 = 2.0,
         geom_friction: Float64 = 0.5,
@@ -956,6 +956,20 @@ struct FlatModelDef[
             model.joint_solimp_limit[j * 5 + 2] = Scalar[DTYPE](ji2)
             model.joint_solimp_limit[j * 5 + 3] = Scalar[DTYPE](ji3)
             model.joint_solimp_limit[j * 5 + 4] = Scalar[DTYPE](ji4)
+
+        # Sync model-level solimp_limit/solref_limit from joint[0] values.
+        # GPU constraint builder reads MODEL_META_IDX_SOLIMP_LIMIT_* (model-level meta)
+        # while CPU reads per-joint values. For models with uniform joint solimp
+        # (all current models), this ensures CPU/GPU consistency.
+        @parameter
+        if Self.NJOINT > 0:
+            model.solimp_limit[0] = model.joint_solimp_limit[0]
+            model.solimp_limit[1] = model.joint_solimp_limit[1]
+            model.solimp_limit[2] = model.joint_solimp_limit[2]
+            model.solimp_limit[3] = model.joint_solimp_limit[3]
+            model.solimp_limit[4] = model.joint_solimp_limit[4]
+            model.solref_limit[0] = model.joint_solref_limit[0]
+            model.solref_limit[1] = model.joint_solref_limit[1]
 
         # Geoms — populate model.geom_* arrays directly
         for i in range(Self.NGEOM):
