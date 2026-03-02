@@ -870,6 +870,10 @@ struct ModelDefFromXML[
                 @parameter
                 if dof >= 0 and dof < Self.NV:
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
+                    if ctrl > Scalar[DTYPE](1.0):
+                        ctrl = Scalar[DTYPE](1.0)
+                    elif ctrl < Scalar[DTYPE](-1.0):
+                        ctrl = Scalar[DTYPE](-1.0)
                     states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
 
         ctx.enqueue_function[apply_kernel, apply_kernel](

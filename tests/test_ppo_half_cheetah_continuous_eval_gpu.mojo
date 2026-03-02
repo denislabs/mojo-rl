@@ -78,7 +78,7 @@ fn main() raises:
 
         print("Loading checkpoint...")
         try:
-            agent.load_checkpoint("ppo_half_cheetah.ckpt")
+            agent.load_checkpoint("ppo_half_cheetah_backup.ckpt")
             print("Checkpoint loaded successfully!")
         except:
             print("Error loading checkpoint!")
@@ -125,7 +125,9 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var stochastic_reward = agent.evaluate_gpu[HalfCheetah[gpu_dtype]](
+        var stochastic_reward = agent.evaluate_gpu[
+            HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
+        ](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -142,7 +144,9 @@ fn main() raises:
 
         start_time = perf_counter_ns()
 
-        var deterministic_reward = agent.evaluate_gpu[HalfCheetah[gpu_dtype]](
+        var deterministic_reward = agent.evaluate_gpu[
+            HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
+        ](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,

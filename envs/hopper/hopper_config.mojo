@@ -15,9 +15,6 @@ from physics3d.gpu.constants import (
 
 from .hopper_xml import HopperModel
 
-from .hopper_def import (
-    HopperParams,
-)
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -28,6 +25,10 @@ struct HopperConfig(Phyics3dEnvConfig):
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
     comptime MAX_CONTACTS: Int = 20
+
+    comptime MIN_HEIGHT: Scalar[DType.float64] = 0.7
+    comptime MAX_PITCH: Scalar[DType.float64] = 0.2  # ~11 deg
+
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         HopperModel.NQ, HopperModel.NV
     ]()  # RK4 needs NQ + 7*NV extra workspace
@@ -249,9 +250,14 @@ struct HopperConfig(Phyics3dEnvConfig):
             ctrl_cost_sum += a * a
         var ctrl_cost = Scalar[DTYPE](0.001) * ctrl_cost_sum
 
-        # Health check — read curriculum parameters
+        # Health check — read curriculum parameters; fall back to defaults
+        # when curriculum is not set (slots remain 0 without update_curriculum_gpu).
         var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        if min_height <= Scalar[DTYPE](0.0):
+            min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
         var max_pitch = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        if max_pitch <= Scalar[DTYPE](0.0):
+            max_pitch = Scalar[DTYPE](Self.MAX_PITCH)
         var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
         var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
 

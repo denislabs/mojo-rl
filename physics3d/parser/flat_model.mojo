@@ -7,6 +7,7 @@ struct via setup_model().
 """
 
 from collections import InlineArray
+from math import sqrt
 from physics3d.types import Model, ConeType
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 
@@ -1003,6 +1004,23 @@ struct FlatModelDef[
             model.geom_solimp[i * 5 + 4] = Scalar[DTYPE](gd.solimp_4)
             model.geom_margin[i] = Scalar[DTYPE](gd.margin)
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
+            # Bounding sphere radius for broad-phase collision detection
+            if gd.geom_type == _GEOM_PLANE:
+                model.geom_rbound[i] = Scalar[DTYPE](1e10)  # planes are infinite
+            elif gd.geom_type == _GEOM_SPHERE:
+                model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
+            elif gd.geom_type == _GEOM_CAPSULE:
+                model.geom_rbound[i] = Scalar[DTYPE](gd.radius + gd.half_length)
+            elif gd.geom_type == _GEOM_CYLINDER:
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    sqrt(gd.half_length * gd.half_length + gd.radius * gd.radius)
+                )
+            elif gd.geom_type == _GEOM_BOX:
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    sqrt(gd.half_x * gd.half_x + gd.half_y * gd.half_y + gd.half_z * gd.half_z)
+                )
+            else:
+                model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
 
         # Sites — populate model.site_body and model.site_pos for FK
         for i in range(Self.NSITE):

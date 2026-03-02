@@ -7,7 +7,6 @@ from physics3d.types import Model, Data
 from physics3d.integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
-    implicit_extra_workspace_size,
     META_IDX_PREV_X,
     qpos_offset,
     model_curriculum_offset,
@@ -22,7 +21,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
-    comptime INTEGRATOR_WS_EXTRA: Int = implicit_extra_workspace_size[9, 8]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # EulerIntegrator needs no extra workspace
 
     # Reward
     comptime FORWARD_REWARD_WEIGHT = 1.0
@@ -260,8 +259,12 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
 
         var reward = forward_reward - ctrl_cost - angle_penalty
 
-        # Health check — read max_pitch from curriculum
+        # Health check — read max_pitch from curriculum; fall back to config
+        # default when curriculum is not set (curriculum slot stays 0 when
+        # update_curriculum_gpu is never called, e.g. during plain evaluation).
         var max_pitch = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        if max_pitch <= Scalar[DTYPE](0.0):
+            max_pitch = Scalar[DTYPE](Self.MAX_PITCH)
         var terminated = y_angle > max_pitch or y_angle < -max_pitch
 
         return (reward, terminated)

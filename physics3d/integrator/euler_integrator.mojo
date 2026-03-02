@@ -1430,14 +1430,22 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 env, workspace
             )
 
-        # Step 5: v_new = v_old + dt * qacc_final
+        # Step 5: v_new = v_old + dt * qacc_final (clamped to prevent divergence)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var qacc_final = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
             state[env, qacc_off + i] = qacc_final
-            state[env, qvel_off + i] = old_qvel + qacc_final * dt
+            var qvel_new = old_qvel + qacc_final * dt
+            var qvel_max = Scalar[DTYPE](100.0)
+            if qvel_new != qvel_new:  # NaN guard: reset to zero
+                qvel_new = Scalar[DTYPE](0.0)
+            elif qvel_new > qvel_max:
+                qvel_new = qvel_max
+            elif qvel_new < -qvel_max:
+                qvel_new = -qvel_max
+            state[env, qvel_off + i] = qvel_new
 
         # Integrate position: qpos += qvel * dt (quaternion-aware for free joints)
         # (reuse model_meta_off from line 890)

@@ -131,6 +131,23 @@ fn _count_exact(xml: String, search: String) -> Int:
     return count
 
 
+fn _strip_xml_comments(s: String) -> String:
+    """Strip all XML comments <!-- ... --> from the string.
+
+    Handles multiple comments and nested <!-- in comment text.
+    """
+    var result = s
+    while True:
+        var start = result.find("<!--")
+        if start == -1:
+            break
+        var end = result.find("-->", start + 4)
+        if end == -1:
+            break  # Malformed XML, stop stripping
+        result = result[:start] + result[end + 3:]
+    return result
+
+
 fn _count_tag(xml: String, tag: String) -> Int:
     """Count occurrences of `<tag` followed by SPACE, >, /, NEWLINE, or TAB.
 
@@ -700,9 +717,12 @@ fn parse_xml(xml: String) -> ParsedModel:
     Actuators: `<motor`, `<position`, `<velocity`, `<general` in `<actuator>`.
     """
 
+    # ---- Strip XML comments to avoid counting commented-out tags ------------
+    var xml_clean = _strip_xml_comments(xml)
+
     # ---- Isolate sections to avoid counting <default> entries ---------------
-    var worldbody = _extract_section(xml, "worldbody")
-    var actuator_sec = _extract_section(xml, "actuator")
+    var worldbody = _extract_section(xml_clean, "worldbody")
+    var actuator_sec = _extract_section(xml_clean, "actuator")
 
     # ---- Bodies -------------------------------------------------------------
     # <body tags inside worldbody (does NOT match <worldbody> itself)
@@ -732,7 +752,7 @@ fn parse_xml(xml: String) -> ParsedModel:
     )
 
     # ---- Assets (<asset> section) -------------------------------------------
-    var asset_sec = _extract_section(xml, "asset")
+    var asset_sec = _extract_section(xml_clean, "asset")
     var ntex = _count_tag(asset_sec, "texture")
     var nmat = _count_tag(asset_sec, "material")
 
@@ -743,22 +763,22 @@ fn parse_xml(xml: String) -> ParsedModel:
 
     # ---- Compiler angle units -----------------------------------------------
     var angle_deg = False
-    var compiler_t = xml.find("<compiler")
+    var compiler_t = xml_clean.find("<compiler")
     if compiler_t != -1:
-        var compiler_end = xml.find(">", compiler_t)
+        var compiler_end = xml_clean.find(">", compiler_t)
         if compiler_end != -1:
-            var ctag = String(xml[compiler_t : compiler_end + 1])
+            var ctag = String(xml_clean[compiler_t : compiler_end + 1])
             var angle_val = _extract_attr(ctag, "angle")
             if _trim(angle_val) == "degree":
                 angle_deg = True
 
     # ---- Timestep (<option timestep="..."/>) --------------------------------
     var timestep = Float64(0.002)  # MuJoCo default
-    var option_t = xml.find("<option")
+    var option_t = xml_clean.find("<option")
     if option_t != -1:
-        var option_end = xml.find(">", option_t)
+        var option_end = xml_clean.find(">", option_t)
         if option_end != -1:
-            var otag = String(xml[option_t : option_end + 1])
+            var otag = String(xml_clean[option_t : option_end + 1])
             var ts_val = _extract_attr(otag, "timestep")
             if len(_trim(ts_val)) > 0:
                 timestep = _parse_float(ts_val)

@@ -14,7 +14,13 @@ Unified constraint representation:
 
 from .pgs_solver import PGSSolver
 from .newton_solver import NewtonSolver
+from .old_newton_solver import OldNewtonSolver
 from .cg_solver import CGSolver
-from .island_detection import detect_islands, IslandData, MAX_ISLANDS, ISLAND_J_THRESH
+from .island_detection import (
+    detect_islands,
+    IslandData,
+    MAX_ISLANDS,
+    ISLAND_J_THRESH,
+)
 from .island_solver import solve_with_islands, ISLAND_CONVERGE_EPS
 from .island_pgs_solver import IslandPGSSolver

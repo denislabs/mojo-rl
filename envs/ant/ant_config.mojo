@@ -267,9 +267,14 @@ struct AntConfig(Phyics3dEnvConfig):
             ctrl_cost_sum += a * a
         var ctrl_cost = Scalar[DTYPE](0.5) * ctrl_cost_sum
 
-        # Health check — read curriculum parameters (min_height, max_height)
+        # Health check — read curriculum parameters (min_height, max_height);
+        # fall back to defaults when curriculum is not set (slots remain 0).
         var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        if min_height <= Scalar[DTYPE](0.0):
+            min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
         var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        if max_height <= Scalar[DTYPE](0.0):
+            max_height = Scalar[DTYPE](Self.MAX_HEIGHT)
         var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
 
         var is_healthy = True
