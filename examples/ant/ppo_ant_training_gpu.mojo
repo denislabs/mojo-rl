@@ -1,23 +1,25 @@
-"""Test PPO Continuous Agent GPU Training on HalfCheetah.
+"""Test PPO Continuous Agent GPU Training on Ant.
 
 This tests the GPU implementation of PPO with continuous actions using the
-HalfCheetah environment with:
+Ant environment with:
 - Parallel environments on GPU
 - Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx and head)
+- 8D continuous action space (joint torques)
+- 27D observation (qpos + qvel excluding x,y)
 
-Action space (6D continuous):
-- action[0]: back thigh (hip) torque (-1.0 to 1.0) * gear=120
-- action[1]: back shin (knee) torque (-1.0 to 1.0) * gear=90
-- action[2]: back foot (ankle) torque (-1.0 to 1.0) * gear=60
-- action[3]: front thigh (hip) torque (-1.0 to 1.0) * gear=120
-- action[4]: front shin (knee) torque (-1.0 to 1.0) * gear=60
-- action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
+Action space (8D continuous):
+- action[0]: hip_4 torque (-1.0 to 1.0) * gear=150
+- action[1]: ankle_4 torque (-1.0 to 1.0) * gear=150
+- action[2]: hip_1 torque (-1.0 to 1.0) * gear=150
+- action[3]: ankle_1 torque (-1.0 to 1.0) * gear=150
+- action[4]: hip_2 torque (-1.0 to 1.0) * gear=150
+- action[5]: ankle_2 torque (-1.0 to 1.0) * gear=150
+- action[6]: hip_3 torque (-1.0 to 1.0) * gear=150
+- action[7]: ankle_3 torque (-1.0 to 1.0) * gear=150
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_half_cheetah_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_half_cheetah_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_ant_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_ant_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -26,10 +28,10 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import (
-    HalfCheetah,
-    HalfCheetahConfig,
-    HalfCheetahCurriculum,
+from envs.ant import (
+    Ant,
+    AntConfig,
+    AntCurriculum,
 )
 
 
@@ -37,9 +39,9 @@ from envs.half_cheetah import (
 # Constants
 # =============================================================================
 
-# HalfCheetah: 17D observation, 6D continuous action
-comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
-comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
+# Ant: 27D observation, 8D continuous action
+comptime OBS_DIM = AntConfig.OBS_DIM  # 27
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
@@ -50,7 +52,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 1_024
+comptime NUM_EPISODES = 50_000
 
 comptime dtype = DType.float32
 
@@ -63,7 +65,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Test on HalfCheetah")
+    print("PPO Continuous Agent GPU Test on Ant")
     print("=" * 70)
     print()
 
@@ -96,14 +98,14 @@ fn main() raises:
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
-            checkpoint_path="ppo_half_cheetah.ckpt",
+            checkpoint_path="ppo_ant.ckpt",
             normalize_rewards=True,
             obs_noise_std=0.0,
         )
 
-        # agent.load_checkpoint("ppo_half_cheetah.ckpt")
+        # agent.load_checkpoint("ppo_ant.ckpt")
 
-        print("Environment: HalfCheetah Continuous (GPU)")
+        print("Environment: Ant Continuous (GPU)")
         print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -122,22 +124,19 @@ fn main() raises:
         print("    - Gradient clipping: max_grad_norm=0.5")
         print("    - Reward normalization: enabled")
         print()
-        print("HalfCheetah specifics:")
+        print("Ant specifics:")
         print("  - Generalized Coordinates (GC) physics engine")
         print("  - MuJoCo-style joint-space dynamics")
-        print("  - Semi-implicit Euler integration (symplectic)")
-        print("  - 8 bodies: torso, 2 legs (thigh+shin+foot), head")
-        print("  - 10 joints: 3 root DOFs + 6 actuated + 1 fixed head")
-        print("  - 17D observations: [z_pos, y_angle,")
-        print("                       bthigh, bshin, bfoot,")
-        print("                       fthigh, fshin, ffoot,")
-        print("                       vel_x, vel_z, y_angvel,")
-        print("                       bthigh_vel, bshin_vel, bfoot_vel,")
-        print("                       fthigh_vel, fshin_vel, ffoot_vel]")
-        print("  - 6D continuous actions (joint torques with gear ratios)")
-        print("  - Reward: forward_velocity - ctrl_cost - angle_penalty")
-        print("  - Anti-flip: angle penalty + unhealthy termination")
-        print("  - Curriculum: max_pitch 3.0 → 1.0 rad")
+        print("  - RK4 integration (matching MuJoCo ant.xml)")
+        print("  - 14 bodies: torso + 4 legs (welded_leg + aux + ankle)")
+        print("  - 9 joints: 1 free root + 8 hinges (4 hip + 4 ankle)")
+        print("  - 27D observations: [z_pos, quat(4), hinge_qpos(8),")
+        print(
+            "                       vel_xyz(3), angvel_xyz(3), hinge_qvel(8)]"
+        )
+        print("  - 8D continuous actions (joint torques with gear=150)")
+        print("  - Reward: forward_velocity + healthy(1.0) - ctrl_cost(0.5)")
+        print("  - Termination: z not in [0.2, 1.0]")
         print()
         print("Expected rewards:")
         print("  - Random policy: ~-100 to -200")
@@ -157,7 +156,8 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
+                Ant[dtype, TERMINATE_ON_UNHEALTHY=False],
+                # AntCurriculum,
             ](
                 ctx,
                 num_episodes=NUM_EPISODES,

@@ -16,3 +16,6 @@ from .stochastic_actor import (
     compute_log_prob,
     get_deterministic_action,
 )
+from .mish import Mish
+from .simnorm import SimNorm
+from .normed_linear import NormedLinear

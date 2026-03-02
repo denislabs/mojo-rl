@@ -18,3 +18,4 @@ from .replay_buffer import (
     HeapReplayBuffer,
     ReplayBufferTrait,
 )
+from .sequence_replay_buffer import SequenceReplayBuffer
