@@ -272,14 +272,16 @@ fn forward_kinematics[
                 var qpos_adr = joint.qpos_adr
 
                 if jnt_type == JNT_FREE:
-                    # FREE joint: position and orientation directly from qpos
+                    # FREE joint: position and orientation directly from qpos.
+                    # MuJoCo qpos layout: [tx, ty, tz, qw, qx, qy, qz]
+                    # Our internal quaternion convention: (x, y, z, w)
                     cur_px = data.qpos[qpos_adr + 0]
                     cur_py = data.qpos[qpos_adr + 1]
                     cur_pz = data.qpos[qpos_adr + 2]
-                    cur_qx = data.qpos[qpos_adr + 3]
-                    cur_qy = data.qpos[qpos_adr + 4]
-                    cur_qz = data.qpos[qpos_adr + 5]
-                    cur_qw = data.qpos[qpos_adr + 6]
+                    cur_qw = data.qpos[qpos_adr + 3]  # MuJoCo qpos[3] = qw
+                    cur_qx = data.qpos[qpos_adr + 4]  # MuJoCo qpos[4] = qx
+                    cur_qy = data.qpos[qpos_adr + 5]  # MuJoCo qpos[5] = qy
+                    cur_qz = data.qpos[qpos_adr + 6]  # MuJoCo qpos[6] = qz
 
                     # Normalize quaternion
                     var normalized = quat_normalize(
@@ -916,7 +918,9 @@ fn forward_kinematics_gpu[
                 )
 
                 if jnt_type == JNT_FREE:
-                    # FREE joint: position and orientation directly from qpos
+                    # FREE joint: position and orientation directly from qpos.
+                    # MuJoCo qpos layout: [tx, ty, tz, qw, qx, qy, qz]
+                    # Our internal quaternion convention: (x, y, z, w)
                     cur_px = rebind[Scalar[DTYPE]](
                         state[env, qpos_off + qpos_adr + 0]
                     )
@@ -926,18 +930,18 @@ fn forward_kinematics_gpu[
                     cur_pz = rebind[Scalar[DTYPE]](
                         state[env, qpos_off + qpos_adr + 2]
                     )
-                    cur_qx = rebind[Scalar[DTYPE]](
-                        state[env, qpos_off + qpos_adr + 3]
-                    )
-                    cur_qy = rebind[Scalar[DTYPE]](
-                        state[env, qpos_off + qpos_adr + 4]
-                    )
-                    cur_qz = rebind[Scalar[DTYPE]](
-                        state[env, qpos_off + qpos_adr + 5]
-                    )
                     cur_qw = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 3]
+                    )  # MuJoCo qpos[3] = qw
+                    cur_qx = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 4]
+                    )  # MuJoCo qpos[4] = qx
+                    cur_qy = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 5]
+                    )  # MuJoCo qpos[5] = qy
+                    cur_qz = rebind[Scalar[DTYPE]](
                         state[env, qpos_off + qpos_adr + 6]
-                    )
+                    )  # MuJoCo qpos[6] = qz
 
                     var normalized = gpu_quat_normalize(
                         cur_qx, cur_qy, cur_qz, cur_qw

@@ -912,6 +912,42 @@ struct Model[
         self.num_joints += 1
         return joint_idx
 
+    fn add_free_joint(
+        mut self,
+        body_id: Int,
+        armature: Scalar[Self.DTYPE] = 0.0,
+        damping: Scalar[Self.DTYPE] = 0.0,
+    ) -> Int:
+        """Add a free joint (6 DOF) to a body.
+
+        Args:
+            body_id: Body this joint controls.
+            armature: Armature (default: 0.0).
+            damping: Damping (default: 0.0).
+
+        Returns:
+            Joint index, or -1 if max joints exceeded.
+        """
+        if self.num_joints >= Self.NJOINT:
+            return -1
+
+        var qpos_adr = 0
+        var dof_adr = 0
+        for i in range(self.num_joints):
+            qpos_adr += self.joints[i].qpos_size()
+            dof_adr += self.joints[i].qvel_size()
+
+        var joint_idx = self.num_joints
+        self.joints[joint_idx] = JointDef[Self.DTYPE].create_free(
+            body_id,
+            qpos_adr,
+            dof_adr,
+        )
+        self.joints[joint_idx].armature = armature
+        self.joints[joint_idx].damping = damping
+        self.num_joints += 1
+        return joint_idx
+
     fn add_connect_constraint(
         mut self,
         body_a: Int,

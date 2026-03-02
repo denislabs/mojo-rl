@@ -176,19 +176,21 @@ fn _integrate_pos_gpu[
                     workspace[env, vel_idx + dof_adr + d]
                 )
                 state[env, qpos_off + qpos_adr + d] = q0_d + v_d * dt
-            # Quaternion: exponential map integration
-            var qx = rebind[Scalar[DTYPE]](
-                workspace[env, q0_idx + qpos_adr + 3]
-            )
-            var qy = rebind[Scalar[DTYPE]](
-                workspace[env, q0_idx + qpos_adr + 4]
-            )
-            var qz = rebind[Scalar[DTYPE]](
-                workspace[env, q0_idx + qpos_adr + 5]
-            )
+            # Quaternion: exponential map integration.
+            # MuJoCo qpos layout: [tx, ty, tz, qw, qx, qy, qz]
+            # Our internal convention: (x, y, z, w)
             var qw = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 3]
+            )  # MuJoCo qpos[3] = qw
+            var qx = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 4]
+            )  # MuJoCo qpos[4] = qx
+            var qy = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 5]
+            )  # MuJoCo qpos[5] = qy
+            var qz = rebind[Scalar[DTYPE]](
                 workspace[env, q0_idx + qpos_adr + 6]
-            )
+            )  # MuJoCo qpos[6] = qz
             var wx = rebind[Scalar[DTYPE]](
                 workspace[env, vel_idx + dof_adr + 3]
             )
@@ -199,10 +201,11 @@ fn _integrate_pos_gpu[
                 workspace[env, vel_idx + dof_adr + 5]
             )
             var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
-            state[env, qpos_off + qpos_adr + 3] = result[0]
-            state[env, qpos_off + qpos_adr + 4] = result[1]
-            state[env, qpos_off + qpos_adr + 5] = result[2]
-            state[env, qpos_off + qpos_adr + 6] = result[3]
+            # Write back in MuJoCo qpos layout: [qw, qx, qy, qz]
+            state[env, qpos_off + qpos_adr + 3] = result[3]  # qw
+            state[env, qpos_off + qpos_adr + 4] = result[0]  # qx
+            state[env, qpos_off + qpos_adr + 5] = result[1]  # qy
+            state[env, qpos_off + qpos_adr + 6] = result[2]  # qz
 
         elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
             var q0_val = rebind[Scalar[DTYPE]](
@@ -625,11 +628,13 @@ fn _integrate_pos[
                 qpos_out[qpos_adr + d] = (
                     qpos_base[qpos_adr + d] + vel[dof_adr + d] * dt
                 )
-            # Quaternion: exponential map integration
-            var qx = qpos_base[qpos_adr + 3]
-            var qy = qpos_base[qpos_adr + 4]
-            var qz = qpos_base[qpos_adr + 5]
-            var qw = qpos_base[qpos_adr + 6]
+            # Quaternion: exponential map integration.
+            # MuJoCo qpos layout: [tx, ty, tz, qw, qx, qy, qz]
+            # Our internal convention: (x, y, z, w)
+            var qw = qpos_base[qpos_adr + 3]  # MuJoCo qpos[3] = qw
+            var qx = qpos_base[qpos_adr + 4]  # MuJoCo qpos[4] = qx
+            var qy = qpos_base[qpos_adr + 5]  # MuJoCo qpos[5] = qy
+            var qz = qpos_base[qpos_adr + 6]  # MuJoCo qpos[6] = qz
             var wx = vel[dof_adr + 3]
             var wy = vel[dof_adr + 4]
             var wz = vel[dof_adr + 5]
@@ -637,10 +642,11 @@ fn _integrate_pos[
             var norm = quat_normalize(
                 result[0], result[1], result[2], result[3]
             )
-            qpos_out[qpos_adr + 3] = norm[0]
-            qpos_out[qpos_adr + 4] = norm[1]
-            qpos_out[qpos_adr + 5] = norm[2]
-            qpos_out[qpos_adr + 6] = norm[3]
+            # Write back in MuJoCo qpos layout: [qw, qx, qy, qz]
+            qpos_out[qpos_adr + 3] = norm[3]  # qw
+            qpos_out[qpos_adr + 4] = norm[0]  # qx
+            qpos_out[qpos_adr + 5] = norm[1]  # qy
+            qpos_out[qpos_adr + 6] = norm[2]  # qz
 
         elif joint.jnt_type == JNT_BALL:
             # Quaternion: exponential map integration

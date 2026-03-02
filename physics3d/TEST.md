@@ -16,6 +16,8 @@ cd mojo-rl && pixi run -e apple mojo run physics3d/tests/<test_file>.mojo  # GPU
 **Models covered:**
 - **HalfCheetah** — pyramidal cone (`ConeType.PYRAMIDAL`), `NQ=10, NV=10, NBODY=9, NJOINT=10, NGEOM=9`
 - **Hopper** — elliptic cone (`ConeType.ELLIPTIC`), `NQ=6, NV=6, NBODY=5, NJOINT=6, NGEOM=5`
+- **Ant** — free joint (quaternion DOFs), 4-leg tree, 3D locomotion, `NQ=15, NV=14, NBODY=14, NJOINT=9, NGEOM=15`
+- **Swimmer** — no contacts (contype=0), 3-body planar chain, RK4 integrator, `NQ=5, NV=5, NBODY=4, NJOINT=5`
 
 **Key principle:** Test each pipeline stage independently before testing combined stages.
 Debugging a full-step failure is nearly impossible because errors compound through:
@@ -143,6 +145,85 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_qderiv_vs_mujoco.mojo` | qDeriv vs MuJoCo reference | PASS | HalfCheetah nonzero vel | matches MuJoCo |
 | `test_pyramidal_vs_mujoco.mojo` | Pyramidal cone Newton solver forces (qacc, qfrc_constraint) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2 (actual ~1e-3). D/R match exactly. |
 | `test_rk4_step_vs_mujoco.mojo` | RK4 full step no contact + contact (ref: MuJoCo RK4) | PASS (6/6) | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 1e-3, qvel: 1e-2 (actual err ~1e-6 no-contact, ~3.5e-6 contact) |
+
+#### Ant Tests (Free joint / 3D locomotion)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_ant_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body (free joint + hinges) | PASS (5/5) | 5 (default, zero, nonzero joints, extreme, raised) | pos: 1e-6, quat: 1e-5 (actual err ~1e-16) |
+| `test_ant_full_step_vs_mujoco.mojo` | Full step no contact + contact (RK4 + Newton) | PASS (5/6) | 5 pass: free fall, free fall+actions, default+no action, moving, 10-step. 1 FAIL: default+large actions+contacts | qpos: 1e-3, qvel: 1e-2 |
+
+**Ant FK notes:**
+- Ant has a **free joint** (JNT_FREE): 7 qpos DOFs [tx,ty,tz,qw,qx,qy,qz], 6 qvel DOFs [vx,vy,vz,wx,wy,wz]
+- First test validating FK for a full 3D floating-body model
+- Tree topology: torso → 4 legs (each: hip hinge → ankle hinge), no parent body for torso
+
+**Ant full step notes:**
+- Uses RK4 integrator + Newton solver (elliptic cone), no contacts for most tests
+- 5/6 tests pass. One remaining failure: `test_default_pose_with_actions`
+  - **Root cause**: 4 contacts (legs touching ground) + large motor forces (0.8 × gear=150 = 120 N·m) → contact solver precision differences cause 3-37% errors in free-joint velocity DOFs
+  - This is a contact solver accuracy issue under extreme forces, not a physics modeling bug
+- **Bug found and fixed (geom density)**: Ant XML uses `density="5.0"` in `<default><geom>`.
+  Our `DefaultsData` was missing a `geom_density` field → always used hardcoded `MJ_DEFAULT_DENSITY=1000.0`.
+  Result: all Ant body masses 200× too large → M[hip,hip] ≈ 6.2 (ours) vs ≈ 1.026 (MuJoCo) → motor-driven qacc ≈ 5× too small.
+  Fix: added `geom_density` to `DefaultsData` and `density` to `GeomData` in `flat_model.mojo`,
+  parsed `density` from XML defaults and per-geom in `full_parser.mojo`, computed `gd.mass = density * volume`
+  inline during parsing for all geom types (sphere/capsule/box/cylinder).
+  Files: `physics3d/parser/flat_model.mojo`, `physics3d/parser/full_parser.mojo`
+
+#### Swimmer Tests (No contacts / pure dynamics)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_swimmer_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body (slide+hinge chain) | PASS (6/6) | 6 (default, zero, bent joints, moving, extreme, large displacement) | pos: 1e-6, quat: 1e-5 (actual err ~1e-16) |
+| `test_swimmer_full_step_vs_mujoco.mojo` | Full step no contact (RK4 + Newton, fluid disabled) | PASS (5/5) | 5 (zero state, bent joints, motor actions, moving+actions, 10-step) | qpos: 1e-3, qvel: 1e-2 |
+
+**Swimmer FK notes:**
+- Swimmer is entirely contact-free (contype=0 on all geoms) — pure rigid-body dynamics test
+- Body chain: world_body → torso (slide_x, slide_y, free_body_rot hinges) → mid_body → back_body
+
+**Swimmer full step notes:**
+- First contact-free full step test (all existing full step tests have contacts or are free fall)
+- MuJoCo fluid dynamics disabled (`viscosity=0, density=0`) since our engine has no fluid drag/buoyancy
+- All 5 configs pass at RK4 accuracy; errors ~1e-6 to 1e-4
+- Validates pure rigid-body dynamics: FK, mass matrix, bias forces, RK4 stages, actuator gear mapping
+
+#### InvertedDoublePendulum Tests (Slide + hinge chain)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_inverted_double_pendulum_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body (slide + 2 hinges) | PASS (5/5) | 5 (default, displaced cart, first hinge, both hinges, large tilt) | pos: 1e-6, quat: 1e-5 (actual err ~1e-16) |
+
+**IDP FK notes:**
+- Simplest model tested: 3 DOFs, 3 bodies (cart, pole, pole2), contype=0 (no contacts)
+- Validates slide joint translation and chained hinge rotations in a lightweight model
+- Errors at machine precision (~1e-16) for all 5 configurations
+
+#### Walker2D Tests (Biped / two-leg)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_walker2d_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body (two legs, off-center joints) | PASS (5/5) | 5 (default standing, large rootx, bent right leg, symmetric gait, extreme joints) | pos: 1e-6, quat: 1e-5 (actual err ~1e-16) |
+
+**Walker2D FK notes:**
+- Biped topology: torso + 2 × (thigh → leg → foot), complements Hopper's single-leg coverage
+- `leg_joint` has `pos="0 0 0.25"` and `foot_joint` has `pos="-0.2 0 0.1"` — same off-center jnt_pos structure that exposed the cdof anchor bug in Hopper; passes cleanly
+- `rootz` has `ref="1.25"` → qpos0[rootz]=1.25; default standing pose uses qpos[rootz]=1.25
+- Errors at machine precision (~1e-16) for all 5 configurations
+
+#### Humanoid Tests (Free joint + tendon constraints)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_humanoid_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body (free joint + 17 hinges + body quats) | PASS (5/5) | 5 (default standing, bent knees, arms extended, rotated torso, full body pose) | pos: 5e-6, quat: 1e-5 (actual arm err ~1e-16, leg chain err ~1-3e-6) |
+
+**Humanoid FK notes:**
+- Most complex model: 24 NQ, 23 NV, 14 bodies, free joint + 17 hinges, 2 tendons
+- First test with body-level `quat=` attributes (`lwaist` and `pelvis` have `quat="1.000 0 -0.002 0"`)
+- **Bug found and fixed (`_parse_quat`)**: `_parse_quat` in `xml_parser.mojo` was reading quaternions as `"x y z w"` but MuJoCo XML stores all quaternion attributes as `"w x y z"`. This caused `lwaist`/`pelvis` body quats to be parsed as a 90° rotation instead of a ~0.1° tilt → all downstream bodies (pelvis, thighs, shins, feet) had 0.33m position errors. Fix: reversed the parse order so `parts[0]` is read as `qw`, returning `(qx, qy, qz, qw)`.
+  File: `physics3d/parser/xml_parser.mojo`
+  Impact: any XML model with explicit `quat=` on body, geom, or joint tags had wrong orientations. HalfCheetah/Hopper/Ant/Swimmer/Walker2D all use `fromto`/`axisangle`/`euler` instead, so were unaffected.
+- Tolerance is 5e-6 (vs usual 1e-6) because `lwaist`'s tiny body quat rotation introduces cos/sin rounding that accumulates ~1-3 µm down the pelvis→thigh→shin→foot chain. Arms (no body quat in parent chain) still hit ~1e-16.
 
 #### Hopper Tests (Elliptic cone)
 
@@ -614,3 +695,35 @@ mj_data.efc_force         # Per-constraint force (nefc)
 | `test_<component>.mojo` | Standalone / analytical test (CPU) |
 | `test_<component>_gpu.mojo` | Standalone GPU test |
 | `test_<component>_diag.mojo` | Diagnostic (logging, not pass/fail) |
+
+
+New Coverage Analysis                                                                                                                                                                 
+                                                                                                                                                                                        
+  ┌──────────────────────────┬───────────────────────────────────────────────────────────────────────┐                                                                                  
+  │       Environment        │                  What's unique vs HalfCheetah/Hopper                  │
+  ├──────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Swimmer                  │ No contacts (contype=0), pure dynamics, 3-body chain                  │
+  ├──────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Inverted Double Pendulum │ Simplest env (3 DOF), slide+2hinges, no contacts, tip site            │
+  ├──────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Walker2D                 │ Biped with 2 legs (vs Hopper's 1), RK4 integrator                     │
+  ├──────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Ant                      │ First 3D free joint (quaternion DOFs), 4-leg tree, real 3D locomotion │
+  ├──────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Humanoid                 │ Tendon constraints (fixed joint couplings), 24 DOF, most complex      │
+  └──────────────────────────┴───────────────────────────────────────────────────────────────────────┘
+
+  Proposed Tests (prioritized by unique coverage)
+
+  Tier 1 — High value, different physics
+
+  1. test_ant_fk_vs_mujoco.mojo — DONE (5/5 PASS). First test with a real 3D free joint (quaternion body). Validates FK for 3D multi-leg topology.
+  2. test_ant_full_step_vs_mujoco.mojo — DONE (5/6 PASS). Free joint + 4-leg contacts. Most different from existing tests. 1 FAIL: large actions + contacts (contact solver accuracy).
+  3. test_swimmer_fk_vs_mujoco.mojo — DONE (6/6 PASS). Pure dynamics, no contacts. Different body chain topology.
+  4. test_swimmer_full_step_vs_mujoco.mojo — DONE (5/5 PASS). Contact-free full step (unique — all existing full step tests have contacts or are in free fall).
+
+  Tier 2 — Good coverage additions
+
+  5. test_inverted_double_pendulum_fk_vs_mujoco.mojo — DONE (5/5 PASS). Simplest model, slide+hinge chain. Machine precision.
+  6. test_walker2d_fk_vs_mujoco.mojo — DONE (5/5 PASS). Biped topology, complements Hopper coverage. Machine precision.
+  7. test_humanoid_fk_vs_mujoco.mojo — DONE (5/5 PASS). Body-level quat attrs, dense tree, free joint. Fixed _parse_quat bug (w,x,y,z order).

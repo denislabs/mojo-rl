@@ -218,6 +218,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_3: Float64
     var solimp_4: Float64
     var margin: Float64
+    var density: Float64  # kg/m³; used when mass=-1 to compute mass from volume
     var mass: Float64     # -1.0 = use density (not specified explicitly)
     var rgba_r: Float64   # visual colour (r component, 0..1)
     var rgba_g: Float64
@@ -255,6 +256,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         solimp_3: Float64 = 0.5,
         solimp_4: Float64 = 2.0,
         margin: Float64 = 0.0,
+        density: Float64 = 1000.0,
         mass: Float64 = -1.0,
         rgba_r: Float64 = 0.7,
         rgba_g: Float64 = 0.7,
@@ -290,6 +292,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_3 = solimp_3
         self.solimp_4 = solimp_4
         self.margin = margin
+        self.density = density
         self.mass = mass
         self.rgba_r = rgba_r
         self.rgba_g = rgba_g
@@ -659,6 +662,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var joint_solimp_limit_2: Float64
     var joint_solimp_limit_3: Float64
     var joint_solimp_limit_4: Float64
+    var geom_density: Float64
     var geom_friction: Float64
     var geom_friction_spin: Float64
     var geom_friction_roll: Float64
@@ -696,6 +700,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_solimp_limit_2: Float64 = 0.001,
         joint_solimp_limit_3: Float64 = 0.5,
         joint_solimp_limit_4: Float64 = 2.0,
+        geom_density: Float64 = 1000.0,
         geom_friction: Float64 = 0.5,
         geom_friction_spin: Float64 = 0.005,
         geom_friction_roll: Float64 = 0.0001,
@@ -731,6 +736,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_solimp_limit_2 = joint_solimp_limit_2
         self.joint_solimp_limit_3 = joint_solimp_limit_3
         self.joint_solimp_limit_4 = joint_solimp_limit_4
+        self.geom_density = geom_density
         self.geom_friction = geom_friction
         self.geom_friction_spin = geom_friction_spin
         self.geom_friction_roll = geom_friction_roll
@@ -936,7 +942,13 @@ struct FlatModelDef[
                     springref=Scalar[DTYPE](jd.springref),
                     frictionloss=Scalar[DTYPE](jd.frictionloss),
                 )
-            # JNT_BALL and JNT_FREE not yet wired — add when needed
+            elif jd.jnt_type == JNT_FREE:
+                _ = model.add_free_joint(
+                    jd.body_id,
+                    armature=Scalar[DTYPE](jd.armature),
+                    damping=Scalar[DTYPE](jd.damping),
+                )
+            # JNT_BALL not yet wired — add when needed
 
             # Set qpos0 from joint ref attribute (MuJoCo: displacement = qpos - qpos0)
             var qpos_adr_j = model.joints[j].qpos_adr

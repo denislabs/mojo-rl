@@ -193,6 +193,10 @@ fn _parse_defaults(xml: String) -> DefaultsData:
     if gpos != -1:
         var gtag = _extract_opening_tag(defaults_sec, gpos)
 
+        var dens_s = _extract_attr(gtag, "density")
+        if len(dens_s) > 0:
+            d.geom_density = _parse_float(dens_s)
+
         var fric_s = _extract_attr(gtag, "friction")
         if len(fric_s) > 0:
             var fvec = _parse_vec3(fric_s)
@@ -1245,9 +1249,33 @@ fn _fill_model[
                 var mg_s = _extract_attr(tag, "margin")
                 gd.margin = _parse_float(mg_s) if len(mg_s) > 0 else defaults.geom_margin
 
-                # mass (explicit)
+                # density (per-geom overrides default; used when mass is absent)
+                var dens_s = _extract_attr(tag, "density")
+                gd.density = _parse_float(dens_s) if len(dens_s) > 0 else defaults.geom_density
+
+                # mass: explicit if provided, else compute from density * volume
                 var ms_s = _extract_attr(tag, "mass")
-                gd.mass = _parse_float(ms_s) if len(ms_s) > 0 else Float64(-1)
+                if len(ms_s) > 0:
+                    gd.mass = _parse_float(ms_s)
+                else:
+                    # Compute mass = density * volume based on geom type and size
+                    var PI: Float64 = 3.14159265358979323846
+                    var vol: Float64 = 0.0
+                    if gd.geom_type == _GEOM_SPHERE:
+                        vol = (Float64(4.0) / Float64(3.0)) * PI * gd.radius * gd.radius * gd.radius
+                    elif gd.geom_type == _GEOM_CAPSULE:
+                        var cyl_vol = PI * gd.radius * gd.radius * (Float64(2.0) * gd.half_length)
+                        var sph_vol = (Float64(4.0) / Float64(3.0)) * PI * gd.radius * gd.radius * gd.radius
+                        vol = cyl_vol + sph_vol
+                    elif gd.geom_type == _GEOM_BOX:
+                        vol = Float64(8.0) * gd.half_x * gd.half_y * gd.half_z
+                    elif gd.geom_type == _GEOM_CYLINDER:
+                        vol = PI * gd.radius * gd.radius * (Float64(2.0) * gd.half_length)
+                    # PLANE has no volume → mass stays 0
+                    if vol > Float64(0):
+                        gd.mass = gd.density * vol
+                    else:
+                        gd.mass = Float64(-1)
 
                 # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
                 var rgba_s = _extract_attr(tag, "rgba")

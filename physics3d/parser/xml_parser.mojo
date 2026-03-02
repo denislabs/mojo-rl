@@ -397,21 +397,25 @@ fn _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
 
 
 fn _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
-    """Parse "x y z w" space-separated string into (qx, qy, qz, qw)."""
+    """Parse MuJoCo "w x y z" quaternion string into internal (qx, qy, qz, qw).
+
+    MuJoCo XML stores all quaternion attributes (body quat, geom quat, iquat,
+    joint quat) in (w, x, y, z) order. Our internal representation is (x, y, z, w).
+    """
     var parts = List[String]()
     _split_spaces(s, parts)
+    var qw = Float64(1)
     var qx = Float64(0)
     var qy = Float64(0)
     var qz = Float64(0)
-    var qw = Float64(1)
     if len(parts) >= 1:
-        qx = _parse_float(parts[0])
+        qw = _parse_float(parts[0])
     if len(parts) >= 2:
-        qy = _parse_float(parts[1])
+        qx = _parse_float(parts[1])
     if len(parts) >= 3:
-        qz = _parse_float(parts[2])
+        qy = _parse_float(parts[2])
     if len(parts) >= 4:
-        qw = _parse_float(parts[3])
+        qz = _parse_float(parts[3])
     return (qx, qy, qz, qw)
 
 
