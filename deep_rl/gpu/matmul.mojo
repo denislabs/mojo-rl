@@ -78,8 +78,7 @@ fn tiled_matmul_kernel[
         barrier()
 
         # Compute partial product for this tile
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[
                 Scalar[dtype]
             ](b_shared[k, local_col])
@@ -169,8 +168,7 @@ fn matmul_kernel[
         barrier()
 
         # Compute partial matrix multiplication for this tile
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()
@@ -260,8 +258,7 @@ fn matmul_bias_kernel[
         barrier()
 
         # Compute partial matrix multiplication for this tile
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()

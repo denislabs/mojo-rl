@@ -27,13 +27,13 @@ struct ObsState[N: Int](Copyable, Movable, State):
         """Initialize from an existing InlineArray."""
         self.data = data.copy()
 
-    fn __copyinit__(out self, read other: Self):
+    fn __init__(out self, copy: Self):
         """Copy constructor."""
-        self.data = other.data.copy()
+        self.data = copy.data.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, deinit take: Self):
         """Move constructor."""
-        self.data = other.data^
+        self.data = take.data^
 
     fn __eq__(self, other: Self) -> Bool:
         """Check equality with another state."""

@@ -171,7 +171,7 @@ struct MouseWheelDirection(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __init__(out self, value: Int):
-        self.value = value
+        self.value = UInt32(value)
 
     @always_inline
     fn __int__(self) -> Int:
@@ -240,7 +240,7 @@ fn has_mouse() raises -> Bool:
 
 
 fn get_mice(
-    count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[MouseID, AnyOrigin[True]]
+    count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[MouseID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected mice.
 
@@ -267,14 +267,14 @@ fn get_mice(
     ret = _get_dylib_function[
         lib,
         "SDL_GetMice",
-        fn(count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[MouseID, AnyOrigin[True]],
+        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[MouseID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_mouse_name_for_id(
-    instance_id: MouseID, out ret: Ptr[c_char, AnyOrigin[False]]
+    instance_id: MouseID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the name of a mouse.
 
@@ -296,13 +296,13 @@ fn get_mouse_name_for_id(
     ret = _get_dylib_function[
         lib,
         "SDL_GetMouseNameForID",
-        fn(instance_id: MouseID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(instance_id: MouseID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_mouse_focus() raises -> Ptr[Window, AnyOrigin[True]]:
+fn get_mouse_focus() raises -> Ptr[Window, MutAnyOrigin]:
     """Get the window which currently has mouse focus.
 
     Returns:
@@ -315,12 +315,12 @@ fn get_mouse_focus() raises -> Ptr[Window, AnyOrigin[True]]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetMouseFocus", fn() -> Ptr[Window, AnyOrigin[True]]
+        lib, "SDL_GetMouseFocus", fn() -> Ptr[Window, MutAnyOrigin]
     ]()()
 
 
 fn get_mouse_state(
-    x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+    x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query SDL's cache for the synchronous mouse button state and the
     window-relative SDL-cursor position.
@@ -358,13 +358,13 @@ fn get_mouse_state(
         lib,
         "SDL_GetMouseState",
         fn(
-            x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+            x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
         ) -> MouseButtonFlags,
     ]()(x, y)
 
 
 fn get_global_mouse_state(
-    x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+    x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query the platform for the asynchronous mouse button state and the
     desktop-relative platform-cursor position.
@@ -405,13 +405,13 @@ fn get_global_mouse_state(
         lib,
         "SDL_GetGlobalMouseState",
         fn(
-            x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+            x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
         ) -> MouseButtonFlags,
     ]()(x, y)
 
 
 fn get_relative_mouse_state(
-    x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+    x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query SDL's cache for the synchronous mouse button state and accumulated
     mouse delta since last call.
@@ -451,13 +451,13 @@ fn get_relative_mouse_state(
         lib,
         "SDL_GetRelativeMouseState",
         fn(
-            x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]]
+            x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
         ) -> MouseButtonFlags,
     ]()(x, y)
 
 
 fn warp_mouse_in_window(
-    window: Ptr[Window, AnyOrigin[True]], x: c_float, y: c_float
+    window: Ptr[Window, MutAnyOrigin], x: c_float, y: c_float
 ) raises -> None:
     """Move the mouse cursor to the given position within the window.
 
@@ -483,9 +483,7 @@ fn warp_mouse_in_window(
     return _get_dylib_function[
         lib,
         "SDL_WarpMouseInWindow",
-        fn(
-            window: Ptr[Window, AnyOrigin[True]], x: c_float, y: c_float
-        ) -> None,
+        fn(window: Ptr[Window, MutAnyOrigin], x: c_float, y: c_float) -> None,
     ]()(window, x, y)
 
 
@@ -522,7 +520,7 @@ fn warp_mouse_global(x: c_float, y: c_float) raises:
 
 
 fn set_window_relative_mouse_mode(
-    window: Ptr[Window, AnyOrigin[True]], enabled: Bool
+    window: Ptr[Window, MutAnyOrigin], enabled: Bool
 ) raises:
     """Set relative mouse mode for a window.
 
@@ -555,14 +553,14 @@ fn set_window_relative_mouse_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowRelativeMouseMode",
-        fn(window: Ptr[Window, AnyOrigin[True]], enabled: Bool) -> Bool,
+        fn(window: Ptr[Window, MutAnyOrigin], enabled: Bool) -> Bool,
     ]()(window, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_window_relative_mouse_mode(
-    window: Ptr[Window, AnyOrigin[True]]
+    window: Ptr[Window, MutAnyOrigin]
 ) raises -> Bool:
     """Query whether relative mouse mode is enabled for a window.
 
@@ -581,7 +579,7 @@ fn get_window_relative_mouse_mode(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowRelativeMouseMode",
-        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
 
 
@@ -642,13 +640,13 @@ fn capture_mouse(enabled: Bool) raises:
 
 
 fn create_cursor(
-    data: Ptr[UInt8, AnyOrigin[False]],
-    mask: Ptr[UInt8, AnyOrigin[False]],
+    data: Ptr[UInt8, ImmutAnyOrigin],
+    mask: Ptr[UInt8, ImmutAnyOrigin],
     w: c_int,
     h: c_int,
     hot_x: c_int,
     hot_y: c_int,
-) raises -> Ptr[Cursor, AnyOrigin[True]]:
+) raises -> Ptr[Cursor, MutAnyOrigin]:
     """Create a cursor using the specified bitmap data and mask (in MSB format).
 
     `mask` has to be in MSB (Most Significant Bit) format.
@@ -696,21 +694,21 @@ fn create_cursor(
         lib,
         "SDL_CreateCursor",
         fn(
-            data: Ptr[UInt8, AnyOrigin[False]],
-            mask: Ptr[UInt8, AnyOrigin[False]],
+            data: Ptr[UInt8, ImmutAnyOrigin],
+            mask: Ptr[UInt8, ImmutAnyOrigin],
             w: c_int,
             h: c_int,
             hot_x: c_int,
             hot_y: c_int,
-        ) -> Ptr[Cursor, AnyOrigin[True]],
+        ) -> Ptr[Cursor, MutAnyOrigin],
     ]()(data, mask, w, h, hot_x, hot_y)
 
 
 fn create_color_cursor(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     hot_x: c_int,
     hot_y: c_int,
-    out ret: Ptr[Cursor, AnyOrigin[True]],
+    out ret: Ptr[Cursor, MutAnyOrigin],
 ) raises:
     """Create a color cursor.
 
@@ -743,15 +741,15 @@ fn create_color_cursor(
         lib,
         "SDL_CreateColorCursor",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]], hot_x: c_int, hot_y: c_int
-        ) -> Ptr[Cursor, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin], hot_x: c_int, hot_y: c_int
+        ) -> Ptr[Cursor, MutAnyOrigin],
     ]()(surface, hot_x, hot_y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn create_system_cursor(
-    id: SystemCursor, out ret: Ptr[Cursor, AnyOrigin[True]]
+    id: SystemCursor, out ret: Ptr[Cursor, MutAnyOrigin]
 ) raises:
     """Create a system cursor.
 
@@ -771,13 +769,13 @@ fn create_system_cursor(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateSystemCursor",
-        fn(id: SystemCursor) -> Ptr[Cursor, AnyOrigin[True]],
+        fn(id: SystemCursor) -> Ptr[Cursor, MutAnyOrigin],
     ]()(id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_cursor(cursor: Ptr[Cursor, AnyOrigin[True]]) raises:
+fn set_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises:
     """Set the active cursor.
 
     This function sets the currently active cursor to the specified one. If the
@@ -799,13 +797,13 @@ fn set_cursor(cursor: Ptr[Cursor, AnyOrigin[True]]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_SetCursor", fn(cursor: Ptr[Cursor, AnyOrigin[True]]) -> Bool
+        lib, "SDL_SetCursor", fn(cursor: Ptr[Cursor, MutAnyOrigin]) -> Bool
     ]()(cursor)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_cursor() raises -> Ptr[Cursor, AnyOrigin[True]]:
+fn get_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     """Get the active cursor.
 
     This function returns a pointer to the current cursor which is owned by the
@@ -821,11 +819,11 @@ fn get_cursor() raises -> Ptr[Cursor, AnyOrigin[True]]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCursor", fn() -> Ptr[Cursor, AnyOrigin[True]]
+        lib, "SDL_GetCursor", fn() -> Ptr[Cursor, MutAnyOrigin]
     ]()()
 
 
-fn get_default_cursor() raises -> Ptr[Cursor, AnyOrigin[True]]:
+fn get_default_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     """Get the default cursor.
 
     You do not have to call SDL_DestroyCursor() on the return value, but it is
@@ -842,11 +840,11 @@ fn get_default_cursor() raises -> Ptr[Cursor, AnyOrigin[True]]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetDefaultCursor", fn() -> Ptr[Cursor, AnyOrigin[True]]
+        lib, "SDL_GetDefaultCursor", fn() -> Ptr[Cursor, MutAnyOrigin]
     ]()()
 
 
-fn destroy_cursor(cursor: Ptr[Cursor, AnyOrigin[True]]) raises -> None:
+fn destroy_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises -> None:
     """Free a previously-created cursor.
 
     Use this function to free cursor resources created with SDL_CreateCursor(),
@@ -864,7 +862,7 @@ fn destroy_cursor(cursor: Ptr[Cursor, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyCursor",
-        fn(cursor: Ptr[Cursor, AnyOrigin[True]]) -> None,
+        fn(cursor: Ptr[Cursor, MutAnyOrigin]) -> None,
     ]()(cursor)
 
 

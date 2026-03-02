@@ -88,11 +88,11 @@ struct CartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, deinit take: Self):
+        self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -104,11 +104,11 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, copy: Self):
+        self.direction = copy.direction
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, deinit take: Self):
+        self.direction = take.direction
 
     @staticmethod
     fn left() -> Self:
@@ -939,7 +939,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             return
 
         # GPU-compatible random: seed based on thread index + external seed
-        var rng = xorshift32(Scalar[DType.uint32](i * 2654435761 + rng_seed))
+        var rng = xorshift32(
+            Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
+        )
 
         # Generate 4 random values in [-0.05, 0.05] for initial state
         var result_x = random_range[gpu_dtype](

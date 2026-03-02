@@ -391,8 +391,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         Uses compile-time DOF_ADR and QPOS_ADR from ActuatorSpec.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof_adr = A_item.DOF_ADR
             comptime qpos_adr = A_item.QPOS_ADR
@@ -411,8 +410,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
             # Compute gain
             var gain = Scalar[DTYPE](A_item.GAINPRM_0)
 
-            @parameter
-            if A_item.GAINTYPE == GAIN_AFFINE:
+            comptime if A_item.GAINTYPE == GAIN_AFFINE:
                 var qpos_val = data.qpos[qpos_adr]
                 var qvel_val = data.qvel[dof_adr]
                 gain = (
@@ -424,8 +422,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
             # Compute bias
             var bias = Scalar[DTYPE](0)
 
-            @parameter
-            if A_item.BIASTYPE == BIAS_AFFINE:
+            comptime if A_item.BIASTYPE == BIAS_AFFINE:
                 var qpos_val = data.qpos[qpos_adr]
                 var qvel_val = data.qvel[dof_adr]
                 bias = (
@@ -478,8 +475,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         comptime QVEL_OFF = qvel_offset[NQ, NV]()
         comptime QFRC_OFF = qfrc_offset[NQ, NV]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof_adr = A_item.DOF_ADR
             comptime qpos_adr = A_item.QPOS_ADR
@@ -498,8 +494,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
             # Compute gain
             var gain = Scalar[GDTYPE](A_item.GAINPRM_0)
 
-            @parameter
-            if A_item.GAINTYPE == GAIN_AFFINE:
+            comptime if A_item.GAINTYPE == GAIN_AFFINE:
                 var qpos_val = rebind[Scalar[GDTYPE]](
                     states[env, QPOS_OFF + qpos_adr]
                 )
@@ -515,8 +510,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
             # Compute bias
             var bias = Scalar[GDTYPE](0)
 
-            @parameter
-            if A_item.BIASTYPE == BIAS_AFFINE:
+            comptime if A_item.BIASTYPE == BIAS_AFFINE:
                 var qpos_val = rebind[Scalar[GDTYPE]](
                     states[env, QPOS_OFF + qpos_adr]
                 )
@@ -561,8 +555,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         Velocity-dependent terms contribute negative damping-like effects.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof = A_item.DOF_ADR
             # Velocity derivative: d(force)/d(qvel) = gear * (gainprm_2 + biasprm_2)
@@ -570,8 +563,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
                 A_item.GAINPRM_2 + A_item.BIASPRM_2
             )
 
-            @parameter
-            if vel_deriv != 0.0:
+            comptime if vel_deriv != 0.0:
                 qderiv[dof * NV + dof] += Scalar[DTYPE](vel_deriv)
 
     @always_inline
@@ -587,16 +579,14 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         """Add actuator velocity derivative contributions to qDeriv in GPU workspace.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof = A_item.DOF_ADR
             comptime vel_deriv = A_item.GEAR * (
                 A_item.GAINPRM_2 + A_item.BIASPRM_2
             )
 
-            @parameter
-            if vel_deriv != 0.0:
+            comptime if vel_deriv != 0.0:
                 var idx = qderiv_offset + dof * NV + dof
                 var cur = rebind[Scalar[GDTYPE]](workspace[env, idx])
                 workspace[env, idx] = cur + Scalar[GDTYPE](vel_deriv)

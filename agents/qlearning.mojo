@@ -13,25 +13,6 @@ struct QTable(Copyable, ImplicitlyCopyable, Movable):
     var num_states: Int
     var num_actions: Int
 
-    fn copy(self) -> Self:
-        """Explicit copy method."""
-        var new_table = Self(self.num_states, self.num_actions)
-        for i in range(len(self.data)):
-            new_table.data[i] = self.data[i]
-        return new_table^
-
-    fn __copyinit__(out self, existing: Self):
-        self.num_states = existing.num_states
-        self.num_actions = existing.num_actions
-        self.data = List[Float64](capacity=len(existing.data))
-        for i in range(len(existing.data)):
-            self.data.append(existing.data[i])
-
-    fn __moveinit__(out self, deinit existing: Self):
-        self.data = existing.data^
-        self.num_states = existing.num_states
-        self.num_actions = existing.num_actions
-
     fn __init__(
         out self,
         num_states: Int,
@@ -44,6 +25,16 @@ struct QTable(Copyable, ImplicitlyCopyable, Movable):
         self.data = List[Float64](capacity=total_size)
         for _ in range(total_size):
             self.data.append(initial_value)
+
+    fn __init__(out self, copy: Self):
+        self.num_states = copy.num_states
+        self.num_actions = copy.num_actions
+        self.data = copy.data.copy()
+
+    fn __init__(out self, deinit take: Self):
+        self.data = take.data^
+        self.num_states = take.num_states
+        self.num_actions = take.num_actions
 
     @always_inline
     fn _index(self, state: Int, action: Int) -> Int:
@@ -92,23 +83,23 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var epsilon_min: Float64
     var num_actions: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
+    fn __init__(out self, copy: Self):
+        self.q_table = copy.q_table.copy()
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
+    fn __init__(out self, deinit take: Self):
+        self.q_table = take.q_table^
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
 
     fn __init__(
         out self,
@@ -134,7 +125,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var rand = random_float64()
         if rand < self.epsilon:
             # random_si64 is inclusive on both ends, so use num_actions - 1
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.q_table.get_best_action(state_idx)
 
@@ -216,7 +207,9 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

@@ -287,8 +287,7 @@ fn _forward_dynamics[
     # 5. Full mass matrix
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
 
-    @parameter
-    if SPARSE:
+    comptime if SPARSE:
         build_sparse_pattern[
             DTYPE,
             NQ,
@@ -337,8 +336,7 @@ fn _forward_dynamics[
         var dof_adr = joint.dof_adr
         var arm = joint.armature
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             if joint.jnt_type == JNT_FREE:
                 for d in range(6):
                     sM.values[sM.diag_pos(dof_adr + d)] += arm
@@ -364,8 +362,7 @@ fn _forward_dynamics[
                 )
 
     # 5c. Expand sparse to dense for M_out (must be before ldl_factor_sparse mutates sM)
-    @parameter
-    if SPARSE:
+    comptime if SPARSE:
         sparse_to_dense[DTYPE, NV, NM](sM, M_out)
 
     # 6. LDL factorize
@@ -376,8 +373,7 @@ fn _forward_dynamics[
     for _ in range(V_SIZE):
         D.append(Scalar[DTYPE](0))
 
-    @parameter
-    if SPARSE:
+    comptime if SPARSE:
         ldl_factor_sparse(sM)
     else:
         ldl_factor[
@@ -475,8 +471,7 @@ fn _forward_dynamics[
     for i in range(NV):
         qacc_out[i] = Scalar[DTYPE](0)
 
-    @parameter
-    if SPARSE:
+    comptime if SPARSE:
         ldl_solve_sparse[DTYPE, NV, NM](sM, f_net, qacc_out)
     else:
         ldl_solve[DTYPE, NV](L, D, f_net, qacc_out)
@@ -485,8 +480,7 @@ fn _forward_dynamics[
     for i in range(M_SIZE):
         M_inv_out[i] = Scalar[DTYPE](0)
 
-    @parameter
-    if SPARSE:
+    comptime if SPARSE:
         # Compute M_inv column-by-column: solve M * e_j = e_j for each j
         var e_col = List[Scalar[DTYPE]](capacity=V_SIZE)
         for _ in range(V_SIZE):
@@ -1146,8 +1140,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             _ = build_sparse_pattern_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
             ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
@@ -1173,8 +1166,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # ---- Pre-stage: save A[prev] and set intermediate state ----
 
-        @parameter
-        if STAGE == 0:
+        comptime if STAGE == 0:
             # Save initial state to workspace
             for i in range(NQ):
                 workspace[env, q0_idx + i] = state[env, qpos_off + i]
@@ -1331,8 +1323,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model, workspace)
 
         # 6. Full mass matrix
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             compute_mass_matrix_sparse_gpu[
                 DTYPE,
                 NQ,
@@ -1379,8 +1370,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, idx] += arm
 
         # 7. LDL factorize M, compute M_inv
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
@@ -1547,8 +1537,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                         workspace[env, fnet_idx + dof_adr] = cur + floss
 
         # 10. LDL solve: f_net → qacc
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )

@@ -254,8 +254,7 @@ struct Muon(Optimizer):
         # Determine if we should transpose (work with smaller dimension as rows)
         comptime should_transpose = ROWS > COLS
 
-        @parameter
-        if should_transpose:
+        comptime if should_transpose:
             # Work with transposed version: COLS x ROWS
             # X starts as normalized G.T
             var norm = Self._frobenius_norm[ROWS, COLS](grads)

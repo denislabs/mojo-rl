@@ -153,12 +153,10 @@ struct Textures[*T: TextureSpec](TexturesLike):
     fn get_skybox_colors() -> List[Float64]:
         var result = List[Float64]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime Tex = Self.tex_types[i]
 
-            @parameter
-            if Tex.BUILTIN == TEX_GRADIENT:
+            comptime if Tex.BUILTIN == TEX_GRADIENT:
                 if len(result) == 0:
                     result.append(Tex.RGB1_R)
                     result.append(Tex.RGB1_G)
@@ -172,12 +170,10 @@ struct Textures[*T: TextureSpec](TexturesLike):
     fn get_checker_colors() -> List[Float64]:
         var result = List[Float64]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime Tex = Self.tex_types[i]
 
-            @parameter
-            if Tex.BUILTIN == TEX_CHECKER:
+            comptime if Tex.BUILTIN == TEX_CHECKER:
                 if len(result) == 0:
                     result.append(Tex.RGB2_R)
                     result.append(Tex.RGB2_G)

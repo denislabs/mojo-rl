@@ -71,7 +71,12 @@ from deep_rl.gpu import (
     sample_indices_kernel,
     gather_batch_kernel,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
+from core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    RenderableEnv,
+)
 
 
 # =============================================================================
@@ -479,8 +484,7 @@ struct DQNAgent[
             uninitialized=True
         )
 
-        @parameter
-        if Self.double_dqn:
+        comptime if Self.double_dqn:
             # Double DQN: online network selects action, target evaluates
             var online_next_q = InlineArray[
                 Scalar[dtype], Self.batch_size * Self.num_actions
@@ -859,7 +863,6 @@ struct DQNAgent[
 
         var seed_scalar = Scalar[DType.uint32](rng_seed)
 
-        @parameter
         @always_inline
         fn argmax_kernel_wrapper_envs(
             epsilon: Scalar[dtype],
@@ -1102,8 +1105,7 @@ struct DQNAgent[
             MutAnyOrigin,
         ](next_q_values_buf.unsafe_ptr())
 
-        @parameter
-        if Self.double_dqn:
+        comptime if Self.double_dqn:
             # For Double DQN: forward online network on next_obs (using workspace)
             self.online_model.forward_gpu[Self.batch_size](
                 ctx,
@@ -1120,7 +1122,7 @@ struct DQNAgent[
             ](online_next_q_buf.unsafe_ptr())
 
             # Double DQN TD target kernel
-            @parameter
+
             @always_inline
             fn double_td_kernel_wrapper(
                 targets_t: LayoutTensor[
@@ -1169,7 +1171,6 @@ struct DQNAgent[
             )
         else:
             # Standard DQN TD target kernel
-            @parameter
             @always_inline
             fn td_kernel_wrapper(
                 targets_t: LayoutTensor[
@@ -1218,7 +1219,6 @@ struct DQNAgent[
         ](actions_buf.unsafe_ptr())
 
         # We don't use loss_out in the kernel for now (would need reduction)
-        @parameter
         @always_inline
         fn grad_kernel_wrapper(
             grad_t: LayoutTensor[
@@ -1270,7 +1270,6 @@ struct DQNAgent[
             dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
         ](online_grads_buf.unsafe_ptr())
 
-        @parameter
         @always_inline
         fn zero_kernel_wrapper(
             buf: LayoutTensor[
@@ -1310,7 +1309,6 @@ struct DQNAgent[
             dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
         ](target_params_buf.unsafe_ptr())
 
-        @parameter
         @always_inline
         fn soft_update_wrapper(
             target_t: LayoutTensor[
@@ -1552,7 +1550,6 @@ struct DQNAgent[
             dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
         ](episode_steps_buf.unsafe_ptr())
 
-        @parameter
         @always_inline
         fn zero_episode_rewards(
             buf: LayoutTensor[
@@ -1609,7 +1606,6 @@ struct DQNAgent[
         ](completed_mask_buf.unsafe_ptr())
 
         # Define kernel wrappers for episode tracking (n_envs)
-        @parameter
         @always_inline
         fn accum_rewards_wrapper(
             ep_rewards: LayoutTensor[
@@ -1623,7 +1619,6 @@ struct DQNAgent[
                 ep_rewards, step_rewards
             )
 
-        @parameter
         @always_inline
         fn incr_steps_wrapper(
             ep_steps: LayoutTensor[
@@ -1632,7 +1627,6 @@ struct DQNAgent[
         ):
             increment_steps_kernel[dtype, Self.n_envs](ep_steps)
 
-        @parameter
         @always_inline
         fn extract_completed_wrapper(
             d: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
@@ -1664,7 +1658,6 @@ struct DQNAgent[
             dtype, Layout.row_major(ENV_OBS_SIZE), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
 
-        @parameter
         @always_inline
         fn copy_obs_wrapper(
             dst: LayoutTensor[
@@ -1728,7 +1721,6 @@ struct DQNAgent[
             dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
 
-        @parameter
         @always_inline
         fn store_transitions_wrapper(
             states: LayoutTensor[
@@ -1783,7 +1775,6 @@ struct DQNAgent[
                 write_idx,
             )
 
-        @parameter
         @always_inline
         fn sample_indices_wrapper(
             indices: LayoutTensor[
@@ -1796,7 +1787,6 @@ struct DQNAgent[
                 indices, buffer_size, rng_seed
             )
 
-        @parameter
         @always_inline
         fn gather_batch_wrapper(
             batch_states: LayoutTensor[
@@ -1888,9 +1878,9 @@ struct DQNAgent[
             )
 
             # Step environments
-            EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim](
-                ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf
-            )
+            EnvType.step_kernel_gpu[
+                Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim
+            ](ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
 
             # Store transitions to replay buffer
             ctx.enqueue_function[
@@ -1983,9 +1973,9 @@ struct DQNAgent[
             # Step all environments on GPU (n_envs environments)
             # After step, obs_buf contains next_obs
             # =================================================================
-            EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim](
-                ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf
-            )
+            EnvType.step_kernel_gpu[
+                Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim
+            ](ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
             ctx.synchronize()
             var t2 = perf_counter_ns()
             time_env_step += t2 - t1

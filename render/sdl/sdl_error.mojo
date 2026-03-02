@@ -61,10 +61,10 @@ fn out_of_memory() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_OutOfMemory.
     """
 
-    return _get_dylib_function[lib, "SDL_OutOfMemory", fn () -> Bool]()()
+    return _get_dylib_function[lib, "SDL_OutOfMemory", fn() -> Bool]()()
 
 
-fn get_error() raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_error() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Retrieve a message about the last error that occurred on the current
     thread.
 
@@ -99,7 +99,9 @@ fn get_error() raises -> Ptr[c_char, AnyOrigin[False]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetError.
     """
 
-    return _get_dylib_function[lib, "SDL_GetError", fn () -> Ptr[c_char, AnyOrigin[False]]]()()
+    return _get_dylib_function[
+        lib, "SDL_GetError", fn() -> Ptr[c_char, ImmutAnyOrigin]
+    ]()()
 
 
 fn clear_error() raises -> Bool:
@@ -114,4 +116,4 @@ fn clear_error() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearError.
     """
 
-    return _get_dylib_function[lib, "SDL_ClearError", fn () -> Bool]()()
+    return _get_dylib_function[lib, "SDL_ClearError", fn() -> Bool]()()

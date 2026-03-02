@@ -32,7 +32,7 @@ comptime GPU_MINIBATCH_SIZE = 2048
 
 # Evaluation settings
 comptime EVAL_EPISODES = 100
-comptime MAX_STEPS = 50_000  # HalfCheetah MAX_STEPS
+comptime MAX_STEPS = 1000  # HalfCheetah MAX_STEPS
 
 
 # =============================================================================

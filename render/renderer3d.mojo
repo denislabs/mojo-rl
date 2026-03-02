@@ -213,17 +213,17 @@ struct LineColorEntry(Copyable, Movable):
         self.b = color[2]
         self.a = color[3]
 
-    fn __copyinit__(out self, read other: Self):
-        self.r = other.r
-        self.g = other.g
-        self.b = other.b
-        self.a = other.a
+    fn __init__(out self, copy: Self):
+        self.r = copy.r
+        self.g = copy.g
+        self.b = copy.b
+        self.a = copy.a
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.r = other.r
-        self.g = other.g
-        self.b = other.b
-        self.a = other.a
+    fn __init__(out self, deinit take: Self):
+        self.r = take.r
+        self.g = take.g
+        self.b = take.b
+        self.a = take.a
 
     fn to_inline_array(self) -> InlineArray[Float32, 4]:
         var out = InlineArray[Float32, 4](fill=Float32(0))
@@ -234,7 +234,7 @@ struct LineColorEntry(Copyable, Movable):
         return out^
 
 
-struct Renderer3D(Movable):
+struct Renderer3D(ImplicitlyCopyable, Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
     Uses Metal (MSL) shaders for Blinn-Phong lit solid rendering with
@@ -242,23 +242,23 @@ struct Renderer3D(Movable):
     """
 
     # SDL3 handles
-    var window: Ptr[Window, AnyOrigin[True]]
-    var device: Ptr[GPUDevice, AnyOrigin[True]]
+    var window: Ptr[Window, MutAnyOrigin]
+    var device: Ptr[GPUDevice, MutAnyOrigin]
 
     # Pipelines
-    var solid_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var ground_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var line_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var shadow_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var reflection_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var skybox_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var solid_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var ground_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var line_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var shadow_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var reflection_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var skybox_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
 
     # Depth buffer
-    var depth_texture: Ptr[GPUTexture, AnyOrigin[True]]
+    var depth_texture: Ptr[GPUTexture, MutAnyOrigin]
 
     # Shadow mapping resources
-    var shadow_map: Ptr[GPUTexture, AnyOrigin[True]]
-    var shadow_sampler: Ptr[GPUSampler, AnyOrigin[True]]
+    var shadow_map: Ptr[GPUTexture, MutAnyOrigin]
+    var shadow_sampler: Ptr[GPUSampler, MutAnyOrigin]
     var shadow_uniforms: ShadowUniforms
     var ground_z: Float64
 
@@ -271,17 +271,19 @@ struct Renderer3D(Movable):
     # Dynamic line buffer
     var line_vertex_data: List[Float32]  # x,y,z per vertex
     var line_colors: List[LineColorEntry]  # color per segment (2 verts)
-    var line_vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
-    var line_transfer_buffer: Ptr[GPUTransferBuffer, AnyOrigin[True]]
+    var line_vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var line_transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin]
 
     # Text (HUD overlay) pipeline and resources
-    var text_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
-    var font_atlas_tex: Ptr[GPUTexture, AnyOrigin[True]]
-    var font_sampler: Ptr[GPUSampler, AnyOrigin[True]]
-    var text_vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
-    var text_index_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
-    var text_transfer_buffer: Ptr[GPUTransferBuffer, AnyOrigin[True]]
-    var text_vertex_data: List[Float32]   # packed TextVertex fields (8 floats/vertex)
+    var text_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin]
+    var font_atlas_tex: Ptr[GPUTexture, MutAnyOrigin]
+    var font_sampler: Ptr[GPUSampler, MutAnyOrigin]
+    var text_vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var text_index_buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var text_transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin]
+    var text_vertex_data: List[
+        Float32
+    ]  # packed TextVertex fields (8 floats/vertex)
     var text_uniforms: TextUniforms
 
     # Deferred draw commands
@@ -330,7 +332,7 @@ struct Renderer3D(Movable):
     # Video recording (V key / programmatic API)
     var recorder: VideoRecorder
     # Reusable GPU download buffer for recording (allocated at start, freed at stop)
-    var recording_tb: Ptr[GPUTransferBuffer, AnyOrigin[True]]
+    var recording_tb: Ptr[GPUTransferBuffer, MutAnyOrigin]
     var recording_tb_size: Int  # current allocation size in bytes
 
     # Default camera position for R-key reset
@@ -375,27 +377,27 @@ struct Renderer3D(Movable):
         )
 
         # Null handles
-        self.window = Ptr[Window, AnyOrigin[True]]()
-        self.device = Ptr[GPUDevice, AnyOrigin[True]]()
-        self.solid_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.ground_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.line_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.shadow_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.reflection_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.skybox_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.depth_texture = Ptr[GPUTexture, AnyOrigin[True]]()
-        self.shadow_map = Ptr[GPUTexture, AnyOrigin[True]]()
-        self.shadow_sampler = Ptr[GPUSampler, AnyOrigin[True]]()
+        self.window = Ptr[Window, MutAnyOrigin]()
+        self.device = Ptr[GPUDevice, MutAnyOrigin]()
+        self.solid_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.ground_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.line_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.shadow_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.reflection_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.skybox_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.depth_texture = Ptr[GPUTexture, MutAnyOrigin]()
+        self.shadow_map = Ptr[GPUTexture, MutAnyOrigin]()
+        self.shadow_sampler = Ptr[GPUSampler, MutAnyOrigin]()
         self.shadow_uniforms = ShadowUniforms()
         self.ground_z = 0.0
-        self.line_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
-        self.line_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
-        self.text_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
-        self.font_atlas_tex = Ptr[GPUTexture, AnyOrigin[True]]()
-        self.font_sampler = Ptr[GPUSampler, AnyOrigin[True]]()
-        self.text_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
-        self.text_index_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
-        self.text_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.line_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
+        self.line_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+        self.text_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
+        self.font_atlas_tex = Ptr[GPUTexture, MutAnyOrigin]()
+        self.font_sampler = Ptr[GPUSampler, MutAnyOrigin]()
+        self.text_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
+        self.text_index_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
+        self.text_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin]()
         self.text_vertex_data = List[Float32]()
         self.text_uniforms = TextUniforms()
         self.swapchain_format = (
@@ -430,7 +432,7 @@ struct Renderer3D(Movable):
         self.screenshot_requested = False
         self.screenshot_counter = 0
         self.recorder = VideoRecorder()
-        self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
         self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
@@ -455,64 +457,64 @@ struct Renderer3D(Movable):
                 )
             )
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.window = other.window
-        self.device = other.device
-        self.solid_pipeline = other.solid_pipeline
-        self.ground_pipeline = other.ground_pipeline
-        self.line_pipeline = other.line_pipeline
-        self.shadow_pipeline = other.shadow_pipeline
-        self.reflection_pipeline = other.reflection_pipeline
-        self.skybox_pipeline = other.skybox_pipeline
-        self.depth_texture = other.depth_texture
-        self.shadow_map = other.shadow_map
-        self.shadow_sampler = other.shadow_sampler
-        self.shadow_uniforms = other.shadow_uniforms
-        self.ground_z = other.ground_z
-        self.sphere_mesh = other.sphere_mesh^
-        self.box_mesh = other.box_mesh^
-        self.ground_mesh = other.ground_mesh^
-        self.capsule_cache = other.capsule_cache^
-        self.line_vertex_data = other.line_vertex_data^
-        self.line_colors = other.line_colors^
-        self.line_vertex_buffer = other.line_vertex_buffer
-        self.line_transfer_buffer = other.line_transfer_buffer
-        self.text_pipeline = other.text_pipeline
-        self.font_atlas_tex = other.font_atlas_tex
-        self.font_sampler = other.font_sampler
-        self.text_vertex_buffer = other.text_vertex_buffer
-        self.text_index_buffer = other.text_index_buffer
-        self.text_transfer_buffer = other.text_transfer_buffer
-        self.text_vertex_data = other.text_vertex_data^
-        self.text_uniforms = other.text_uniforms
-        self.solid_draws = other.solid_draws^
-        self.ground_uniforms = other.ground_uniforms
-        self.has_ground = other.has_ground
-        self.camera = other.camera^
-        self.width = other.width
-        self.height = other.height
-        self.background_color = other.background_color
-        self.scene_uniforms = other.scene_uniforms
-        self.skybox_uniforms = other.skybox_uniforms
-        self.draw_skybox = other.draw_skybox
-        self.swapchain_format = other.swapchain_format
-        self.lights = other.lights^
-        self.camera_switch_request = other.camera_switch_request
-        self.mouse_left_down = other.mouse_left_down
-        self.mouse_right_down = other.mouse_right_down
-        self.is_paused = other.is_paused
-        self.step_once = other.step_once
-        self.screenshot_requested = other.screenshot_requested
-        self.screenshot_counter = other.screenshot_counter
-        self.recorder = other.recorder^
-        self.recording_tb = other.recording_tb
-        self.recording_tb_size = other.recording_tb_size
-        self.default_eye = other.default_eye
-        self.default_target = other.default_target
-        self.initialized = other.initialized
-        self.should_quit = other.should_quit
-        self.draw_grid = other.draw_grid
-        self.draw_axes = other.draw_axes
+    fn __init__(out self, deinit take: Self):
+        self.window = take.window
+        self.device = take.device
+        self.solid_pipeline = take.solid_pipeline
+        self.ground_pipeline = take.ground_pipeline
+        self.line_pipeline = take.line_pipeline
+        self.shadow_pipeline = take.shadow_pipeline
+        self.reflection_pipeline = take.reflection_pipeline
+        self.skybox_pipeline = take.skybox_pipeline
+        self.depth_texture = take.depth_texture
+        self.shadow_map = take.shadow_map
+        self.shadow_sampler = take.shadow_sampler
+        self.shadow_uniforms = take.shadow_uniforms
+        self.ground_z = take.ground_z
+        self.sphere_mesh = take.sphere_mesh^
+        self.box_mesh = take.box_mesh^
+        self.ground_mesh = take.ground_mesh^
+        self.capsule_cache = take.capsule_cache^
+        self.line_vertex_data = take.line_vertex_data^
+        self.line_colors = take.line_colors^
+        self.line_vertex_buffer = take.line_vertex_buffer
+        self.line_transfer_buffer = take.line_transfer_buffer
+        self.text_pipeline = take.text_pipeline
+        self.font_atlas_tex = take.font_atlas_tex
+        self.font_sampler = take.font_sampler
+        self.text_vertex_buffer = take.text_vertex_buffer
+        self.text_index_buffer = take.text_index_buffer
+        self.text_transfer_buffer = take.text_transfer_buffer
+        self.text_vertex_data = take.text_vertex_data^
+        self.text_uniforms = take.text_uniforms
+        self.solid_draws = take.solid_draws^
+        self.ground_uniforms = take.ground_uniforms
+        self.has_ground = take.has_ground
+        self.camera = take.camera^
+        self.width = take.width
+        self.height = take.height
+        self.background_color = take.background_color
+        self.scene_uniforms = take.scene_uniforms
+        self.skybox_uniforms = take.skybox_uniforms
+        self.draw_skybox = take.draw_skybox
+        self.swapchain_format = take.swapchain_format
+        self.lights = take.lights^
+        self.camera_switch_request = take.camera_switch_request
+        self.mouse_left_down = take.mouse_left_down
+        self.mouse_right_down = take.mouse_right_down
+        self.is_paused = take.is_paused
+        self.step_once = take.step_once
+        self.screenshot_requested = take.screenshot_requested
+        self.screenshot_counter = take.screenshot_counter
+        self.recorder = take.recorder^
+        self.recording_tb = take.recording_tb
+        self.recording_tb_size = take.recording_tb_size
+        self.default_eye = take.default_eye
+        self.default_target = take.default_target
+        self.initialized = take.initialized
+        self.should_quit = take.should_quit
+        self.draw_grid = take.draw_grid
+        self.draw_axes = take.draw_axes
 
     fn init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
@@ -530,12 +532,12 @@ struct Renderer3D(Movable):
             lib,
             "SDL_CreateGPUDevice",
             fn(
-                GPUShaderFormat, Bool, Ptr[c_char, AnyOrigin[False]]
-            ) -> Ptr[GPUDevice, AnyOrigin[True]],
+                GPUShaderFormat, Bool, Ptr[c_char, ImmutAnyOrigin]
+            ) -> Ptr[GPUDevice, MutAnyOrigin],
         ]()(
             GPUShaderFormat.GPU_SHADERFORMAT_MSL,
             True,
-            Ptr[c_char, AnyOrigin[False]](),  # NULL = auto-select driver
+            Ptr[c_char, ImmutAnyOrigin](),  # NULL = auto-select driver
         )
 
         # 4. Claim window
@@ -573,13 +575,13 @@ struct Renderer3D(Movable):
         num_uniform_buffers: UInt32,
         entrypoint: String,
         num_samplers: UInt32 = 0,
-    ) raises -> Ptr[GPUShader, AnyOrigin[True]]:
+    ) raises -> Ptr[GPUShader, MutAnyOrigin]:
         """Compile an MSL shader from source string."""
         var code_bytes = source.as_bytes()
         var ep = entrypoint
 
         var info = GPUShaderCreateInfo(
-            code_size=len(code_bytes),
+            code_size=UInt(len(code_bytes)),
             code=code_bytes.unsafe_ptr(),
             entrypoint=ep.as_c_string_slice().unsafe_ptr(),
             format=GPUShaderFormat.GPU_SHADERFORMAT_MSL,
@@ -1035,7 +1037,7 @@ struct Renderer3D(Movable):
             ),
             target_info=GPUGraphicsPipelineTargetInfo(
                 color_target_descriptions=Ptr[
-                    GPUColorTargetDescription, AnyOrigin[False]
+                    GPUColorTargetDescription, ImmutAnyOrigin
                 ](),
                 num_color_targets=0,
                 depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
@@ -1205,9 +1207,11 @@ struct Renderer3D(Movable):
 
         # Skybox has NO vertex input (uses vertex_id to generate fullscreen triangle)
         var skybox_vi = GPUVertexInputState(
-            vertex_buffer_descriptions=Ptr[GPUVertexBufferDescription, AnyOrigin[False]](),
+            vertex_buffer_descriptions=Ptr[
+                GPUVertexBufferDescription, ImmutAnyOrigin
+            ](),
             num_vertex_buffers=0,
-            vertex_attributes=Ptr[GPUVertexAttribute, AnyOrigin[False]](),
+            vertex_attributes=Ptr[GPUVertexAttribute, ImmutAnyOrigin](),
             num_vertex_attributes=0,
         )
 
@@ -1462,7 +1466,7 @@ struct Renderer3D(Movable):
         """Create font atlas texture, sampler, text pipeline and buffers."""
         # --- 1. Build and upload R8_UNORM font atlas (128×64) ---
         var atlas = build_font_atlas_r8()  # InlineArray[UInt8, 8192]
-        var atlas_size = UInt32(8192)      # 128 * 64 * 1 byte
+        var atlas_size = UInt32(8192)  # 128 * 64 * 1 byte
 
         var atlas_tex_info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
@@ -1768,28 +1772,47 @@ struct Renderer3D(Movable):
         for i in range(len(text)):
             var c = text.as_bytes()[i]
             var uv = glyph_uv(c)
-            var u0 = uv[0]; var v0 = uv[1]; var u1 = uv[2]; var v1 = uv[3]
+            var u0 = uv[0]
+            var v0 = uv[1]
+            var u1 = uv[2]
+            var v1 = uv[3]
             # 4 vertices: top-left, top-right, bottom-right, bottom-left
             # Vertex 0: top-left
-            self.text_vertex_data.append(cx);        self.text_vertex_data.append(y)
-            self.text_vertex_data.append(u0);        self.text_vertex_data.append(v0)
-            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
-            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            self.text_vertex_data.append(cx)
+            self.text_vertex_data.append(y)
+            self.text_vertex_data.append(u0)
+            self.text_vertex_data.append(v0)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
             # Vertex 1: top-right
-            self.text_vertex_data.append(cx + glyph_w); self.text_vertex_data.append(y)
-            self.text_vertex_data.append(u1);        self.text_vertex_data.append(v0)
-            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
-            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            self.text_vertex_data.append(cx + glyph_w)
+            self.text_vertex_data.append(y)
+            self.text_vertex_data.append(u1)
+            self.text_vertex_data.append(v0)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
             # Vertex 2: bottom-right
-            self.text_vertex_data.append(cx + glyph_w); self.text_vertex_data.append(y + glyph_h)
-            self.text_vertex_data.append(u1);        self.text_vertex_data.append(v1)
-            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
-            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            self.text_vertex_data.append(cx + glyph_w)
+            self.text_vertex_data.append(y + glyph_h)
+            self.text_vertex_data.append(u1)
+            self.text_vertex_data.append(v1)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
             # Vertex 3: bottom-left
-            self.text_vertex_data.append(cx);        self.text_vertex_data.append(y + glyph_h)
-            self.text_vertex_data.append(u0);        self.text_vertex_data.append(v1)
-            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
-            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            self.text_vertex_data.append(cx)
+            self.text_vertex_data.append(y + glyph_h)
+            self.text_vertex_data.append(u0)
+            self.text_vertex_data.append(v1)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
             cx += glyph_w
 
     fn draw_sphere(
@@ -2080,12 +2103,12 @@ struct Renderer3D(Movable):
 
     fn _select_and_draw(
         self,
-        render_pass: Ptr[GPURenderPass, AnyOrigin[True]],
+        render_pass: Ptr[GPURenderPass, MutAnyOrigin],
         draw: SolidDrawCommand,
     ) raises:
         """Select mesh buffers for a draw command, bind, and draw."""
-        var vb: Ptr[GPUBuffer, AnyOrigin[True]]
-        var ib: Ptr[GPUBuffer, AnyOrigin[True]]
+        var vb: Ptr[GPUBuffer, MutAnyOrigin]
+        var ib: Ptr[GPUBuffer, MutAnyOrigin]
         var n_idx: UInt32
 
         if draw.is_capsule:
@@ -2153,7 +2176,9 @@ struct Renderer3D(Movable):
             end_gpu_copy_pass(copy_pass)
 
         # Upload text vertex data if any (must be before render pass)
-        var num_text_chars = len(self.text_vertex_data) // 32  # 32 floats per quad (4 verts × 8 floats)
+        var num_text_chars = (
+            len(self.text_vertex_data) // 32
+        )  # 32 floats per quad (4 verts × 8 floats)
         if num_text_chars > 0:
             var text_mapped = map_gpu_transfer_buffer(
                 self.device, self.text_transfer_buffer, True
@@ -2203,7 +2228,7 @@ struct Renderer3D(Movable):
 
             var shadow_pass = begin_gpu_render_pass(
                 cmd_buf,
-                Ptr[GPUColorTargetInfo, AnyOrigin[False]](),  # No color targets
+                Ptr[GPUColorTargetInfo, ImmutAnyOrigin](),  # No color targets
                 0,
                 Ptr(to=shadow_depth_info),
             )
@@ -2244,7 +2269,7 @@ struct Renderer3D(Movable):
         # ====================================================================
         # Acquire swapchain texture
         # ====================================================================
-        var swapchain_tex = Ptr[GPUTexture, AnyOrigin[True]]()
+        var swapchain_tex = Ptr[GPUTexture, MutAnyOrigin]()
         var sc_w = UInt32(0)
         var sc_h = UInt32(0)
         wait_and_acquire_gpu_swapchain_texture(
@@ -2281,7 +2306,7 @@ struct Renderer3D(Movable):
             clear_color=FColor(bg_r, bg_g, bg_b, 1.0),
             load_op=GPULoadOp.GPU_LOADOP_CLEAR,
             store_op=GPUStoreOp.GPU_STOREOP_STORE,
-            resolve_texture=Ptr[GPUTexture, AnyOrigin[True]](),
+            resolve_texture=Ptr[GPUTexture, MutAnyOrigin](),
             resolve_mip_level=0,
             resolve_layer=0,
             cycle=True,
@@ -2531,9 +2556,7 @@ struct Renderer3D(Movable):
                 texture=self.font_atlas_tex,
                 sampler=self.font_sampler,
             )
-            bind_gpu_fragment_samplers(
-                render_pass, 0, Ptr(to=atlas_binding), 1
-            )
+            bind_gpu_fragment_samplers(render_pass, 0, Ptr(to=atlas_binding), 1)
             var text_vb_binding = GPUBufferBinding(
                 buffer=self.text_vertex_buffer, offset=0
             )
@@ -2546,14 +2569,16 @@ struct Renderer3D(Movable):
                 Ptr(to=text_ib_binding),
                 GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
             )
-            draw_gpu_indexed_primitives(render_pass, num_text_chars * 6, 1, 0, 0, 0)
+            draw_gpu_indexed_primitives(
+                render_pass, UInt32(num_text_chars * 6), 1, 0, 0, 0
+            )
 
         # End render pass
         end_gpu_render_pass(render_pass)
 
         # Screenshot capture: append a download copy pass before submitting.
         # The transfer buffer pointer is non-null only if setup succeeded.
-        var screenshot_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        var screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
         if self.screenshot_requested:
             self.screenshot_requested = False
             try:
@@ -2597,7 +2622,7 @@ struct Renderer3D(Movable):
                 print("Screenshot setup failed: " + String(e))
                 if screenshot_tb:
                     release_gpu_transfer_buffer(self.device, screenshot_tb)
-                    screenshot_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+                    screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
 
         # Always submit the command buffer (screenshot download included if set up).
         submit_gpu_command_buffer(cmd_buf)
@@ -2610,9 +2635,7 @@ struct Renderer3D(Movable):
                     self.device, screenshot_tb, False
                 )
                 var filename = (
-                    "screenshot_"
-                    + String(self.screenshot_counter)
-                    + ".jpg"
+                    "screenshot_" + String(self.screenshot_counter) + ".jpg"
                 )
                 self.recorder.save_frame_bgra(
                     Int(pixels), self.width, self.height, filename
@@ -2630,7 +2653,7 @@ struct Renderer3D(Movable):
             if needed != self.recording_tb_size:
                 if self.recording_tb:
                     release_gpu_transfer_buffer(self.device, self.recording_tb)
-                    self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+                    self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
                     self.recording_tb_size = 0
                 try:
                     var tb_info = GPUTransferBufferCreateInfo(
@@ -2643,7 +2666,10 @@ struct Renderer3D(Movable):
                     )
                     self.recording_tb_size = needed
                 except e:
-                    print("Recording: failed to allocate transfer buffer: " + String(e))
+                    print(
+                        "Recording: failed to allocate transfer buffer: "
+                        + String(e)
+                    )
             # If we have a valid buffer, queue download in a new command buffer
             if self.recording_tb:
                 try:
@@ -2701,7 +2727,7 @@ struct Renderer3D(Movable):
         self.recorder.stop()
         if self.recording_tb:
             release_gpu_transfer_buffer(self.device, self.recording_tb)
-            self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
             self.recording_tb_size = 0
 
     fn _build_scene_uniforms(mut self):
@@ -2903,14 +2929,20 @@ struct Renderer3D(Movable):
                         except:
                             pass
 
-                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_BUTTON_DOWN:
+                elif (
+                    EventType(Int(event_type))
+                    == EventType.EVENT_MOUSE_BUTTON_DOWN
+                ):
                     var btn = event[MouseButtonEvent]
                     if Int(btn.button) == 1:
                         self.mouse_left_down = True
                     elif Int(btn.button) == 3:
                         self.mouse_right_down = True
 
-                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_BUTTON_UP:
+                elif (
+                    EventType(Int(event_type))
+                    == EventType.EVENT_MOUSE_BUTTON_UP
+                ):
                     var btn = event[MouseButtonEvent]
                     if Int(btn.button) == 1:
                         self.mouse_left_down = False
@@ -2926,7 +2958,9 @@ struct Renderer3D(Movable):
                         self.camera.orbit(dx * 0.005, dy * 0.005)
                     elif self.mouse_right_down:
                         # Pan: scale by distance so speed feels constant
-                        var dist = (self.camera.eye - self.camera.target).length()
+                        var dist = (
+                            self.camera.eye - self.camera.target
+                        ).length()
                         var scale = dist * 0.002
                         self.camera.pan(-dx * scale, -dy * scale)
 
@@ -3002,7 +3036,7 @@ struct Renderer3D(Movable):
             self.recorder.stop()
         if self.recording_tb:
             release_gpu_transfer_buffer(self.device, self.recording_tb)
-            self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
             self.recording_tb_size = 0
 
         # Release capsule cache meshes

@@ -104,9 +104,14 @@ fn test_xml_full_parser() raises:
     print("NACT   =", pm.NACT, " (expected 6)")
     print()
 
-    @parameter
-    if pm.NBODY != 8 or pm.NJOINT != 9 or pm.NQ != 9 or pm.NV != 9 or pm.NGEOM != 8 or pm.NACT != 6:
-        assert_true(False, "dimension mismatch — NBODY/NJOINT/NQ/NV/NGEOM/NACT not as expected")
+    comptime if pm.NBODY != 8 or pm.NJOINT != 9 or pm.NQ != 9 or pm.NV != 9 or pm.NGEOM != 8 or pm.NACT != 6:
+        assert_true(
+            False,
+            (
+                "dimension mismatch — NBODY/NJOINT/NQ/NV/NGEOM/NACT not as"
+                " expected"
+            ),
+        )
 
     # =========================================================================
     # Step 2: Full parse — dimensions from comptime pm, data at runtime
@@ -145,11 +150,19 @@ fn test_xml_full_parser() raises:
 
     print("=== Geom checks ===")
     # geoms[0] = floor (plane, body_id=0)
-    print("floor type    =", fmd.geoms[0].geom_type, " (expected", GEOM_PLANE, ")")
+    print(
+        "floor type    =", fmd.geoms[0].geom_type, " (expected", GEOM_PLANE, ")"
+    )
     print("floor body_id =", fmd.geoms[0].body_id, " (expected 0)")
 
     # geoms[1] = torso capsule (fromto, body_id=1)
-    print("torso geom type =", fmd.geoms[1].geom_type, " (expected", GEOM_CAPSULE, ")")
+    print(
+        "torso geom type =",
+        fmd.geoms[1].geom_type,
+        " (expected",
+        GEOM_CAPSULE,
+        ")",
+    )
     print("torso geom body =", fmd.geoms[1].body_id, " (expected 1)")
     print("torso geom radius=", fmd.geoms[1].radius, " (expected 0.046)")
     print("torso half_len  =", fmd.geoms[1].half_length, " (expected 0.5)")
@@ -170,16 +183,31 @@ fn test_xml_full_parser() raises:
     # =========================================================================
     print("=== FK round-trip ===")
     var model = Model[
-        DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
-        0, ConeType.ELLIPTIC, 0, 0
+        DType.float64,
+        pm.NQ,
+        pm.NV,
+        pm.NBODY,
+        pm.NJOINT,
+        10,
+        pm.NGEOM,
+        0,
+        ConeType.ELLIPTIC,
+        0,
+        0,
     ]()
     var data = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, 0]()
 
     fmd.setup_model[DType.float64, 10](model)
 
     print("gravity_z     =", Float64(model.gravity[2]), " (expected -9.81)")
-    print("torso body_id1 mass=", Float64(model.body_mass[1]), " (expected ~1.0 default)")
-    print("torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)")
+    print(
+        "torso body_id1 mass=",
+        Float64(model.body_mass[1]),
+        " (expected ~1.0 default)",
+    )
+    print(
+        "torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)"
+    )
 
     forward_kinematics(model, data)
     print("FK completed")

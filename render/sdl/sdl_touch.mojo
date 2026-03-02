@@ -147,7 +147,7 @@ struct Finger(ImplicitlyCopyable, Movable):
 
 
 fn get_touch_devices(
-    count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[TouchID, AnyOrigin[True]]
+    count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[TouchID, MutAnyOrigin]
 ) raises:
     """Get a list of registered touch devices.
 
@@ -170,14 +170,14 @@ fn get_touch_devices(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDevices",
-        fn(count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[TouchID, AnyOrigin[True]],
+        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[TouchID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_touch_device_name(
-    touch_id: TouchID, out ret: Ptr[c_char, AnyOrigin[False]]
+    touch_id: TouchID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the touch device name as reported from the driver.
 
@@ -194,7 +194,7 @@ fn get_touch_device_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDeviceName",
-        fn(touch_id: TouchID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(touch_id: TouchID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(touch_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -219,8 +219,8 @@ fn get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
 
 fn get_touch_fingers(
     touch_id: TouchID,
-    count: Ptr[c_int, AnyOrigin[True]],
-    out ret: Ptr[Ptr[Finger, AnyOrigin[True]], AnyOrigin[True]],
+    count: Ptr[c_int, MutAnyOrigin],
+    out ret: Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
 ) raises:
     """Get a list of active fingers for a given touch device.
 
@@ -242,8 +242,8 @@ fn get_touch_fingers(
         lib,
         "SDL_GetTouchFingers",
         fn(
-            touch_id: TouchID, count: Ptr[c_int, AnyOrigin[True]]
-        ) -> Ptr[Ptr[Finger, AnyOrigin[True]], AnyOrigin[True]],
+            touch_id: TouchID, count: Ptr[c_int, MutAnyOrigin]
+        ) -> Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
     ]()(touch_id, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

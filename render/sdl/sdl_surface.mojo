@@ -171,13 +171,13 @@ struct Surface(ImplicitlyCopyable, Movable):
     """The height of the surface, read-only."""
     var pitch: c_int
     """The distance in bytes between rows of pixels, read-only."""
-    var pixels: Ptr[NoneType, AnyOrigin[True]]
+    var pixels: Ptr[NoneType, MutAnyOrigin]
     """A pointer to the pixels of the surface, the pixels are writeable if non-NULL."""
 
     var refcount: c_int
     """Application reference count, used when freeing surface."""
 
-    var reserved: Ptr[NoneType, AnyOrigin[True]]
+    var reserved: Ptr[NoneType, MutAnyOrigin]
     """Reserved for internal use."""
 
 
@@ -185,7 +185,7 @@ fn create_surface(
     width: c_int,
     height: c_int,
     format: PixelFormat,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Allocate a new surface with a specific pixel format.
 
@@ -211,7 +211,7 @@ fn create_surface(
         "SDL_CreateSurface",
         fn(
             width: c_int, height: c_int, format: PixelFormat
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -221,9 +221,9 @@ fn create_surface_from(
     width: c_int,
     height: c_int,
     format: PixelFormat,
-    pixels: Ptr[NoneType, AnyOrigin[True]],
+    pixels: Ptr[NoneType, MutAnyOrigin],
     pitch: c_int,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Allocate a new surface with a specific pixel format and existing pixel
     data.
@@ -261,15 +261,15 @@ fn create_surface_from(
             width: c_int,
             height: c_int,
             format: PixelFormat,
-            pixels: Ptr[NoneType, AnyOrigin[True]],
+            pixels: Ptr[NoneType, MutAnyOrigin],
             pitch: c_int,
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
+fn destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     """Free a surface.
 
     It is safe to pass NULL to this function.
@@ -286,12 +286,12 @@ fn destroy_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroySurface",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
 fn get_surface_properties(
-    surface: Ptr[Surface, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a surface.
 
@@ -332,12 +332,12 @@ fn get_surface_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceProperties",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> PropertiesID,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> PropertiesID,
     ]()(surface)
 
 
 fn set_surface_colorspace(
-    surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace
+    surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace
 ) raises:
     """Set the colorspace used by a surface.
 
@@ -362,16 +362,14 @@ fn set_surface_colorspace(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorspace",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace
-        ) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace) -> Bool,
     ]()(surface, colorspace)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_surface_colorspace(
-    surface: Ptr[Surface, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Colorspace:
     """Get the colorspace used by a surface.
 
@@ -395,13 +393,13 @@ fn get_surface_colorspace(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorspace",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Colorspace,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Colorspace,
     ]()(surface)
 
 
 fn create_surface_palette(
-    surface: Ptr[Surface, AnyOrigin[True]]
-) raises -> Ptr[Palette, AnyOrigin[True]]:
+    surface: Ptr[Surface, MutAnyOrigin]
+) raises -> Ptr[Palette, MutAnyOrigin]:
     """Create a palette and associate it with a surface.
 
     This function creates a palette compatible with the provided surface. The
@@ -435,15 +433,13 @@ fn create_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_CreateSurfacePalette",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]]
-        ) -> Ptr[Palette, AnyOrigin[True]],
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
 fn set_surface_palette(
-    surface: Ptr[Surface, AnyOrigin[True]],
-    palette: Ptr[Palette, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
+    palette: Ptr[Palette, MutAnyOrigin],
 ) raises:
     """Set the palette used by a surface.
 
@@ -467,8 +463,8 @@ fn set_surface_palette(
         lib,
         "SDL_SetSurfacePalette",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            palette: Ptr[Palette, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            palette: Ptr[Palette, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, palette)
     if not ret:
@@ -476,8 +472,8 @@ fn set_surface_palette(
 
 
 fn get_surface_palette(
-    surface: Ptr[Surface, AnyOrigin[True]]
-) raises -> Ptr[Palette, AnyOrigin[True]]:
+    surface: Ptr[Surface, MutAnyOrigin]
+) raises -> Ptr[Palette, MutAnyOrigin]:
     """Get the palette used by a surface.
 
     Args:
@@ -496,14 +492,12 @@ fn get_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfacePalette",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]]
-        ) -> Ptr[Palette, AnyOrigin[True]],
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
 fn add_surface_alternate_image(
-    surface: Ptr[Surface, AnyOrigin[True]], image: Ptr[Surface, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin], image: Ptr[Surface, MutAnyOrigin]
 ) raises:
     """Add an alternate version of a surface.
 
@@ -534,8 +528,8 @@ fn add_surface_alternate_image(
         lib,
         "SDL_AddSurfaceAlternateImage",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            image: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            image: Ptr[Surface, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, image)
     if not ret:
@@ -543,7 +537,7 @@ fn add_surface_alternate_image(
 
 
 fn surface_has_alternate_images(
-    surface: Ptr[Surface, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Bool:
     """Return whether a surface has alternate versions available.
 
@@ -562,13 +556,13 @@ fn surface_has_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasAlternateImages",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
 fn get_surface_images(
-    surface: Ptr[Surface, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]
-) raises -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]]:
+    surface: Ptr[Surface, MutAnyOrigin], count: Ptr[c_int, MutAnyOrigin]
+) raises -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin]:
     """Get an array including all versions of a surface.
 
     This returns all versions of a surface, with the surface being queried as
@@ -598,14 +592,14 @@ fn get_surface_images(
         lib,
         "SDL_GetSurfaceImages",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            count: Ptr[c_int, AnyOrigin[True]],
-        ) -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            count: Ptr[c_int, MutAnyOrigin],
+        ) -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
     ]()(surface, count)
 
 
 fn remove_surface_alternate_images(
-    surface: Ptr[Surface, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> None:
     """Remove all alternate versions of a surface.
 
@@ -624,11 +618,11 @@ fn remove_surface_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_RemoveSurfaceAlternateImages",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
-fn lock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises:
+fn lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
     """Set up a surface for directly accessing the pixels.
 
     Between calls to SDL_LockSurface() / SDL_UnlockSurface(), you can write to
@@ -658,13 +652,13 @@ fn lock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LockSurface",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
+fn unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     """Release a surface after directly accessing the pixels.
 
     Args:
@@ -681,14 +675,14 @@ fn unlock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnlockSurface",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
 fn load_bmp_io(
-    src: Ptr[IOStream, AnyOrigin[True]],
+    src: Ptr[IOStream, MutAnyOrigin],
     closeio: Bool,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Load a BMP image from a seekable SDL data stream.
 
@@ -714,14 +708,14 @@ fn load_bmp_io(
         lib,
         "SDL_LoadBMP_IO",
         fn(
-            src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool
-        ) -> Ptr[Surface, AnyOrigin[True]],
+            src: Ptr[IOStream, MutAnyOrigin], closeio: Bool
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(src, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_bmp(var file: String, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     """Load a BMP image from a file.
 
     The new surface should be freed with SDL_DestroySurface(). Not doing so
@@ -743,17 +737,15 @@ fn load_bmp(var file: String, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        fn(
-            file: Ptr[c_char, AnyOrigin[False]]
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        fn(file: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn save_bmp_io(
-    surface: Ptr[Surface, AnyOrigin[True]],
-    dst: Ptr[IOStream, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
+    dst: Ptr[IOStream, MutAnyOrigin],
     closeio: Bool,
 ) raises:
     """Save a surface to a seekable SDL data stream in BMP format.
@@ -784,8 +776,8 @@ fn save_bmp_io(
         lib,
         "SDL_SaveBMP_IO",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            dst: Ptr[IOStream, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            dst: Ptr[IOStream, MutAnyOrigin],
             closeio: Bool,
         ) -> Bool,
     ]()(surface, dst, closeio)
@@ -793,7 +785,7 @@ fn save_bmp_io(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_bmp(surface: Ptr[Surface, AnyOrigin[True]], var file: String) raises:
+fn save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
     """Save a surface to a file.
 
     Surfaces with a 24-bit, 32-bit and paletted 8-bit format get saved in the
@@ -820,17 +812,15 @@ fn save_bmp(surface: Ptr[Surface, AnyOrigin[True]], var file: String) raises:
         lib,
         "SDL_SaveBMP",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            file: Ptr[c_char, AnyOrigin[False]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            file: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_rle(
-    surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool
-) raises:
+fn set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
     """Set the RLE acceleration hint for a surface.
 
     If RLE is enabled, color key and alpha blending blits are much faster, but
@@ -853,13 +843,13 @@ fn set_surface_rle(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceRLE",
-        fn(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) -> Bool,
     ]()(surface, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_rle(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
+fn surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     """Returns whether the surface is RLE enabled.
 
     It is safe to pass a NULL `surface` here; it will return false.
@@ -879,12 +869,12 @@ fn surface_has_rle(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasRLE",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
 fn set_surface_color_key(
-    surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32
+    surface: Ptr[Surface, MutAnyOrigin], enabled: Bool, key: UInt32
 ) raises:
     """Set the color key (transparent pixel) in a surface.
 
@@ -914,14 +904,14 @@ fn set_surface_color_key(
         lib,
         "SDL_SetSurfaceColorKey",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32
+            surface: Ptr[Surface, MutAnyOrigin], enabled: Bool, key: UInt32
         ) -> Bool,
     ]()(surface, enabled, key)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_color_key(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
+fn surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     """Returns whether the surface has a color key.
 
     It is safe to pass a NULL `surface` here; it will return false.
@@ -941,12 +931,12 @@ fn surface_has_color_key(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasColorKey",
-        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
 fn get_surface_color_key(
-    surface: Ptr[Surface, AnyOrigin[True]], key: Ptr[UInt32, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin], key: Ptr[UInt32, MutAnyOrigin]
 ) raises:
     """Get the color key (transparent pixel) for a surface.
 
@@ -973,8 +963,8 @@ fn get_surface_color_key(
         lib,
         "SDL_GetSurfaceColorKey",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            key: Ptr[UInt32, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            key: Ptr[UInt32, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, key)
     if not ret:
@@ -982,7 +972,7 @@ fn get_surface_color_key(
 
 
 fn set_surface_color_mod(
-    surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+    surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises:
     """Set an additional color value multiplied into blit operations.
 
@@ -1012,7 +1002,7 @@ fn set_surface_color_mod(
         lib,
         "SDL_SetSurfaceColorMod",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+            surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
         ) -> Bool,
     ]()(surface, r, g, b)
     if not ret:
@@ -1020,10 +1010,10 @@ fn set_surface_color_mod(
 
 
 fn get_surface_color_mod(
-    surface: Ptr[Surface, AnyOrigin[True]],
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
 ) raises:
     """Get the additional color value multiplied into blit operations.
 
@@ -1047,10 +1037,10 @@ fn get_surface_color_mod(
         lib,
         "SDL_GetSurfaceColorMod",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, r, g, b)
     if not ret:
@@ -1058,7 +1048,7 @@ fn get_surface_color_mod(
 
 
 fn set_surface_alpha_mod(
-    surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8
+    surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8
 ) raises:
     """Set an additional alpha value used in blit operations.
 
@@ -1084,14 +1074,14 @@ fn set_surface_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceAlphaMod",
-        fn(surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) -> Bool,
     ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_surface_alpha_mod(
-    surface: Ptr[Surface, AnyOrigin[True]], alpha: Ptr[UInt8, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin], alpha: Ptr[UInt8, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value used in blit operations.
 
@@ -1113,8 +1103,8 @@ fn get_surface_alpha_mod(
         lib,
         "SDL_GetSurfaceAlphaMod",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            alpha: Ptr[UInt8, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            alpha: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, alpha)
     if not ret:
@@ -1122,7 +1112,7 @@ fn get_surface_alpha_mod(
 
 
 fn set_surface_blend_mode(
-    surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode
+    surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode used for blit operations.
 
@@ -1147,17 +1137,15 @@ fn set_surface_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceBlendMode",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode
-        ) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
     ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_surface_blend_mode(
-    surface: Ptr[Surface, AnyOrigin[True]],
-    blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
+    blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
     """Get the blend mode used for blit operations.
 
@@ -1179,8 +1167,8 @@ fn get_surface_blend_mode(
         lib,
         "SDL_GetSurfaceBlendMode",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            blend_mode: Ptr[BlendMode, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, blend_mode)
     if not ret:
@@ -1188,7 +1176,7 @@ fn get_surface_blend_mode(
 
 
 fn set_surface_clip_rect(
-    surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]
+    surface: Ptr[Surface, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Set the clipping rectangle for a surface.
 
@@ -1217,14 +1205,14 @@ fn set_surface_clip_rect(
         lib,
         "SDL_SetSurfaceClipRect",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(surface, rect)
 
 
 fn get_surface_clip_rect(
-    surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+    surface: Ptr[Surface, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the clipping rectangle for a surface.
 
@@ -1251,15 +1239,15 @@ fn get_surface_clip_rect(
         lib,
         "SDL_GetSurfaceClipRect",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
+            rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn flip_surface(surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) raises:
+fn flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
     """Flip a surface vertically or horizontally.
 
     Args:
@@ -1279,15 +1267,15 @@ fn flip_surface(surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlipSurface",
-        fn(surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) -> Bool,
     ]()(surface, flip)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn duplicate_surface(
-    surface: Ptr[Surface, AnyOrigin[True]],
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Creates a new surface identical to the existing surface.
 
@@ -1312,20 +1300,18 @@ fn duplicate_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_DuplicateSurface",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]]
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn scale_surface(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     width: c_int,
     height: c_int,
     scale_mode: ScaleMode,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Creates a new surface identical to the existing surface, scaled to the
     desired size.
@@ -1352,20 +1338,20 @@ fn scale_surface(
         lib,
         "SDL_ScaleSurface",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             width: c_int,
             height: c_int,
             scale_mode: ScaleMode,
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, width, height, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn convert_surface(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     format: PixelFormat,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Copy an existing surface to a new surface of the specified format.
 
@@ -1398,20 +1384,20 @@ fn convert_surface(
         lib,
         "SDL_ConvertSurface",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat
-        ) -> Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin], format: PixelFormat
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn convert_surface_and_colorspace(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     format: PixelFormat,
-    palette: Ptr[Palette, AnyOrigin[True]],
+    palette: Ptr[Palette, MutAnyOrigin],
     colorspace: Colorspace,
     props: PropertiesID,
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Copy an existing surface to a new surface of the specified format and
     colorspace.
@@ -1444,12 +1430,12 @@ fn convert_surface_and_colorspace(
         lib,
         "SDL_ConvertSurfaceAndColorspace",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             format: PixelFormat,
-            palette: Ptr[Palette, AnyOrigin[True]],
+            palette: Ptr[Palette, MutAnyOrigin],
             colorspace: Colorspace,
             props: PropertiesID,
-        ) -> Ptr[Surface, AnyOrigin[True]],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format, palette, colorspace, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1459,10 +1445,10 @@ fn convert_pixels(
     width: c_int,
     height: c_int,
     src_format: PixelFormat,
-    src: Ptr[NoneType, AnyOrigin[False]],
+    src: Ptr[NoneType, ImmutAnyOrigin],
     src_pitch: c_int,
     dst_format: PixelFormat,
-    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst: Ptr[NoneType, MutAnyOrigin],
     dst_pitch: c_int,
 ) raises:
     """Copy a block of pixels of one format to another format.
@@ -1496,10 +1482,10 @@ fn convert_pixels(
             width: c_int,
             height: c_int,
             src_format: PixelFormat,
-            src: Ptr[NoneType, AnyOrigin[False]],
+            src: Ptr[NoneType, ImmutAnyOrigin],
             src_pitch: c_int,
             dst_format: PixelFormat,
-            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
         ) -> Bool,
     ]()(width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch)
@@ -1513,12 +1499,12 @@ fn convert_pixels_and_colorspace(
     src_format: PixelFormat,
     src_colorspace: Colorspace,
     src_properties: PropertiesID,
-    src: Ptr[NoneType, AnyOrigin[False]],
+    src: Ptr[NoneType, ImmutAnyOrigin],
     src_pitch: c_int,
     dst_format: PixelFormat,
     dst_colorspace: Colorspace,
     dst_properties: PropertiesID,
-    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst: Ptr[NoneType, MutAnyOrigin],
     dst_pitch: c_int,
 ) raises:
     """Copy a block of pixels of one format and colorspace to another format and
@@ -1563,12 +1549,12 @@ fn convert_pixels_and_colorspace(
             src_format: PixelFormat,
             src_colorspace: Colorspace,
             src_properties: PropertiesID,
-            src: Ptr[NoneType, AnyOrigin[False]],
+            src: Ptr[NoneType, ImmutAnyOrigin],
             src_pitch: c_int,
             dst_format: PixelFormat,
             dst_colorspace: Colorspace,
             dst_properties: PropertiesID,
-            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
         ) -> Bool,
     ]()(
@@ -1593,10 +1579,10 @@ fn premultiply_alpha(
     width: c_int,
     height: c_int,
     src_format: PixelFormat,
-    src: Ptr[NoneType, AnyOrigin[False]],
+    src: Ptr[NoneType, ImmutAnyOrigin],
     src_pitch: c_int,
     dst_format: PixelFormat,
-    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst: Ptr[NoneType, MutAnyOrigin],
     dst_pitch: c_int,
     linear: Bool,
 ) raises:
@@ -1635,10 +1621,10 @@ fn premultiply_alpha(
             width: c_int,
             height: c_int,
             src_format: PixelFormat,
-            src: Ptr[NoneType, AnyOrigin[False]],
+            src: Ptr[NoneType, ImmutAnyOrigin],
             src_pitch: c_int,
             dst_format: PixelFormat,
-            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
             linear: Bool,
         ) -> Bool,
@@ -1658,7 +1644,7 @@ fn premultiply_alpha(
 
 
 fn premultiply_surface_alpha(
-    surface: Ptr[Surface, AnyOrigin[True]], linear: Bool
+    surface: Ptr[Surface, MutAnyOrigin], linear: Bool
 ) raises:
     """Premultiply the alpha in a surface.
 
@@ -1682,14 +1668,14 @@ fn premultiply_surface_alpha(
     ret = _get_dylib_function[
         lib,
         "SDL_PremultiplySurfaceAlpha",
-        fn(surface: Ptr[Surface, AnyOrigin[True]], linear: Bool) -> Bool,
+        fn(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) -> Bool,
     ]()(surface, linear)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn clear_surface(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     r: c_float,
     g: c_float,
     b: c_float,
@@ -1723,7 +1709,7 @@ fn clear_surface(
         lib,
         "SDL_ClearSurface",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             r: c_float,
             g: c_float,
             b: c_float,
@@ -1735,8 +1721,8 @@ fn clear_surface(
 
 
 fn fill_surface_rect(
-    dst: Ptr[Surface, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
     color: UInt32,
 ) raises:
     """Perform a fast fill of a rectangle with a specific color.
@@ -1770,8 +1756,8 @@ fn fill_surface_rect(
         lib,
         "SDL_FillSurfaceRect",
         fn(
-            dst: Ptr[Surface, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
             color: UInt32,
         ) -> Bool,
     ]()(dst, rect, color)
@@ -1780,8 +1766,8 @@ fn fill_surface_rect(
 
 
 fn fill_surface_rects(
-    dst: Ptr[Surface, AnyOrigin[True]],
-    rects: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, MutAnyOrigin],
+    rects: Ptr[Rect, ImmutAnyOrigin],
     count: c_int,
     color: UInt32,
 ) raises:
@@ -1816,8 +1802,8 @@ fn fill_surface_rects(
         lib,
         "SDL_FillSurfaceRects",
         fn(
-            dst: Ptr[Surface, AnyOrigin[True]],
-            rects: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, MutAnyOrigin],
+            rects: Ptr[Rect, ImmutAnyOrigin],
             count: c_int,
             color: UInt32,
         ) -> Bool,
@@ -1827,10 +1813,10 @@ fn fill_surface_rects(
 
 
 fn blit_surface(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
 ) raises:
     """Performs a fast blit from the source surface to the destination surface
     with clipping.
@@ -1909,10 +1895,10 @@ fn blit_surface(
         lib,
         "SDL_BlitSurface",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
@@ -1920,10 +1906,10 @@ fn blit_surface(
 
 
 fn blit_surface_unchecked(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
 ) raises:
     """Perform low-level surface blitting only.
 
@@ -1953,10 +1939,10 @@ fn blit_surface_unchecked(
         lib,
         "SDL_BlitSurfaceUnchecked",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
@@ -1964,10 +1950,10 @@ fn blit_surface_unchecked(
 
 
 fn blit_surface_scaled(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
     scale_mode: ScaleMode,
 ) raises:
     """Perform a scaled blit to a destination surface, which may be of a different
@@ -1998,10 +1984,10 @@ fn blit_surface_scaled(
         lib,
         "SDL_BlitSurfaceScaled",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
@@ -2010,10 +1996,10 @@ fn blit_surface_scaled(
 
 
 fn blit_surface_unchecked_scaled(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
     scale_mode: ScaleMode,
 ) raises:
     """Perform low-level surface scaled blitting only.
@@ -2045,10 +2031,10 @@ fn blit_surface_unchecked_scaled(
         lib,
         "SDL_BlitSurfaceUncheckedScaled",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
@@ -2057,10 +2043,10 @@ fn blit_surface_unchecked_scaled(
 
 
 fn stretch_surface(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
     scale_mode: ScaleMode,
 ) raises:
     """Perform a stretched pixel copy from one surface to another.
@@ -2090,10 +2076,10 @@ fn stretch_surface(
         lib,
         "SDL_StretchSurface",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
@@ -2102,10 +2088,10 @@ fn stretch_surface(
 
 
 fn blit_surface_tiled(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
 ) raises:
     """Perform a tiled blit to a destination surface, which may be of a different
     format.
@@ -2136,10 +2122,10 @@ fn blit_surface_tiled(
         lib,
         "SDL_BlitSurfaceTiled",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
@@ -2147,12 +2133,12 @@ fn blit_surface_tiled(
 
 
 fn blit_surface_tiled_with_scale(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
     scale: c_float,
     scale_mode: ScaleMode,
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
 ) raises:
     """Perform a scaled and tiled blit to a destination surface, which may be of a
     different format.
@@ -2187,12 +2173,12 @@ fn blit_surface_tiled_with_scale(
         lib,
         "SDL_BlitSurfaceTiledWithScale",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
             scale: c_float,
             scale_mode: ScaleMode,
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(src, srcrect, scale, scale_mode, dst, dstrect)
     if not ret:
@@ -2200,16 +2186,16 @@ fn blit_surface_tiled_with_scale(
 
 
 fn blit_surface_9grid(
-    src: Ptr[Surface, AnyOrigin[True]],
-    srcrect: Ptr[Rect, AnyOrigin[False]],
+    src: Ptr[Surface, MutAnyOrigin],
+    srcrect: Ptr[Rect, ImmutAnyOrigin],
     left_width: c_int,
     right_width: c_int,
     top_height: c_int,
     bottom_height: c_int,
     scale: c_float,
     scale_mode: ScaleMode,
-    dst: Ptr[Surface, AnyOrigin[True]],
-    dstrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, MutAnyOrigin],
+    dstrect: Ptr[Rect, ImmutAnyOrigin],
 ) raises:
     """Perform a scaled blit using the 9-grid algorithm to a destination surface,
     which may be of a different format.
@@ -2251,16 +2237,16 @@ fn blit_surface_9grid(
         lib,
         "SDL_BlitSurface9Grid",
         fn(
-            src: Ptr[Surface, AnyOrigin[True]],
-            srcrect: Ptr[Rect, AnyOrigin[False]],
+            src: Ptr[Surface, MutAnyOrigin],
+            srcrect: Ptr[Rect, ImmutAnyOrigin],
             left_width: c_int,
             right_width: c_int,
             top_height: c_int,
             bottom_height: c_int,
             scale: c_float,
             scale_mode: ScaleMode,
-            dst: Ptr[Surface, AnyOrigin[True]],
-            dstrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, MutAnyOrigin],
+            dstrect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         src,
@@ -2279,7 +2265,7 @@ fn blit_surface_9grid(
 
 
 fn map_surface_rgb(
-    surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+    surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises -> UInt32:
     """Map an RGB triple to an opaque pixel value for a surface.
 
@@ -2317,13 +2303,13 @@ fn map_surface_rgb(
         lib,
         "SDL_MapSurfaceRGB",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+            surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
         ) -> UInt32,
     ]()(surface, r, g, b)
 
 
 fn map_surface_rgba(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     r: UInt8,
     g: UInt8,
     b: UInt8,
@@ -2366,7 +2352,7 @@ fn map_surface_rgba(
         lib,
         "SDL_MapSurfaceRGBA",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             r: UInt8,
             g: UInt8,
             b: UInt8,
@@ -2376,13 +2362,13 @@ fn map_surface_rgba(
 
 
 fn read_surface_pixel(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
-    a: Ptr[UInt8, AnyOrigin[True]],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
+    a: Ptr[UInt8, MutAnyOrigin],
 ) raises:
     """Retrieves a single pixel from a surface.
 
@@ -2419,13 +2405,13 @@ fn read_surface_pixel(
         lib,
         "SDL_ReadSurfacePixel",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
-            a: Ptr[UInt8, AnyOrigin[True]],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
+            a: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
@@ -2433,13 +2419,13 @@ fn read_surface_pixel(
 
 
 fn read_surface_pixel_float(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
-    r: Ptr[c_float, AnyOrigin[True]],
-    g: Ptr[c_float, AnyOrigin[True]],
-    b: Ptr[c_float, AnyOrigin[True]],
-    a: Ptr[c_float, AnyOrigin[True]],
+    r: Ptr[c_float, MutAnyOrigin],
+    g: Ptr[c_float, MutAnyOrigin],
+    b: Ptr[c_float, MutAnyOrigin],
+    a: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Retrieves a single pixel from a surface.
 
@@ -2473,13 +2459,13 @@ fn read_surface_pixel_float(
         lib,
         "SDL_ReadSurfacePixelFloat",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
-            r: Ptr[c_float, AnyOrigin[True]],
-            g: Ptr[c_float, AnyOrigin[True]],
-            b: Ptr[c_float, AnyOrigin[True]],
-            a: Ptr[c_float, AnyOrigin[True]],
+            r: Ptr[c_float, MutAnyOrigin],
+            g: Ptr[c_float, MutAnyOrigin],
+            b: Ptr[c_float, MutAnyOrigin],
+            a: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
@@ -2487,7 +2473,7 @@ fn read_surface_pixel_float(
 
 
 fn write_surface_pixel(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
     r: UInt8,
@@ -2526,7 +2512,7 @@ fn write_surface_pixel(
         lib,
         "SDL_WriteSurfacePixel",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
             r: UInt8,
@@ -2540,7 +2526,7 @@ fn write_surface_pixel(
 
 
 fn write_surface_pixel_float(
-    surface: Ptr[Surface, AnyOrigin[True]],
+    surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
     r: c_float,
@@ -2576,7 +2562,7 @@ fn write_surface_pixel_float(
         lib,
         "SDL_WriteSurfacePixelFloat",
         fn(
-            surface: Ptr[Surface, AnyOrigin[True]],
+            surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
             r: c_float,

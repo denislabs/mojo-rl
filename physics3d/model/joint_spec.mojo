@@ -637,8 +637,7 @@ struct Joints[*J: JointSpec](JointsLike):
         """Sum NQ across all joints (total qpos dimension)."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.joint_types[i].NQ
         return total
 
@@ -647,8 +646,7 @@ struct Joints[*J: JointSpec](JointsLike):
         """Sum NV across all joints (total qvel dimension)."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.joint_types[i].NV
         return total
 
@@ -658,8 +656,7 @@ struct Joints[*J: JointSpec](JointsLike):
         """
         var total = 0
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.joint_types[j].NQ
         return total
 
@@ -669,8 +666,7 @@ struct Joints[*J: JointSpec](JointsLike):
         """
         var total = 0
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.joint_types[j].NV
         return total
 
@@ -689,13 +685,11 @@ struct Joints[*J: JointSpec](JointsLike):
         acceleration, and force arrays. Does NOT run forward kinematics.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
             comptime offset = Self._qpos_offset[i]()
 
-            @parameter
-            if J.JNT_TYPE == JNT_FREE:
+            comptime if J.JNT_TYPE == JNT_FREE:
                 # Free joint: qpos = [x, y, z, qx, qy, qz, qw]
                 data.qpos[offset + 0] = Scalar[DTYPE](J.INIT_POS_X)
                 data.qpos[offset + 1] = Scalar[DTYPE](J.INIT_POS_Y)
@@ -724,12 +718,10 @@ struct Joints[*J: JointSpec](JointsLike):
         """
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QPOS:
+            comptime if not J.EXCLUDE_OBS_QPOS:
                 total += J.NQ - J.NUM_EXCLUDED_QPOS
         return total
 
@@ -738,12 +730,10 @@ struct Joints[*J: JointSpec](JointsLike):
         """Count of qvel elements included in observation."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QVEL:
+            comptime if not J.EXCLUDE_OBS_QVEL:
                 total += J.NV
         return total
 
@@ -757,12 +747,10 @@ struct Joints[*J: JointSpec](JointsLike):
         """Count of actuated DOFs (joints with IS_ACTUATED=True)."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if J.IS_ACTUATED:
+            comptime if J.IS_ACTUATED:
                 total += J.NV
         return total
 
@@ -788,29 +776,23 @@ struct Joints[*J: JointSpec](JointsLike):
         """
 
         # Included qpos (skip first NUM_EXCLUDED_QPOS elements per joint)
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QPOS:
+            comptime if not J.EXCLUDE_OBS_QPOS:
                 comptime offset = Self._qpos_offset[i]()
 
-                @parameter
-                for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
+                comptime for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
                     obs.append(data.qpos[offset + k])
 
         # Included qvel
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QVEL:
+            comptime if not J.EXCLUDE_OBS_QVEL:
                 comptime offset = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NV):
+                comptime for k in range(J.NV):
                     obs.append(data.qvel[offset + k])
 
     @staticmethod
@@ -820,6 +802,7 @@ struct Joints[*J: JointSpec](JointsLike):
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
+        NSITE: Int = 0,
     ](
         mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE],
         actions: List[Float64],
@@ -831,16 +814,13 @@ struct Joints[*J: JointSpec](JointsLike):
         """
         var act_idx = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if J.IS_ACTUATED:
+            comptime if J.IS_ACTUATED:
                 comptime offset = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NV):
+                comptime for k in range(J.NV):
                     var a = actions[act_idx] if act_idx < len(actions) else 0.0
                     # Clamp to [-1, 1]
                     if a > 1.0:
@@ -861,17 +841,14 @@ struct Joints[*J: JointSpec](JointsLike):
     ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NSITE]):
         """Enforce joint position limits. Zeros velocity at limits."""
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if J.HAS_LIMITS:
+            comptime if J.HAS_LIMITS:
                 comptime qp_off = Self._qpos_offset[i]()
                 comptime qv_off = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NQ):
+                comptime for k in range(J.NQ):
                     var qpos = data.qpos[qp_off + k]
                     var qvel = data.qvel[qv_off + k]
                     if qpos < Scalar[DTYPE](J.RANGE_MIN):
@@ -912,30 +889,24 @@ struct Joints[*J: JointSpec](JointsLike):
         var obs_idx = 0
 
         # Included qpos (skip first NUM_EXCLUDED_QPOS elements per joint)
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QPOS:
+            comptime if not J.EXCLUDE_OBS_QPOS:
                 comptime offset = Self._qpos_offset[i]()
 
-                @parameter
-                for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
+                comptime for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
                     obs[env, obs_idx] = states[env, QPOS_OFF + offset + k]
                     obs_idx += 1
 
         # Included qvel
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if not J.EXCLUDE_OBS_QVEL:
+            comptime if not J.EXCLUDE_OBS_QVEL:
                 comptime offset = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NV):
+                comptime for k in range(J.NV):
                     obs[env, obs_idx] = states[env, QVEL_OFF + offset + k]
                     obs_idx += 1
 
@@ -962,16 +933,13 @@ struct Joints[*J: JointSpec](JointsLike):
 
         var act_idx = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if J.IS_ACTUATED:
+            comptime if J.IS_ACTUATED:
                 comptime offset = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NV):
+                comptime for k in range(J.NV):
                     var a = actions[env, act_idx]
                     if a > Scalar[GDTYPE](1.0):
                         a = Scalar[GDTYPE](1.0)
@@ -1000,17 +968,14 @@ struct Joints[*J: JointSpec](JointsLike):
         comptime QPOS_OFF = qpos_offset[NQ_VAL, NV_VAL]()
         comptime QVEL_OFF = qvel_offset[NQ_VAL, NV_VAL]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
-            @parameter
-            if J.HAS_LIMITS:
+            comptime if J.HAS_LIMITS:
                 comptime qp_off = Self._qpos_offset[i]()
                 comptime qv_off = Self._qvel_offset[i]()
 
-                @parameter
-                for k in range(J.NQ):
+                comptime for k in range(J.NQ):
                     var qpos = states[env, QPOS_OFF + qp_off + k]
                     if qpos < Scalar[GDTYPE](J.RANGE_MIN):
                         states[env, QPOS_OFF + qp_off + k] = Scalar[GDTYPE](
@@ -1076,13 +1041,11 @@ struct Joints[*J: JointSpec](JointsLike):
             rand_vals[b * 4 + 3] = batch[3]
 
         # Reset qpos with noise
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
             comptime offset = Self._qpos_offset[i]()
 
-            @parameter
-            if J.JNT_TYPE == JNT_FREE:
+            comptime if J.JNT_TYPE == JNT_FREE:
                 # Free joint: init position + identity quaternion (no noise for now)
                 states[env, QPOS_OFF + offset + 0] = Scalar[GDTYPE](
                     J.INIT_POS_X
@@ -1098,9 +1061,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 states[env, QPOS_OFF + offset + 5] = Scalar[GDTYPE](0)  # qz
                 states[env, QPOS_OFF + offset + 6] = Scalar[GDTYPE](1)  # qw
             else:
-
-                @parameter
-                for k in range(J.NQ):
+                comptime for k in range(J.NQ):
                     var noise = (
                         Scalar[GDTYPE](rand_vals[offset + k] * 2.0 - 1.0)
                         * noise_scale
@@ -1110,13 +1071,11 @@ struct Joints[*J: JointSpec](JointsLike):
                     )
 
         # Reset qvel with noise
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
             comptime offset = Self._qvel_offset[i]()
 
-            @parameter
-            for k in range(J.NV):
+            comptime for k in range(J.NV):
                 var noise = (
                     Scalar[GDTYPE](rand_vals[NQ_VAL + offset + k] * 2.0 - 1.0)
                     * noise_scale
@@ -1298,8 +1257,7 @@ struct Joints[*J: JointSpec](JointsLike):
         Also populates per-joint solref/solimp limit arrays.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
 
             # Resolve dynamics fields from defaults
@@ -1312,8 +1270,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 J.FRICTIONLOSS, Defaults.JOINT_FRICTIONLOSS
             ]()
 
-            @parameter
-            if J.JNT_TYPE == JNT_HINGE:
+            comptime if J.JNT_TYPE == JNT_HINGE:
                 _ = model.add_hinge_joint(
                     body_id=J.BODY_IDX,
                     pos=(
@@ -1406,8 +1363,7 @@ struct Joints[*J: JointSpec](JointsLike):
             # Set qpos0 (MuJoCo ref / initial position)
             comptime qp_off = Self._qpos_offset[i]()
 
-            @parameter
-            if J.JNT_TYPE == JNT_FREE:
+            comptime if J.JNT_TYPE == JNT_FREE:
                 model.qpos0[qp_off + 0] = Scalar[DTYPE](J.INIT_POS_X)
                 model.qpos0[qp_off + 1] = Scalar[DTYPE](J.INIT_POS_Y)
                 model.qpos0[qp_off + 2] = Scalar[DTYPE](J.INIT_POS_Z)
@@ -1432,8 +1388,7 @@ struct Joints[*J: JointSpec](JointsLike):
         var qpos_adr = 0
         var dof_adr = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime J = Self.joint_types[i]
             var off = model_joint_offset[NBODY](i)
 
@@ -1469,39 +1424,25 @@ struct Joints[*J: JointSpec](JointsLike):
 
             # Per-joint solref/solimp for limits
             buffer[off + JOINT_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0
-                ]()
+                _resolve_f64[J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0]()
             )
             buffer[off + JOINT_IDX_SOLREF_LIMIT_1] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1
-                ]()
+                _resolve_f64[J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1]()
             )
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_0] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0]()
             )
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_1] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1]()
             )
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2]()
             )
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_3] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_3, Defaults.JOINT_SOLIMP_LIMIT_3
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_3, Defaults.JOINT_SOLIMP_LIMIT_3]()
             )
             buffer[off + JOINT_IDX_SOLIMP_LIMIT_4] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_4, Defaults.JOINT_SOLIMP_LIMIT_4
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_4, Defaults.JOINT_SOLIMP_LIMIT_4]()
             )
 
             # Advance addresses

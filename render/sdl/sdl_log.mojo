@@ -260,19 +260,17 @@ fn set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetLogPriorityPrefix",
-        fn(
-            priority: LogPriority, prefix: Ptr[c_char, AnyOrigin[False]]
-        ) -> Bool,
+        fn(priority: LogPriority, prefix: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 comptime LogOutputFunction = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
     category: c_int,
     priority: LogPriority,
-    message: Ptr[c_char, AnyOrigin[False]],
+    message: Ptr[c_char, ImmutAnyOrigin],
 ) -> None
 """The prototype for the log output callback function.
     
@@ -309,8 +307,8 @@ fn get_default_log_output_function() raises -> LogOutputFunction:
 
 
 fn get_log_output_function(
-    callback: Ptr[LogOutputFunction, AnyOrigin[True]],
-    userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+    callback: Ptr[LogOutputFunction, MutAnyOrigin],
+    userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
 ) raises -> None:
     """Get the current log output function.
 
@@ -330,14 +328,14 @@ fn get_log_output_function(
         lib,
         "SDL_GetLogOutputFunction",
         fn(
-            callback: Ptr[LogOutputFunction, AnyOrigin[True]],
-            userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+            callback: Ptr[LogOutputFunction, MutAnyOrigin],
+            userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
         ) -> None,
     ]()(callback, userdata)
 
 
 fn set_log_output_function(
-    callback: LogOutputFunction, userdata: Ptr[NoneType, AnyOrigin[True]]
+    callback: LogOutputFunction, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Replace the default log output function with one of your own.
 
@@ -356,6 +354,6 @@ fn set_log_output_function(
         "SDL_SetLogOutputFunction",
         fn(
             callback: LogOutputFunction,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> None,
     ]()(callback, userdata)

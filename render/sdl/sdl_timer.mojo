@@ -193,7 +193,7 @@ struct TimerID(Intable, TrivialRegisterPassable):
 
 
 comptime TimerCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt32,
 ) -> UInt32
@@ -227,7 +227,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_TimerCallback.
 fn add_timer(
     interval: UInt32,
     callback: TimerCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises -> TimerID:
     """Call a callback function at a future time.
 
@@ -270,13 +270,13 @@ fn add_timer(
         fn(
             interval: UInt32,
             callback: TimerCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> TimerID,
     ]()(interval, callback, userdata)
 
 
 comptime NSTimerCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt64,
 ) -> UInt64
@@ -310,7 +310,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_NSTimerCallback.
 fn add_timer_ns(
     interval: UInt64,
     callback: NSTimerCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises -> TimerID:
     """Call a callback function at a future time.
 
@@ -353,7 +353,7 @@ fn add_timer_ns(
         fn(
             interval: UInt64,
             callback: NSTimerCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> TimerID,
     ]()(interval, callback, userdata)
 

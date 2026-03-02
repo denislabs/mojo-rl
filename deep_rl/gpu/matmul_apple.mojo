@@ -105,8 +105,7 @@ fn matmul_apple_kernel[
         barrier()
 
         # Compute partial product
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()
@@ -182,8 +181,7 @@ fn matmul_apple_reg2x2_kernel[
 
         # Load A tile: need 2 rows per thread for 2x2 blocking
         # Each thread loads 2 elements in the row dimension
-        @parameter
-        for dr in range(2):
+        comptime for dr in range(2):
             var a_row = global_row_base + dr
             var a_col = k_offset + local_col
             if a_row < M and a_col < K:
@@ -192,8 +190,7 @@ fn matmul_apple_reg2x2_kernel[
                 a_shared[local_row * 2 + dr, local_col] = 0
 
         # Load B tile: need 2 cols per thread for 2x2 blocking
-        @parameter
-        for dc in range(2):
+        comptime for dc in range(2):
             var b_row = k_offset + local_row
             var b_col = global_col_base + dc
             if b_row < K and b_col < N:
@@ -204,8 +201,7 @@ fn matmul_apple_reg2x2_kernel[
         barrier()
 
         # Compute 2x2 partial products
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             var a0 = a_shared[local_row * 2, k]
             var a1 = a_shared[local_row * 2 + 1, k]
             var b0 = b_shared[k, local_col * 2]
@@ -294,8 +290,7 @@ fn matmul_bias_apple_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()
@@ -369,8 +364,7 @@ fn matmul_fp16_apple_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             # Promote to FP32 for accumulation
             var a_val = rebind[Scalar[DType.float16]](a_shared[local_row, k])
             var b_val = rebind[Scalar[DType.float16]](b_shared[k, local_col])

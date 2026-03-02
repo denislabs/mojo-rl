@@ -99,8 +99,7 @@ fn main() raises:
     var env = BipedalWalker[dtype]()
 
     # Create renderer if enabled
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         var renderer = Renderer2D(
             width=600,
             height=400,

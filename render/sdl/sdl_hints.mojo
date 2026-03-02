@@ -93,8 +93,8 @@ fn set_hint_with_priority(
         lib,
         "SDL_SetHintWithPriority",
         fn(
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[c_char, ImmutAnyOrigin],
             priority: HintPriority,
         ) -> Bool,
     ]()(
@@ -131,8 +131,8 @@ fn set_hint(var name: String, var value: String) raises:
         lib,
         "SDL_SetHint",
         fn(
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -163,7 +163,7 @@ fn reset_hint(var name: String) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ResetHint", fn(name: Ptr[c_char, AnyOrigin[False]]) -> Bool
+        lib, "SDL_ResetHint", fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Bool
     ]()(name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -185,7 +185,7 @@ fn reset_hints() raises -> None:
     return _get_dylib_function[lib, "SDL_ResetHints", fn() -> None]()()
 
 
-fn get_hint(var name: String) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the value of a hint.
 
     Args:
@@ -208,9 +208,7 @@ fn get_hint(var name: String) raises -> Ptr[c_char, AnyOrigin[False]]:
     return _get_dylib_function[
         lib,
         "SDL_GetHint",
-        fn(
-            name: Ptr[c_char, AnyOrigin[False]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+        fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -234,15 +232,15 @@ fn get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetHintBoolean",
-        fn(name: Ptr[c_char, AnyOrigin[False]], default_value: Bool) -> Bool,
+        fn(name: Ptr[c_char, ImmutAnyOrigin], default_value: Bool) -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
 comptime HintCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
-    name: Ptr[c_char, AnyOrigin[False]],
-    old_value: Ptr[c_char, AnyOrigin[False]],
-    new_value: Ptr[c_char, AnyOrigin[False]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
+    name: Ptr[c_char, ImmutAnyOrigin],
+    old_value: Ptr[c_char, ImmutAnyOrigin],
+    new_value: Ptr[c_char, ImmutAnyOrigin],
 ) -> None
 """A callback used to send notifications of hint value changes.
     
@@ -267,7 +265,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_HintCallback.
 fn add_hint_callback(
     var name: String,
     callback: HintCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises:
     """Add a function to watch a particular hint.
 
@@ -294,9 +292,9 @@ fn add_hint_callback(
         lib,
         "SDL_AddHintCallback",
         fn(
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             callback: HintCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
@@ -306,7 +304,7 @@ fn add_hint_callback(
 fn remove_hint_callback(
     var name: String,
     callback: HintCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises -> None:
     """Remove a function watching a particular hint.
 
@@ -326,8 +324,8 @@ fn remove_hint_callback(
         lib,
         "SDL_RemoveHintCallback",
         fn(
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             callback: HintCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> None,
     ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)

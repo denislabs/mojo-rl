@@ -236,8 +236,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             M.append(Scalar[DTYPE](0))
         var sM = SparseMassMatrix[DTYPE, NV, NM]()
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             build_sparse_pattern[
                 DTYPE,
                 NQ,
@@ -280,8 +279,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var arm = joint.armature
             var diag_add = arm
 
-            @parameter
-            if SPARSE:
+            comptime if SPARSE:
                 if joint.jnt_type == JNT_FREE:
                     for d in range(6):
                         sM.values[sM.diag_pos(dof_adr + d)] += diag_add
@@ -307,8 +305,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     )
 
         # 5c. Expand sparse to dense for M_hat (must be before ldl_factor_sparse mutates sM)
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             sparse_to_dense[DTYPE, NV, NM](sM, M)
 
         # 6. LDL factorize M and solve for qacc
@@ -319,8 +316,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(V_SIZE):
             D.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse(sM)
         else:
             ldl_factor[DTYPE, NV](M, L, D)
@@ -427,8 +423,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(V_SIZE):
             qacc.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse[DTYPE, NV, NM](sM, f_net, qacc)
         else:
             ldl_solve[DTYPE, NV](L, D, f_net, qacc)
@@ -438,8 +433,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(M_SIZE):
             M_inv.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             # Compute M_inv column-by-column: solve M * e_j = e_j for each j
             var e_col = List[Scalar[DTYPE]](capacity=V_SIZE)
             for _ in range(V_SIZE):
@@ -550,8 +544,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     M[dof_adr * NV + dof_adr] += dt * damp
 
         # Step 4: Re-factor M_hat via LDL
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             # Recompute sparse M, add armature + dt*damping to diagonal, then factor
             compute_mass_matrix_sparse[
                 DTYPE,
@@ -592,8 +585,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(V_SIZE):
             v_new.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse[DTYPE, NV, NM](sM, rhs, v_new)
         else:
             ldl_solve[DTYPE, NV](L, D, rhs, v_new)
@@ -747,14 +739,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime M_idx = ws_M_offset[NV, NBODY]()
 
         # Sparse pattern arrays — built once per step from model topology.
-        # When SPARSE=False these are eliminated by @parameter if dead-code removal.
+        # When SPARSE=False these are eliminated by comptime if dead-code removal.
         comptime NM_SAFE = _ensure_positive[NM]()
         var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             _ = build_sparse_pattern_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
             ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
@@ -833,8 +824,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model, workspace)
 
         # 6. Compute mass matrix using CRBA (reads cdof/crb, writes M in workspace)
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             compute_mass_matrix_sparse_gpu[
                 DTYPE,
                 NQ,
@@ -883,8 +873,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, idx] += diag_add
 
         # 7. LDL factorize M, compute M_inv
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
@@ -1287,8 +1276,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     )
 
         # LDL solve: reads f_net from workspace, writes qacc to workspace
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
@@ -1361,8 +1349,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             _ = build_sparse_pattern_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
             ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
@@ -1416,8 +1403,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     workspace[env, idx] += dt * damp
 
         # Step 3: Re-factor M_hat, Step 4: solve qacc_final = M_hat^{-1} * rhs
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )

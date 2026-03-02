@@ -318,8 +318,7 @@ fn setup_friction_geom[
     friction_geom: Optional[Float64] = None,
     default_friction: Float64 = FRICTION_DEFAULT,
 ]() -> Float64:
-    @parameter
-    if friction_geom:
+    comptime if friction_geom:
         return friction_geom.value()
     else:
         return default_friction

@@ -173,7 +173,7 @@ struct FlatModelDef[
     """Model definition using flat InlineArrays instead of heterogeneous types.
 
     Dimensions come from XML parser output. Data stored in InlineArray[BodyData/JointData].
-    setup_model() uses a regular for loop — no @parameter needed.
+    setup_model() uses a regular for loop — no comptime if needed.
     """
 
     # KEY TEST: does InlineArray[custom_struct, struct_param] work?
@@ -214,11 +214,14 @@ struct FlatModelDef[
     ):
         """Write body and joint data from InlineArrays to the Model struct.
 
-        Uses regular for loops — no @parameter needed since we write
+        Uses regular for loops — no comptime if needed since we write
         Float64/Int values, not instantiate per-type specializations.
         """
         model.gravity = SIMD[DTYPE, 4](
-            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](self.gravity_z), Scalar[DTYPE](0)
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](self.gravity_z),
+            Scalar[DTYPE](0),
         )
         model.timestep = Scalar[DTYPE](self.timestep)
 
@@ -373,8 +376,14 @@ fn test_flat_model_def() raises:
     # Mutate one body to verify indexing works
     flat_runtime.bodies[0] = BodyData(parent=0, mass=14.0, pos_z=0.7)
     print("[Q1] InlineArray[BodyData, 8] created and indexed")
-    print("     bodies[0].mass =", flat_runtime.bodies[0].mass, " (expected 14.0)")
-    print("     bodies[0].pos_z =", flat_runtime.bodies[0].pos_z, " (expected 0.7)")
+    print(
+        "     bodies[0].mass =", flat_runtime.bodies[0].mass, " (expected 14.0)"
+    )
+    print(
+        "     bodies[0].pos_z =",
+        flat_runtime.bodies[0].pos_z,
+        " (expected 0.7)",
+    )
     print()
 
     # =========================================================================
@@ -383,14 +392,18 @@ fn test_flat_model_def() raises:
     comptime pm = parse_xml(half_cheetah_xml)
 
     # THE key experiment: use pm.NBODY directly as a struct type parameter
-    comptime flat_ct = FlatModelDef[pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT]()
+    comptime flat_ct = FlatModelDef[
+        pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT
+    ]()
 
     print("[Q2] FlatModelDef[pm.NBODY, ...] instantiated at comptime ✓")
     print("     pm.NBODY =", pm.NBODY, "| pm.NJOINT =", pm.NJOINT)
 
-    @parameter
-    if pm.NBODY == 8 and pm.NJOINT == 9:
-        print("     @parameter branch: NBODY==8, NJOINT==9 confirmed at comptime ✓")
+    comptime if pm.NBODY == 8 and pm.NJOINT == 9:
+        print(
+            "     comptime if branch: NBODY==8, NJOINT==9 confirmed at"
+            " comptime ✓"
+        )
     print()
 
     # =========================================================================
@@ -401,21 +414,36 @@ fn test_flat_model_def() raises:
 
     # Set torso: parent=worldbody(0), mass=14.0, pos_z=0.7
     flat.bodies[0] = BodyData(
-        parent=0, mass=14.0,
-        pos_x=0.0, pos_y=0.0, pos_z=0.7,
-        quat_w=1.0, ixx=0.1, iyy=0.1, izz=0.05,
+        parent=0,
+        mass=14.0,
+        pos_x=0.0,
+        pos_y=0.0,
+        pos_z=0.7,
+        quat_w=1.0,
+        ixx=0.1,
+        iyy=0.1,
+        izz=0.05,
     )
 
     # rootz slide joint on torso (body_id=1, axis=Z)
     flat.joints[0] = JointData(
         jnt_type=JNT_SLIDE,
-        body_id=1, nq=1, nv=1,
-        axis_x=0.0, axis_y=0.0, axis_z=1.0,
-        is_limited=False, armature=0.0, damping=0.0, stiffness=0.0,
+        body_id=1,
+        nq=1,
+        nv=1,
+        axis_x=0.0,
+        axis_y=0.0,
+        axis_z=1.0,
+        is_limited=False,
+        armature=0.0,
+        damping=0.0,
+        stiffness=0.0,
     )
 
     # Create Model/Data with dimensions matching the FlatModelDef
-    var model = Model[DType.float64, 9, 9, 8, 9, 10, 9, 0, ConeType.ELLIPTIC, 0, 0]()
+    var model = Model[
+        DType.float64, 9, 9, 8, 9, 10, 9, 0, ConeType.ELLIPTIC, 0, 0
+    ]()
     var data = Data[DType.float64, 9, 9, 8, 9, 10, 0]()
 
     # Call setup_model — uses a regular for loop over InlineArray
@@ -423,13 +451,19 @@ fn test_flat_model_def() raises:
 
     print("[Q3] setup_model via InlineArray for loop:")
     print("     body 1 mass =", Float64(model.body_mass[1]), " (expected 14.0)")
-    print("     body 1 pos_z =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)")
+    print(
+        "     body 1 pos_z =",
+        Float64(model.body_pos[1 * 3 + 2]),
+        " (expected 0.7)",
+    )
     print()
 
     # Run FK to verify the model is usable with the existing physics engine
     forward_kinematics(model, data)
     print("[Q3] forward_kinematics ran on InlineArray-setup model ✓")
-    print("     torso xpos_z =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
+    print(
+        "     torso xpos_z =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)"
+    )
 
 
 fn main() raises:

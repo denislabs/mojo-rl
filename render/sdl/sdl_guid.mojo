@@ -49,10 +49,12 @@ struct GUID(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GUID.
     """
 
-    var data: ArrayHelper[UInt8, 16, AnyOrigin[True]]
+    var data: ArrayHelper[UInt8, 16, MutAnyOrigin]
 
 
-fn guid_to_string(guid: GUID, psz_guid: Ptr[c_char, AnyOrigin[True]], cb_guid: c_int) raises -> None:
+fn guid_to_string(
+    guid: GUID, psz_guid: Ptr[c_char, MutAnyOrigin], cb_guid: c_int
+) raises -> None:
     """Get an ASCII string representation for a given SDL_GUID.
 
     Args:
@@ -66,7 +68,13 @@ fn guid_to_string(guid: GUID, psz_guid: Ptr[c_char, AnyOrigin[True]], cb_guid: c
     Docs: https://wiki.libsdl.org/SDL3/SDL_GUIDToString.
     """
 
-    return _get_dylib_function[lib, "SDL_GUIDToString", fn (guid: GUID, psz_guid: Ptr[c_char, AnyOrigin[True]], cb_guid: c_int) -> None]()(guid, psz_guid, cb_guid)
+    return _get_dylib_function[
+        lib,
+        "SDL_GUIDToString",
+        fn(
+            guid: GUID, psz_guid: Ptr[c_char, MutAnyOrigin], cb_guid: c_int
+        ) -> None,
+    ]()(guid, psz_guid, cb_guid)
 
 
 fn string_to_guid(var pch_guid: String) raises -> GUID:
@@ -88,4 +96,8 @@ fn string_to_guid(var pch_guid: String) raises -> GUID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StringToGUID.
     """
 
-    return _get_dylib_function[lib, "SDL_StringToGUID", fn (pch_guid: Ptr[c_char, AnyOrigin[False]]) -> GUID]()(pch_guid.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_StringToGUID",
+        fn(pch_guid: Ptr[c_char, ImmutAnyOrigin]) -> GUID,
+    ]()(pch_guid.as_c_string_slice().unsafe_ptr())

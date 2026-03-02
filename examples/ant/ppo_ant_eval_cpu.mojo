@@ -118,8 +118,7 @@ fn main() raises:
     print("  - 14 bodies, 9 joints (8 actuated)")
     print("  - Free joint root (3D movement)")
 
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         print("  Controls: Close window to exit")
     print()
     print("-" * 70)

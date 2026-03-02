@@ -92,11 +92,10 @@ fn matmul_bias_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -120,7 +119,9 @@ fn matmul_bias_cache_input_kernel[
     input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
     bias: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
-    input_cache: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    input_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+    ],
 ):
     """Matmul with bias and input caching: output = input @ W + bias.
 
@@ -172,11 +173,10 @@ fn matmul_bias_cache_input_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -201,7 +201,9 @@ fn matmul_bias_tanh_cached_kernel[
     input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
     bias: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
-    cache: LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
+    cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
+    ],
 ):
     """Fused matmul + bias + tanh with caching.
 
@@ -257,11 +259,10 @@ fn matmul_bias_tanh_cached_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -330,11 +331,10 @@ fn matmul_bias_tanh_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -359,7 +359,9 @@ fn matmul_bias_relu_cached_kernel[
     input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
     bias: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
-    cache: LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
+    cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
+    ],
 ):
     """Fused matmul + bias + ReLU with caching.
 
@@ -413,11 +415,10 @@ fn matmul_bias_relu_cached_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -485,11 +486,10 @@ fn matmul_bias_relu_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[output.element_type](
-                x_shared[local_row, k]
-            ) * rebind[output.element_type](W_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[output.element_type](x_shared[local_row, k]) * rebind[
+                output.element_type
+            ](W_shared[k, local_col])
 
         barrier()
 
@@ -509,8 +509,12 @@ fn matmul_backward_dx_kernel[
     OUT_DIM: Int,
     TILE: Int = TILE_APPLE,
 ](
-    grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+    grad_input: LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+    ],
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
 ):
     """Backward pass for input gradient: dx = dy @ W.T.
@@ -556,8 +560,7 @@ fn matmul_backward_dx_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += rebind[grad_input.element_type](
                 dy_shared[local_row, k]
             ) * rebind[grad_input.element_type](W_T_shared[k, local_col])
@@ -576,8 +579,12 @@ fn matmul_backward_dW_kernel[
     TILE: Int = TILE_APPLE,
 ](
     dW: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
-    input_cache: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
-    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+    input_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin
+    ],
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
 ):
     """Backward pass for weight gradient: dW = x.T @ dy.
 
@@ -611,7 +618,9 @@ fn matmul_backward_dW_kernel[
 
         # Load x.T tile (transpose: x_T[i,j] = x[j,i])
         if global_row < IN_DIM and batch_idx < BATCH:
-            x_T_shared[local_row, local_col] = input_cache[batch_idx, global_row]
+            x_T_shared[local_row, local_col] = input_cache[
+                batch_idx, global_row
+            ]
         else:
             x_T_shared[local_row, local_col] = 0
 
@@ -622,11 +631,10 @@ fn matmul_backward_dW_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[dW.element_type](
-                x_T_shared[local_row, k]
-            ) * rebind[dW.element_type](dy_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[dW.element_type](x_T_shared[local_row, k]) * rebind[
+                dW.element_type
+            ](dy_shared[k, local_col])
 
         barrier()
 

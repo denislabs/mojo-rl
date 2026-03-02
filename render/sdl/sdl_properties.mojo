@@ -216,8 +216,8 @@ fn unlock_properties(props: PropertiesID) raises -> None:
 
 
 comptime CleanupPropertyCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
-    value: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
+    value: Ptr[NoneType, MutAnyOrigin],
 ) -> None
 """A callback used to free resources when a property is deleted.
     
@@ -245,9 +245,9 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_CleanupPropertyCallback.
 fn set_pointer_property_with_cleanup(
     props: PropertiesID,
     var name: String,
-    value: Ptr[NoneType, AnyOrigin[True]],
+    value: Ptr[NoneType, MutAnyOrigin],
     cleanup: CleanupPropertyCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises:
     """Set a pointer property in a group of properties with a cleanup function
     that is called when the property is deleted.
@@ -283,10 +283,10 @@ fn set_pointer_property_with_cleanup(
         "SDL_SetPointerPropertyWithCleanup",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[NoneType, AnyOrigin[True]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[NoneType, MutAnyOrigin],
             cleanup: CleanupPropertyCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value, cleanup, userdata)
     if not ret:
@@ -294,7 +294,7 @@ fn set_pointer_property_with_cleanup(
 
 
 fn set_pointer_property(
-    props: PropertiesID, var name: String, value: Ptr[NoneType, AnyOrigin[True]]
+    props: PropertiesID, var name: String, value: Ptr[NoneType, MutAnyOrigin]
 ) raises:
     """Set a pointer property in a group of properties.
 
@@ -318,8 +318,8 @@ fn set_pointer_property(
         "SDL_SetPointerProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[NoneType, AnyOrigin[True]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[NoneType, MutAnyOrigin],
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
@@ -354,8 +354,8 @@ fn set_string_property(
         "SDL_SetStringProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         props,
@@ -391,7 +391,7 @@ fn set_number_property(
         "SDL_SetNumberProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             value: Int64,
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
@@ -424,7 +424,7 @@ fn set_float_property(
         "SDL_SetFloatProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             value: c_float,
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
@@ -457,7 +457,7 @@ fn set_boolean_property(
         "SDL_SetBooleanProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             value: Bool,
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
@@ -484,7 +484,7 @@ fn has_property(props: PropertiesID, var name: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasProperty",
-        fn(props: PropertiesID, name: Ptr[c_char, AnyOrigin[False]]) -> Bool,
+        fn(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
@@ -511,7 +511,7 @@ fn get_property_type(
         lib,
         "SDL_GetPropertyType",
         fn(
-            props: PropertiesID, name: Ptr[c_char, AnyOrigin[False]]
+            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
         ) -> PropertyType,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
@@ -519,8 +519,8 @@ fn get_property_type(
 fn get_pointer_property(
     props: PropertiesID,
     var name: String,
-    default_value: Ptr[NoneType, AnyOrigin[True]],
-) raises -> Ptr[NoneType, AnyOrigin[True]]:
+    default_value: Ptr[NoneType, MutAnyOrigin],
+) raises -> Ptr[NoneType, MutAnyOrigin]:
     """Get a pointer property from a group of properties.
 
     By convention, the names of properties that SDL exposes on objects will
@@ -553,15 +553,15 @@ fn get_pointer_property(
         "SDL_GetPointerProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
-            default_value: Ptr[NoneType, AnyOrigin[True]],
-        ) -> Ptr[NoneType, AnyOrigin[True]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            default_value: Ptr[NoneType, MutAnyOrigin],
+        ) -> Ptr[NoneType, MutAnyOrigin],
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
 fn get_string_property(
     props: PropertiesID, var name: String, var default_value: String
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get a string property from a group of properties.
 
     Args:
@@ -589,9 +589,9 @@ fn get_string_property(
         "SDL_GetStringProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
-            default_value: Ptr[c_char, AnyOrigin[False]],
-        ) -> Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            default_value: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(
         props,
         name.as_c_string_slice().unsafe_ptr(),
@@ -627,7 +627,7 @@ fn get_number_property(
         "SDL_GetNumberProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Int64,
         ) -> Int64,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
@@ -661,7 +661,7 @@ fn get_float_property(
         "SDL_GetFloatProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             default_value: c_float,
         ) -> c_float,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
@@ -695,7 +695,7 @@ fn get_boolean_property(
         "SDL_GetBooleanProperty",
         fn(
             props: PropertiesID,
-            name: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Bool,
         ) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
@@ -721,16 +721,16 @@ fn clear_property(props: PropertiesID, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ClearProperty",
-        fn(props: PropertiesID, name: Ptr[c_char, AnyOrigin[False]]) -> Bool,
+        fn(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 comptime EnumeratePropertiesCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
     props: PropertiesID,
-    name: Ptr[c_char, AnyOrigin[False]],
+    name: Ptr[c_char, ImmutAnyOrigin],
 ) -> None
 """A callback used to enumerate all the properties in a group of properties.
     
@@ -753,7 +753,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EnumeratePropertiesCallback.
 fn enumerate_properties(
     props: PropertiesID,
     callback: EnumeratePropertiesCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
 ) raises:
     """Enumerate the properties contained in a group of properties.
 
@@ -781,7 +781,7 @@ fn enumerate_properties(
         fn(
             props: PropertiesID,
             callback: EnumeratePropertiesCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> Bool,
     ]()(props, callback, userdata)
     if not ret:

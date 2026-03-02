@@ -368,7 +368,9 @@ fn forward_kinematics[
 
                 elif jnt_type == JNT_SLIDE:
                     # SLIDE joint: translate along axis (MuJoCo: qpos - qpos0)
-                    var displacement = data.qpos[qpos_adr] - model.qpos0[qpos_adr]
+                    var displacement = (
+                        data.qpos[qpos_adr] - model.qpos0[qpos_adr]
+                    )
 
                     # Joint axis in body frame → world frame
                     var axis_x = joint.axis_x
@@ -956,9 +958,10 @@ fn forward_kinematics_gpu[
                     var qpos0_val = rebind[Scalar[DTYPE]](
                         model[0, joint_off + JOINT_IDX_QPOS0]
                     )
-                    var angle = rebind[Scalar[DTYPE]](
-                        state[env, qpos_off + qpos_adr]
-                    ) - qpos0_val
+                    var angle = (
+                        rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
+                        - qpos0_val
+                    )
 
                     var jpos_x = rebind[Scalar[DTYPE]](
                         model[0, joint_off + JOINT_IDX_POS_X]
@@ -1035,9 +1038,10 @@ fn forward_kinematics_gpu[
                     var qpos0_val = rebind[Scalar[DTYPE]](
                         model[0, joint_off + JOINT_IDX_QPOS0]
                     )
-                    var displacement = rebind[Scalar[DTYPE]](
-                        state[env, qpos_off + qpos_adr]
-                    ) - qpos0_val
+                    var displacement = (
+                        rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
+                        - qpos0_val
+                    )
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(
@@ -1171,23 +1175,50 @@ fn forward_kinematics_gpu[
             state[env, xipos_off + body * 3 + 2] = world_pz + rot_ipos[2]
 
     # Compute site world positions (GPU): site_xpos = xpos[body] + rotate(site_pos, xquat[body])
-    @parameter
-    if NSITE > 0:
+
+    comptime if NSITE > 0:
         var site_xpos_off = site_xpos_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         for site_idx in range(NSITE):
-            var site_base = model_site_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON](site_idx)
-            var s_body = Int(rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_BODY]))
-            var sp_x = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_X])
-            var sp_y = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_Y])
-            var sp_z = rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_POS_Z])
-            var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 0])
-            var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 1])
-            var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 2])
-            var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + s_body * 4 + 3])
+            var site_base = model_site_offset[
+                NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON
+            ](site_idx)
+            var s_body = Int(
+                rebind[Scalar[DTYPE]](model[0, site_base + SITE_IDX_BODY])
+            )
+            var sp_x = rebind[Scalar[DTYPE]](
+                model[0, site_base + SITE_IDX_POS_X]
+            )
+            var sp_y = rebind[Scalar[DTYPE]](
+                model[0, site_base + SITE_IDX_POS_Y]
+            )
+            var sp_z = rebind[Scalar[DTYPE]](
+                model[0, site_base + SITE_IDX_POS_Z]
+            )
+            var bqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + s_body * 4 + 0]
+            )
+            var bqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + s_body * 4 + 1]
+            )
+            var bqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + s_body * 4 + 2]
+            )
+            var bqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + s_body * 4 + 3]
+            )
             var rot = gpu_quat_rotate(bqx, bqy, bqz, bqw, sp_x, sp_y, sp_z)
-            state[env, site_xpos_off + site_idx * 3 + 0] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 0]) + rot[0]
-            state[env, site_xpos_off + site_idx * 3 + 1] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 1]) + rot[1]
-            state[env, site_xpos_off + site_idx * 3 + 2] = rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 2]) + rot[2]
+            state[env, site_xpos_off + site_idx * 3 + 0] = (
+                rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 0])
+                + rot[0]
+            )
+            state[env, site_xpos_off + site_idx * 3 + 1] = (
+                rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 1])
+                + rot[1]
+            )
+            state[env, site_xpos_off + site_idx * 3 + 2] = (
+                rebind[Scalar[DTYPE]](state[env, xpos_off + s_body * 3 + 2])
+                + rot[2]
+            )
 
 
 # =============================================================================

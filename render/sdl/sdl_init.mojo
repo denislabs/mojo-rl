@@ -135,9 +135,9 @@ struct AppResult(Indexer, Intable, TrivialRegisterPassable):
 
 
 comptime AppInit_func = fn(
-    appstate: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+    appstate: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
     argc: c_int,
-    argv: Ptr[c_char, AnyOrigin[True]],
+    argv: Ptr[c_char, MutAnyOrigin],
 ) -> AppResult
 """Function pointer typedef for SDL_AppInit.
     
@@ -161,7 +161,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppInit_func.
 
 
 comptime AppIterate_func = fn(
-    appstate: Ptr[NoneType, AnyOrigin[True]]
+    appstate: Ptr[NoneType, MutAnyOrigin]
 ) -> AppResult
 """Function pointer typedef for SDL_AppIterate.
     
@@ -181,7 +181,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppIterate_func.
 
 
 comptime AppEvent_func = fn(
-    appstate: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]
+    appstate: Ptr[NoneType, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) -> AppResult
 """Function pointer typedef for SDL_AppEvent.
     
@@ -202,7 +202,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppEvent_func.
 
 
 comptime AppQuit_func = fn(
-    appstate: Ptr[NoneType, AnyOrigin[True]], result: AppResult
+    appstate: Ptr[NoneType, MutAnyOrigin], result: AppResult
 ) -> None
 """Function pointer typedef for SDL_AppQuit.
     
@@ -373,9 +373,7 @@ fn is_main_thread() raises -> Bool:
     return _get_dylib_function[lib, "SDL_IsMainThread", fn() -> Bool]()()
 
 
-comptime MainThreadCallback = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]]
-) -> None
+comptime MainThreadCallback = fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
 """Callback run on the main thread.
     
     Args:
@@ -387,7 +385,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_MainThreadCallback.
 
 fn run_on_main_thread(
     callback: MainThreadCallback,
-    userdata: Ptr[NoneType, AnyOrigin[True]],
+    userdata: Ptr[NoneType, MutAnyOrigin],
     wait_complete: Bool,
 ) raises:
     """Call a function on the main thread during event processing.
@@ -421,7 +419,7 @@ fn run_on_main_thread(
         "SDL_RunOnMainThread",
         fn(
             callback: MainThreadCallback,
-            userdata: Ptr[NoneType, AnyOrigin[True]],
+            userdata: Ptr[NoneType, MutAnyOrigin],
             wait_complete: Bool,
         ) -> Bool,
     ]()(callback, userdata, wait_complete)
@@ -474,9 +472,9 @@ fn set_app_metadata(
         lib,
         "SDL_SetAppMetadata",
         fn(
-            appname: Ptr[c_char, AnyOrigin[False]],
-            appversion: Ptr[c_char, AnyOrigin[False]],
-            appidentifier: Ptr[c_char, AnyOrigin[False]],
+            appname: Ptr[c_char, ImmutAnyOrigin],
+            appversion: Ptr[c_char, ImmutAnyOrigin],
+            appidentifier: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         appname.as_c_string_slice().unsafe_ptr(),
@@ -554,8 +552,8 @@ fn set_app_metadata_property(var name: String, var value: String) raises:
         lib,
         "SDL_SetAppMetadataProperty",
         fn(
-            name: Ptr[c_char, AnyOrigin[False]],
-            value: Ptr[c_char, AnyOrigin[False]],
+            name: Ptr[c_char, ImmutAnyOrigin],
+            value: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -567,7 +565,7 @@ fn set_app_metadata_property(var name: String, var value: String) raises:
 
 fn get_app_metadata_property(
     var name: String,
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get metadata about your app.
 
     This returns metadata previously set using SDL_SetAppMetadata() or
@@ -593,7 +591,5 @@ fn get_app_metadata_property(
     return _get_dylib_function[
         lib,
         "SDL_GetAppMetadataProperty",
-        fn(
-            name: Ptr[c_char, AnyOrigin[False]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+        fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())

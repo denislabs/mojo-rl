@@ -48,7 +48,7 @@ struct PowerState(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __init__(out self, value: Int):
-        self.value = value
+        self.value = UInt32(value)
 
     @always_inline
     fn __int__(self) -> Int:
@@ -77,7 +77,7 @@ struct PowerState(Indexer, Intable, TrivialRegisterPassable):
 
 
 fn get_power_info(
-    seconds: Ptr[c_int, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]
+    seconds: Ptr[c_int, MutAnyOrigin], percent: Ptr[c_int, MutAnyOrigin]
 ) raises -> PowerState:
     """Get the current power supply details.
 
@@ -118,7 +118,7 @@ fn get_power_info(
         lib,
         "SDL_GetPowerInfo",
         fn(
-            seconds: Ptr[c_int, AnyOrigin[True]],
-            percent: Ptr[c_int, AnyOrigin[True]],
+            seconds: Ptr[c_int, MutAnyOrigin],
+            percent: Ptr[c_int, MutAnyOrigin],
         ) -> PowerState,
     ]()(seconds, percent)

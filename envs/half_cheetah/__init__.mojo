@@ -24,5 +24,4 @@ Example usage:
 from .half_cheetah import HalfCheetah
 from .curriculum import HalfCheetahCurriculum
 from .half_cheetah_xml import HalfCheetahModel
-
 from .half_cheetah_config import HalfCheetahConfig

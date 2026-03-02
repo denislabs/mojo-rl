@@ -1062,10 +1062,14 @@ struct TDMPC2Agent[
         """
         # ── Reconstruct LayoutTensor views ──
         var batch_obs_flat_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH * (Self.H + 1) * Self.OBS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.BATCH * (Self.H + 1) * Self.OBS),
+            MutAnyOrigin,
         ](batch_obs_flat_buf.unsafe_ptr())
         var batch_act_flat_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH * Self.H * Self.ACT), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.BATCH * Self.H * Self.ACT),
+            MutAnyOrigin,
         ](batch_act_flat_buf.unsafe_ptr())
         var batch_rew_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH * Self.H), MutAnyOrigin
@@ -1150,28 +1154,48 @@ struct TDMPC2Agent[
 
         # ── Extract step data ──
         ctx.enqueue_function[Self.EXTRACT_ACT_KERNEL, Self.EXTRACT_ACT_KERNEL](
-            batch_act_flat_tensor, t, act_step_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+            batch_act_flat_tensor,
+            t,
+            act_step_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[Self.EXTRACT_OBS_KERNEL, Self.EXTRACT_OBS_KERNEL](
-            batch_obs_flat_tensor, t + 1, obs_next_step_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+            batch_obs_flat_tensor,
+            t + 1,
+            obs_next_step_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
-        ctx.enqueue_function[Self.EXTRACT_REW_DONE_KERNEL, Self.EXTRACT_REW_DONE_KERNEL](
-            batch_rew_flat_tensor, batch_done_flat_tensor, t,
-            rew_step_tensor, done_step_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.EXTRACT_REW_DONE_KERNEL, Self.EXTRACT_REW_DONE_KERNEL
+        ](
+            batch_rew_flat_tensor,
+            batch_done_flat_tensor,
+            t,
+            rew_step_tensor,
+            done_step_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Build za = [z_t, a_t] ──
         ctx.enqueue_function[Self.BUILD_ZA_KERNEL, Self.BUILD_ZA_KERNEL](
-            z_tensor, act_step_tensor, za_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+            z_tensor,
+            act_step_tensor,
+            za_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Dynamics forward with cache → z_pred ──
         self.world_model.dynamics.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, z_pred_buf, dyn_params_buf, dyn_cache_buf, dyn_batch_ws_buf
+            ctx,
+            za_buf,
+            z_pred_buf,
+            dyn_params_buf,
+            dyn_cache_buf,
+            dyn_batch_ws_buf,
         )
 
         # ── Consistency target: encode obs_{t+1} (stop-grad) ──
@@ -1181,37 +1205,68 @@ struct TDMPC2Agent[
 
         # ── Consistency loss gradient → grad_z_pred ──
         var cons_rho = rho_t * Scalar[dtype](self.consistency_coef)
-        ctx.enqueue_function[Self.CONSISTENCY_GRAD_KERNEL, Self.CONSISTENCY_GRAD_KERNEL](
-            z_pred_tensor, z_next_tensor, grad_z_pred_tensor, cons_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.CONSISTENCY_GRAD_KERNEL, Self.CONSISTENCY_GRAD_KERNEL
+        ](
+            z_pred_tensor,
+            z_next_tensor,
+            grad_z_pred_tensor,
+            cons_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Dynamics backward: grad_z_pred → grad_za ──
         self.world_model.dynamics.backward_gpu[Self.BATCH](
-            ctx, grad_z_pred_buf, grad_za_buf,
-            dyn_params_buf, dyn_cache_buf, dyn_grads_buf, dyn_batch_ws_buf,
+            ctx,
+            grad_z_pred_buf,
+            grad_za_buf,
+            dyn_params_buf,
+            dyn_cache_buf,
+            dyn_grads_buf,
+            dyn_batch_ws_buf,
         )
-        ctx.enqueue_function[Self.EXTRACT_Z_GRAD_KERNEL, Self.EXTRACT_Z_GRAD_KERNEL](
-            grad_za_tensor, grad_z_dyn_2d_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.EXTRACT_Z_GRAD_KERNEL, Self.EXTRACT_Z_GRAD_KERNEL
+        ](
+            grad_za_tensor,
+            grad_z_dyn_2d_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Reward forward + two-hot grad + backward ──
         self.world_model.reward_head.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, rew_params_buf, rew_cache_buf, rew_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            rew_params_buf,
+            rew_cache_buf,
+            rew_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
         var rew_rho = rho_t * Scalar[dtype](self.reward_coef)
         var tgt_t_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
         ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor, grad_logits_tensor, rew_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor,
+            grad_logits_tensor,
+            rew_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.reward_head.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            rew_params_buf, rew_cache_buf, rew_grads_buf, rew_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            rew_params_buf,
+            rew_cache_buf,
+            rew_grads_buf,
+            rew_batch_ws_buf,
         )
 
         # ── Q1..Q5 forward + two-hot grad + backward ──
@@ -1221,102 +1276,208 @@ struct TDMPC2Agent[
         ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
         self.world_model.q1.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, q1_params_buf, q1_cache_buf, q1_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            q1_params_buf,
+            q1_cache_buf,
+            q1_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor_q, grad_logits_tensor, q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor_q,
+            grad_logits_tensor,
+            q_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.q1.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            q1_params_buf, q1_cache_buf, q1_grads_buf, q1_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            q1_params_buf,
+            q1_cache_buf,
+            q1_grads_buf,
+            q1_batch_ws_buf,
         )
 
         self.world_model.q2.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, q2_params_buf, q2_cache_buf, q2_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            q2_params_buf,
+            q2_cache_buf,
+            q2_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor_q, grad_logits_tensor, q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor_q,
+            grad_logits_tensor,
+            q_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.q2.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            q2_params_buf, q2_cache_buf, q2_grads_buf, q2_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            q2_params_buf,
+            q2_cache_buf,
+            q2_grads_buf,
+            q2_batch_ws_buf,
         )
 
         self.world_model.q3.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, q3_params_buf, q3_cache_buf, q3_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            q3_params_buf,
+            q3_cache_buf,
+            q3_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor_q, grad_logits_tensor, q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor_q,
+            grad_logits_tensor,
+            q_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.q3.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            q3_params_buf, q3_cache_buf, q3_grads_buf, q3_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            q3_params_buf,
+            q3_cache_buf,
+            q3_grads_buf,
+            q3_batch_ws_buf,
         )
 
         self.world_model.q4.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, q4_params_buf, q4_cache_buf, q4_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            q4_params_buf,
+            q4_cache_buf,
+            q4_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor_q, grad_logits_tensor, q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor_q,
+            grad_logits_tensor,
+            q_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.q4.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            q4_params_buf, q4_cache_buf, q4_grads_buf, q4_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            q4_params_buf,
+            q4_cache_buf,
+            q4_grads_buf,
+            q4_batch_ws_buf,
         )
 
         self.world_model.q5.forward_gpu_with_cache[Self.BATCH](
-            ctx, za_buf, logits_buf, q5_params_buf, q5_cache_buf, q5_batch_ws_buf
+            ctx,
+            za_buf,
+            logits_buf,
+            q5_params_buf,
+            q5_cache_buf,
+            q5_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
-        ctx.enqueue_function[Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL](
-            logits_tensor, tgt_t_tensor_q, grad_logits_tensor, q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.TWO_HOT_GRAD_KERNEL, Self.TWO_HOT_GRAD_KERNEL
+        ](
+            logits_tensor,
+            tgt_t_tensor_q,
+            grad_logits_tensor,
+            q_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.q5.backward_gpu[Self.BATCH](
-            ctx, grad_logits_buf, dummy_grad_buf,
-            q5_params_buf, q5_cache_buf, q5_grads_buf, q5_batch_ws_buf,
+            ctx,
+            grad_logits_buf,
+            dummy_grad_buf,
+            q5_params_buf,
+            q5_cache_buf,
+            q5_grads_buf,
+            q5_batch_ws_buf,
         )
 
         # ── Termination forward + BCE grad + backward ──
         self.world_model.termination.forward_gpu_with_cache[Self.BATCH](
-            ctx, z_buf, term_prob_buf, term_params_buf, term_cache_buf, term_batch_ws_buf
+            ctx,
+            z_buf,
+            term_prob_buf,
+            term_params_buf,
+            term_cache_buf,
+            term_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_term_prob_buf, 0)
         var term_rho = rho_t * Scalar[dtype](self.terminal_coef)
         ctx.enqueue_function[Self.BCE_GRAD_KERNEL, Self.BCE_GRAD_KERNEL](
-            term_prob_tensor, done_step_tensor, grad_term_prob_tensor, term_rho,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+            term_prob_tensor,
+            done_step_tensor,
+            grad_term_prob_tensor,
+            term_rho,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
         self.world_model.termination.backward_gpu[Self.BATCH](
-            ctx, grad_term_prob_buf, grad_z_term_buf,
-            term_params_buf, term_cache_buf, term_grads_buf, term_batch_ws_buf,
+            ctx,
+            grad_term_prob_buf,
+            grad_z_term_buf,
+            term_params_buf,
+            term_cache_buf,
+            term_grads_buf,
+            term_batch_ws_buf,
         )
 
         # ── Combine encoder gradients: grad_enc_out += grad_z_dyn + grad_z_term ──
-        ctx.enqueue_function[Self.ADD_TWO_INTO_LATENT_KERNEL, Self.ADD_TWO_INTO_LATENT_KERNEL](
-            grad_enc_out_tensor, grad_z_dyn_tensor, grad_z_term_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+        ctx.enqueue_function[
+            Self.ADD_TWO_INTO_LATENT_KERNEL, Self.ADD_TWO_INTO_LATENT_KERNEL
+        ](
+            grad_enc_out_tensor,
+            grad_z_dyn_tensor,
+            grad_z_term_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Encoder backward ──
         self.world_model.encoder.backward_gpu[Self.BATCH](
-            ctx, grad_enc_out_buf, dummy_grad_buf,
-            enc_params_buf, enc_cache_buf, enc_grads_buf, enc_batch_ws_buf,
+            ctx,
+            grad_enc_out_buf,
+            dummy_grad_buf,
+            enc_params_buf,
+            enc_cache_buf,
+            enc_grads_buf,
+            enc_batch_ws_buf,
         )
 
         # ── Advance current z ← z_pred (for next horizon step) ──
         if t < Self.H - 1:
             ctx.enqueue_function[Self.COPY_Z_KERNEL, Self.COPY_Z_KERNEL](
-                z_flat_tensor, z_pred_flat_tensor,
-                grid_dim=(Self.BATCH_BLOCKS,), block_dim=(TPB,),
+                z_flat_tensor,
+                z_pred_flat_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
             )
 
         return rho_t * Scalar[dtype](self.rho)
@@ -1937,8 +2098,7 @@ struct TDMPC2Agent[
             # Step all environments
             var env_seed = UInt64(total_steps * 1103515245 + 12345)
 
-            @parameter
-            if TOTAL_WS > 0:
+            comptime if TOTAL_WS > 0:
                 ENV.step_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS, Self.ACT](
                     ctx,
                     states_buf,
@@ -2315,23 +2475,70 @@ struct TDMPC2Agent[
 
                 for t in range(Self.H):
                     rho_t = self._wm_horizon_step_gpu(
-                        ctx, t, rho_t,
-                        batch_obs_buf, batch_act_buf,
-                        batch_rew_buf, batch_done_buf, td_targets_buf,
-                        enc_params_buf, enc_cache_buf, enc_grads_buf, enc_batch_ws_buf,
-                        dyn_params_buf, dyn_cache_buf, dyn_grads_buf, dyn_batch_ws_buf,
-                        rew_params_buf, rew_cache_buf, rew_grads_buf, rew_batch_ws_buf,
-                        term_params_buf, term_cache_buf, term_grads_buf, term_batch_ws_buf,
-                        q1_params_buf, q1_cache_buf, q1_grads_buf, q1_batch_ws_buf,
-                        q2_params_buf, q2_cache_buf, q2_grads_buf, q2_batch_ws_buf,
-                        q3_params_buf, q3_cache_buf, q3_grads_buf, q3_batch_ws_buf,
-                        q4_params_buf, q4_cache_buf, q4_grads_buf, q4_batch_ws_buf,
-                        q5_params_buf, q5_cache_buf, q5_grads_buf, q5_batch_ws_buf,
-                        z_buf, z_pred_buf, z_next_buf, za_buf, logits_buf, term_prob_buf,
-                        obs_step_buf, obs_next_step_buf, act_step_buf, rew_step_buf, done_step_buf,
-                        grad_z_pred_buf, grad_za_buf, grad_z_dyn_buf, grad_z_term_buf,
-                        grad_enc_out_buf, grad_logits_buf, grad_term_prob_buf,
-                        dummy_grad_buf, bins_buf,
+                        ctx,
+                        t,
+                        rho_t,
+                        batch_obs_buf,
+                        batch_act_buf,
+                        batch_rew_buf,
+                        batch_done_buf,
+                        td_targets_buf,
+                        enc_params_buf,
+                        enc_cache_buf,
+                        enc_grads_buf,
+                        enc_batch_ws_buf,
+                        dyn_params_buf,
+                        dyn_cache_buf,
+                        dyn_grads_buf,
+                        dyn_batch_ws_buf,
+                        rew_params_buf,
+                        rew_cache_buf,
+                        rew_grads_buf,
+                        rew_batch_ws_buf,
+                        term_params_buf,
+                        term_cache_buf,
+                        term_grads_buf,
+                        term_batch_ws_buf,
+                        q1_params_buf,
+                        q1_cache_buf,
+                        q1_grads_buf,
+                        q1_batch_ws_buf,
+                        q2_params_buf,
+                        q2_cache_buf,
+                        q2_grads_buf,
+                        q2_batch_ws_buf,
+                        q3_params_buf,
+                        q3_cache_buf,
+                        q3_grads_buf,
+                        q3_batch_ws_buf,
+                        q4_params_buf,
+                        q4_cache_buf,
+                        q4_grads_buf,
+                        q4_batch_ws_buf,
+                        q5_params_buf,
+                        q5_cache_buf,
+                        q5_grads_buf,
+                        q5_batch_ws_buf,
+                        z_buf,
+                        z_pred_buf,
+                        z_next_buf,
+                        za_buf,
+                        logits_buf,
+                        term_prob_buf,
+                        obs_step_buf,
+                        obs_next_step_buf,
+                        act_step_buf,
+                        rew_step_buf,
+                        done_step_buf,
+                        grad_z_pred_buf,
+                        grad_za_buf,
+                        grad_z_dyn_buf,
+                        grad_z_term_buf,
+                        grad_enc_out_buf,
+                        grad_logits_buf,
+                        grad_term_prob_buf,
+                        dummy_grad_buf,
+                        bins_buf,
                     )
 
                 # ── Gradient clipping + optimizer step for all world model networks ──

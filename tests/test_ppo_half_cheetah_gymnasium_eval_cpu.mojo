@@ -96,13 +96,14 @@ fn main() raises:
     # Create Gymnasium environment
     # =========================================================================
 
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         var env = make_half_cheetah(render_mode="human")
         print("Environment: HalfCheetah-v5 (Gymnasium, render_mode=human)")
         print("  Obs dim:", env.obs_dim())
         print("  Action dim:", env.action_dim())
-        print("  Action range: [", env.action_low(), ",", env.action_high(), "]")
+        print(
+            "  Action range: [", env.action_low(), ",", env.action_high(), "]"
+        )
         print()
 
         print("Running CPU evaluation...")
@@ -152,7 +153,9 @@ fn main() raises:
         print("Environment: HalfCheetah-v5 (Gymnasium, headless)")
         print("  Obs dim:", env.obs_dim())
         print("  Action dim:", env.action_dim())
-        print("  Action range: [", env.action_low(), ",", env.action_high(), "]")
+        print(
+            "  Action range: [", env.action_low(), ",", env.action_high(), "]"
+        )
         print()
 
         print("Running CPU evaluation...")

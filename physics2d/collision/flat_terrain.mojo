@@ -240,8 +240,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
         var count = 0
 
-        @parameter
-        for body_idx in range(NUM_BODIES):
+        comptime for body_idx in range(NUM_BODIES):
             var body_x = bodies[env, body_idx, IDX_X]
             var body_y = bodies[env, body_idx, IDX_Y]
             var body_angle = bodies[env, body_idx, IDX_ANGLE]
@@ -254,8 +253,7 @@ struct FlatTerrainCollision(CollisionSystem):
             if shape_type == SHAPE_POLYGON:
                 var n_verts = Int(shapes[shape_idx, 1])
 
-                @parameter
-                for v in range(MAX_POLYGON_VERTS):
+                comptime for v in range(MAX_POLYGON_VERTS):
                     if v >= n_verts:
                         break
 
@@ -367,8 +365,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
         var count = 0
 
-        @parameter
-        for body_idx in range(NUM_BODIES):
+        comptime for body_idx in range(NUM_BODIES):
             var body_off = BODIES_OFFSET + body_idx * BODY_STATE_SIZE
 
             var body_x = state[env, body_off + IDX_X]
@@ -383,8 +380,7 @@ struct FlatTerrainCollision(CollisionSystem):
             if shape_type == SHAPE_POLYGON:
                 var n_verts = Int(shapes[shape_idx, 1])
 
-                @parameter
-                for v in range(MAX_POLYGON_VERTS):
+                comptime for v in range(MAX_POLYGON_VERTS):
                     if v >= n_verts:
                         break
 

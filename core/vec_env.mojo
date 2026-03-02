@@ -11,7 +11,7 @@ Key components:
 Performance notes:
 - Uses native SIMD methods (.eq(), .lt(), .gt(), etc.) for element-wise comparisons
 - Uses @always_inline for zero function call overhead
-- Uses @parameter for compile-time loop unrolling
+- Uses comptime for compile-time loop unrolling
 """
 
 from random import random_float64
@@ -78,8 +78,7 @@ fn simd_splat_f64[n: Int](value: Float64) -> SIMD[DType.float64, n]:
     """
     var result = SIMD[DType.float64, n]()
 
-    @parameter
-    for i in range(n):
+    comptime for i in range(n):
         result[i] = value
     return result
 
@@ -99,8 +98,7 @@ fn simd_splat_i32[n: Int](value: Int32) -> SIMD[DType.int32, n]:
     """
     var result = SIMD[DType.int32, n]()
 
-    @parameter
-    for i in range(n):
+    comptime for i in range(n):
         result[i] = value
     return result
 
@@ -111,9 +109,9 @@ fn simd_splat_i32[n: Int](value: Int32) -> SIMD[DType.int32, n]:
 
 
 @always_inline
-fn simd_eq_i32[n: Int](
-    a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]
-) -> SIMD[DType.bool, n]:
+fn simd_eq_i32[
+    n: Int
+](a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]) -> SIMD[DType.bool, n]:
     """Element-wise equality comparison of two int32 SIMD vectors.
 
     Uses native SIMD .eq() method for optimal performance.
@@ -132,9 +130,9 @@ fn simd_eq_i32[n: Int](
 
 
 @always_inline
-fn simd_ge_i32[n: Int](
-    a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]
-) -> SIMD[DType.bool, n]:
+fn simd_ge_i32[
+    n: Int
+](a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]) -> SIMD[DType.bool, n]:
     """Element-wise greater-than-or-equal comparison.
 
     Uses native SIMD .ge() method for optimal performance.
@@ -153,9 +151,9 @@ fn simd_ge_i32[n: Int](
 
 
 @always_inline
-fn simd_lt_f64[n: Int](
-    a: SIMD[DType.float64, n], b: Float64
-) -> SIMD[DType.bool, n]:
+fn simd_lt_f64[
+    n: Int
+](a: SIMD[DType.float64, n], b: Float64) -> SIMD[DType.bool, n]:
     """Element-wise less-than comparison with scalar.
 
     Uses native SIMD .lt() method for optimal performance.
@@ -174,9 +172,9 @@ fn simd_lt_f64[n: Int](
 
 
 @always_inline
-fn simd_gt_f64[n: Int](
-    a: SIMD[DType.float64, n], b: Float64
-) -> SIMD[DType.bool, n]:
+fn simd_gt_f64[
+    n: Int
+](a: SIMD[DType.float64, n], b: Float64) -> SIMD[DType.bool, n]:
     """Element-wise greater-than comparison with scalar.
 
     Uses native SIMD .gt() method for optimal performance.
@@ -216,8 +214,7 @@ fn random_simd[n: Int](low: Float64, high: Float64) -> SIMD[DType.float64, n]:
     var result = SIMD[DType.float64, n]()
     var range_size = high - low
 
-    @parameter
-    for i in range(n):
+    comptime for i in range(n):
         result[i] = random_float64() * range_size + low
     return result
 
@@ -246,9 +243,9 @@ fn random_simd_centered[n: Int](half_range: Float64) -> SIMD[DType.float64, n]:
 
 
 @always_inline
-fn simd_or[n: Int](
-    a: SIMD[DType.bool, n], b: SIMD[DType.bool, n]
-) -> SIMD[DType.bool, n]:
+fn simd_or[
+    n: Int
+](a: SIMD[DType.bool, n], b: SIMD[DType.bool, n]) -> SIMD[DType.bool, n]:
     """Element-wise OR of two boolean SIMD vectors.
 
     Uses native bitwise OR operator for optimal performance.

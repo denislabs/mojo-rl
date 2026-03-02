@@ -222,8 +222,7 @@ struct SemiImplicitEuler(Integrator):
         - integrate_velocities_kernel (standalone kernel)
         - PhysicsStepKernel (fused kernel)
         """
-        @parameter
-        for body in range(NUM_BODIES):
+        comptime for body in range(NUM_BODIES):
             var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE
             var force_off = FORCES_OFFSET + body * 3
 
@@ -272,8 +271,7 @@ struct SemiImplicitEuler(Integrator):
         - integrate_positions_kernel (standalone kernel)
         - PhysicsStepKernel (fused kernel)
         """
-        @parameter
-        for body in range(NUM_BODIES):
+        comptime for body in range(NUM_BODIES):
             var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE
 
             var inv_mass = state[env, body_off + IDX_INV_MASS]

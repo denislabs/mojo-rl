@@ -43,7 +43,6 @@ fn gpu_add[
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
     comptime rank = 1
 
-    @parameter
     @always_inline
     fn add_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
@@ -76,7 +75,6 @@ fn gpu_mul[
     """
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
 
-    @parameter
     @always_inline
     fn mul_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
@@ -109,7 +107,6 @@ fn gpu_scale[
     """
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
 
-    @parameter
     @always_inline
     fn scale_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
@@ -141,7 +138,6 @@ fn gpu_relu[
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
     comptime rank = 1
 
-    @parameter
     @always_inline
     fn relu_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
@@ -174,7 +170,6 @@ fn gpu_tanh[
     """
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
 
-    @parameter
     @always_inline
     fn tanh_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
@@ -206,7 +201,6 @@ fn gpu_sigmoid[
     """
     comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
 
-    @parameter
     @always_inline
     fn sigmoid_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()

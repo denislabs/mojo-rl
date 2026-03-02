@@ -74,17 +74,15 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.algorithm_name = algorithm_name
         self.environment_name = environment_name
 
-    fn __copyinit__(out self, existing: Self):
-        self.episodes = List[EpisodeMetrics]()
-        for i in range(len(existing.episodes)):
-            self.episodes.append(existing.episodes[i])
-        self.algorithm_name = existing.algorithm_name
-        self.environment_name = existing.environment_name
+    fn __init__(out self, copy: Self):
+        self.episodes = copy.episodes.copy()
+        self.algorithm_name = copy.algorithm_name
+        self.environment_name = copy.environment_name
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.episodes = existing.episodes^
-        self.algorithm_name = existing.algorithm_name^
-        self.environment_name = existing.environment_name^
+    fn __init__(out self, deinit take: Self):
+        self.episodes = take.episodes^
+        self.algorithm_name = take.algorithm_name^
+        self.environment_name = take.environment_name^
 
     fn log_episode[
         dtype: DType

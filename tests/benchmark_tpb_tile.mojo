@@ -35,6 +35,7 @@ comptime BENCHMARK_ITERS = 100
 # Matmul Kernels with Different TILE Sizes
 # =============================================================================
 
+
 fn matmul_kernel_tile8[
     M: Int, K: Int, N: Int
 ](
@@ -87,9 +88,11 @@ fn matmul_kernel_tile8[
         barrier()
 
         # Compute
-        @parameter
-        for k in range(TILE):
-            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[Scalar[dtype]](b_shared[k, local_col])
+
+        comptime for k in range(TILE):
+            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[
+                Scalar[dtype]
+            ](b_shared[k, local_col])
 
         barrier()
 
@@ -144,9 +147,10 @@ fn matmul_kernel_tile16[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[Scalar[dtype]](b_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[
+                Scalar[dtype]
+            ](b_shared[k, local_col])
 
         barrier()
 
@@ -201,9 +205,10 @@ fn matmul_kernel_tile32[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
-            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[Scalar[dtype]](b_shared[k, local_col])
+        comptime for k in range(TILE):
+            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[
+                Scalar[dtype]
+            ](b_shared[k, local_col])
 
         barrier()
 
@@ -214,7 +219,10 @@ fn matmul_kernel_tile32[
 # Elementwise Kernels with Different TPB Sizes
 # =============================================================================
 
-fn relu_kernel[SIZE: Int, TPB: Int](
+
+fn relu_kernel[
+    SIZE: Int, TPB: Int
+](
     x: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     y: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
 ):
@@ -226,7 +234,9 @@ fn relu_kernel[SIZE: Int, TPB: Int](
     y[idx] = val if val > 0 else Scalar[dtype](0)
 
 
-fn add_kernel[SIZE: Int, TPB: Int](
+fn add_kernel[
+    SIZE: Int, TPB: Int
+](
     a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     c: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -241,6 +251,7 @@ fn add_kernel[SIZE: Int, TPB: Int](
 # =============================================================================
 # Benchmark Functions
 # =============================================================================
+
 
 fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     """Benchmark matmul with specific TILE size."""
@@ -266,16 +277,22 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     ctx.enqueue_copy(b_buf, b_data.unsafe_ptr())
     ctx.synchronize()
 
-    var a = LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin](a_buf.unsafe_ptr())
-    var b = LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin](b_buf.unsafe_ptr())
-    var c = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](c_buf.unsafe_ptr())
+    var a = LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin](
+        a_buf.unsafe_ptr()
+    )
+    var b = LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin](
+        b_buf.unsafe_ptr()
+    )
+    var c = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
+        c_buf.unsafe_ptr()
+    )
 
     comptime BLOCKS_X = (N + TILE - 1) // TILE
     comptime BLOCKS_Y = (M + TILE - 1) // TILE
 
     # Warmup and benchmark
-    @parameter
-    if TILE == 8:
+    comptime if TILE == 8:
+
         @always_inline
         fn kernel8(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -286,7 +303,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
 
         for _ in range(WARMUP_ITERS):
             ctx.enqueue_function[kernel8, kernel8](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -295,7 +314,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         var start = perf_counter_ns()
         for _ in range(BENCHMARK_ITERS):
             ctx.enqueue_function[kernel8, kernel8](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -305,6 +326,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         return Float64(end - start) / 1_000_000.0 / BENCHMARK_ITERS
 
     elif TILE == 16:
+
         @always_inline
         fn kernel16(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -315,7 +337,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
 
         for _ in range(WARMUP_ITERS):
             ctx.enqueue_function[kernel16, kernel16](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -324,7 +348,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         var start = perf_counter_ns()
         for _ in range(BENCHMARK_ITERS):
             ctx.enqueue_function[kernel16, kernel16](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -334,6 +360,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         return Float64(end - start) / 1_000_000.0 / BENCHMARK_ITERS
 
     else:  # TILE == 32
+
         @always_inline
         fn kernel32(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -344,7 +371,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
 
         for _ in range(WARMUP_ITERS):
             ctx.enqueue_function[kernel32, kernel32](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -353,7 +382,9 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         var start = perf_counter_ns()
         for _ in range(BENCHMARK_ITERS):
             ctx.enqueue_function[kernel32, kernel32](
-                a, b, c,
+                a,
+                b,
+                c,
                 grid_dim=(BLOCKS_X, BLOCKS_Y),
                 block_dim=(TILE, TILE),
             )
@@ -385,9 +416,15 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     ctx.enqueue_copy(b_buf, b_data.unsafe_ptr())
     ctx.synchronize()
 
-    var a = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](a_buf.unsafe_ptr())
-    var b = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](b_buf.unsafe_ptr())
-    var c = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](c_buf.unsafe_ptr())
+    var a = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](
+        a_buf.unsafe_ptr()
+    )
+    var b = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](
+        b_buf.unsafe_ptr()
+    )
+    var c = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](
+        c_buf.unsafe_ptr()
+    )
 
     @always_inline
     fn relu_wrapper(
@@ -407,12 +444,15 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     # Warmup
     for _ in range(WARMUP_ITERS):
         ctx.enqueue_function[relu_wrapper, relu_wrapper](
-            a, c,
+            a,
+            c,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
         ctx.enqueue_function[add_wrapper, add_wrapper](
-            a, b, c,
+            a,
+            b,
+            c,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -422,12 +462,15 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     var start = perf_counter_ns()
     for _ in range(BENCHMARK_ITERS):
         ctx.enqueue_function[relu_wrapper, relu_wrapper](
-            a, c,
+            a,
+            c,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
         ctx.enqueue_function[add_wrapper, add_wrapper](
-            a, b, c,
+            a,
+            b,
+            c,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -438,7 +481,9 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     return Float64(end - start) / 1_000_000.0 / BENCHMARK_ITERS
 
 
-fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64:
+fn benchmark_combined[
+    TILE: Int, TPB: Int
+](ctx: DeviceContext) raises -> Float64:
     """Benchmark combined matmul + elementwise pipeline."""
     comptime M = BATCH
     comptime K = IN_DIM
@@ -464,11 +509,21 @@ fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64
     ctx.enqueue_copy(w_buf, w_data.unsafe_ptr())
     ctx.synchronize()
 
-    var a = LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin](a_buf.unsafe_ptr())
-    var w = LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin](w_buf.unsafe_ptr())
-    var out = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](out_buf.unsafe_ptr())
-    var relu_out = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](relu_buf.unsafe_ptr())
-    var out_flat = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](out_buf.unsafe_ptr())
+    var a = LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin](
+        a_buf.unsafe_ptr()
+    )
+    var w = LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin](
+        w_buf.unsafe_ptr()
+    )
+    var out = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
+        out_buf.unsafe_ptr()
+    )
+    var relu_out = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](
+        relu_buf.unsafe_ptr()
+    )
+    var out_flat = LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin](
+        out_buf.unsafe_ptr()
+    )
 
     comptime MATMUL_BLOCKS_X = (N + TILE - 1) // TILE
     comptime MATMUL_BLOCKS_Y = (M + TILE - 1) // TILE
@@ -480,8 +535,7 @@ fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64
         b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
         c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
     ):
-        @parameter
-        if TILE == 8:
+        comptime if TILE == 8:
             matmul_kernel_tile8[M, K, N](a, b, c)
         elif TILE == 16:
             matmul_kernel_tile16[M, K, N](a, b, c)
@@ -498,12 +552,15 @@ fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64
     # Warmup
     for _ in range(WARMUP_ITERS):
         ctx.enqueue_function[matmul_wrapper, matmul_wrapper](
-            a, w, out,
+            a,
+            w,
+            out,
             grid_dim=(MATMUL_BLOCKS_X, MATMUL_BLOCKS_Y),
             block_dim=(TILE, TILE),
         )
         ctx.enqueue_function[relu_wrapper, relu_wrapper](
-            out_flat, relu_out,
+            out_flat,
+            relu_out,
             grid_dim=(ELEM_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -513,12 +570,15 @@ fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64
     var start = perf_counter_ns()
     for _ in range(BENCHMARK_ITERS):
         ctx.enqueue_function[matmul_wrapper, matmul_wrapper](
-            a, w, out,
+            a,
+            w,
+            out,
             grid_dim=(MATMUL_BLOCKS_X, MATMUL_BLOCKS_Y),
             block_dim=(TILE, TILE),
         )
         ctx.enqueue_function[relu_wrapper, relu_wrapper](
-            out_flat, relu_out,
+            out_flat,
+            relu_out,
             grid_dim=(ELEM_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -531,6 +591,7 @@ fn benchmark_combined[TILE: Int, TPB: Int](ctx: DeviceContext) raises -> Float64
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     seed(42)
@@ -554,7 +615,17 @@ def main():
     # TILE Benchmark (Matmul)
     # =========================================================================
     print("-" * 70)
-    print("TILE Size Benchmark (Matmul: " + String(BATCH) + "x" + String(IN_DIM) + " @ " + String(IN_DIM) + "x" + String(HIDDEN_DIM) + ")")
+    print(
+        "TILE Size Benchmark (Matmul: "
+        + String(BATCH)
+        + "x"
+        + String(IN_DIM)
+        + " @ "
+        + String(IN_DIM)
+        + "x"
+        + String(HIDDEN_DIM)
+        + ")"
+    )
     print("-" * 70)
 
     var tile8_time = benchmark_matmul_tile[8](ctx)
@@ -576,14 +647,24 @@ def main():
         best_tile_time = tile32_time
 
     print()
-    print("  Best TILE: " + String(best_tile) + " (" + String(best_tile_time)[:8] + " ms)")
+    print(
+        "  Best TILE: "
+        + String(best_tile)
+        + " ("
+        + String(best_tile_time)[:8]
+        + " ms)"
+    )
     print()
 
     # =========================================================================
     # TPB Benchmark (Elementwise)
     # =========================================================================
     print("-" * 70)
-    print("TPB Size Benchmark (Elementwise: " + String(BATCH * HIDDEN_DIM) + " elements)")
+    print(
+        "TPB Size Benchmark (Elementwise: "
+        + String(BATCH * HIDDEN_DIM)
+        + " elements)"
+    )
     print("-" * 70)
 
     var tpb32_time = benchmark_elementwise_tpb[32](ctx)
@@ -617,7 +698,13 @@ def main():
         best_tpb_time = tpb512_time
 
     print()
-    print("  Best TPB: " + String(best_tpb) + " (" + String(best_tpb_time)[:8] + " ms)")
+    print(
+        "  Best TPB: "
+        + String(best_tpb)
+        + " ("
+        + String(best_tpb_time)[:8]
+        + " ms)"
+    )
     print()
 
     # =========================================================================
@@ -642,9 +729,30 @@ def main():
     var combo_32_256 = benchmark_combined[32, 256](ctx)
 
     print("           TPB=64     TPB=128    TPB=256")
-    print("  TILE=8:  " + String(combo_8_64)[:8] + "   " + String(combo_8_128)[:8] + "   " + String(combo_8_256)[:8])
-    print("  TILE=16: " + String(combo_16_64)[:8] + "   " + String(combo_16_128)[:8] + "   " + String(combo_16_256)[:8])
-    print("  TILE=32: " + String(combo_32_64)[:8] + "   " + String(combo_32_128)[:8] + "   " + String(combo_32_256)[:8])
+    print(
+        "  TILE=8:  "
+        + String(combo_8_64)[:8]
+        + "   "
+        + String(combo_8_128)[:8]
+        + "   "
+        + String(combo_8_256)[:8]
+    )
+    print(
+        "  TILE=16: "
+        + String(combo_16_64)[:8]
+        + "   "
+        + String(combo_16_128)[:8]
+        + "   "
+        + String(combo_16_256)[:8]
+    )
+    print(
+        "  TILE=32: "
+        + String(combo_32_64)[:8]
+        + "   "
+        + String(combo_32_128)[:8]
+        + "   "
+        + String(combo_32_256)[:8]
+    )
     print()
 
     # Find best combo
@@ -678,7 +786,12 @@ def main():
     print()
     print("Best for Matmul:      TILE=" + String(best_tile))
     print("Best for Elementwise: TPB=" + String(best_tpb))
-    print("Best Combined:        TILE=" + String(best_combo_tile) + ", TPB=" + String(best_combo_tpb))
+    print(
+        "Best Combined:        TILE="
+        + String(best_combo_tile)
+        + ", TPB="
+        + String(best_combo_tpb)
+    )
     print()
     print("Current defaults in deep_rl/constants.mojo:")
     print("  TILE = 16")

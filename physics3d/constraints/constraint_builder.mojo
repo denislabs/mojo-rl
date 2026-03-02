@@ -308,8 +308,7 @@ fn build_constraints[
         contact_active[i] = 0
         contact_normal_row[i] = -1
 
-    @parameter
-    if CONE_TYPE == ConeType.PYRAMIDAL:
+    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
         # =================================================================
         # PYRAMIDAL CONE: Build edge rows (all >= 0 constraints)
         # J_edge± = J_normal ± mu_k * J_tangent_k
@@ -1388,8 +1387,7 @@ fn build_constraints[
     # =========================================================================
     var eq_start = row_idx
 
-    @parameter
-    if MAX_EQUALITY > 0:
+    comptime if MAX_EQUALITY > 0:
         # Read solref/solimp for each equality constraint (per-constraint)
         for eq_idx in range(model.num_equality):
             var eq = model.equality_constraints[eq_idx]
@@ -1718,8 +1716,7 @@ fn build_constraints[
     # Jacobian is trivial: J[dof_adr_i] = coef_i
     # =========================================================================
 
-    @parameter
-    if MAX_TENDON > 0:
+    comptime if MAX_TENDON > 0:
         for t_idx in range(model.num_tendons):
             if row_idx >= MAX_ROWS:
                 break

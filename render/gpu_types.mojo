@@ -178,13 +178,13 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
         self.bottom_color[2] = 0.5
         self.bottom_color[3] = 1.0
 
-    fn __copyinit__(out self, read other: Self):
-        self.top_color = other.top_color.copy()
-        self.bottom_color = other.bottom_color.copy()
+    fn __init__(out self, copy: Self):
+        self.top_color = copy.top_color.copy()
+        self.bottom_color = copy.bottom_color.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.top_color = other.top_color^
-        self.bottom_color = other.bottom_color^
+    fn __init__(out self, deinit take: Self):
+        self.top_color = take.top_color^
+        self.bottom_color = take.bottom_color^
 
 
 struct LineUniforms(ImplicitlyCopyable, Movable):
@@ -202,13 +202,13 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.color = InlineArray[Float32, 4](fill=Float32(0))
 
-    fn __copyinit__(out self, read other: Self):
-        self.view_proj = other.view_proj.copy()
-        self.color = other.color.copy()
+    fn __init__(out self, copy: Self):
+        self.view_proj = copy.view_proj.copy()
+        self.color = copy.color.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.view_proj = other.view_proj^
-        self.color = other.color^
+    fn __init__(out self, deinit take: Self):
+        self.view_proj = take.view_proj^
+        self.color = take.color^
 
 
 struct ShadowUniforms(ImplicitlyCopyable, Movable):
@@ -229,13 +229,13 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
         self.params[0] = 0.5
         self.params[1] = 0.005
 
-    fn __copyinit__(out self, read other: Self):
-        self.light_view_proj = other.light_view_proj.copy()
-        self.params = other.params.copy()
+    fn __init__(out self, copy: Self):
+        self.light_view_proj = copy.light_view_proj.copy()
+        self.params = copy.params.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.light_view_proj = other.light_view_proj^
-        self.params = other.params^
+    fn __init__(out self, deinit take: Self):
+        self.light_view_proj = take.light_view_proj^
+        self.params = take.params^
 
 
 # --- Mesh data structures ---
@@ -251,9 +251,9 @@ struct MeshData(Movable):
         self.vertices = List[GPUVertex]()
         self.indices = List[UInt16]()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.vertices = other.vertices^
-        self.indices = other.indices^
+    fn __init__(out self, deinit take: Self):
+        self.vertices = take.vertices^
+        self.indices = take.indices^
 
     fn vertex_byte_size(self) -> Int:
         return len(self.vertices) * 32  # sizeof(GPUVertex)
@@ -265,21 +265,21 @@ struct MeshData(Movable):
 struct MeshHandle(Copyable, Movable):
     """GPU-side mesh reference."""
 
-    var vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
-    var index_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
+    var vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var index_buffer: Ptr[GPUBuffer, MutAnyOrigin]
     var num_indices: UInt32
     var num_vertices: UInt32
 
     fn __init__(out self):
-        self.vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
-        self.index_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
+        self.vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
+        self.index_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
         self.num_indices = 0
         self.num_vertices = 0
 
     fn __init__(
         out self,
-        vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]],
-        index_buffer: Ptr[GPUBuffer, AnyOrigin[True]],
+        vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin],
+        index_buffer: Ptr[GPUBuffer, MutAnyOrigin],
         num_indices: UInt32,
         num_vertices: UInt32,
     ):
@@ -288,17 +288,17 @@ struct MeshHandle(Copyable, Movable):
         self.num_indices = num_indices
         self.num_vertices = num_vertices
 
-    fn __copyinit__(out self, read other: Self):
-        self.vertex_buffer = other.vertex_buffer
-        self.index_buffer = other.index_buffer
-        self.num_indices = other.num_indices
-        self.num_vertices = other.num_vertices
+    fn __init__(out self, copy: Self):
+        self.vertex_buffer = copy.vertex_buffer
+        self.index_buffer = copy.index_buffer
+        self.num_indices = copy.num_indices
+        self.num_vertices = copy.num_vertices
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.vertex_buffer = other.vertex_buffer
-        self.index_buffer = other.index_buffer
-        self.num_indices = other.num_indices
-        self.num_vertices = other.num_vertices
+    fn __init__(out self, deinit take: Self):
+        self.vertex_buffer = take.vertex_buffer
+        self.index_buffer = take.index_buffer
+        self.num_indices = take.num_indices
+        self.num_vertices = take.num_vertices
 
 
 struct CapsuleCacheEntry(Copyable, Movable):
@@ -368,17 +368,17 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.is_capsule = is_capsule
         self.capsule_cache_idx = capsule_cache_idx
 
-    fn __copyinit__(out self, read other: Self):
-        self.mesh_idx = other.mesh_idx
-        self.uniforms = other.uniforms
-        self.is_capsule = other.is_capsule
-        self.capsule_cache_idx = other.capsule_cache_idx
+    fn __init__(out self, copy: Self):
+        self.mesh_idx = copy.mesh_idx
+        self.uniforms = copy.uniforms
+        self.is_capsule = copy.is_capsule
+        self.capsule_cache_idx = copy.capsule_cache_idx
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.mesh_idx = other.mesh_idx
-        self.uniforms = other.uniforms
-        self.is_capsule = other.is_capsule
-        self.capsule_cache_idx = other.capsule_cache_idx
+    fn __init__(out self, deinit take: Self):
+        self.mesh_idx = take.mesh_idx
+        self.uniforms = take.uniforms
+        self.is_capsule = take.is_capsule
+        self.capsule_cache_idx = take.capsule_cache_idx
 
 
 # --- Helper functions ---
@@ -602,8 +602,8 @@ struct TextUniforms(ImplicitlyCopyable, Movable):
     fn __init__(out self):
         self.ortho_proj = make_identity_f32()
 
-    fn __copyinit__(out self, read other: Self):
-        self.ortho_proj = other.ortho_proj.copy()
+    fn __init__(out self, copy: Self):
+        self.ortho_proj = copy.ortho_proj.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.ortho_proj = other.ortho_proj^
+    fn __init__(out self, deinit take: Self):
+        self.ortho_proj = take.ortho_proj^

@@ -639,8 +639,7 @@ struct LunarLander[
         self.particles.clear()
 
         # Reset wind indices (compile-time eliminated if ENABLE_WIND=False)
-        @parameter
-        if Self.ENABLE_WIND:
+        comptime if Self.ENABLE_WIND:
             self.rng_counter += 1
             var wind_rng = PhiloxRandom(
                 seed=Int(self.rng_seed) + 2000, offset=self.rng_counter
@@ -1008,8 +1007,7 @@ struct LunarLander[
         When ENABLE_WIND is False, this is a no-op eliminated at compile time.
         """
 
-        @parameter
-        if not Self.ENABLE_WIND:
+        comptime if not Self.ENABLE_WIND:
             return
 
         var obs = self.get_observation(0)
@@ -2199,8 +2197,7 @@ struct LunarLander[
         eliminated at compile time.
         """
 
-        @parameter
-        if not Self.ENABLE_WIND:
+        comptime if not Self.ENABLE_WIND:
             return
 
         # Check leg contacts from observation - skip wind if grounded

@@ -119,8 +119,7 @@ struct Cameras[*C: CameraSpec](CamerasLike):
     fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
         var cameras = List[Camera3D]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime Cam = Self.cam_types[i]
             var camera = Camera3D(
                 eye=Vec3(0.0, Cam.POS_Y, Cam.POS_Z),
@@ -140,8 +139,7 @@ struct Cameras[*C: CameraSpec](CamerasLike):
     fn setup_camera_modes() -> List[Int]:
         var modes = List[Int]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime Cam = Self.cam_types[i]
             modes.append(Cam.MODE)
         return modes^

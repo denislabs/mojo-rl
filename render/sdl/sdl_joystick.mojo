@@ -202,8 +202,8 @@ fn has_joystick() raises -> Bool:
 
 
 fn get_joysticks(
-    count: Ptr[c_int, AnyOrigin[True]],
-    out ret: Ptr[JoystickID, AnyOrigin[True]],
+    count: Ptr[c_int, MutAnyOrigin],
+    out ret: Ptr[JoystickID, MutAnyOrigin],
 ) raises:
     """Get a list of currently connected joysticks.
 
@@ -222,9 +222,7 @@ fn get_joysticks(
     ret = _get_dylib_function[
         lib,
         "SDL_GetJoysticks",
-        fn(
-            count: Ptr[c_int, AnyOrigin[True]]
-        ) -> Ptr[JoystickID, AnyOrigin[True]],
+        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[JoystickID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -232,7 +230,7 @@ fn get_joysticks(
 
 fn get_joystick_name_for_id(
     instance_id: JoystickID,
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a joystick.
 
     This can be called before any joysticks are opened.
@@ -250,13 +248,13 @@ fn get_joystick_name_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickNameForID",
-        fn(instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(instance_id: JoystickID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
 fn get_joystick_path_for_id(
     instance_id: JoystickID,
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent path of a joystick.
 
     This can be called before any joysticks are opened.
@@ -274,7 +272,7 @@ fn get_joystick_path_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickPathForID",
-        fn(instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(instance_id: JoystickID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -412,7 +410,7 @@ fn get_joystick_type_for_id(instance_id: JoystickID) raises -> JoystickType:
 
 
 fn open_joystick(
-    instance_id: JoystickID, out ret: Ptr[Joystick, AnyOrigin[True]]
+    instance_id: JoystickID, out ret: Ptr[Joystick, MutAnyOrigin]
 ) raises:
     """Open a joystick for use.
 
@@ -432,7 +430,7 @@ fn open_joystick(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenJoystick",
-        fn(instance_id: JoystickID) -> Ptr[Joystick, AnyOrigin[True]],
+        fn(instance_id: JoystickID) -> Ptr[Joystick, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -440,7 +438,7 @@ fn open_joystick(
 
 fn get_joystick_from_id(
     instance_id: JoystickID,
-) raises -> Ptr[Joystick, AnyOrigin[True]]:
+) raises -> Ptr[Joystick, MutAnyOrigin]:
     """Get the SDL_Joystick associated with an instance ID, if it has been opened.
 
     Args:
@@ -456,12 +454,12 @@ fn get_joystick_from_id(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickFromID",
-        fn(instance_id: JoystickID) -> Ptr[Joystick, AnyOrigin[True]],
+        fn(instance_id: JoystickID) -> Ptr[Joystick, MutAnyOrigin],
     ]()(instance_id)
 
 
 fn get_joystick_from_player_index(
-    player_index: c_int, out ret: Ptr[Joystick, AnyOrigin[True]]
+    player_index: c_int, out ret: Ptr[Joystick, MutAnyOrigin]
 ) raises:
     """Get the SDL_Joystick associated with a player index.
 
@@ -478,7 +476,7 @@ fn get_joystick_from_player_index(
     ret = _get_dylib_function[
         lib,
         "SDL_GetJoystickFromPlayerIndex",
-        fn(player_index: c_int) -> Ptr[Joystick, AnyOrigin[True]],
+        fn(player_index: c_int) -> Ptr[Joystick, MutAnyOrigin],
     ]()(player_index)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -493,7 +491,7 @@ struct VirtualJoystickTouchpadDesc(ImplicitlyCopyable, Movable):
 
     var nfingers: UInt16
     """The number of simultaneous fingers on this touchpad."""
-    var padding: ArrayHelper[UInt16, 3, AnyOrigin[True]]
+    var padding: ArrayHelper[UInt16, 3, MutAnyOrigin]
 
 
 @fieldwise_init
@@ -541,7 +539,7 @@ struct VirtualJoystickDesc(ImplicitlyCopyable, Movable):
     """The number of touchpads on this joystick, requires `touchpads` to point at valid descriptions."""
     var nsensors: UInt16
     """The number of sensors on this joystick, requires `sensors` to point at valid descriptions."""
-    var padding2: ArrayHelper[UInt16, 2, AnyOrigin[True]]
+    var padding2: ArrayHelper[UInt16, 2, MutAnyOrigin]
     """Unused."""
     var button_mask: UInt32
     """A mask of which buttons are valid for this controller
@@ -549,56 +547,56 @@ struct VirtualJoystickDesc(ImplicitlyCopyable, Movable):
     var axis_mask: UInt32
     """A mask of which axes are valid for this controller
                                  e.g. (1 << SDL_GAMEPAD_AXIS_LEFTX)."""
-    var name: Ptr[c_char, AnyOrigin[False]]
+    var name: Ptr[c_char, ImmutAnyOrigin]
     """The name of the joystick."""
-    var touchpads: Ptr[VirtualJoystickTouchpadDesc, AnyOrigin[False]]
+    var touchpads: Ptr[VirtualJoystickTouchpadDesc, ImmutAnyOrigin]
     """A pointer to an array of touchpad descriptions, required if `ntouchpads` is > 0."""
-    var sensors: Ptr[VirtualJoystickSensorDesc, AnyOrigin[False]]
+    var sensors: Ptr[VirtualJoystickSensorDesc, ImmutAnyOrigin]
     """A pointer to an array of sensor descriptions, required if `nsensors` is > 0."""
 
-    var userdata: Ptr[NoneType, AnyOrigin[True]]
+    var userdata: Ptr[NoneType, MutAnyOrigin]
     """User data pointer passed to callbacks."""
-    var update: fn(userdata: Ptr[NoneType, AnyOrigin[True]]) -> None
+    var update: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
     """Called when the joystick state should be updated."""
     var set_player_index: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]], player_index: c_int
+        userdata: Ptr[NoneType, MutAnyOrigin], player_index: c_int
     ) -> None
     """Called when the player index is set."""
     var rumble: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]],
+        userdata: Ptr[NoneType, MutAnyOrigin],
         low_frequency_rumble: UInt16,
         high_frequency_rumble: UInt16,
     ) -> Bool
     """Implements SDL_RumbleJoystick()."""
     var rumble_triggers: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]],
+        userdata: Ptr[NoneType, MutAnyOrigin],
         left_rumble: UInt16,
         right_rumble: UInt16,
     ) -> Bool
     """Implements SDL_RumbleJoystickTriggers()."""
     var set_led: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]],
+        userdata: Ptr[NoneType, MutAnyOrigin],
         red: UInt8,
         green: UInt8,
         blue: UInt8,
     ) -> Bool
     """Implements SDL_SetJoystickLED()."""
     var send_effect: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]],
-        data: Ptr[NoneType, AnyOrigin[False]],
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        data: Ptr[NoneType, ImmutAnyOrigin],
         size: c_int,
     ) -> Bool
     """Implements SDL_SendJoystickEffect()."""
     var set_sensors_enabled: fn(
-        userdata: Ptr[NoneType, AnyOrigin[True]], enabled: Bool
+        userdata: Ptr[NoneType, MutAnyOrigin], enabled: Bool
     ) -> Bool
     """Implements SDL_SetGamepadSensorEnabled()."""
-    var cleanup: fn(userdata: Ptr[NoneType, AnyOrigin[True]]) -> None
+    var cleanup: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
     """Cleans up the userdata when the joystick is detached."""
 
 
 fn attach_virtual_joystick(
-    desc: Ptr[VirtualJoystickDesc, AnyOrigin[False]]
+    desc: Ptr[VirtualJoystickDesc, ImmutAnyOrigin]
 ) raises -> JoystickID:
     """Attach a new virtual joystick.
 
@@ -615,7 +613,7 @@ fn attach_virtual_joystick(
     return _get_dylib_function[
         lib,
         "SDL_AttachVirtualJoystick",
-        fn(desc: Ptr[VirtualJoystickDesc, AnyOrigin[False]]) -> JoystickID,
+        fn(desc: Ptr[VirtualJoystickDesc, ImmutAnyOrigin]) -> JoystickID,
     ]()(desc)
 
 
@@ -658,7 +656,7 @@ fn is_joystick_virtual(instance_id: JoystickID) raises -> Bool:
 
 
 fn set_joystick_virtual_axis(
-    joystick: Ptr[Joystick, AnyOrigin[True]], axis: c_int, value: Int16
+    joystick: Ptr[Joystick, MutAnyOrigin], axis: c_int, value: Int16
 ) raises:
     """Set the state of an axis on an opened virtual joystick.
 
@@ -688,7 +686,7 @@ fn set_joystick_virtual_axis(
         lib,
         "SDL_SetJoystickVirtualAxis",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]], axis: c_int, value: Int16
+            joystick: Ptr[Joystick, MutAnyOrigin], axis: c_int, value: Int16
         ) -> Bool,
     ]()(joystick, axis, value)
     if not ret:
@@ -696,7 +694,7 @@ fn set_joystick_virtual_axis(
 
 
 fn set_joystick_virtual_ball(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     ball: c_int,
     xrel: Int16,
     yrel: Int16,
@@ -726,7 +724,7 @@ fn set_joystick_virtual_ball(
         lib,
         "SDL_SetJoystickVirtualBall",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             ball: c_int,
             xrel: Int16,
             yrel: Int16,
@@ -737,7 +735,7 @@ fn set_joystick_virtual_ball(
 
 
 fn set_joystick_virtual_button(
-    joystick: Ptr[Joystick, AnyOrigin[True]], button: c_int, down: Bool
+    joystick: Ptr[Joystick, MutAnyOrigin], button: c_int, down: Bool
 ) raises:
     """Set the state of a button on an opened virtual joystick.
 
@@ -763,7 +761,7 @@ fn set_joystick_virtual_button(
         lib,
         "SDL_SetJoystickVirtualButton",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]], button: c_int, down: Bool
+            joystick: Ptr[Joystick, MutAnyOrigin], button: c_int, down: Bool
         ) -> Bool,
     ]()(joystick, button, down)
     if not ret:
@@ -771,7 +769,7 @@ fn set_joystick_virtual_button(
 
 
 fn set_joystick_virtual_hat(
-    joystick: Ptr[Joystick, AnyOrigin[True]], hat: c_int, value: UInt8
+    joystick: Ptr[Joystick, MutAnyOrigin], hat: c_int, value: UInt8
 ) raises:
     """Set the state of a hat on an opened virtual joystick.
 
@@ -797,7 +795,7 @@ fn set_joystick_virtual_hat(
         lib,
         "SDL_SetJoystickVirtualHat",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]], hat: c_int, value: UInt8
+            joystick: Ptr[Joystick, MutAnyOrigin], hat: c_int, value: UInt8
         ) -> Bool,
     ]()(joystick, hat, value)
     if not ret:
@@ -805,7 +803,7 @@ fn set_joystick_virtual_hat(
 
 
 fn set_joystick_virtual_touchpad(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     touchpad: c_int,
     finger: c_int,
     down: Bool,
@@ -844,7 +842,7 @@ fn set_joystick_virtual_touchpad(
         lib,
         "SDL_SetJoystickVirtualTouchpad",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             touchpad: c_int,
             finger: c_int,
             down: Bool,
@@ -858,10 +856,10 @@ fn set_joystick_virtual_touchpad(
 
 
 fn send_joystick_virtual_sensor_data(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     type: SensorType,
     sensor_timestamp: UInt64,
-    data: Ptr[c_float, AnyOrigin[False]],
+    data: Ptr[c_float, ImmutAnyOrigin],
     num_values: c_int,
 ) raises:
     """Send a sensor update for an opened virtual joystick.
@@ -891,10 +889,10 @@ fn send_joystick_virtual_sensor_data(
         lib,
         "SDL_SendJoystickVirtualSensorData",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             type: SensorType,
             sensor_timestamp: UInt64,
-            data: Ptr[c_float, AnyOrigin[False]],
+            data: Ptr[c_float, ImmutAnyOrigin],
             num_values: c_int,
         ) -> Bool,
     ]()(joystick, type, sensor_timestamp, data, num_values)
@@ -903,7 +901,7 @@ fn send_joystick_virtual_sensor_data(
 
 
 fn get_joystick_properties(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a joystick.
 
@@ -933,13 +931,13 @@ fn get_joystick_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickProperties",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> PropertiesID,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> PropertiesID,
     ]()(joystick)
 
 
 fn get_joystick_name(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+    joystick: Ptr[Joystick, MutAnyOrigin]
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a joystick.
 
     Args:
@@ -956,14 +954,14 @@ fn get_joystick_name(
         lib,
         "SDL_GetJoystickName",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+            joystick: Ptr[Joystick, MutAnyOrigin]
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(joystick)
 
 
 fn get_joystick_path(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+    joystick: Ptr[Joystick, MutAnyOrigin]
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent path of a joystick.
 
     Args:
@@ -980,13 +978,13 @@ fn get_joystick_path(
         lib,
         "SDL_GetJoystickPath",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+            joystick: Ptr[Joystick, MutAnyOrigin]
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(joystick)
 
 
 fn get_joystick_player_index(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> c_int:
     """Get the player index of an opened joystick.
 
@@ -1005,12 +1003,12 @@ fn get_joystick_player_index(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickPlayerIndex",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> c_int,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> c_int,
     ]()(joystick)
 
 
 fn set_joystick_player_index(
-    joystick: Ptr[Joystick, AnyOrigin[True]], player_index: c_int
+    joystick: Ptr[Joystick, MutAnyOrigin], player_index: c_int
 ) raises:
     """Set the player index of an opened joystick.
 
@@ -1029,15 +1027,13 @@ fn set_joystick_player_index(
     ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickPlayerIndex",
-        fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]], player_index: c_int
-        ) -> Bool,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin], player_index: c_int) -> Bool,
     ]()(joystick, player_index)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_joystick_guid(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> GUID:
+fn get_joystick_guid(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> GUID:
     """Get the implementation-dependent GUID for the joystick.
 
     This function requires an open joystick.
@@ -1056,13 +1052,11 @@ fn get_joystick_guid(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> GUID:
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickGUID",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> GUID,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> GUID,
     ]()(joystick)
 
 
-fn get_joystick_vendor(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> UInt16:
+fn get_joystick_vendor(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> UInt16:
     """Get the USB vendor ID of an opened joystick, if available.
 
     If the vendor ID isn't available this function returns 0.
@@ -1079,13 +1073,11 @@ fn get_joystick_vendor(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickVendor",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> UInt16,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> UInt16,
     ]()(joystick)
 
 
-fn get_joystick_product(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> UInt16:
+fn get_joystick_product(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> UInt16:
     """Get the USB product ID of an opened joystick, if available.
 
     If the product ID isn't available this function returns 0.
@@ -1102,12 +1094,12 @@ fn get_joystick_product(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickProduct",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> UInt16,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> UInt16,
     ]()(joystick)
 
 
 fn get_joystick_product_version(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> UInt16:
     """Get the product version of an opened joystick, if available.
 
@@ -1125,12 +1117,12 @@ fn get_joystick_product_version(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickProductVersion",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> UInt16,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> UInt16,
     ]()(joystick)
 
 
 fn get_joystick_firmware_version(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> UInt16:
     """Get the firmware version of an opened joystick, if available.
 
@@ -1149,13 +1141,13 @@ fn get_joystick_firmware_version(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickFirmwareVersion",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> UInt16,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> UInt16,
     ]()(joystick)
 
 
 fn get_joystick_serial(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+    joystick: Ptr[Joystick, MutAnyOrigin]
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the serial number of an opened joystick, if available.
 
     Returns the serial number of the joystick, or NULL if it is not available.
@@ -1174,13 +1166,13 @@ fn get_joystick_serial(
         lib,
         "SDL_GetJoystickSerial",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+            joystick: Ptr[Joystick, MutAnyOrigin]
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(joystick)
 
 
 fn get_joystick_type(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> JoystickType:
     """Get the type of an opened joystick.
 
@@ -1196,16 +1188,16 @@ fn get_joystick_type(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickType",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> JoystickType,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> JoystickType,
     ]()(joystick)
 
 
 fn get_joystick_guid_info(
     guid: GUID,
-    vendor: Ptr[UInt16, AnyOrigin[True]],
-    product: Ptr[UInt16, AnyOrigin[True]],
-    version: Ptr[UInt16, AnyOrigin[True]],
-    crc16: Ptr[UInt16, AnyOrigin[True]],
+    vendor: Ptr[UInt16, MutAnyOrigin],
+    product: Ptr[UInt16, MutAnyOrigin],
+    version: Ptr[UInt16, MutAnyOrigin],
+    crc16: Ptr[UInt16, MutAnyOrigin],
 ) raises -> None:
     """Get the device information encoded in a SDL_GUID structure.
 
@@ -1228,15 +1220,15 @@ fn get_joystick_guid_info(
         "SDL_GetJoystickGUIDInfo",
         fn(
             guid: GUID,
-            vendor: Ptr[UInt16, AnyOrigin[True]],
-            product: Ptr[UInt16, AnyOrigin[True]],
-            version: Ptr[UInt16, AnyOrigin[True]],
-            crc16: Ptr[UInt16, AnyOrigin[True]],
+            vendor: Ptr[UInt16, MutAnyOrigin],
+            product: Ptr[UInt16, MutAnyOrigin],
+            version: Ptr[UInt16, MutAnyOrigin],
+            crc16: Ptr[UInt16, MutAnyOrigin],
         ) -> None,
     ]()(guid, vendor, product, version, crc16)
 
 
-fn joystick_connected(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> Bool:
+fn joystick_connected(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> Bool:
     """Get the status of a specified joystick.
 
     Args:
@@ -1252,13 +1244,11 @@ fn joystick_connected(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_JoystickConnected",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> Bool,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> Bool,
     ]()(joystick)
 
 
-fn get_joystick_id(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> JoystickID:
+fn get_joystick_id(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> JoystickID:
     """Get the instance ID of an opened joystick.
 
     Args:
@@ -1274,13 +1264,11 @@ fn get_joystick_id(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickID",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> JoystickID,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> JoystickID,
     ]()(joystick)
 
 
-fn get_num_joystick_axes(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> c_int:
+fn get_num_joystick_axes(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> c_int:
     """Get the number of general axis controls on a joystick.
 
     Often, the directional pad on a game controller will either look like 4
@@ -1300,12 +1288,12 @@ fn get_num_joystick_axes(
     return _get_dylib_function[
         lib,
         "SDL_GetNumJoystickAxes",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> c_int,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> c_int,
     ]()(joystick)
 
 
 fn get_num_joystick_balls(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> c_int:
     """Get the number of trackballs on a joystick.
 
@@ -1327,13 +1315,11 @@ fn get_num_joystick_balls(
     return _get_dylib_function[
         lib,
         "SDL_GetNumJoystickBalls",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> c_int,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> c_int,
     ]()(joystick)
 
 
-fn get_num_joystick_hats(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
-) raises -> c_int:
+fn get_num_joystick_hats(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> c_int:
     """Get the number of POV hats on a joystick.
 
     Args:
@@ -1349,12 +1335,12 @@ fn get_num_joystick_hats(
     return _get_dylib_function[
         lib,
         "SDL_GetNumJoystickHats",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> c_int,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> c_int,
     ]()(joystick)
 
 
 fn get_num_joystick_buttons(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> c_int:
     """Get the number of buttons on a joystick.
 
@@ -1371,7 +1357,7 @@ fn get_num_joystick_buttons(
     return _get_dylib_function[
         lib,
         "SDL_GetNumJoystickButtons",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> c_int,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> c_int,
     ]()(joystick)
 
 
@@ -1424,7 +1410,7 @@ fn update_joysticks() raises -> None:
 
 
 fn get_joystick_axis(
-    joystick: Ptr[Joystick, AnyOrigin[True]], axis: c_int
+    joystick: Ptr[Joystick, MutAnyOrigin], axis: c_int
 ) raises -> Int16:
     """Get the current state of an axis control on a joystick.
 
@@ -1452,14 +1438,14 @@ fn get_joystick_axis(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickAxis",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]], axis: c_int) -> Int16,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin], axis: c_int) -> Int16,
     ]()(joystick, axis)
 
 
 fn get_joystick_axis_initial_state(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     axis: c_int,
-    state: Ptr[Int16, AnyOrigin[True]],
+    state: Ptr[Int16, MutAnyOrigin],
 ) raises -> Bool:
     """Get the initial state of an axis control on a joystick.
 
@@ -1482,18 +1468,18 @@ fn get_joystick_axis_initial_state(
         lib,
         "SDL_GetJoystickAxisInitialState",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             axis: c_int,
-            state: Ptr[Int16, AnyOrigin[True]],
+            state: Ptr[Int16, MutAnyOrigin],
         ) -> Bool,
     ]()(joystick, axis, state)
 
 
 fn get_joystick_ball(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     ball: c_int,
-    dx: Ptr[c_int, AnyOrigin[True]],
-    dy: Ptr[c_int, AnyOrigin[True]],
+    dx: Ptr[c_int, MutAnyOrigin],
+    dy: Ptr[c_int, MutAnyOrigin],
 ) raises:
     """Get the ball axis change since the last poll.
 
@@ -1519,10 +1505,10 @@ fn get_joystick_ball(
         lib,
         "SDL_GetJoystickBall",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             ball: c_int,
-            dx: Ptr[c_int, AnyOrigin[True]],
-            dy: Ptr[c_int, AnyOrigin[True]],
+            dx: Ptr[c_int, MutAnyOrigin],
+            dy: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(joystick, ball, dx, dy)
     if not ret:
@@ -1530,7 +1516,7 @@ fn get_joystick_ball(
 
 
 fn get_joystick_hat(
-    joystick: Ptr[Joystick, AnyOrigin[True]], hat: c_int
+    joystick: Ptr[Joystick, MutAnyOrigin], hat: c_int
 ) raises -> UInt8:
     """Get the current state of a POV hat on a joystick.
 
@@ -1549,12 +1535,12 @@ fn get_joystick_hat(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickHat",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]], hat: c_int) -> UInt8,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin], hat: c_int) -> UInt8,
     ]()(joystick, hat)
 
 
 fn get_joystick_button(
-    joystick: Ptr[Joystick, AnyOrigin[True]], button: c_int
+    joystick: Ptr[Joystick, MutAnyOrigin], button: c_int
 ) raises -> Bool:
     """Get the current state of a button on a joystick.
 
@@ -1572,12 +1558,12 @@ fn get_joystick_button(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickButton",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]], button: c_int) -> Bool,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin], button: c_int) -> Bool,
     ]()(joystick, button)
 
 
 fn rumble_joystick(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     low_frequency_rumble: UInt16,
     high_frequency_rumble: UInt16,
     duration_ms: UInt32,
@@ -1608,7 +1594,7 @@ fn rumble_joystick(
         lib,
         "SDL_RumbleJoystick",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             low_frequency_rumble: UInt16,
             high_frequency_rumble: UInt16,
             duration_ms: UInt32,
@@ -1617,7 +1603,7 @@ fn rumble_joystick(
 
 
 fn rumble_joystick_triggers(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     left_rumble: UInt16,
     right_rumble: UInt16,
     duration_ms: UInt32,
@@ -1654,7 +1640,7 @@ fn rumble_joystick_triggers(
         lib,
         "SDL_RumbleJoystickTriggers",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             left_rumble: UInt16,
             right_rumble: UInt16,
             duration_ms: UInt32,
@@ -1665,7 +1651,7 @@ fn rumble_joystick_triggers(
 
 
 fn set_joystick_led(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
     red: UInt8,
     green: UInt8,
     blue: UInt8,
@@ -1695,7 +1681,7 @@ fn set_joystick_led(
         lib,
         "SDL_SetJoystickLED",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
             red: UInt8,
             green: UInt8,
             blue: UInt8,
@@ -1706,8 +1692,8 @@ fn set_joystick_led(
 
 
 fn send_joystick_effect(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
-    data: Ptr[NoneType, AnyOrigin[False]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
+    data: Ptr[NoneType, ImmutAnyOrigin],
     size: c_int,
 ) raises:
     """Send a joystick specific effect packet.
@@ -1728,8 +1714,8 @@ fn send_joystick_effect(
         lib,
         "SDL_SendJoystickEffect",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
-            data: Ptr[NoneType, AnyOrigin[False]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
+            data: Ptr[NoneType, ImmutAnyOrigin],
             size: c_int,
         ) -> Bool,
     ]()(joystick, data, size)
@@ -1737,7 +1723,7 @@ fn send_joystick_effect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_joystick(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> None:
+fn close_joystick(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> None:
     """Close a joystick previously opened with SDL_OpenJoystick().
 
     Args:
@@ -1749,12 +1735,12 @@ fn close_joystick(joystick: Ptr[Joystick, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_CloseJoystick",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> None,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> None,
     ]()(joystick)
 
 
 fn get_joystick_connection_state(
-    joystick: Ptr[Joystick, AnyOrigin[True]]
+    joystick: Ptr[Joystick, MutAnyOrigin]
 ) raises -> JoystickConnectionState:
     """Get the connection state of a joystick.
 
@@ -1772,13 +1758,13 @@ fn get_joystick_connection_state(
     return _get_dylib_function[
         lib,
         "SDL_GetJoystickConnectionState",
-        fn(joystick: Ptr[Joystick, AnyOrigin[True]]) -> JoystickConnectionState,
+        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> JoystickConnectionState,
     ]()(joystick)
 
 
 fn get_joystick_power_info(
-    joystick: Ptr[Joystick, AnyOrigin[True]],
-    percent: Ptr[c_int, AnyOrigin[True]],
+    joystick: Ptr[Joystick, MutAnyOrigin],
+    percent: Ptr[c_int, MutAnyOrigin],
 ) raises -> PowerState:
     """Get the battery state of a joystick.
 
@@ -1806,7 +1792,7 @@ fn get_joystick_power_info(
         lib,
         "SDL_GetJoystickPowerInfo",
         fn(
-            joystick: Ptr[Joystick, AnyOrigin[True]],
-            percent: Ptr[c_int, AnyOrigin[True]],
+            joystick: Ptr[Joystick, MutAnyOrigin],
+            percent: Ptr[c_int, MutAnyOrigin],
         ) -> PowerState,
     ]()(joystick, percent)

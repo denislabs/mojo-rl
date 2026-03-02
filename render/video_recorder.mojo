@@ -42,15 +42,15 @@ struct VideoRecorder(Movable):
         self._ctypes = None
         self._channel_idx = None
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.is_recording = other.is_recording
-        self.frame_count = other.frame_count
-        self.fps = other.fps
-        self.filename = other.filename^
-        self._writer = other._writer^
-        self._np = other._np^
-        self._ctypes = other._ctypes^
-        self._channel_idx = other._channel_idx^
+    fn __init__(out self, deinit take: Self):
+        self.is_recording = take.is_recording
+        self.frame_count = take.frame_count
+        self.fps = take.fps
+        self.filename = take.filename^
+        self._writer = take._writer^
+        self._np = take._np^
+        self._ctypes = take._ctypes^
+        self._channel_idx = take._channel_idx^
 
     fn start(mut self, filename: String, fps: Int = 30) raises:
         """Open a video writer.
@@ -75,9 +75,7 @@ struct VideoRecorder(Movable):
         self.is_recording = True
         print("Recording started: " + filename)
 
-    fn add_frame_bgra(
-        mut self, addr: Int, width: Int, height: Int
-    ) raises:
+    fn add_frame_bgra(mut self, addr: Int, width: Int, height: Int) raises:
         """Append one frame from a BGRA pixel buffer.
 
         The buffer layout must be B8G8R8A8 (4 bytes per pixel, row-major),

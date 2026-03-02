@@ -10,7 +10,7 @@ from std.builtin.variadics import Variadic
 # =============================================================================
 #
 # Sequential[*LAYERS: Model] handles any number of layers directly using
-# Variadic.types + @parameter for with index-based access for compile-time
+# Variadic.types + comptime for with index-based access for compile-time
 # iteration over heterogeneous type parameter packs.
 #
 # Usage:
@@ -27,7 +27,7 @@ struct Sequential[*LAYERS: Model](Model):
     """Variadic sequential container for N layers.
 
     Composes N layers where layer[i].OUT_DIM == layer[i+1].IN_DIM.
-    Uses Variadic.types + @parameter for to iterate at compile time.
+    Uses Variadic.types + comptime for to iterate at compile time.
     """
 
     comptime model_types = Variadic.types[T=Model, *Self.LAYERS]
@@ -42,8 +42,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _sum_param_size() -> Int:
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.model_types[i].PARAM_SIZE
         return total
 
@@ -51,8 +50,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _sum_cache_size() -> Int:
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.model_types[i].CACHE_SIZE
         return total
 
@@ -62,8 +60,7 @@ struct Sequential[*LAYERS: Model](Model):
         """
         var total = 0
 
-        @parameter
-        for i in range(Self.N - 1):
+        comptime for i in range(Self.N - 1):
             total += Self.model_types[i].OUT_DIM
         return total
 
@@ -71,8 +68,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _sum_ws() -> Int:
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
         return total
 
@@ -86,8 +82,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _param_offset[idx: Int]() -> Int:
         var total = 0
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.model_types[j].PARAM_SIZE
         return total
 
@@ -95,8 +90,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _cache_offset[idx: Int]() -> Int:
         var total = 0
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.model_types[j].CACHE_SIZE
         return total
 
@@ -105,8 +99,7 @@ struct Sequential[*LAYERS: Model](Model):
         """Offset of intermediate slot idx (per sample)."""
         var total = 0
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.model_types[j].OUT_DIM
         return total
 
@@ -116,8 +109,7 @@ struct Sequential[*LAYERS: Model](Model):
         """
         var total = Self._total_inter()
 
-        @parameter
-        for j in range(idx):
+        comptime for j in range(idx):
             total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
         return total
 
@@ -142,8 +134,7 @@ struct Sequential[*LAYERS: Model](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             var in_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
@@ -174,8 +165,7 @@ struct Sequential[*LAYERS: Model](Model):
                 inter_storage.append(0)
             var inter_ptr = inter_storage.unsafe_ptr()
 
-            @parameter
-            for i in range(Self.N):
+            comptime for i in range(Self.N):
                 var li_p = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
@@ -187,8 +177,7 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ](cache.ptr + BATCH * Self._cache_offset[i]())
 
-                @parameter
-                if i == 0:
+                comptime if i == 0:
                     var li_in = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
@@ -249,8 +238,7 @@ struct Sequential[*LAYERS: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             var in_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
@@ -275,16 +263,14 @@ struct Sequential[*LAYERS: Model](Model):
                 inter_storage.append(0)
             var inter_ptr = inter_storage.unsafe_ptr()
 
-            @parameter
-            for i in range(Self.N):
+            comptime for i in range(Self.N):
                 var li_p = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
 
-                @parameter
-                if i == 0:
+                comptime if i == 0:
                     var li_in = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
@@ -345,8 +331,7 @@ struct Sequential[*LAYERS: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             var go_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
@@ -383,8 +368,7 @@ struct Sequential[*LAYERS: Model](Model):
             var gi_ptr = grad_inter_storage.unsafe_ptr()
 
             # Reverse iteration
-            @parameter
-            for _ri in range(Self.N):
+            comptime for _ri in range(Self.N):
                 comptime i = Self.N - 1 - _ri
 
                 var li_p = LayoutTensor[
@@ -403,8 +387,7 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ](grads.ptr + Self._param_offset[i]())
 
-                @parameter
-                if i == Self.N - 1:
+                comptime if i == Self.N - 1:
                     # Last layer: Sequential grad_output -> grad_inter[i-1]
                     var li_go = LayoutTensor[
                         dtype,
@@ -470,8 +453,7 @@ struct Sequential[*LAYERS: Model](Model):
         Workspace layout: [inter_bufs (N-1 buffers) | L0 ws | L1 ws | ... | L_{N-1} ws]
         """
 
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             Self.model_types[0].forward_gpu[BATCH](
                 ctx,
                 output_buf,
@@ -485,8 +467,7 @@ struct Sequential[*LAYERS: Model](Model):
             var p_ptr = params_buf.unsafe_ptr()
             var c_ptr = cache_buf.unsafe_ptr()
 
-            @parameter
-            for i in range(Self.N):
+            comptime for i in range(Self.N):
                 # Params view
                 var li_params = DeviceBuffer[dtype](
                     ctx,
@@ -512,8 +493,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                @parameter
-                if i == 0:
+                comptime if i == 0:
                     var inter_out = DeviceBuffer[dtype](
                         ctx,
                         ws_ptr,
@@ -579,8 +559,7 @@ struct Sequential[*LAYERS: Model](Model):
         params_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             Self.model_types[0].forward_gpu_no_cache[BATCH](
                 ctx, output_buf, input_buf, params_buf, workspace_buf
             )
@@ -588,8 +567,7 @@ struct Sequential[*LAYERS: Model](Model):
             var ws_ptr = workspace_buf.unsafe_ptr()
             var p_ptr = params_buf.unsafe_ptr()
 
-            @parameter
-            for i in range(Self.N):
+            comptime for i in range(Self.N):
                 var li_params = DeviceBuffer[dtype](
                     ctx,
                     p_ptr + Self._param_offset[i](),
@@ -606,8 +584,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                @parameter
-                if i == 0:
+                comptime if i == 0:
                     var inter_out = DeviceBuffer[dtype](
                         ctx,
                         ws_ptr,
@@ -663,8 +640,7 @@ struct Sequential[*LAYERS: Model](Model):
         """GPU backward pass. Workspace inter region reused for gradient intermediates.
         """
 
-        @parameter
-        if Self.N == 1:
+        comptime if Self.N == 1:
             Self.model_types[0].backward_gpu[BATCH](
                 ctx,
                 grad_input_buf,
@@ -681,8 +657,7 @@ struct Sequential[*LAYERS: Model](Model):
             var g_ptr = grads_buf.unsafe_ptr()
 
             # Reverse iteration
-            @parameter
-            for _ri in range(Self.N):
+            comptime for _ri in range(Self.N):
                 comptime i = Self.N - 1 - _ri
 
                 var li_params = DeviceBuffer[dtype](
@@ -713,8 +688,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                @parameter
-                if i == Self.N - 1:
+                comptime if i == Self.N - 1:
                     # Last layer: grad_output -> grad_inter[i-1]
                     var gi_buf = DeviceBuffer[dtype](
                         ctx,

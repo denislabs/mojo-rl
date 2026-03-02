@@ -98,13 +98,25 @@ struct WheelFriction:
             (local_x, local_y) position of wheel relative to hull center.
         """
         if wheel == WHEEL_FL:
-            return (Scalar[dtype](WHEEL_POS_FL_X), Scalar[dtype](WHEEL_POS_FL_Y))
+            return (
+                Scalar[dtype](WHEEL_POS_FL_X),
+                Scalar[dtype](WHEEL_POS_FL_Y),
+            )
         elif wheel == WHEEL_FR:
-            return (Scalar[dtype](WHEEL_POS_FR_X), Scalar[dtype](WHEEL_POS_FR_Y))
+            return (
+                Scalar[dtype](WHEEL_POS_FR_X),
+                Scalar[dtype](WHEEL_POS_FR_Y),
+            )
         elif wheel == WHEEL_RL:
-            return (Scalar[dtype](WHEEL_POS_RL_X), Scalar[dtype](WHEEL_POS_RL_Y))
+            return (
+                Scalar[dtype](WHEEL_POS_RL_X),
+                Scalar[dtype](WHEEL_POS_RL_Y),
+            )
         else:  # WHEEL_RR
-            return (Scalar[dtype](WHEEL_POS_RR_X), Scalar[dtype](WHEEL_POS_RR_Y))
+            return (
+                Scalar[dtype](WHEEL_POS_RR_X),
+                Scalar[dtype](WHEEL_POS_RR_Y),
+            )
 
     @staticmethod
     @always_inline
@@ -353,22 +365,33 @@ struct WheelFriction:
         # Read hull state (use rebind to extract Scalar from LayoutTensor)
         var hull_x = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_X])
         var hull_y = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_Y])
-        var hull_angle = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_ANGLE])
+        var hull_angle = rebind[Scalar[dtype]](
+            state[env, HULL_OFFSET + HULL_ANGLE]
+        )
         var hull_vx = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_VX])
         var hull_vy = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_VY])
-        var hull_omega = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_OMEGA])
+        var hull_omega = rebind[Scalar[dtype]](
+            state[env, HULL_OFFSET + HULL_OMEGA]
+        )
 
         # Read controls
-        var steering = rebind[Scalar[dtype]](state[env, CONTROLS_OFFSET + CTRL_STEERING])
+        var steering = rebind[Scalar[dtype]](
+            state[env, CONTROLS_OFFSET + CTRL_STEERING]
+        )
         var gas = rebind[Scalar[dtype]](state[env, CONTROLS_OFFSET + CTRL_GAS])
-        var brake = rebind[Scalar[dtype]](state[env, CONTROLS_OFFSET + CTRL_BRAKE])
+        var brake = rebind[Scalar[dtype]](
+            state[env, CONTROLS_OFFSET + CTRL_BRAKE]
+        )
 
         # Process each wheel
-        @parameter
-        for wheel in range(NUM_WHEELS):
+        comptime for wheel in range(NUM_WHEELS):
             var wheel_off = WHEELS_OFFSET + wheel * WHEEL_STATE_SIZE
-            var wheel_omega = rebind[Scalar[dtype]](state[env, wheel_off + WHEEL_OMEGA])
-            var joint_angle = rebind[Scalar[dtype]](state[env, wheel_off + WHEEL_JOINT_ANGLE])
+            var wheel_omega = rebind[Scalar[dtype]](
+                state[env, wheel_off + WHEEL_OMEGA]
+            )
+            var joint_angle = rebind[Scalar[dtype]](
+                state[env, wheel_off + WHEEL_JOINT_ANGLE]
+            )
 
             # Get wheel local position
             var local_pos = WheelFriction.get_wheel_local_pos(wheel)
@@ -408,7 +431,9 @@ struct WheelFriction:
             state[env, wheel_off + WHEEL_OMEGA] = result[3]
 
             # Update wheel phase (cumulative rotation for rendering)
-            var phase = rebind[Scalar[dtype]](state[env, wheel_off + WHEEL_PHASE])
+            var phase = rebind[Scalar[dtype]](
+                state[env, wheel_off + WHEEL_PHASE]
+            )
             phase = phase + result[3] * dt
             state[env, wheel_off + WHEEL_PHASE] = phase
 

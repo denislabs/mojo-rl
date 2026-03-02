@@ -206,7 +206,9 @@ fn _solve_friction_pgs_gpu[
             state[env, c_off + CONTACT_IDX_FRICTION]
         )
         if mu_slide <= Scalar[DTYPE](0):
-            mu_slide = Scalar[DTYPE](0.5)  # fallback (contacts always have friction from geom specs)
+            mu_slide = Scalar[DTYPE](
+                0.5
+            )  # fallback (contacts always have friction from geom specs)
         var mu_spin = rebind[Scalar[DTYPE]](
             state[env, c_off + CONTACT_IDX_FRICTION_SPIN]
         )
@@ -228,9 +230,15 @@ fn _solve_friction_pgs_gpu[
         var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c])
 
         # Compute tangent basis (MuJoCo mju_makeFrame with capsule axis hint)
-        var hint_x = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_X])
-        var hint_y = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Y])
-        var hint_z = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Z])
+        var hint_x = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRAME_T1_X]
+        )
+        var hint_y = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRAME_T1_Y]
+        )
+        var hint_z = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRAME_T1_Z]
+        )
         var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
 
         # If no hint (non-capsule), use MuJoCo default
@@ -434,8 +442,7 @@ fn _solve_friction_pgs_gpu[
             )
 
         # Pyramidal precomputation: cross-term C_nt, K_edge_pos/neg, R_edge
-        @parameter
-        if CONE_TYPE == ConeType.PYRAMIDAL:
+        comptime if CONE_TYPE == ConeType.PYRAMIDAL:
             var R_n_val = (
                 (Scalar[DTYPE](1.0) - imp_n)
                 / imp_n
@@ -510,7 +517,9 @@ fn _solve_friction_pgs_gpu[
                     workspace[env, ws_J_n + c * NV + i]
                     * workspace[env, qacc_idx + i]
                 )
-            var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+            var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
+                workspace[env, ws_inv_K_imp + c]
+            ) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
             var residual = (
                 a_n
                 + workspace[env, ws_pos_bias + c]
@@ -540,9 +549,7 @@ fn _solve_friction_pgs_gpu[
                 if condim_z >= 6:
                     num_fric_z = 5
                 for d in range(num_fric_z):
-
-                    @parameter
-                    if CONE_TYPE == ConeType.PYRAMIDAL:
+                    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                         # Pyramidal: undo edge forces (MinvJ_n ± mu*MinvJ_f)
                         var mu_d = rebind[Scalar[DTYPE]](
                             workspace[env, fc + d * MC + c]
@@ -604,8 +611,7 @@ fn _solve_friction_pgs_gpu[
                 workspace[env, ws_lambda_n + c]
             )
 
-            @parameter
-            if CONE_TYPE == ConeType.PYRAMIDAL:
+            comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                 # === PYRAMIDAL CONE: Edge constraints with λ ≥ 0 ===
                 # Save old values for delta computation
                 var old_pos = InlineArray[Scalar[DTYPE], 5](
@@ -670,7 +676,8 @@ fn _solve_friction_pgs_gpu[
                     )
                     var residual_pos = (
                         a_edge_pos
-                        + bias_n + mu_d * bf_d
+                        + bias_n
+                        + mu_d * bf_d
                         + R_e
                         * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
                     )
@@ -727,7 +734,8 @@ fn _solve_friction_pgs_gpu[
                     )
                     var residual_neg = (
                         a_edge_neg
-                        + bias_n - mu_d * bf_d
+                        + bias_n
+                        - mu_d * bf_d
                         + R_e
                         * rebind[Scalar[DTYPE]](
                             workspace[env, le_neg + d * MC + c]
@@ -770,14 +778,22 @@ fn _solve_friction_pgs_gpu[
                 # AR[0,d+1] = AR[d+1,0] = J_n @ MinvJ_f (normal-friction cross)
                 # AR[d1+1,d2+1] = J_f[d1] @ MinvJ_f[d2] + R_f*delta(d1,d2)
                 var AR = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
-                var R_n_val = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
-                AR[0] = rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) + R_n_val
+                var R_n_val = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
+                    workspace[env, ws_inv_K_imp + c]
+                ) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+                AR[0] = (
+                    rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) + R_n_val
+                )
 
                 for d1 in range(num_fric):
                     # Normal-friction cross: J_n @ MinvJ_f[d1]
                     var cross: Scalar[DTYPE] = 0
                     for i in range(NV):
-                        cross += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, mj + d1 * MC * NV + c * NV + i])
+                        cross += rebind[Scalar[DTYPE]](
+                            workspace[env, ws_J_n + c * NV + i]
+                        ) * rebind[Scalar[DTYPE]](
+                            workspace[env, mj + d1 * MC * NV + c * NV + i]
+                        )
                     AR[(d1 + 1)] = cross  # AR[0, d1+1]
                     AR[(d1 + 1) * dim] = cross  # AR[d1+1, 0]
 
@@ -785,49 +801,88 @@ fn _solve_friction_pgs_gpu[
                         # Friction-friction: J_f[d1] @ MinvJ_f[d2]
                         var ff: Scalar[DTYPE] = 0
                         for i in range(NV):
-                            ff += rebind[Scalar[DTYPE]](workspace[env, jf + d1 * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, mj + d2 * MC * NV + c * NV + i])
+                            ff += rebind[Scalar[DTYPE]](
+                                workspace[env, jf + d1 * MC * NV + c * NV + i]
+                            ) * rebind[Scalar[DTYPE]](
+                                workspace[env, mj + d2 * MC * NV + c * NV + i]
+                            )
                         if d1 == d2:
-                            ff += rebind[Scalar[DTYPE]](workspace[env, rf + d1 * MC + c])
+                            ff += rebind[Scalar[DTYPE]](
+                                workspace[env, rf + d1 * MC + c]
+                            )
                         AR[(d1 + 1) * dim + (d2 + 1)] = ff
 
                 # Compute block residual
-                var block_res = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                var block_res = InlineArray[Scalar[DTYPE], 6](
+                    fill=Scalar[DTYPE](0)
+                )
                 # Normal residual
                 var a_n_res: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    a_n_res += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
-                block_res[0] = a_n_res + rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias + c]) + R_n_val * rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                    a_n_res += rebind[Scalar[DTYPE]](
+                        workspace[env, ws_J_n + c * NV + i]
+                    ) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+                block_res[0] = (
+                    a_n_res
+                    + rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias + c])
+                    + R_n_val
+                    * rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                )
                 # Friction residuals
                 for d in range(num_fric):
                     var a_f_res: Scalar[DTYPE] = 0
                     for i in range(NV):
-                        a_f_res += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
-                    var R_f_d = rebind[Scalar[DTYPE]](workspace[env, rf + d * MC + c])
-                    block_res[1 + d] = a_f_res + rebind[Scalar[DTYPE]](workspace[env, bf + d * MC + c]) + R_f_d * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                        a_f_res += rebind[Scalar[DTYPE]](
+                            workspace[env, jf + d * MC * NV + c * NV + i]
+                        ) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+                    var R_f_d = rebind[Scalar[DTYPE]](
+                        workspace[env, rf + d * MC + c]
+                    )
+                    block_res[1 + d] = (
+                        a_f_res
+                        + rebind[Scalar[DTYPE]](workspace[env, bf + d * MC + c])
+                        + R_f_d
+                        * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    )
 
                 # Save old forces
-                var oldforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                oldforce[0] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                var oldforce = InlineArray[Scalar[DTYPE], 6](
+                    fill=Scalar[DTYPE](0)
+                )
+                oldforce[0] = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_lambda_n + c]
+                )
                 for d in range(num_fric):
-                    oldforce[1 + d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    oldforce[1 + d] = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + d * MC + c]
+                    )
 
                 var ARinv0: Scalar[DTYPE] = 0
                 if AR[0] > Scalar[DTYPE](1e-10):
                     ARinv0 = Scalar[DTYPE](1.0) / AR[0]
 
                 # --- Ray update ---
-                if rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) < Scalar[DTYPE](1e-10):
+                if rebind[Scalar[DTYPE]](
+                    workspace[env, ws_lambda_n + c]
+                ) < Scalar[DTYPE](1e-10):
                     # Normal force too small: scalar update, zero friction
-                    workspace[env, ws_lambda_n + c] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) - block_res[0] * ARinv0
+                    workspace[env, ws_lambda_n + c] = (
+                        rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                        - block_res[0] * ARinv0
+                    )
                     if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
                         workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
                     for d in range(num_fric):
                         workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
                 else:
                     var v = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                    v[0] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                    v[0] = rebind[Scalar[DTYPE]](
+                        workspace[env, ws_lambda_n + c]
+                    )
                     for d in range(num_fric):
-                        v[1 + d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                        v[1 + d] = rebind[Scalar[DTYPE]](
+                            workspace[env, lf + d * MC + c]
+                        )
                     var denom: Scalar[DTYPE] = 0
                     for bi in range(dim):
                         for bj in range(dim):
@@ -837,35 +892,72 @@ fn _solve_friction_pgs_gpu[
                         for bi in range(dim):
                             vdotr += v[bi] * block_res[bi]
                         var x = -vdotr / denom
-                        if rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) + x * v[0] < Scalar[DTYPE](0):
-                            x = -rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) / v[0]
-                        workspace[env, ws_lambda_n + c] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) + x * v[0]
+                        if rebind[Scalar[DTYPE]](
+                            workspace[env, ws_lambda_n + c]
+                        ) + x * v[0] < Scalar[DTYPE](0):
+                            x = (
+                                -rebind[Scalar[DTYPE]](
+                                    workspace[env, ws_lambda_n + c]
+                                )
+                                / v[0]
+                            )
+                        workspace[env, ws_lambda_n + c] = (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_lambda_n + c]
+                            )
+                            + x * v[0]
+                        )
                         for d in range(num_fric):
-                            workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) + x * v[1 + d]
+                            workspace[env, lf + d * MC + c] = (
+                                rebind[Scalar[DTYPE]](
+                                    workspace[env, lf + d * MC + c]
+                                )
+                                + x * v[1 + d]
+                            )
 
                 # --- QCQP friction update ---
-                var fn_val = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                var fn_val = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_lambda_n + c]
+                )
                 if fn_val >= Scalar[DTYPE](1e-10) and num_fric > 0:
                     # Build friction sub-block Ac and adjusted bias bc
-                    var Ac = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
-                    var bc_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                    var Ac = InlineArray[Scalar[DTYPE], 25](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var bc_arr = InlineArray[Scalar[DTYPE], 5](
+                        fill=Scalar[DTYPE](0)
+                    )
                     for j in range(num_fric):
                         for j2 in range(num_fric):
                             Ac[j * num_fric + j2] = AR[(1 + j) * dim + (1 + j2)]
                         bc_arr[j] = block_res[1 + j]
                         for j2 in range(num_fric):
-                            bc_arr[j] -= Ac[j * num_fric + j2] * oldforce[1 + j2]
-                        bc_arr[j] += AR[(1 + j) * dim + 0] * (fn_val - oldforce[0])
+                            bc_arr[j] -= (
+                                Ac[j * num_fric + j2] * oldforce[1 + j2]
+                            )
+                        bc_arr[j] += AR[(1 + j) * dim + 0] * (
+                            fn_val - oldforce[0]
+                        )
 
-                    var mu_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                    var mu_arr = InlineArray[Scalar[DTYPE], 5](
+                        fill=Scalar[DTYPE](0)
+                    )
                     for d in range(num_fric):
-                        mu_arr[d] = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
+                        mu_arr[d] = rebind[Scalar[DTYPE]](
+                            workspace[env, fc + d * MC + c]
+                        )
 
                     var flg_active = False
                     if num_fric == 2:
-                        var A2 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-                        var b2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-                        var d2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+                        var A2 = InlineArray[Scalar[DTYPE], 4](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var b2 = InlineArray[Scalar[DTYPE], 2](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var d2 = InlineArray[Scalar[DTYPE], 2](
+                            fill=Scalar[DTYPE](0)
+                        )
                         for ii in range(2):
                             b2[ii] = bc_arr[ii]
                             d2[ii] = mu_arr[ii]
@@ -877,9 +969,15 @@ fn _solve_friction_pgs_gpu[
                         workspace[env, lf + 0 * MC + c] = r0
                         workspace[env, lf + 1 * MC + c] = r1
                     elif num_fric == 3:
-                        var A3 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-                        var b3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-                        var d3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+                        var A3 = InlineArray[Scalar[DTYPE], 9](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var b3 = InlineArray[Scalar[DTYPE], 3](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var d3 = InlineArray[Scalar[DTYPE], 3](
+                            fill=Scalar[DTYPE](0)
+                        )
                         for ii in range(3):
                             b3[ii] = bc_arr[ii]
                             d3[ii] = mu_arr[ii]
@@ -888,20 +986,30 @@ fn _solve_friction_pgs_gpu[
                         var r0: Scalar[DTYPE] = 0
                         var r1: Scalar[DTYPE] = 0
                         var r2: Scalar[DTYPE] = 0
-                        flg_active = mj_qcqp3[DTYPE](r0, r1, r2, A3, b3, d3, fn_val)
+                        flg_active = mj_qcqp3[DTYPE](
+                            r0, r1, r2, A3, b3, d3, fn_val
+                        )
                         workspace[env, lf + 0 * MC + c] = r0
                         workspace[env, lf + 1 * MC + c] = r1
                         workspace[env, lf + 2 * MC + c] = r2
                     elif num_fric == 5:
-                        var A5 = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
-                        var b5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                        var d5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                        var A5 = InlineArray[Scalar[DTYPE], 25](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var b5 = InlineArray[Scalar[DTYPE], 5](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        var d5 = InlineArray[Scalar[DTYPE], 5](
+                            fill=Scalar[DTYPE](0)
+                        )
                         for ii in range(5):
                             b5[ii] = bc_arr[ii]
                             d5[ii] = mu_arr[ii]
                             for jj in range(5):
                                 A5[ii * 5 + jj] = Ac[ii * num_fric + jj]
-                        var res5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                        var res5 = InlineArray[Scalar[DTYPE], 5](
+                            fill=Scalar[DTYPE](0)
+                        )
                         flg_active = mj_qcqp5[DTYPE](res5, A5, b5, d5, fn_val)
                         for d in range(5):
                             workspace[env, lf + d * MC + c] = res5[d]
@@ -910,14 +1018,21 @@ fn _solve_friction_pgs_gpu[
                     if flg_active:
                         var s: Scalar[DTYPE] = 0
                         for d in range(num_fric):
-                            var fv = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                            var fv = rebind[Scalar[DTYPE]](
+                                workspace[env, lf + d * MC + c]
+                            )
                             var mu_d = mu_arr[d]
                             if mu_d > Scalar[DTYPE](1e-10):
                                 s += fv * fv / (mu_d * mu_d)
                         if s > Scalar[DTYPE](1e-10):
                             var scale = sqrt(fn_val * fn_val / s)
                             for d in range(num_fric):
-                                workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) * scale
+                                workspace[env, lf + d * MC + c] = (
+                                    rebind[Scalar[DTYPE]](
+                                        workspace[env, lf + d * MC + c]
+                                    )
+                                    * scale
+                                )
 
                 # --- Cost descent check ---
                 var cost_val: Scalar[DTYPE] = 0
@@ -925,10 +1040,14 @@ fn _solve_friction_pgs_gpu[
                     var new_i: Scalar[DTYPE]
                     var old_i: Scalar[DTYPE]
                     if bi == 0:
-                        new_i = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                        new_i = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_lambda_n + c]
+                        )
                         old_i = oldforce[0]
                     else:
-                        new_i = rebind[Scalar[DTYPE]](workspace[env, lf + (bi - 1) * MC + c])
+                        new_i = rebind[Scalar[DTYPE]](
+                            workspace[env, lf + (bi - 1) * MC + c]
+                        )
                         old_i = oldforce[bi]
                     var delta_i = new_i - old_i
                     cost_val += delta_i * block_res[bi]
@@ -936,13 +1055,22 @@ fn _solve_friction_pgs_gpu[
                         var new_j: Scalar[DTYPE]
                         var old_j: Scalar[DTYPE]
                         if bj == 0:
-                            new_j = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                            new_j = rebind[Scalar[DTYPE]](
+                                workspace[env, ws_lambda_n + c]
+                            )
                             old_j = oldforce[0]
                         else:
-                            new_j = rebind[Scalar[DTYPE]](workspace[env, lf + (bj - 1) * MC + c])
+                            new_j = rebind[Scalar[DTYPE]](
+                                workspace[env, lf + (bj - 1) * MC + c]
+                            )
                             old_j = oldforce[bj]
                         var delta_j = new_j - old_j
-                        cost_val += Scalar[DTYPE](0.5) * delta_i * AR[bi * dim + bj] * delta_j
+                        cost_val += (
+                            Scalar[DTYPE](0.5)
+                            * delta_i
+                            * AR[bi * dim + bj]
+                            * delta_j
+                        )
 
                 if cost_val > Scalar[DTYPE](1e-10):
                     # Revert
@@ -951,19 +1079,29 @@ fn _solve_friction_pgs_gpu[
                         workspace[env, lf + d * MC + c] = oldforce[1 + d]
 
                 # Apply delta to qacc
-                var actual_n = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) - oldforce[0]
+                var actual_n = (
+                    rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                    - oldforce[0]
+                )
                 if actual_n != Scalar[DTYPE](0):
                     for i in range(NV):
-                        workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
+                        workspace[env, qacc_idx + i] += (
+                            workspace[env, ws_MinvJn + c * NV + i] * actual_n
+                        )
                 for d in range(num_fric):
-                    var actual_f = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) - oldforce[1 + d]
+                    var actual_f = (
+                        rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                        - oldforce[1 + d]
+                    )
                     if actual_f != Scalar[DTYPE](0):
                         for i in range(NV):
-                            workspace[env, qacc_idx + i] += workspace[env, mj + d * MC * NV + c * NV + i] * actual_f
+                            workspace[env, qacc_idx + i] += (
+                                workspace[env, mj + d * MC * NV + c * NV + i]
+                                * actual_f
+                            )
 
     # Store impulses back for warm-starting
-    @parameter
-    if CONE_TYPE == ConeType.PYRAMIDAL:
+    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
         # Pyramidal: force_n includes edge contributions, tangent = mu*(pos-neg)
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE

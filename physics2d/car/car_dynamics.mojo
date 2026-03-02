@@ -408,8 +408,7 @@ struct CarDynamics:
         state[env, OBS_OFFSET + 7] = state[env, fr_off + WHEEL_JOINT_ANGLE]
 
         # Wheel angular velocities (4 values)
-        @parameter
-        for wheel in range(NUM_WHEELS):
+        comptime for wheel in range(NUM_WHEELS):
             var wheel_off = WHEELS_OFFSET + wheel * WHEEL_STATE_SIZE
             state[env, OBS_OFFSET + 8 + wheel] = state[
                 env, wheel_off + WHEEL_OMEGA

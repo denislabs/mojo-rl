@@ -117,8 +117,7 @@ fn main() raises:
     print("  - Semi-implicit Euler integration")
     print("  - 8 bodies, 10 joints (6 actuated)")
 
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         print("  Controls: Close window to exit")
     print()
     print("-" * 70)

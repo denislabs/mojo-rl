@@ -121,7 +121,7 @@ struct PenAxis(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __init__(out self, value: Int):
-        self.value = value
+        self.value = UInt32(value)
 
     @always_inline
     fn __int__(self) -> Int:

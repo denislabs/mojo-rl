@@ -61,8 +61,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     ):
         """Forward pass with caching."""
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             # Training mode: apply dropout mask
             var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
             var zero = Scalar[dtype](0.0)
@@ -101,8 +100,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     ):
         """Forward pass with caching."""
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             # Training mode: apply dropout mask
             var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
             var zero = Scalar[dtype](0.0)
@@ -146,8 +144,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     ):
         """Backward pass: dx = dy * mask."""
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             # Apply same mask as forward
             for batch in range(BATCH):
                 for i in range(Self.dim):
@@ -192,8 +189,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         Block: (TPB,)
         """
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH * Self.dim:
                 return
@@ -271,8 +267,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         Block: (TPB,)
         """
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH * Self.dim:
                 return
@@ -316,8 +311,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             var cache = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ](cache_buf.unsafe_ptr())
@@ -448,8 +442,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
-        @parameter
-        if Self.training:
+        comptime if Self.training:
             var cache = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ](cache_buf.unsafe_ptr())

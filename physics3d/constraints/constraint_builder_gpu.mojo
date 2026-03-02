@@ -338,11 +338,18 @@ fn precompute_contact_normal_gpu[
                 elif si_power == Scalar[DTYPE](1):
                     y = x
                 elif x <= si_midpoint:
-                    var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                    var a = Scalar[DTYPE](1) / pow(
+                        si_midpoint, si_power - Scalar[DTYPE](1)
+                    )
                     y = a * pow(x, si_power)
                 else:
-                    var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
-                    y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                    var b = Scalar[DTYPE](1) / pow(
+                        Scalar[DTYPE](1) - si_midpoint,
+                        si_power - Scalar[DTYPE](1),
+                    )
+                    y = Scalar[DTYPE](1) - b * pow(
+                        Scalar[DTYPE](1) - x, si_power
+                    )
                 imp = si_dmin + y * (si_dmax - si_dmin)
             # Impedance floor prevents zero-force contacts at surface
             if imp < Scalar[DTYPE](1e-6):
@@ -364,10 +371,11 @@ fn precompute_contact_normal_gpu[
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = rebind[Scalar[DTYPE]](k)  # Fallback to exact K
             var R_n = (Scalar[DTYPE](1.0) - imp) / imp * diag_n
-            workspace[env, ws_inv_K_imp + c] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_n)
+            workspace[env, ws_inv_K_imp + c] = Scalar[DTYPE](1.0) / (
+                rebind[Scalar[DTYPE]](k) + R_n
+            )
 
-            @parameter
-            if COMPUTE_RHS:
+            comptime if COMPUTE_RHS:
                 workspace[env, RHS_IDX + c] = a_n + bias
 
             # Warm-start lambda
@@ -609,9 +617,7 @@ fn detect_and_solve_limits_gpu[
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level coefficients for limits
     # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
-    var l_K_spring = Scalar[DTYPE](1.0) / (
-        lr_tc * lr_tc * li_dmax * li_dmax
-    )
+    var l_K_spring = Scalar[DTYPE](1.0) / (lr_tc * lr_tc * li_dmax * li_dmax)
     var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
 
     # Precompute impedance and MinvJ for limits
@@ -638,11 +644,17 @@ fn detect_and_solve_limits_gpu[
             elif li_power == Scalar[DTYPE](1):
                 y_lim = x_lim
             elif x_lim <= li_midpoint:
-                var a = Scalar[DTYPE](1) / pow(li_midpoint, li_power - Scalar[DTYPE](1))
+                var a = Scalar[DTYPE](1) / pow(
+                    li_midpoint, li_power - Scalar[DTYPE](1)
+                )
                 y_lim = a * pow(x_lim, li_power)
             else:
-                var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - li_midpoint, li_power - Scalar[DTYPE](1))
-                y_lim = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x_lim, li_power)
+                var b = Scalar[DTYPE](1) / pow(
+                    Scalar[DTYPE](1) - li_midpoint, li_power - Scalar[DTYPE](1)
+                )
+                y_lim = Scalar[DTYPE](1) - b * pow(
+                    Scalar[DTYPE](1) - x_lim, li_power
+                )
             imp_lim = li_dmin + y_lim * (li_dmax - li_dmin)
         # MuJoCo uses mjMINIMP ~1e-6
         if imp_lim < Scalar[DTYPE](1e-6):
@@ -737,8 +749,7 @@ fn build_and_solve_equality_gpu[
     equality constraints (no lambda >= 0 clamping).
     """
 
-    @parameter
-    if MAX_EQUALITY == 0:
+    comptime if MAX_EQUALITY == 0:
         return
 
     comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
@@ -982,11 +993,18 @@ fn build_and_solve_equality_gpu[
                 elif si_power == Scalar[DTYPE](1):
                     y = x
                 elif x <= si_midpoint:
-                    var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                    var a = Scalar[DTYPE](1) / pow(
+                        si_midpoint, si_power - Scalar[DTYPE](1)
+                    )
                     y = a * pow(x, si_power)
                 else:
-                    var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
-                    y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                    var b = Scalar[DTYPE](1) / pow(
+                        Scalar[DTYPE](1) - si_midpoint,
+                        si_power - Scalar[DTYPE](1),
+                    )
+                    y = Scalar[DTYPE](1) - b * pow(
+                        Scalar[DTYPE](1) - x, si_power
+                    )
                 imp = si_dmin + y * (si_dmax - si_dmin)
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
@@ -1012,7 +1030,9 @@ fn build_and_solve_equality_gpu[
             if diag_eq < Scalar[DTYPE](1e-10):
                 diag_eq = rebind[Scalar[DTYPE]](k)
             var R_eq = (Scalar[DTYPE](1.0) - imp) / imp * diag_eq
-            eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_eq)
+            eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (
+                rebind[Scalar[DTYPE]](k) + R_eq
+            )
 
             num_eq_rows += 1
 
@@ -1150,11 +1170,18 @@ fn build_and_solve_equality_gpu[
                     elif si_power == Scalar[DTYPE](1):
                         y = x
                     elif x <= si_midpoint:
-                        var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                        var a = Scalar[DTYPE](1) / pow(
+                            si_midpoint, si_power - Scalar[DTYPE](1)
+                        )
                         y = a * pow(x, si_power)
                     else:
-                        var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
-                        y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
+                        var b = Scalar[DTYPE](1) / pow(
+                            Scalar[DTYPE](1) - si_midpoint,
+                            si_power - Scalar[DTYPE](1),
+                        )
+                        y = Scalar[DTYPE](1) - b * pow(
+                            Scalar[DTYPE](1) - x, si_power
+                        )
                     imp = si_dmin + y * (si_dmax - si_dmin)
                 if imp < Scalar[DTYPE](1e-6):
                     imp = Scalar[DTYPE](1e-6)
@@ -1179,7 +1206,9 @@ fn build_and_solve_equality_gpu[
                 if diag_rot < Scalar[DTYPE](1e-10):
                     diag_rot = rebind[Scalar[DTYPE]](k)
                 var R_rot = (Scalar[DTYPE](1.0) - imp) / imp * diag_rot
-                eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_rot)
+                eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (
+                    rebind[Scalar[DTYPE]](k) + R_rot
+                )
 
                 num_eq_rows += 1
 
@@ -1260,8 +1289,7 @@ fn build_and_solve_tendon_gpu[
     Equality constraint: ten_length - length_ref = 0.
     """
 
-    @parameter
-    if MAX_TENDON == 0:
+    comptime if MAX_TENDON == 0:
         return
 
     comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
@@ -1272,9 +1300,7 @@ fn build_and_solve_tendon_gpu[
 
     # Read number of tendons from model metadata
     var nten = Int(
-        rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_NTENDON]
-        )
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NTENDON])
     )
     if nten == 0:
         return
@@ -1308,9 +1334,7 @@ fn build_and_solve_tendon_gpu[
         if num_ten_rows >= MAX_TEN_ROWS:
             break
 
-        var t_off = model_tendon_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY](
-            t_i
-        )
+        var t_off = model_tendon_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY](t_i)
         var num_joints = Int(
             rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_NUM_JOINTS])
         )
@@ -1361,9 +1385,7 @@ fn build_and_solve_tendon_gpu[
             ten_length += c * rebind[Scalar[DTYPE]](
                 state[env, qpos_off + qpos_adr]
             )
-            ten_vel += c * rebind[Scalar[DTYPE]](
-                state[env, qvel_off + dof_adr]
-            )
+            ten_vel += c * rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
             # Trivial Jacobian: J[dof_adr] = coef
             ten_J[r * NV + dof_adr] = c
 
@@ -1430,10 +1452,14 @@ fn build_and_solve_tendon_gpu[
             elif si_power == Scalar[DTYPE](1):
                 y = x
             elif x <= si_midpoint:
-                var a = Scalar[DTYPE](1) / pow(si_midpoint, si_power - Scalar[DTYPE](1))
+                var a = Scalar[DTYPE](1) / pow(
+                    si_midpoint, si_power - Scalar[DTYPE](1)
+                )
                 y = a * pow(x, si_power)
             else:
-                var b = Scalar[DTYPE](1) / pow(Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1))
+                var b = Scalar[DTYPE](1) / pow(
+                    Scalar[DTYPE](1) - si_midpoint, si_power - Scalar[DTYPE](1)
+                )
                 y = Scalar[DTYPE](1) - b * pow(Scalar[DTYPE](1) - x, si_power)
             imp = si_dmin + y * (si_dmax - si_dmin)
         if imp < Scalar[DTYPE](1e-6):

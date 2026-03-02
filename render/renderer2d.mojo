@@ -56,8 +56,8 @@ struct Renderer2D(Movable):
     """
 
     # SDL3 handles
-    var window: Ptr[Window, AnyOrigin[True]]
-    var sdl_renderer: Ptr[SDLRenderer, AnyOrigin[True]]
+    var window: Ptr[Window, MutAnyOrigin]
+    var sdl_renderer: Ptr[SDLRenderer, MutAnyOrigin]
 
     # Display settings
     var screen_width: Int
@@ -96,8 +96,8 @@ struct Renderer2D(Movable):
             fps: Target frames per second.
             title: Window title.
         """
-        self.window = Ptr[Window, AnyOrigin[True]]()
-        self.sdl_renderer = Ptr[SDLRenderer, AnyOrigin[True]]()
+        self.window = Ptr[Window, MutAnyOrigin]()
+        self.sdl_renderer = Ptr[SDLRenderer, MutAnyOrigin]()
 
         self.screen_width = width
         self.screen_height = height
@@ -116,22 +116,22 @@ struct Renderer2D(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.window = existing.window
-        self.sdl_renderer = existing.sdl_renderer
-        self.screen_width = existing.screen_width
-        self.screen_height = existing.screen_height
-        self.fps = existing.fps
-        self.title = existing.title^
-        self.frame_delay = existing.frame_delay
-        self.white = existing.white
-        self.black = existing.black
-        self.background_color = existing.background_color
-        self.initialized = existing.initialized
-        self.should_quit = existing.should_quit
-        self.last_frame_time = existing.last_frame_time
-        self.recorder = existing.recorder^
-        self.recording_counter = existing.recording_counter
+    fn __init__(out self, deinit take: Self):
+        self.window = take.window
+        self.sdl_renderer = take.sdl_renderer
+        self.screen_width = take.screen_width
+        self.screen_height = take.screen_height
+        self.fps = take.fps
+        self.title = take.title^
+        self.frame_delay = take.frame_delay
+        self.white = take.white
+        self.black = take.black
+        self.background_color = take.background_color
+        self.initialized = take.initialized
+        self.should_quit = take.should_quit
+        self.last_frame_time = take.last_frame_time
+        self.recorder = take.recorder^
+        self.recording_counter = take.recording_counter
 
     fn make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
         """Create an SDL color.
@@ -289,7 +289,7 @@ struct Renderer2D(Movable):
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
             render_fill_rect(
                 self.sdl_renderer,
-                rebind[Ptr[FRect, AnyOrigin[False]]](Ptr(to=rect)),
+                rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=rect)),
             )
         except:
             pass
@@ -300,7 +300,7 @@ struct Renderer2D(Movable):
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
             sdl_render_rect(
                 self.sdl_renderer,
-                rebind[Ptr[FRect, AnyOrigin[False]]](Ptr(to=rect)),
+                rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=rect)),
             )
         except:
             pass
@@ -440,7 +440,7 @@ struct Renderer2D(Movable):
             # Draw multiple parallel lines for thicker lines
             var dx = x2 - x1
             var dy = y2 - y1
-            var length = Float64((dx * dx + dy * dy) ** 0.5)
+            var length = Float64(Float64(dx * dx + dy * dy) ** 0.5)
             if length == 0:
                 return
 
@@ -646,7 +646,7 @@ struct Renderer2D(Movable):
                 try:
                     # NULL rect = read entire viewport into a new Surface
                     var surf = render_read_pixels(
-                        self.sdl_renderer, Ptr[Rect, AnyOrigin[False]]()
+                        self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin]()
                     )
                     var pixels = surf[].pixels
                     self.recorder.add_frame_bgra(
@@ -1480,7 +1480,8 @@ struct Renderer2D(Movable):
         )
 
     fn renderer_delay(self, ms: Int) -> None:
-        """Delay for the given number of milliseconds (for frame rate control)."""
+        """Delay for the given number of milliseconds (for frame rate control).
+        """
         if ms <= 0:
             return
         try:

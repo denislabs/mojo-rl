@@ -275,8 +275,8 @@ struct DQNPERAgent[
             uninitialized=True
         )
 
-        @parameter
-        if Self.double_dqn:
+        
+        comptime if Self.double_dqn:
             # Double DQN: online network selects best action, target evaluates it
             var online_next_q = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS

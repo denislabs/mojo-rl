@@ -44,10 +44,10 @@ fn get_version() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetVersion.
     """
 
-    return _get_dylib_function[lib, "SDL_GetVersion", fn () -> c_int]()()
+    return _get_dylib_function[lib, "SDL_GetVersion", fn() -> c_int]()()
 
 
-fn get_revision() raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_revision() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the code revision of SDL that is linked against your program.
 
     This value is the revision of the code you are linked with and may be
@@ -71,4 +71,6 @@ fn get_revision() raises -> Ptr[c_char, AnyOrigin[False]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRevision.
     """
 
-    return _get_dylib_function[lib, "SDL_GetRevision", fn () -> Ptr[c_char, AnyOrigin[False]]]()()
+    return _get_dylib_function[
+        lib, "SDL_GetRevision", fn() -> Ptr[c_char, ImmutAnyOrigin]
+    ]()()

@@ -51,7 +51,7 @@ trait SiteSpec:
         NAME: Optional human-readable name.
     """
 
-    comptime BODY_IDX: Int   # Body index (>=1, 0=worldbody)
+    comptime BODY_IDX: Int  # Body index (>=1, 0=worldbody)
     comptime POS_X: Float64  # Local position in body frame
     comptime POS_Y: Float64
     comptime POS_Z: Float64
@@ -126,7 +126,8 @@ trait SitesLike:
             NSITE,
         ]
     ):
-        """Populate model.site_body and model.site_pos from compile-time specs."""
+        """Populate model.site_body and model.site_pos from compile-time specs.
+        """
         ...
 
     @staticmethod
@@ -257,8 +258,7 @@ struct Sites[*S: SiteSpec](SitesLike):
     ):
         """Populate model site arrays from compile-time SiteSpec list."""
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime SS = Self.site_types[i]
             model.site_body[i] = SS.BODY_IDX
             model.site_pos[i * 3 + 0] = Scalar[DTYPE](SS.POS_X)
@@ -280,8 +280,7 @@ struct Sites[*S: SiteSpec](SitesLike):
         Layout per site: [body_idx, pos_x, pos_y, pos_z]
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime SS = Self.site_types[i]
             comptime base = model_site_offset[
                 NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON
@@ -303,15 +302,13 @@ struct Sites[*S: SiteSpec](SitesLike):
         Uses radius=0.01m and bright green color to distinguish from geoms.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime SS = Self.site_types[i]
             var body_pos = positions[SS.BODY_IDX]
             var body_quat = quaternions[SS.BODY_IDX]
             var site_world_pos: _RVec3
 
-            @parameter
-            if SS.POS_X == 0.0 and SS.POS_Y == 0.0 and SS.POS_Z == 0.0:
+            comptime if SS.POS_X == 0.0 and SS.POS_Y == 0.0 and SS.POS_Z == 0.0:
                 site_world_pos = body_pos
             else:
                 var local_pos = _RVec3(SS.POS_X, SS.POS_Y, SS.POS_Z)

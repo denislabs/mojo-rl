@@ -545,8 +545,7 @@ struct IslandPGSSolver(ConstraintSolver):
             ](env, state, model, workspace)
 
             # Tendon equality constraints
-            @parameter
-            if MAX_TENDON > 0:
+            comptime if MAX_TENDON > 0:
                 build_and_solve_tendon_gpu[
                     DTYPE,
                     NQ,
@@ -803,8 +802,7 @@ struct IslandPGSSolver(ConstraintSolver):
                             Scalar[DTYPE]
                         ](v_t)
 
-                    @parameter
-                    if CONE_TYPE == ConeType.PYRAMIDAL:
+                    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                         # Pyramidal precomputation: C_nt, K_edge_pos/neg, R_edge
                         var R_n_val = (
                             (Scalar[DTYPE](1.0) - imp_n_pgs)
@@ -931,9 +929,7 @@ struct IslandPGSSolver(ConstraintSolver):
                         if condim_z >= 6:
                             num_fric_z = 5
                         for d in range(num_fric_z):
-
-                            @parameter
-                            if CONE_TYPE == ConeType.PYRAMIDAL:
+                            comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                                 var mu_d = rebind[Scalar[DTYPE]](
                                     workspace[env, ws_fc + d * MC + c]
                                 )
@@ -1007,8 +1003,7 @@ struct IslandPGSSolver(ConstraintSolver):
                         workspace[env, ws_lambda_n + c]
                     )
 
-                    @parameter
-                    if CONE_TYPE == ConeType.PYRAMIDAL:
+                    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                         # === PYRAMIDAL CONE: Edge constraints with λ ≥ 0 ===
                         var bias_n = rebind[Scalar[DTYPE]](
                             workspace[env, ws_pos_bias + c]
@@ -1552,8 +1547,7 @@ struct IslandPGSSolver(ConstraintSolver):
                             num_converged += 1
 
             # Store impulses back to state buffer for warm-starting
-            @parameter
-            if CONE_TYPE == ConeType.PYRAMIDAL:
+            comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                 # Pyramidal: force_n includes edge contributions
                 for c in range(nc):
                     var c_off = contacts_off + c * CONTACT_SIZE

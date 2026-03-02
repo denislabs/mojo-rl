@@ -436,8 +436,7 @@ struct OldNewtonSolver(ConstraintSolver):
             constraints, jar, D_vals, force, cstate, constraint_cost
         )
 
-        @parameter
-        if NEWTON_CPU_DEBUG:
+        comptime if NEWTON_CPU_DEBUG:
             print(
                 "  [PRIMAL] num_rows=",
                 num_rows,
@@ -531,8 +530,7 @@ struct OldNewtonSolver(ConstraintSolver):
                 grad[i] = Ma[i] - qfrc_smooth[i] - qfrc_constraint[i]
                 grad_norm += grad[i] * grad[i]
 
-            @parameter
-            if NEWTON_CPU_DEBUG:
+            comptime if NEWTON_CPU_DEBUG:
                 print(
                     "    [PRIMAL_NEWTON] iter_start",
                     total_iter,
@@ -544,9 +542,7 @@ struct OldNewtonSolver(ConstraintSolver):
 
             # Check gradient convergence
             if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_CPU_TOLERANCE):
-
-                @parameter
-                if NEWTON_CPU_DEBUG:
+                comptime if NEWTON_CPU_DEBUG:
                     print(
                         "    [PRIMAL_NEWTON] CONVERGED at iter",
                         total_iter,
@@ -583,9 +579,7 @@ struct OldNewtonSolver(ConstraintSolver):
             )
 
             if alpha == Scalar[DTYPE](0):
-
-                @parameter
-                if NEWTON_CPU_DEBUG:
+                comptime if NEWTON_CPU_DEBUG:
                     print(
                         "    [PRIMAL_NEWTON] STOPPED at iter",
                         total_iter,
@@ -632,8 +626,7 @@ struct OldNewtonSolver(ConstraintSolver):
             ](Ma, qfrc_smooth, qacc, qacc_smooth)
             var improvement = scale * (old_cost - new_cost)
 
-            @parameter
-            if NEWTON_CPU_DEBUG:
+            comptime if NEWTON_CPU_DEBUG:
                 print(
                     "    [PRIMAL_NEWTON] iter",
                     total_iter,
@@ -686,8 +679,7 @@ struct OldNewtonSolver(ConstraintSolver):
                 ](constraints, D_vals, jar, cstate, H)
                 chol_factor[DTYPE, NV, M_SIZE](H, L)
 
-        @parameter
-        if NEWTON_CPU_DEBUG:
+        comptime if NEWTON_CPU_DEBUG:
             print("  [PRIMAL] Final states:")
             for r in range(num_rows):
                 var state_str = "SAT"
@@ -1794,8 +1786,7 @@ struct OldNewtonSolver(ConstraintSolver):
             SOLVER_ITER_GPU,
         ](env, state, model, workspace)
 
-        @parameter
-        if MAX_TENDON > 0:
+        comptime if MAX_TENDON > 0:
             build_and_solve_tendon_gpu[
                 DTYPE,
                 NQ,

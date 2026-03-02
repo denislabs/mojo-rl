@@ -103,9 +103,8 @@ fn test_parser_xml_compile() raises:
     print("NACT   =", model.NACT, " (expected 6)")
 
     # Because `model` is comptime, its fields are compile-time known integers.
-    # Demonstrate we can use them in a @parameter branch (compile-time if):
-    @parameter
-    if model.NBODY == 8:
+    # Demonstrate we can use them in a comptime if branch (compile-time if):
+    comptime if model.NBODY == 8:
         print("Compile-time check passed: NBODY == 8")
 
     # Note: open() cannot run at comptime (external FFI call).

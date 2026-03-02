@@ -11,18 +11,17 @@ comptime UNSET_INT: Int = -1
 fn _resolve_f64[val: Float64, default: Float64]() -> Float64:
     """Resolve a compile-time Float64: use val if set (>= 0), else default."""
 
-    @parameter
-    if val >= 0.0:
+    comptime if val >= 0.0:
         return val
     else:
         return default
+    return default
 
 
 fn _resolve_int[val: Int, default: Int]() -> Int:
     """Resolve a compile-time Int: use val if set (>= 0), else default."""
 
-    @parameter
-    if val >= 0:
+    comptime if val >= 0:
         return val
     else:
         return default
@@ -78,7 +77,7 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     # MuJoCo <compiler> block
     comptime SETTOTALMASS: Float64
     # MuJoCo <option> fluid parameters
-    comptime OPT_DENSITY: Float64    # Fluid density (kg/m³), 0 = disabled
+    comptime OPT_DENSITY: Float64  # Fluid density (kg/m³), 0 = disabled
     comptime OPT_VISCOSITY: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 
 

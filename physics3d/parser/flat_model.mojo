@@ -190,8 +190,8 @@ comptime _GEOM_CYLINDER: Int = 4
 struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime geom data."""
 
-    var body_id: Int        # 0 = worldbody/static, >=1 = body-attached
-    var geom_type: Int      # _GEOM_PLANE/SPHERE/CAPSULE/BOX/CYLINDER
+    var body_id: Int  # 0 = worldbody/static, >=1 = body-attached
+    var geom_type: Int  # _GEOM_PLANE/SPHERE/CAPSULE/BOX/CYLINDER
     var pos_x: Float64
     var pos_y: Float64
     var pos_z: Float64
@@ -201,7 +201,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var quat_w: Float64
     var radius: Float64
     var half_length: Float64  # capsule half-length along axis
-    var half_x: Float64       # box half-extents
+    var half_x: Float64  # box half-extents
     var half_y: Float64
     var half_z: Float64
     var friction: Float64
@@ -219,8 +219,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_4: Float64
     var margin: Float64
     var density: Float64  # kg/m³; used when mass=-1 to compute mass from volume
-    var mass: Float64     # -1.0 = use density (not specified explicitly)
-    var rgba_r: Float64   # visual colour (r component, 0..1)
+    var mass: Float64  # -1.0 = use density (not specified explicitly)
+    var rgba_r: Float64  # visual colour (r component, 0..1)
     var rgba_g: Float64
     var rgba_b: Float64
     var rgba_a: Float64
@@ -309,8 +309,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
 struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime actuator data parsed from <motor/position/velocity> tags."""
 
-    var joint_id: Int        # 0-based joint index this actuator drives
-    var gear: Float64        # Force/torque scaling
+    var joint_id: Int  # 0-based joint index this actuator drives
+    var gear: Float64  # Force/torque scaling
     var ctrl_min: Float64
     var ctrl_max: Float64
     var is_ctrl_limited: Bool
@@ -355,9 +355,9 @@ comptime TEX_MARK_RANDOM: Int = 3
 struct TextureData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime texture data parsed from <texture> in <asset>."""
 
-    var tex_type: Int    # TEX_SKYBOX / TEX_2D / TEX_CUBE
-    var builtin: Int     # TEX_BUILTIN_* — procedural texture pattern
-    var mark: Int        # TEX_MARK_* — overlay mark type
+    var tex_type: Int  # TEX_SKYBOX / TEX_2D / TEX_CUBE
+    var builtin: Int  # TEX_BUILTIN_* — procedural texture pattern
+    var mark: Int  # TEX_MARK_* — overlay mark type
     var rgb1_r: Float64
     var rgb1_g: Float64
     var rgb1_b: Float64  # primary colour (background / gradient start)
@@ -414,7 +414,7 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
 struct MaterialData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime material data parsed from <material> in <asset>."""
 
-    var tex_id: Int         # index into textures[], -1 if no texture
+    var tex_id: Int  # index into textures[], -1 if no texture
     var rgba_r: Float64
     var rgba_g: Float64
     var rgba_b: Float64
@@ -424,7 +424,7 @@ struct MaterialData(Copyable, ImplicitlyCopyable, Movable):
     var reflectance: Float64
     var texrepeat_u: Float64
     var texrepeat_v: Float64
-    var texuniform: Bool    # tile texture uniformly across surface
+    var texuniform: Bool  # tile texture uniformly across surface
 
     fn __init__(
         out self,
@@ -468,7 +468,7 @@ comptime LIGHT_MODE_TARGETBODYCOM: Int = 4
 struct LightData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime light data parsed from <light> in <worldbody>."""
 
-    var body_id: Int        # body this light is attached to (0 = worldbody)
+    var body_id: Int  # body this light is attached to (0 = worldbody)
     var pos_x: Float64
     var pos_y: Float64
     var pos_z: Float64
@@ -484,11 +484,11 @@ struct LightData(Copyable, ImplicitlyCopyable, Movable):
     var ambient_r: Float64
     var ambient_g: Float64
     var ambient_b: Float64
-    var directional: Bool   # true = directional (infinite), false = point/spot
+    var directional: Bool  # true = directional (infinite), false = point/spot
     var castshadow: Bool
-    var cutoff: Float64     # spot cone half-angle in degrees (100 = point light)
-    var exponent: Float64   # spot exponent
-    var mode: Int           # LIGHT_MODE_*
+    var cutoff: Float64  # spot cone half-angle in degrees (100 = point light)
+    var exponent: Float64  # spot exponent
+    var mode: Int  # LIGHT_MODE_*
 
     fn __init__(
         out self,
@@ -552,7 +552,7 @@ comptime CAM_MODE_TARGETBODYCOM: Int = 4
 struct CameraData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime camera data parsed from <camera> in <worldbody>."""
 
-    var body_id: Int        # body this camera is attached to (0 = worldbody)
+    var body_id: Int  # body this camera is attached to (0 = worldbody)
     var pos_x: Float64
     var pos_y: Float64
     var pos_z: Float64
@@ -560,9 +560,9 @@ struct CameraData(Copyable, ImplicitlyCopyable, Movable):
     var quat_y: Float64
     var quat_z: Float64
     var quat_w: Float64
-    var fovy: Float64       # vertical field of view in degrees
-    var ipd: Float64        # interpupillary distance (stereo)
-    var mode: Int           # CAM_MODE_*
+    var fovy: Float64  # vertical field of view in degrees
+    var ipd: Float64  # interpupillary distance (stereo)
+    var mode: Int  # CAM_MODE_*
 
     fn __init__(
         out self,
@@ -600,7 +600,7 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime site data parsed from <site> in <worldbody>."""
 
     var body_id: Int
-    var site_type: Int      # geom-like type (_GEOM_SPHERE / _GEOM_CAPSULE / etc.)
+    var site_type: Int  # geom-like type (_GEOM_SPHERE / _GEOM_CAPSULE / etc.)
     var pos_x: Float64
     var pos_y: Float64
     var pos_z: Float64
@@ -608,9 +608,9 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
     var quat_y: Float64
     var quat_z: Float64
     var quat_w: Float64
-    var size_0: Float64     # radius (sphere/capsule/cylinder) or half-x (box)
-    var size_1: Float64     # half-length (capsule/cylinder) or half-y (box)
-    var size_2: Float64     # half-z (box only)
+    var size_0: Float64  # radius (sphere/capsule/cylinder) or half-x (box)
+    var size_1: Float64  # half-length (capsule/cylinder) or half-y (box)
+    var size_2: Float64  # half-z (box only)
 
     fn __init__(
         out self,
@@ -782,7 +782,7 @@ struct FlatModelDef[
 
     Dimensions are supplied as comptime parameters (from parse_xml() output).
     Data is stored in InlineArray[BodyData/JointData/GeomData/ActuatorData/...].
-    setup_model() uses regular for loops — no @parameter needed.
+    setup_model() uses regular for loops — no comptime if needed.
 
     Optional visual-element arrays (NTEX, NMAT, NLIGHT, NCAM, NSITE) default to
     0; the underlying InlineArray uses size+1 to satisfy the >0 requirement.
@@ -807,9 +807,15 @@ struct FlatModelDef[
         self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
         self.joints = InlineArray[JointData, Self.NJOINT](fill=JointData())
         self.geoms = InlineArray[GeomData, Self.NGEOM](fill=GeomData())
-        self.actuators = InlineArray[ActuatorData, Self.NACT](fill=ActuatorData())
-        self.textures = InlineArray[TextureData, Self.NTEX + 1](fill=TextureData())
-        self.materials = InlineArray[MaterialData, Self.NMAT + 1](fill=MaterialData())
+        self.actuators = InlineArray[ActuatorData, Self.NACT](
+            fill=ActuatorData()
+        )
+        self.textures = InlineArray[TextureData, Self.NTEX + 1](
+            fill=TextureData()
+        )
+        self.materials = InlineArray[MaterialData, Self.NMAT + 1](
+            fill=MaterialData()
+        )
         self.lights = InlineArray[LightData, Self.NLIGHT + 1](fill=LightData())
         self.cameras = InlineArray[CameraData, Self.NCAM + 1](fill=CameraData())
         self.sites = InlineArray[SiteData, Self.NSITE + 1](fill=SiteData())
@@ -843,7 +849,7 @@ struct FlatModelDef[
     ):
         """Write body, joint, and geom data from InlineArrays into the Model struct.
 
-        Uses regular for loops — no @parameter needed since we write
+        Uses regular for loops — no comptime if needed since we write
         scalar values, not instantiate per-type specialisations.
         """
         # Global physics parameters
@@ -955,13 +961,34 @@ struct FlatModelDef[
             model.qpos0[qpos_adr_j] = Scalar[DTYPE](jd.ref_val)
 
             # Set per-joint solimp/solref for limits (use parsed value if >= 0, else model default)
-            var jr0: Float64 = jd.solref_limit_0 if jd.solref_limit_0 >= 0.0 else Float64(model.solref_limit[0])
-            var jr1: Float64 = jd.solref_limit_1 if jd.solref_limit_1 >= 0.0 else Float64(model.solref_limit[1])
-            var ji0: Float64 = jd.solimp_limit_0 if jd.solimp_limit_0 >= 0.0 else Float64(model.solimp_limit[0])
-            var ji1: Float64 = jd.solimp_limit_1 if jd.solimp_limit_1 >= 0.0 else Float64(model.solimp_limit[1])
-            var ji2: Float64 = jd.solimp_limit_2 if jd.solimp_limit_2 >= 0.0 else Float64(model.solimp_limit[2])
-            var ji3: Float64 = jd.solimp_limit_3 if jd.solimp_limit_3 >= 0.0 else Float64(model.solimp_limit[3])
-            var ji4: Float64 = jd.solimp_limit_4 if jd.solimp_limit_4 >= 0.0 else Float64(model.solimp_limit[4])
+            var jr0: Float64 = (
+                jd.solref_limit_0 if jd.solref_limit_0
+                >= 0.0 else Float64(model.solref_limit[0])
+            )
+            var jr1: Float64 = (
+                jd.solref_limit_1 if jd.solref_limit_1
+                >= 0.0 else Float64(model.solref_limit[1])
+            )
+            var ji0: Float64 = (
+                jd.solimp_limit_0 if jd.solimp_limit_0
+                >= 0.0 else Float64(model.solimp_limit[0])
+            )
+            var ji1: Float64 = (
+                jd.solimp_limit_1 if jd.solimp_limit_1
+                >= 0.0 else Float64(model.solimp_limit[1])
+            )
+            var ji2: Float64 = (
+                jd.solimp_limit_2 if jd.solimp_limit_2
+                >= 0.0 else Float64(model.solimp_limit[2])
+            )
+            var ji3: Float64 = (
+                jd.solimp_limit_3 if jd.solimp_limit_3
+                >= 0.0 else Float64(model.solimp_limit[3])
+            )
+            var ji4: Float64 = (
+                jd.solimp_limit_4 if jd.solimp_limit_4
+                >= 0.0 else Float64(model.solimp_limit[4])
+            )
             model.joint_solref_limit[j * 2 + 0] = Scalar[DTYPE](jr0)
             model.joint_solref_limit[j * 2 + 1] = Scalar[DTYPE](jr1)
             model.joint_solimp_limit[j * 5 + 0] = Scalar[DTYPE](ji0)
@@ -974,8 +1001,7 @@ struct FlatModelDef[
         # GPU constraint builder reads MODEL_META_IDX_SOLIMP_LIMIT_* (model-level meta)
         # while CPU reads per-joint values. For models with uniform joint solimp
         # (all current models), this ensures CPU/GPU consistency.
-        @parameter
-        if Self.NJOINT > 0:
+        comptime if Self.NJOINT > 0:
             model.solimp_limit[0] = model.joint_solimp_limit[0]
             model.solimp_limit[1] = model.joint_solimp_limit[1]
             model.solimp_limit[2] = model.joint_solimp_limit[2]
@@ -1018,18 +1044,26 @@ struct FlatModelDef[
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
             # Bounding sphere radius for broad-phase collision detection
             if gd.geom_type == _GEOM_PLANE:
-                model.geom_rbound[i] = Scalar[DTYPE](1e10)  # planes are infinite
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    1e10
+                )  # planes are infinite
             elif gd.geom_type == _GEOM_SPHERE:
                 model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
             elif gd.geom_type == _GEOM_CAPSULE:
                 model.geom_rbound[i] = Scalar[DTYPE](gd.radius + gd.half_length)
             elif gd.geom_type == _GEOM_CYLINDER:
                 model.geom_rbound[i] = Scalar[DTYPE](
-                    sqrt(gd.half_length * gd.half_length + gd.radius * gd.radius)
+                    sqrt(
+                        gd.half_length * gd.half_length + gd.radius * gd.radius
+                    )
                 )
             elif gd.geom_type == _GEOM_BOX:
                 model.geom_rbound[i] = Scalar[DTYPE](
-                    sqrt(gd.half_x * gd.half_x + gd.half_y * gd.half_y + gd.half_z * gd.half_z)
+                    sqrt(
+                        gd.half_x * gd.half_x
+                        + gd.half_y * gd.half_y
+                        + gd.half_z * gd.half_z
+                    )
                 )
             else:
                 model.geom_rbound[i] = Scalar[DTYPE](gd.radius)

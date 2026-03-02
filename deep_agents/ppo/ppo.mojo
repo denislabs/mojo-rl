@@ -2171,8 +2171,7 @@ struct DeepPPOAgent[
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
 
-                @parameter
-                if TOTAL_WS > 0:
+                comptime if TOTAL_WS > 0:
                     EnvType.step_kernel_gpu[
                         Self.n_envs, EnvType.STATE_SIZE, Self.OBS
                     ](

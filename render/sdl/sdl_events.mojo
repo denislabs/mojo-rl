@@ -61,7 +61,7 @@ struct EventType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __init__(out self, value: Int):
-        self.value = value
+        self.value = UInt32(value)
 
     @always_inline
     fn __int__(self) -> Int:
@@ -488,7 +488,7 @@ struct TextEditingEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, AnyOrigin[False]]
+    var text: Ptr[c_char, ImmutAnyOrigin]
     """The editing text."""
     var start: Int32
     """The start cursor of selected editing text, or -1 if not set."""
@@ -510,7 +510,7 @@ struct TextEditingCandidatesEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var candidates: Ptr[c_char, AnyOrigin[False]]
+    var candidates: Ptr[c_char, ImmutAnyOrigin]
     """The list of candidates, or NULL if there are no candidates available."""
     var num_candidates: Int32
     """The number of strings in `candidates`."""
@@ -540,7 +540,7 @@ struct TextInputEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, AnyOrigin[False]]
+    var text: Ptr[c_char, ImmutAnyOrigin]
     """The input text, UTF-8 encoded."""
 
 
@@ -897,7 +897,7 @@ struct GamepadSensorEvent(ImplicitlyCopyable, Movable):
     """The joystick instance id."""
     var sensor: Int32
     """The type of the sensor, one of the values of SDL_SensorType."""
-    var data: ArrayHelper[c_float, 3, AnyOrigin[True]]
+    var data: ArrayHelper[c_float, 3, MutAnyOrigin]
     """Up to 3 values from the sensor, as defined in SDL_sensor.h."""
     var sensor_timestamp: UInt64
     """The timestamp of the sensor reading in nanoseconds, not necessarily synchronized with the system clock."""
@@ -1169,9 +1169,9 @@ struct DropEvent(ImplicitlyCopyable, Movable):
     """X coordinate, relative to window (not on begin)."""
     var y: c_float
     """Y coordinate, relative to window (not on begin)."""
-    var source: Ptr[c_char, AnyOrigin[False]]
+    var source: Ptr[c_char, ImmutAnyOrigin]
     """The source app that sent this drop event, or NULL if that isn't available."""
-    var data: Ptr[c_char, AnyOrigin[False]]
+    var data: Ptr[c_char, ImmutAnyOrigin]
     """The text for SDL_EVENT_DROP_TEXT and the file name for SDL_EVENT_DROP_FILE, NULL for other events."""
 
 
@@ -1192,7 +1192,7 @@ struct ClipboardEvent(ImplicitlyCopyable, Movable):
     """Are we owning the clipboard (internal update)."""
     var num_mime_types: Int32
     """Number of mime types."""
-    var mime_types: Ptr[Ptr[c_char, AnyOrigin[False]], AnyOrigin[False]]
+    var mime_types: Ptr[Ptr[c_char, ImmutAnyOrigin], ImmutAnyOrigin]
     """Current mime types."""
 
 
@@ -1210,7 +1210,7 @@ struct SensorEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var which: SensorID
     """The instance ID of the sensor."""
-    var data: ArrayHelper[c_float, 6, AnyOrigin[True]]
+    var data: ArrayHelper[c_float, 6, MutAnyOrigin]
     """Up to 6 values from the sensor - additional values can be queried using SDL_GetSensorData()."""
     var sensor_timestamp: UInt64
     """The timestamp of the sensor reading in nanoseconds, not necessarily synchronized with the system clock."""
@@ -1252,9 +1252,9 @@ struct UserEvent(ImplicitlyCopyable, Movable):
     """The associated window if any."""
     var code: Int32
     """User defined event code."""
-    var data1: Ptr[NoneType, AnyOrigin[True]]
+    var data1: Ptr[NoneType, MutAnyOrigin]
     """User defined data pointer."""
-    var data2: Ptr[NoneType, AnyOrigin[True]]
+    var data2: Ptr[NoneType, MutAnyOrigin]
     """User defined data pointer."""
 
 
@@ -1344,9 +1344,7 @@ struct Event:
 
     fn __init__(out self):
         """Initialize event for polling."""
-        __mlir_op.`lit.ownership.mark_initialized`(
-            __get_mvalue_as_litref(self)
-        )
+        __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
     fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
@@ -1407,7 +1405,7 @@ struct EventAction(Indexer, Intable, TrivialRegisterPassable):
 
 
 fn peep_events(
-    events: Ptr[Event, AnyOrigin[True]],
+    events: Ptr[Event, MutAnyOrigin],
     numevents: c_int,
     action: EventAction,
     min_type: UInt32,
@@ -1459,7 +1457,7 @@ fn peep_events(
         lib,
         "SDL_PeepEvents",
         fn(
-            events: Ptr[Event, AnyOrigin[True]],
+            events: Ptr[Event, MutAnyOrigin],
             numevents: c_int,
             action: EventAction,
             min_type: UInt32,
@@ -1581,7 +1579,7 @@ fn flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     ]()(min_type, max_type)
 
 
-fn poll_event(event: Ptr[Event, AnyOrigin[True]]) raises -> Bool:
+fn poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
     """Poll for currently pending events.
 
     If `event` is not NULL, the next event is removed from the queue and stored
@@ -1627,11 +1625,11 @@ fn poll_event(event: Ptr[Event, AnyOrigin[True]]) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_PollEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+        lib, "SDL_PollEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
 
 
-fn wait_event(event: Ptr[Event, AnyOrigin[True]]) raises:
+fn wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """Wait indefinitely for the next available event.
 
     If `event` is not NULL, the next event is removed from the queue and stored
@@ -1655,14 +1653,14 @@ fn wait_event(event: Ptr[Event, AnyOrigin[True]]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_WaitEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+        lib, "SDL_WaitEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn wait_event_timeout(
-    event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32
+    event: Ptr[Event, MutAnyOrigin], timeout_ms: Int32
 ) raises -> Bool:
     """Wait until the specified timeout (in milliseconds) for the next available
     event.
@@ -1695,11 +1693,11 @@ fn wait_event_timeout(
     return _get_dylib_function[
         lib,
         "SDL_WaitEventTimeout",
-        fn(event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32) -> Bool,
+        fn(event: Ptr[Event, MutAnyOrigin], timeout_ms: Int32) -> Bool,
     ]()(event, timeout_ms)
 
 
-fn push_event(event: Ptr[Event, AnyOrigin[True]]) raises:
+fn push_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """Add an event to the event queue.
 
     The event queue can actually be used as a two way communication channel.
@@ -1733,14 +1731,14 @@ fn push_event(event: Ptr[Event, AnyOrigin[True]]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_PushEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+        lib, "SDL_PushEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 comptime EventFilter = fn(
-    userdata: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]
+    userdata: Ptr[NoneType, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) -> Bool
 """A function pointer used for callbacks that watch the event queue.
     
@@ -1764,7 +1762,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EventFilter.
 
 
 fn set_event_filter(
-    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+    filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Set up a filter to process all events before they are added to the internal
     event queue.
@@ -1804,15 +1802,13 @@ fn set_event_filter(
     return _get_dylib_function[
         lib,
         "SDL_SetEventFilter",
-        fn(
-            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
-        ) -> None,
+        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
 fn get_event_filter(
-    filter: Ptr[EventFilter, AnyOrigin[True]],
-    userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+    filter: Ptr[EventFilter, MutAnyOrigin],
+    userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
 ) raises:
     """Query the current event filter.
 
@@ -1837,8 +1833,8 @@ fn get_event_filter(
         lib,
         "SDL_GetEventFilter",
         fn(
-            filter: Ptr[EventFilter, AnyOrigin[True]],
-            userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+            filter: Ptr[EventFilter, MutAnyOrigin],
+            userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
         ) -> Bool,
     ]()(filter, userdata)
     if not ret:
@@ -1846,7 +1842,7 @@ fn get_event_filter(
 
 
 fn add_event_watch(
-    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+    filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises:
     """Add a callback to be triggered when an event is added to the event queue.
 
@@ -1882,16 +1878,14 @@ fn add_event_watch(
     ret = _get_dylib_function[
         lib,
         "SDL_AddEventWatch",
-        fn(
-            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
-        ) -> Bool,
+        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool,
     ]()(filter, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn remove_event_watch(
-    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+    filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Remove an event watch callback added with SDL_AddEventWatch().
 
@@ -1911,14 +1905,12 @@ fn remove_event_watch(
     return _get_dylib_function[
         lib,
         "SDL_RemoveEventWatch",
-        fn(
-            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
-        ) -> None,
+        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
 fn filter_events(
-    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+    filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Run a specific filter function on the current event queue, removing any
     events for which the filter returns false.
@@ -1940,9 +1932,7 @@ fn filter_events(
     return _get_dylib_function[
         lib,
         "SDL_FilterEvents",
-        fn(
-            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
-        ) -> None,
+        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
@@ -2007,8 +1997,8 @@ fn register_events(numevents: c_int) raises -> UInt32:
 
 
 fn get_window_from_event(
-    event: Ptr[Event, AnyOrigin[False]]
-) raises -> Ptr[Window, AnyOrigin[True]]:
+    event: Ptr[Event, ImmutAnyOrigin]
+) raises -> Ptr[Window, MutAnyOrigin]:
     """Get window associated with an event.
 
     Args:
@@ -2026,5 +2016,5 @@ fn get_window_from_event(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowFromEvent",
-        fn(event: Ptr[Event, AnyOrigin[False]]) -> Ptr[Window, AnyOrigin[True]],
+        fn(event: Ptr[Event, ImmutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
     ]()(event)

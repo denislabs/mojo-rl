@@ -113,8 +113,7 @@ struct Lights[*L: LightSpec](LightsLike):
     fn setup_lights() -> List[Light]:
         var lights = List[Light]()
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime L = Self.light_types[i]
             lights.append(
                 Light(

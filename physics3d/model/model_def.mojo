@@ -1,7 +1,7 @@
 """ModelDef compositor for compile-time model definitions.
 
 Composes Bodies and Joints into a ModelDef with auto-computed dimensions.
-Uses Variadic.types + @parameter for to iterate at compile time, following
+Uses Variadic.types + comptimefor to iterate at compile time, following
 the same pattern as Sequential[*LAYERS: Model] in deep_rl/model/sequential.mojo.
 
 Note: Bodies and Joints are standalone variadic containers. ModelDef takes
@@ -602,13 +602,11 @@ struct ModelDef[
         """
 
         # MuJoCo <compiler inertiafromgeom> — compute body inertia from geoms
-        @parameter
-        if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
+        comptime if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
             compute_inertia_from_geoms(model)
 
         # MuJoCo <compiler settotalmass> — rescale body masses/inertias
-        @parameter
-        if Self.Defaults.SETTOTALMASS > 0.0:
+        comptime if Self.Defaults.SETTOTALMASS > 0.0:
             var total_mass = Scalar[DTYPE](0)
             for i in range(1, Self.NBODY):
                 total_mass += model.body_mass[i]
@@ -692,14 +690,12 @@ struct ModelDef[
             DTYPE, Self.NBODY, Defaults = Self.Defaults
         ](host_buf)
 
-        @parameter
-        if Self.NGEOM > 0:
+        comptime if Self.NGEOM > 0:
             Self.Geoms.write_to_buffer[
                 DTYPE, Self.NBODY, Self.NJOINT, Defaults = Self.Defaults
             ](host_buf)
 
-        @parameter
-        if Self.NSITE > 0:
+        comptime if Self.NSITE > 0:
             Self.Sites.write_to_buffer[
                 DTYPE,
                 Self.NBODY,
@@ -711,8 +707,7 @@ struct ModelDef[
         Self._write_metadata_to_buffer[DTYPE](host_buf)
 
         # Derived computations on buffer
-        @parameter
-        if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
+        comptime if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
             var geom_masses = Self.Geoms.compute_geom_masses[
                 DTYPE, Defaults = Self.Defaults
             ]()
@@ -720,8 +715,7 @@ struct ModelDef[
                 DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM
             ](host_buf, geom_masses)
 
-        @parameter
-        if Self.Defaults.SETTOTALMASS > 0.0:
+        comptime if Self.Defaults.SETTOTALMASS > 0.0:
             Self._settotalmass_buffer[DTYPE](host_buf)
 
         # Copy to GPU (invweight0 slots are still zero)

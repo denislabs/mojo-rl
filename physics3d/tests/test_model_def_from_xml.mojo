@@ -104,8 +104,7 @@ fn test_model_def_from_xml() raises:
     print("NACT  =", pm.NACT, " (expected 6)")
     print()
 
-    @parameter
-    if (
+    comptime if (
         pm.NBODY != 8
         or pm.NJOINT != 9
         or pm.NQ != 9
@@ -138,8 +137,7 @@ fn test_model_def_from_xml() raises:
     print("MAX_CONTACTS=", XmlModel.MAX_CONTACTS, " (expected 10)")
     print()
 
-    @parameter
-    if XmlModel.OBS_DIM != 17:
+    comptime if XmlModel.OBS_DIM != 17:
         print("ERROR: OBS_DIM mismatch")
         return
 
@@ -198,7 +196,9 @@ fn test_model_def_from_xml() raises:
     XmlModel.setup_model_and_data[DType.float64](model, data)
     print("setup_model_and_data succeeded")
     print("gravity_z     =", Float64(model.gravity[2]), " (expected -9.81)")
-    print("torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)")
+    print(
+        "torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)"
+    )
     print("torso xpos_z  =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
     print()
 

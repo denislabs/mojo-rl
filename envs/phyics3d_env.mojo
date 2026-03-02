@@ -337,8 +337,7 @@ struct Phyics3dEnv[
         var reward = result[0]
         var terminated = result[1]
 
-        @parameter
-        if not Self.TERMINATE_ON_UNHEALTHY:
+        comptime if not Self.TERMINATE_ON_UNHEALTHY:
             terminated = False
 
         var truncated = self.current_step >= self.max_steps
@@ -394,8 +393,7 @@ struct Phyics3dEnv[
     fn is_done(self) -> Bool:
         var truncated = self.current_step >= self.max_steps
 
-        @parameter
-        if Self.TERMINATE_ON_UNHEALTHY:
+        comptime if Self.TERMINATE_ON_UNHEALTHY:
             # Check termination via config
             var dummy_actions = List[Float64]()
             var result = Self.CONFIG.compute_reward_and_done_cpu(
@@ -967,8 +965,7 @@ struct Phyics3dEnv[
             # Determine termination
             var terminated = result[1]
 
-            @parameter
-            if not Self.TERMINATE_ON_UNHEALTHY:
+            comptime if not Self.TERMINATE_ON_UNHEALTHY:
                 terminated = False
 
             var truncated = step_count >= MAX_STEPS_VAL

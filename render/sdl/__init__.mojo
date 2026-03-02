@@ -70,14 +70,12 @@ comptime lib = _Global["SDL", _init_sdl_handle]()
 
 fn _init_sdl_handle() -> OwnedDLHandle:
     try:
-
-        @parameter
-        if CompilationTarget.is_macos():
+        comptime if CompilationTarget.is_macos():
             return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.dylib")
         elif CompilationTarget.is_linux():
             return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.so")
         else:
-            constrained[False, "OS is not supported"]()
+            comptime assert False, "OS is not supported"
             return _uninit[OwnedDLHandle]()
     except:
         print("libSDL3 not found at .pixi/envs/default/lib/")

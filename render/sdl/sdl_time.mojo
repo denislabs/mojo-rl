@@ -126,8 +126,8 @@ struct TimeFormat(Indexer, Intable, TrivialRegisterPassable):
 
 
 fn get_date_time_locale_preferences(
-    date_format: Ptr[DateFormat, AnyOrigin[True]],
-    time_format: Ptr[TimeFormat, AnyOrigin[True]],
+    date_format: Ptr[DateFormat, MutAnyOrigin],
+    time_format: Ptr[TimeFormat, MutAnyOrigin],
 ) raises:
     """Gets the current preferred date and time format for the system locale.
 
@@ -153,15 +153,15 @@ fn get_date_time_locale_preferences(
         lib,
         "SDL_GetDateTimeLocalePreferences",
         fn(
-            date_format: Ptr[DateFormat, AnyOrigin[True]],
-            time_format: Ptr[TimeFormat, AnyOrigin[True]],
+            date_format: Ptr[DateFormat, MutAnyOrigin],
+            time_format: Ptr[TimeFormat, MutAnyOrigin],
         ) -> Bool,
     ]()(date_format, time_format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_time(ticks: Ptr[Int64, AnyOrigin[True]]) raises:
+fn get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
     """Gets the current value of the system realtime clock in nanoseconds since
     Jan 1, 1970 in Universal Coordinated Time (UTC).
 
@@ -178,14 +178,14 @@ fn get_current_time(ticks: Ptr[Int64, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GetCurrentTime",
-        fn(ticks: Ptr[Int64, AnyOrigin[True]]) -> Bool,
+        fn(ticks: Ptr[Int64, MutAnyOrigin]) -> Bool,
     ]()(ticks)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn time_to_date_time(
-    ticks: Int64, dt: Ptr[DateTime, AnyOrigin[True]], local_time: Bool
+    ticks: Int64, dt: Ptr[DateTime, MutAnyOrigin], local_time: Bool
 ) raises:
     """Converts an SDL_Time in nanoseconds since the epoch to a calendar time in
     the SDL_DateTime format.
@@ -208,7 +208,7 @@ fn time_to_date_time(
         lib,
         "SDL_TimeToDateTime",
         fn(
-            ticks: Int64, dt: Ptr[DateTime, AnyOrigin[True]], local_time: Bool
+            ticks: Int64, dt: Ptr[DateTime, MutAnyOrigin], local_time: Bool
         ) -> Bool,
     ]()(ticks, dt, local_time)
     if not ret:
@@ -216,7 +216,7 @@ fn time_to_date_time(
 
 
 fn date_time_to_time(
-    dt: Ptr[DateTime, AnyOrigin[False]], ticks: Ptr[Int64, AnyOrigin[True]]
+    dt: Ptr[DateTime, ImmutAnyOrigin], ticks: Ptr[Int64, MutAnyOrigin]
 ) raises:
     """Converts a calendar time to an SDL_Time in nanoseconds since the epoch.
 
@@ -238,8 +238,8 @@ fn date_time_to_time(
         lib,
         "SDL_DateTimeToTime",
         fn(
-            dt: Ptr[DateTime, AnyOrigin[False]],
-            ticks: Ptr[Int64, AnyOrigin[True]],
+            dt: Ptr[DateTime, ImmutAnyOrigin],
+            ticks: Ptr[Int64, MutAnyOrigin],
         ) -> Bool,
     ]()(dt, ticks)
     if not ret:
@@ -248,8 +248,8 @@ fn date_time_to_time(
 
 fn time_to_windows(
     ticks: Int64,
-    dw_low_date_time: Ptr[UInt32, AnyOrigin[True]],
-    dw_high_date_time: Ptr[UInt32, AnyOrigin[True]],
+    dw_low_date_time: Ptr[UInt32, MutAnyOrigin],
+    dw_high_date_time: Ptr[UInt32, MutAnyOrigin],
 ) raises -> None:
     """Converts an SDL time into a Windows FILETIME (100-nanosecond intervals
     since January 1, 1601).
@@ -271,8 +271,8 @@ fn time_to_windows(
         "SDL_TimeToWindows",
         fn(
             ticks: Int64,
-            dw_low_date_time: Ptr[UInt32, AnyOrigin[True]],
-            dw_high_date_time: Ptr[UInt32, AnyOrigin[True]],
+            dw_low_date_time: Ptr[UInt32, MutAnyOrigin],
+            dw_high_date_time: Ptr[UInt32, MutAnyOrigin],
         ) -> None,
     ]()(ticks, dw_low_date_time, dw_high_date_time)
 

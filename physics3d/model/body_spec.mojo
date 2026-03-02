@@ -390,8 +390,8 @@ trait BodiesLike:
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
     ):
         ...
@@ -431,8 +431,8 @@ struct _EmptyBodies(BodiesLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
     ):
         pass
@@ -463,8 +463,8 @@ struct Bodies[*B: BodySpec](BodiesLike):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -476,8 +476,8 @@ struct Bodies[*B: BodySpec](BodiesLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
     ):
         """Populate model body properties from compile-time BodySpec list.
@@ -487,8 +487,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
         at 1 (worldbody at index 0 is initialized by Model.__init__).
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime B = Self.body_types[i]
             # Body index i+1: worldbody is at index 0 (reserved)
             comptime body_idx = i + 1
@@ -556,8 +555,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
         buffer[wb_off + BODY_IDX_IQUAT_W] = Scalar[DTYPE](1.0)
         buffer[wb_off + BODY_IDX_PARENT] = Scalar[DTYPE](-1)
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime B = Self.body_types[i]
             comptime body_idx = i + 1
             var off = model_body_offset(body_idx)

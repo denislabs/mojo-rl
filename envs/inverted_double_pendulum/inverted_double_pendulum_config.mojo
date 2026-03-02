@@ -115,15 +115,25 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
 
         # Tip position (analytical from joint angles)
         var pole_len = Scalar[DTYPE](_POLE_LEN)
-        var x_tip = q0 + pole_len * Scalar[DTYPE](sin(Float64(q1))) + pole_len * Scalar[DTYPE](sin(Float64(q1) + Float64(q2)))
-        var z_tip = pole_len * Scalar[DTYPE](cos(Float64(q1))) + pole_len * Scalar[DTYPE](cos(Float64(q1) + Float64(q2)))
+        var x_tip = (
+            q0
+            + pole_len * Scalar[DTYPE](sin(Float64(q1)))
+            + pole_len * Scalar[DTYPE](sin(Float64(q1) + Float64(q2)))
+        )
+        var z_tip = pole_len * Scalar[DTYPE](
+            cos(Float64(q1))
+        ) + pole_len * Scalar[DTYPE](cos(Float64(q1) + Float64(q2)))
 
         var terminated = z_tip <= Scalar[DTYPE](Self.MIN_TIP_HEIGHT)
 
-        var dist_penalty = Scalar[DTYPE](0.01) * x_tip * x_tip + (z_tip - Scalar[DTYPE](2.0)) * (z_tip - Scalar[DTYPE](2.0))
+        var dist_penalty = Scalar[DTYPE](0.01) * x_tip * x_tip + (
+            z_tip - Scalar[DTYPE](2.0)
+        ) * (z_tip - Scalar[DTYPE](2.0))
         var v1 = data.qvel[1]
         var v2 = data.qvel[2]
-        var vel_penalty = Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
+        var vel_penalty = (
+            Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
+        )
 
         var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
 
@@ -184,7 +194,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         meta_offset: Int,
     ):
         # Save cart x position (qpos[0]) into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV]()
+        comptime QPOS_OFF = qpos_offset[
+            InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
+        ]()
         states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
     # === GPU inline: Reward + termination ===
@@ -234,12 +246,18 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
 
         var terminated = z_tip <= Scalar[DTYPE](1.0)
 
-        var dist_penalty = Scalar[DTYPE](0.01) * x_tip * x_tip + (z_tip - Scalar[DTYPE](2.0)) * (z_tip - Scalar[DTYPE](2.0))
+        var dist_penalty = Scalar[DTYPE](0.01) * x_tip * x_tip + (
+            z_tip - Scalar[DTYPE](2.0)
+        ) * (z_tip - Scalar[DTYPE](2.0))
 
-        comptime QVEL_OFF = qvel_offset[InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV]()
+        comptime QVEL_OFF = qvel_offset[
+            InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
+        ]()
         var v1 = rebind[Scalar[DTYPE]](states[env, QVEL_OFF + 1])
         var v2 = rebind[Scalar[DTYPE]](states[env, QVEL_OFF + 2])
-        var vel_penalty = Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
+        var vel_penalty = (
+            Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
+        )
 
         var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
 
@@ -294,8 +312,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         obs[env, 3] = Scalar[DTYPE](cos(Float64(q1)))
         obs[env, 4] = Scalar[DTYPE](cos(Float64(q2)))
 
-        @parameter
-        for i in range(3):
+        comptime for i in range(3):
             var v = rebind[Scalar[DTYPE]](states[env, qvel_off + i])
             if v > Scalar[DTYPE](10.0):
                 v = Scalar[DTYPE](10.0)

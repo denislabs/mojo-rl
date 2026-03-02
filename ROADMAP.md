@@ -262,7 +262,7 @@
   - Uses Structure of Arrays (SoA) layout for SIMD-friendly memory access
   - Auto-reset: done environments automatically reset (with early-exit optimization)
   - **Performance**: Uses native SIMD methods (.eq(), .lt(), .gt()), @always_inline,
-    and @parameter for compile-time loop unrolling. Achieves ~14-16M steps/sec.
+    and comptime for compile-time loop unrolling. Achieves ~14-16M steps/sec.
   - **Note on SIMD efficiency**: For simple environments like CartPole, scalar code
     is faster (~34M steps/sec) because the physics is too simple to benefit from
     SIMD parallelism - the overhead exceeds the gains. Vectorized environments

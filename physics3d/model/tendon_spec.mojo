@@ -121,13 +121,12 @@ struct Tendons[*T: TendonSpec]:
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        NSITE,
+            NSITE,
         ]
     ):
         """Populate model tendons from compile-time specs."""
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime T_item = Self.tendon_types[i]
 
             model.tendons[i] = TendonDef[DTYPE](

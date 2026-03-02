@@ -261,37 +261,70 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     var version: UInt32
     """The version of this interface."""
 
-    var close: fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool
+    var close: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
     """Called when the storage is closed."""
 
-    var ready: fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool
+    var ready: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
     """Optional, returns whether the storage is currently ready for access."""
 
-    var enumerate: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], callback: EnumerateDirectoryCallback, callback_userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool
+    var enumerate: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+        callback: EnumerateDirectoryCallback,
+        callback_userdata: Ptr[NoneType, MutAnyOrigin],
+    ) -> Bool
     """Enumerate a directory, optional for write-only storage."""
 
-    var info: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], info: Ptr[PathInfo, AnyOrigin[True]]) -> Bool
+    var info: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+        info: Ptr[PathInfo, MutAnyOrigin],
+    ) -> Bool
     """Get path information, optional for write-only storage."""
 
-    var read_file: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], destination: Ptr[NoneType, AnyOrigin[True]], length: UInt64) -> Bool
+    var read_file: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+        destination: Ptr[NoneType, MutAnyOrigin],
+        length: UInt64,
+    ) -> Bool
     """Read a file from storage, optional for write-only storage."""
 
-    var write_file: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], source: Ptr[NoneType, AnyOrigin[False]], length: UInt64) -> Bool
+    var write_file: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+        source: Ptr[NoneType, ImmutAnyOrigin],
+        length: UInt64,
+    ) -> Bool
     """Write a file to storage, optional for read-only storage."""
 
-    var mkdir: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]]) -> Bool
+    var mkdir: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+    ) -> Bool
     """Create a directory, optional for read-only storage."""
 
-    var remove: fn (userdata: Ptr[NoneType, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]]) -> Bool
+    var remove: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        path: Ptr[c_char, ImmutAnyOrigin],
+    ) -> Bool
     """Remove a file or empty directory, optional for read-only storage."""
 
-    var rename: fn (userdata: Ptr[NoneType, AnyOrigin[True]], oldpath: Ptr[c_char, AnyOrigin[False]], newpath: Ptr[c_char, AnyOrigin[False]]) -> Bool
+    var rename: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        oldpath: Ptr[c_char, ImmutAnyOrigin],
+        newpath: Ptr[c_char, ImmutAnyOrigin],
+    ) -> Bool
     """Rename a path, optional for read-only storage."""
 
-    var copy_file: fn (userdata: Ptr[NoneType, AnyOrigin[True]], oldpath: Ptr[c_char, AnyOrigin[False]], newpath: Ptr[c_char, AnyOrigin[False]]) -> Bool
+    var copy_file: fn(
+        userdata: Ptr[NoneType, MutAnyOrigin],
+        oldpath: Ptr[c_char, ImmutAnyOrigin],
+        newpath: Ptr[c_char, ImmutAnyOrigin],
+    ) -> Bool
     """Copy a file, optional for read-only storage."""
 
-    var space_remaining: fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> UInt64
+    var space_remaining: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> UInt64
     """Get the space remaining, optional for read-only storage."""
 
 
@@ -309,7 +342,11 @@ struct Storage(ImplicitlyCopyable, Movable):
     pass
 
 
-fn open_title_storage(var override: String, props: PropertiesID, out ret: Ptr[Storage, AnyOrigin[True]]) raises:
+fn open_title_storage(
+    var override: String,
+    props: PropertiesID,
+    out ret: Ptr[Storage, MutAnyOrigin],
+) raises:
     """Opens up a read-only container for the application's filesystem.
 
     Args:
@@ -323,12 +360,23 @@ fn open_title_storage(var override: String, props: PropertiesID, out ret: Ptr[St
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenTitleStorage.
     """
 
-    ret = _get_dylib_function[lib, "SDL_OpenTitleStorage", fn (override: Ptr[c_char, AnyOrigin[False]], props: PropertiesID) -> Ptr[Storage, AnyOrigin[True]]]()(override.as_c_string_slice().unsafe_ptr(), props)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_OpenTitleStorage",
+        fn(
+            override: Ptr[c_char, ImmutAnyOrigin], props: PropertiesID
+        ) -> Ptr[Storage, MutAnyOrigin],
+    ]()(override.as_c_string_slice().unsafe_ptr(), props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_user_storage(var org: String, var app: String, props: PropertiesID, out ret: Ptr[Storage, AnyOrigin[True]]) raises:
+fn open_user_storage(
+    var org: String,
+    var app: String,
+    props: PropertiesID,
+    out ret: Ptr[Storage, MutAnyOrigin],
+) raises:
     """Opens up a container for a user's unique read/write filesystem.
 
     While title storage can generally be kept open throughout runtime, user
@@ -348,12 +396,26 @@ fn open_user_storage(var org: String, var app: String, props: PropertiesID, out 
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenUserStorage.
     """
 
-    ret = _get_dylib_function[lib, "SDL_OpenUserStorage", fn (org: Ptr[c_char, AnyOrigin[False]], app: Ptr[c_char, AnyOrigin[False]], props: PropertiesID) -> Ptr[Storage, AnyOrigin[True]]]()(org.as_c_string_slice().unsafe_ptr(), app.as_c_string_slice().unsafe_ptr(), props)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_OpenUserStorage",
+        fn(
+            org: Ptr[c_char, ImmutAnyOrigin],
+            app: Ptr[c_char, ImmutAnyOrigin],
+            props: PropertiesID,
+        ) -> Ptr[Storage, MutAnyOrigin],
+    ]()(
+        org.as_c_string_slice().unsafe_ptr(),
+        app.as_c_string_slice().unsafe_ptr(),
+        props,
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_file_storage(var path: String, out ret: Ptr[Storage, AnyOrigin[True]]) raises:
+fn open_file_storage(
+    var path: String, out ret: Ptr[Storage, MutAnyOrigin]
+) raises:
     """Opens up a container for local filesystem storage.
 
     This is provided for development and tools. Portable applications should
@@ -371,12 +433,20 @@ fn open_file_storage(var path: String, out ret: Ptr[Storage, AnyOrigin[True]]) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenFileStorage.
     """
 
-    ret = _get_dylib_function[lib, "SDL_OpenFileStorage", fn (path: Ptr[c_char, AnyOrigin[False]]) -> Ptr[Storage, AnyOrigin[True]]]()(path.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_OpenFileStorage",
+        fn(path: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Storage, MutAnyOrigin],
+    ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_storage(iface: Ptr[StorageInterface, AnyOrigin[False]], userdata: Ptr[NoneType, AnyOrigin[True]], out ret: Ptr[Storage, AnyOrigin[True]]) raises:
+fn open_storage(
+    iface: Ptr[StorageInterface, ImmutAnyOrigin],
+    userdata: Ptr[NoneType, MutAnyOrigin],
+    out ret: Ptr[Storage, MutAnyOrigin],
+) raises:
     """Opens up a container using a client-provided storage interface.
 
     Applications do not need to use this function unless they are providing
@@ -399,12 +469,19 @@ fn open_storage(iface: Ptr[StorageInterface, AnyOrigin[False]], userdata: Ptr[No
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenStorage.
     """
 
-    ret = _get_dylib_function[lib, "SDL_OpenStorage", fn (iface: Ptr[StorageInterface, AnyOrigin[False]], userdata: Ptr[NoneType, AnyOrigin[True]]) -> Ptr[Storage, AnyOrigin[True]]]()(iface, userdata)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_OpenStorage",
+        fn(
+            iface: Ptr[StorageInterface, ImmutAnyOrigin],
+            userdata: Ptr[NoneType, MutAnyOrigin],
+        ) -> Ptr[Storage, MutAnyOrigin],
+    ]()(iface, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_storage(storage: Ptr[Storage, AnyOrigin[True]]) raises -> Bool:
+fn close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """Closes and frees a storage container.
 
     Args:
@@ -419,10 +496,12 @@ fn close_storage(storage: Ptr[Storage, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CloseStorage.
     """
 
-    return _get_dylib_function[lib, "SDL_CloseStorage", fn (storage: Ptr[Storage, AnyOrigin[True]]) -> Bool]()(storage)
+    return _get_dylib_function[
+        lib, "SDL_CloseStorage", fn(storage: Ptr[Storage, MutAnyOrigin]) -> Bool
+    ]()(storage)
 
 
-fn storage_ready(storage: Ptr[Storage, AnyOrigin[True]]) raises -> Bool:
+fn storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """Checks if the storage container is ready to use.
 
     This function should be called in regular intervals until it returns true -
@@ -439,10 +518,16 @@ fn storage_ready(storage: Ptr[Storage, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StorageReady.
     """
 
-    return _get_dylib_function[lib, "SDL_StorageReady", fn (storage: Ptr[Storage, AnyOrigin[True]]) -> Bool]()(storage)
+    return _get_dylib_function[
+        lib, "SDL_StorageReady", fn(storage: Ptr[Storage, MutAnyOrigin]) -> Bool
+    ]()(storage)
 
 
-fn get_storage_file_size(storage: Ptr[Storage, AnyOrigin[True]], var path: String, length: Ptr[UInt64, AnyOrigin[True]]) raises -> Bool:
+fn get_storage_file_size(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    length: Ptr[UInt64, MutAnyOrigin],
+) raises -> Bool:
     """Query the size of a file within a storage container.
 
     Args:
@@ -457,10 +542,23 @@ fn get_storage_file_size(storage: Ptr[Storage, AnyOrigin[True]], var path: Strin
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetStorageFileSize.
     """
 
-    return _get_dylib_function[lib, "SDL_GetStorageFileSize", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], length: Ptr[UInt64, AnyOrigin[True]]) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetStorageFileSize",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            length: Ptr[UInt64, MutAnyOrigin],
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
 
 
-fn read_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var path: String, destination: Ptr[NoneType, AnyOrigin[True]], length: UInt64) raises -> Bool:
+fn read_storage_file(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    destination: Ptr[NoneType, MutAnyOrigin],
+    length: UInt64,
+) raises -> Bool:
     """Synchronously read a file from a storage container into a client-provided
     buffer.
 
@@ -481,10 +579,24 @@ fn read_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var path: String, d
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadStorageFile.
     """
 
-    return _get_dylib_function[lib, "SDL_ReadStorageFile", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], destination: Ptr[NoneType, AnyOrigin[True]], length: UInt64) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
+    return _get_dylib_function[
+        lib,
+        "SDL_ReadStorageFile",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            destination: Ptr[NoneType, MutAnyOrigin],
+            length: UInt64,
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
 
 
-fn write_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var path: String, source: Ptr[NoneType, AnyOrigin[False]], length: UInt64) raises -> Bool:
+fn write_storage_file(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    source: Ptr[NoneType, ImmutAnyOrigin],
+    length: UInt64,
+) raises -> Bool:
     """Synchronously write a file from client memory into a storage container.
 
     Args:
@@ -500,10 +612,21 @@ fn write_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var path: String, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteStorageFile.
     """
 
-    return _get_dylib_function[lib, "SDL_WriteStorageFile", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], source: Ptr[NoneType, AnyOrigin[False]], length: UInt64) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
+    return _get_dylib_function[
+        lib,
+        "SDL_WriteStorageFile",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            source: Ptr[NoneType, ImmutAnyOrigin],
+            length: UInt64,
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
 
 
-fn create_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path: String) raises:
+fn create_storage_directory(
+    storage: Ptr[Storage, MutAnyOrigin], var path: String
+) raises:
     """Create a directory in a writable storage container.
 
     Args:
@@ -517,12 +640,24 @@ fn create_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path: St
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateStorageDirectory.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreateStorageDirectory", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreateStorageDirectory",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn enumerate_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path: String, callback: EnumerateDirectoryCallback, userdata: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn enumerate_storage_directory(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    callback: EnumerateDirectoryCallback,
+    userdata: Ptr[NoneType, MutAnyOrigin],
+) raises:
     """Enumerate a directory in a storage container through a callback function.
 
     This function provides every directory entry through an app-provided
@@ -551,12 +686,23 @@ fn enumerate_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnumerateStorageDirectory.
     """
 
-    ret = _get_dylib_function[lib, "SDL_EnumerateStorageDirectory", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], callback: EnumerateDirectoryCallback, userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr(), callback, userdata)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_EnumerateStorageDirectory",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            callback: EnumerateDirectoryCallback,
+            userdata: Ptr[NoneType, MutAnyOrigin],
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_storage_path(storage: Ptr[Storage, AnyOrigin[True]], var path: String) raises:
+fn remove_storage_path(
+    storage: Ptr[Storage, MutAnyOrigin], var path: String
+) raises:
     """Remove a file or an empty directory in a writable storage container.
 
     Args:
@@ -570,12 +716,23 @@ fn remove_storage_path(storage: Ptr[Storage, AnyOrigin[True]], var path: String)
     Docs: https://wiki.libsdl.org/SDL3/SDL_RemoveStoragePath.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RemoveStoragePath", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RemoveStoragePath",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn rename_storage_path(storage: Ptr[Storage, AnyOrigin[True]], var oldpath: String, var newpath: String) raises:
+fn rename_storage_path(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var oldpath: String,
+    var newpath: String,
+) raises:
     """Rename a file or directory in a writable storage container.
 
     Args:
@@ -590,12 +747,28 @@ fn rename_storage_path(storage: Ptr[Storage, AnyOrigin[True]], var oldpath: Stri
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenameStoragePath.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RenameStoragePath", fn (storage: Ptr[Storage, AnyOrigin[True]], oldpath: Ptr[c_char, AnyOrigin[False]], newpath: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(storage, oldpath.as_c_string_slice().unsafe_ptr(), newpath.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RenameStoragePath",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            oldpath: Ptr[c_char, ImmutAnyOrigin],
+            newpath: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Bool,
+    ]()(
+        storage,
+        oldpath.as_c_string_slice().unsafe_ptr(),
+        newpath.as_c_string_slice().unsafe_ptr(),
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn copy_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var oldpath: String, var newpath: String) raises:
+fn copy_storage_file(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var oldpath: String,
+    var newpath: String,
+) raises:
     """Copy a file in a writable storage container.
 
     Args:
@@ -610,12 +783,28 @@ fn copy_storage_file(storage: Ptr[Storage, AnyOrigin[True]], var oldpath: String
     Docs: https://wiki.libsdl.org/SDL3/SDL_CopyStorageFile.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CopyStorageFile", fn (storage: Ptr[Storage, AnyOrigin[True]], oldpath: Ptr[c_char, AnyOrigin[False]], newpath: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(storage, oldpath.as_c_string_slice().unsafe_ptr(), newpath.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CopyStorageFile",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            oldpath: Ptr[c_char, ImmutAnyOrigin],
+            newpath: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Bool,
+    ]()(
+        storage,
+        oldpath.as_c_string_slice().unsafe_ptr(),
+        newpath.as_c_string_slice().unsafe_ptr(),
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_storage_path_info(storage: Ptr[Storage, AnyOrigin[True]], var path: String, info: Ptr[PathInfo, AnyOrigin[True]]) raises:
+fn get_storage_path_info(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    info: Ptr[PathInfo, MutAnyOrigin],
+) raises:
     """Get information about a filesystem path in a storage container.
 
     Args:
@@ -631,12 +820,22 @@ fn get_storage_path_info(storage: Ptr[Storage, AnyOrigin[True]], var path: Strin
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetStoragePathInfo.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetStoragePathInfo", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], info: Ptr[PathInfo, AnyOrigin[True]]) -> Bool]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetStoragePathInfo",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            info: Ptr[PathInfo, MutAnyOrigin],
+        ) -> Bool,
+    ]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_storage_space_remaining(storage: Ptr[Storage, AnyOrigin[True]]) raises -> UInt64:
+fn get_storage_space_remaining(
+    storage: Ptr[Storage, MutAnyOrigin]
+) raises -> UInt64:
     """Queries the remaining space in a storage container.
 
     Args:
@@ -648,10 +847,21 @@ fn get_storage_space_remaining(storage: Ptr[Storage, AnyOrigin[True]]) raises ->
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetStorageSpaceRemaining.
     """
 
-    return _get_dylib_function[lib, "SDL_GetStorageSpaceRemaining", fn (storage: Ptr[Storage, AnyOrigin[True]]) -> UInt64]()(storage)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetStorageSpaceRemaining",
+        fn(storage: Ptr[Storage, MutAnyOrigin]) -> UInt64,
+    ]()(storage)
 
 
-fn glob_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path: String, var pattern: String, flags: GlobFlags, count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]]) raises:
+fn glob_storage_directory(
+    storage: Ptr[Storage, MutAnyOrigin],
+    var path: String,
+    var pattern: String,
+    flags: GlobFlags,
+    count: Ptr[c_int, MutAnyOrigin],
+    out ret: Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
+) raises:
     """Enumerate a directory tree, filtered by pattern, and return a list.
 
     Files are filtered out if they don't match the string in `pattern`, which
@@ -694,6 +904,22 @@ fn glob_storage_directory(storage: Ptr[Storage, AnyOrigin[True]], var path: Stri
     Docs: https://wiki.libsdl.org/SDL3/SDL_GlobStorageDirectory.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GlobStorageDirectory", fn (storage: Ptr[Storage, AnyOrigin[True]], path: Ptr[c_char, AnyOrigin[False]], pattern: Ptr[c_char, AnyOrigin[False]], flags: GlobFlags, count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]]]()(storage, path.as_c_string_slice().unsafe_ptr(), pattern.as_c_string_slice().unsafe_ptr(), flags, count)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GlobStorageDirectory",
+        fn(
+            storage: Ptr[Storage, MutAnyOrigin],
+            path: Ptr[c_char, ImmutAnyOrigin],
+            pattern: Ptr[c_char, ImmutAnyOrigin],
+            flags: GlobFlags,
+            count: Ptr[c_int, MutAnyOrigin],
+        ) -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
+    ]()(
+        storage,
+        path.as_c_string_slice().unsafe_ptr(),
+        pattern.as_c_string_slice().unsafe_ptr(),
+        flags,
+        count,
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

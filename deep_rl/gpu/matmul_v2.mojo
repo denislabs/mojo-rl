@@ -102,8 +102,7 @@ fn tiled_matmul_kernel_idiomatic[
         barrier()
 
         # Compute partial matrix multiplication for this tile
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()
@@ -177,9 +176,8 @@ fn tiled_matmul_kernel_general[
 
         barrier()
 
-        # Compute partial product - use @parameter for inner loop (small, fixed size)
-        @parameter
-        for k in range(TILE):
+        # Compute partial product - use comptime for inner loop (small, fixed size)
+        comptime for k in range(TILE):
             acc += a_shared[local_row, k] * b_shared[k, local_col]
 
         barrier()
@@ -261,8 +259,7 @@ fn linear_forward_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += x_shared[local_row, k] * W_shared[k, local_col]
 
         barrier()
@@ -333,8 +330,7 @@ fn linear_backward_dx_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += dy_shared[local_row, k] * W_T_shared[k, local_col]
 
         barrier()
@@ -402,8 +398,7 @@ fn linear_backward_dW_kernel[
 
         barrier()
 
-        @parameter
-        for k in range(TILE):
+        comptime for k in range(TILE):
             acc += x_T_shared[local_row, k] * dy_shared[k, local_col]
 
         barrier()

@@ -183,7 +183,7 @@ fn get_num_camera_drivers() raises -> c_int:
     ]()()
 
 
-fn get_camera_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_camera_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Use this function to get the name of a built in camera driver.
 
     The list of camera drivers is given in the order that they are normally
@@ -211,11 +211,11 @@ fn get_camera_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
     return _get_dylib_function[
         lib,
         "SDL_GetCameraDriver",
-        fn(index: c_int) -> Ptr[c_char, AnyOrigin[False]],
+        fn(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
-fn get_current_camera_driver() raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_current_camera_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of the current camera driver.
 
     The names of drivers are all simple, low-ASCII identifiers, like "v4l2",
@@ -233,12 +233,12 @@ fn get_current_camera_driver() raises -> Ptr[c_char, AnyOrigin[False]]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCurrentCameraDriver", fn() -> Ptr[c_char, AnyOrigin[False]]
+        lib, "SDL_GetCurrentCameraDriver", fn() -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
 fn get_cameras(
-    count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[CameraID, AnyOrigin[True]]
+    count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[CameraID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected camera devices.
 
@@ -260,17 +260,15 @@ fn get_cameras(
     ret = _get_dylib_function[
         lib,
         "SDL_GetCameras",
-        fn(
-            count: Ptr[c_int, AnyOrigin[True]]
-        ) -> Ptr[CameraID, AnyOrigin[True]],
+        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[CameraID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_camera_supported_formats(
-    instance_id: CameraID, count: Ptr[c_int, AnyOrigin[True]]
-) raises -> Ptr[Ptr[CameraSpec, AnyOrigin[True]], AnyOrigin[True]]:
+    instance_id: CameraID, count: Ptr[c_int, MutAnyOrigin]
+) raises -> Ptr[Ptr[CameraSpec, MutAnyOrigin], MutAnyOrigin]:
     """Get the list of native formats/sizes a camera supports.
 
     This returns a list of all formats and frame sizes that a specific camera
@@ -313,13 +311,13 @@ fn get_camera_supported_formats(
         lib,
         "SDL_GetCameraSupportedFormats",
         fn(
-            instance_id: CameraID, count: Ptr[c_int, AnyOrigin[True]]
-        ) -> Ptr[Ptr[CameraSpec, AnyOrigin[True]], AnyOrigin[True]],
+            instance_id: CameraID, count: Ptr[c_int, MutAnyOrigin]
+        ) -> Ptr[Ptr[CameraSpec, MutAnyOrigin], MutAnyOrigin],
     ]()(instance_id, count)
 
 
 fn get_camera_name(
-    instance_id: CameraID, out ret: Ptr[c_char, AnyOrigin[False]]
+    instance_id: CameraID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the human-readable device name for a camera.
 
@@ -339,7 +337,7 @@ fn get_camera_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetCameraName",
-        fn(instance_id: CameraID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(instance_id: CameraID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -374,8 +372,8 @@ fn get_camera_position(instance_id: CameraID) raises -> CameraPosition:
 
 fn open_camera(
     instance_id: CameraID,
-    spec: Ptr[CameraSpec, AnyOrigin[False]],
-    out ret: Ptr[Camera, AnyOrigin[True]],
+    spec: Ptr[CameraSpec, ImmutAnyOrigin],
+    out ret: Ptr[Camera, MutAnyOrigin],
 ) raises:
     """Open a video recording device (a "camera").
 
@@ -427,15 +425,15 @@ fn open_camera(
         lib,
         "SDL_OpenCamera",
         fn(
-            instance_id: CameraID, spec: Ptr[CameraSpec, AnyOrigin[False]]
-        ) -> Ptr[Camera, AnyOrigin[True]],
+            instance_id: CameraID, spec: Ptr[CameraSpec, ImmutAnyOrigin]
+        ) -> Ptr[Camera, MutAnyOrigin],
     ]()(instance_id, spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_camera_permission_state(
-    camera: Ptr[Camera, AnyOrigin[True]]
+    camera: Ptr[Camera, MutAnyOrigin]
 ) raises -> c_int:
     """Query if camera access has been approved by the user.
 
@@ -472,11 +470,11 @@ fn get_camera_permission_state(
     return _get_dylib_function[
         lib,
         "SDL_GetCameraPermissionState",
-        fn(camera: Ptr[Camera, AnyOrigin[True]]) -> c_int,
+        fn(camera: Ptr[Camera, MutAnyOrigin]) -> c_int,
     ]()(camera)
 
 
-fn get_camera_id(camera: Ptr[Camera, AnyOrigin[True]]) raises -> CameraID:
+fn get_camera_id(camera: Ptr[Camera, MutAnyOrigin]) raises -> CameraID:
     """Get the instance ID of an opened camera.
 
     Args:
@@ -495,12 +493,12 @@ fn get_camera_id(camera: Ptr[Camera, AnyOrigin[True]]) raises -> CameraID:
     return _get_dylib_function[
         lib,
         "SDL_GetCameraID",
-        fn(camera: Ptr[Camera, AnyOrigin[True]]) -> CameraID,
+        fn(camera: Ptr[Camera, MutAnyOrigin]) -> CameraID,
     ]()(camera)
 
 
 fn get_camera_properties(
-    camera: Ptr[Camera, AnyOrigin[True]]
+    camera: Ptr[Camera, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with an opened camera.
 
@@ -520,12 +518,12 @@ fn get_camera_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetCameraProperties",
-        fn(camera: Ptr[Camera, AnyOrigin[True]]) -> PropertiesID,
+        fn(camera: Ptr[Camera, MutAnyOrigin]) -> PropertiesID,
     ]()(camera)
 
 
 fn get_camera_format(
-    camera: Ptr[Camera, AnyOrigin[True]], spec: Ptr[CameraSpec, AnyOrigin[True]]
+    camera: Ptr[Camera, MutAnyOrigin], spec: Ptr[CameraSpec, MutAnyOrigin]
 ) raises:
     """Get the spec that a camera is using when generating images.
 
@@ -557,8 +555,8 @@ fn get_camera_format(
         lib,
         "SDL_GetCameraFormat",
         fn(
-            camera: Ptr[Camera, AnyOrigin[True]],
-            spec: Ptr[CameraSpec, AnyOrigin[True]],
+            camera: Ptr[Camera, MutAnyOrigin],
+            spec: Ptr[CameraSpec, MutAnyOrigin],
         ) -> Bool,
     ]()(camera, spec)
     if not ret:
@@ -566,9 +564,9 @@ fn get_camera_format(
 
 
 fn acquire_camera_frame(
-    camera: Ptr[Camera, AnyOrigin[True]],
-    timestamp_ns: Ptr[UInt64, AnyOrigin[True]],
-) raises -> Ptr[Surface, AnyOrigin[True]]:
+    camera: Ptr[Camera, MutAnyOrigin],
+    timestamp_ns: Ptr[UInt64, MutAnyOrigin],
+) raises -> Ptr[Surface, MutAnyOrigin]:
     """Acquire a frame.
 
     The frame is a memory pointer to the image data, whose size and format are
@@ -616,14 +614,14 @@ fn acquire_camera_frame(
         lib,
         "SDL_AcquireCameraFrame",
         fn(
-            camera: Ptr[Camera, AnyOrigin[True]],
-            timestamp_ns: Ptr[UInt64, AnyOrigin[True]],
-        ) -> Ptr[Surface, AnyOrigin[True]],
+            camera: Ptr[Camera, MutAnyOrigin],
+            timestamp_ns: Ptr[UInt64, MutAnyOrigin],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(camera, timestamp_ns)
 
 
 fn release_camera_frame(
-    camera: Ptr[Camera, AnyOrigin[True]], frame: Ptr[Surface, AnyOrigin[True]]
+    camera: Ptr[Camera, MutAnyOrigin], frame: Ptr[Surface, MutAnyOrigin]
 ) raises -> None:
     """Release a frame of video acquired from a camera.
 
@@ -655,13 +653,13 @@ fn release_camera_frame(
         lib,
         "SDL_ReleaseCameraFrame",
         fn(
-            camera: Ptr[Camera, AnyOrigin[True]],
-            frame: Ptr[Surface, AnyOrigin[True]],
+            camera: Ptr[Camera, MutAnyOrigin],
+            frame: Ptr[Surface, MutAnyOrigin],
         ) -> None,
     ]()(camera, frame)
 
 
-fn close_camera(camera: Ptr[Camera, AnyOrigin[True]]) raises -> None:
+fn close_camera(camera: Ptr[Camera, MutAnyOrigin]) raises -> None:
     """Use this function to shut down camera processing and close the camera
     device.
 
@@ -676,5 +674,5 @@ fn close_camera(camera: Ptr[Camera, AnyOrigin[True]]) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseCamera", fn(camera: Ptr[Camera, AnyOrigin[True]]) -> None
+        lib, "SDL_CloseCamera", fn(camera: Ptr[Camera, MutAnyOrigin]) -> None
     ]()(camera)

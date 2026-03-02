@@ -50,7 +50,12 @@ from .primal_common import (
     PRIMAL_MINVAL,
 )
 from ..dynamics.mass_matrix import ldl_factor, ldl_solve
-from .cholesky import chol_factor, chol_solve, chol_factor_inline, chol_solve_inline
+from .cholesky import (
+    chol_factor,
+    chol_solve,
+    chol_factor_inline,
+    chol_solve_inline,
+)
 
 from ..gpu.constants import (
     contacts_offset,
@@ -251,8 +256,7 @@ struct CGSolver(ConstraintSolver):
             constraints, jar, D_vals, force, cstate, constraint_cost
         )
 
-        @parameter
-        if CG_CPU_DEBUG:
+        comptime if CG_CPU_DEBUG:
             print(
                 "  [PRIMAL_CG] num_rows=",
                 num_rows,
@@ -325,8 +329,7 @@ struct CGSolver(ConstraintSolver):
         for iter in range(CG_CPU_ITERATIONS):
             total_iter += 1
 
-            @parameter
-            if CG_CPU_DEBUG:
+            comptime if CG_CPU_DEBUG:
                 print(
                     "    [PRIMAL_CG] iter_start",
                     total_iter,
@@ -360,9 +363,7 @@ struct CGSolver(ConstraintSolver):
             )
 
             if alpha == Scalar[DTYPE](0):
-
-                @parameter
-                if CG_CPU_DEBUG:
+                comptime if CG_CPU_DEBUG:
                     print(
                         "    [PRIMAL_CG] STOPPED at iter",
                         total_iter,
@@ -406,8 +407,7 @@ struct CGSolver(ConstraintSolver):
             ](Ma, qfrc_smooth, qacc, qacc_smooth)
             var improvement = scale * (old_cost - new_cost)
 
-            @parameter
-            if CG_CPU_DEBUG:
+            comptime if CG_CPU_DEBUG:
                 print(
                     "    [PRIMAL_CG] iter",
                     total_iter,
@@ -450,9 +450,7 @@ struct CGSolver(ConstraintSolver):
 
             # Check gradient convergence
             if scale * sqrt(grad_norm) < Scalar[DTYPE](CG_CPU_TOLERANCE):
-
-                @parameter
-                if CG_CPU_DEBUG:
+                comptime if CG_CPU_DEBUG:
                     print(
                         "    [PRIMAL_CG] CONVERGED at iter",
                         total_iter,
@@ -481,8 +479,7 @@ struct CGSolver(ConstraintSolver):
             for i in range(NV):
                 search[i] = -Mgrad[i] + beta * search[i]
 
-        @parameter
-        if CG_CPU_DEBUG:
+        comptime if CG_CPU_DEBUG:
             print("  [PRIMAL_CG] Final iteration count:", total_iter)
 
         # Write forces back to constraint lambda_val for warm-starting
@@ -728,7 +725,9 @@ struct CGSolver(ConstraintSolver):
         # === Step 1: Precompute friction tangent frames, D values, and bias ===
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for c in range(nc):
-            if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) >= Scalar[DTYPE](0):
+            if rebind[Scalar[DTYPE]](
+                workspace[env, ws_c_dist_idx + c]
+            ) >= Scalar[DTYPE](0):
                 continue
 
             var nx = rebind[Scalar[DTYPE]](workspace[env, ws_c_nx_idx + c])
@@ -736,10 +735,18 @@ struct CGSolver(ConstraintSolver):
             var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz_idx + c])
 
             var c_off = contacts_off + c * CONTACT_SIZE
-            var hint_x = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_X])
-            var hint_y = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Y])
-            var hint_z = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Z])
-            if hint_x * hint_x + hint_y * hint_y + hint_z * hint_z < Scalar[DTYPE](0.25):
+            var hint_x = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_FRAME_T1_X]
+            )
+            var hint_y = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_FRAME_T1_Y]
+            )
+            var hint_z = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_FRAME_T1_Z]
+            )
+            if hint_x * hint_x + hint_y * hint_y + hint_z * hint_z < Scalar[
+                DTYPE
+            ](0.25):
                 hint_x = Scalar[DTYPE](0)
                 if ny >= Scalar[DTYPE](-0.5) and ny <= Scalar[DTYPE](0.5):
                     hint_y = Scalar[DTYPE](1)
@@ -764,38 +771,100 @@ struct CGSolver(ConstraintSolver):
             var t2y = nz * t1x - nx * t1z
             var t2z = nx * t1y - ny * t1x
 
-            var body_a = Int(rebind[Scalar[DTYPE]](workspace[env, ws_c_body_idx + c]))
-            var body_b = Int(rebind[Scalar[DTYPE]](workspace[env, ws_c_body_b_idx + c]))
+            var body_a = Int(
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_body_idx + c])
+            )
+            var body_b = Int(
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_body_b_idx + c])
+            )
             var px = rebind[Scalar[DTYPE]](workspace[env, ws_c_px_idx + c])
             var py = rebind[Scalar[DTYPE]](workspace[env, ws_c_py_idx + c])
             var pz = rebind[Scalar[DTYPE]](workspace[env, ws_c_pz_idx + c])
 
             # Compute J_t1 and MinvJ_t1
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            ](env, state, model, workspace, body_a, body_b, px, py, pz, t1x, t1y, t1z, J_row)
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](
+                env,
+                state,
+                model,
+                workspace,
+                body_a,
+                body_b,
+                px,
+                py,
+                pz,
+                t1x,
+                t1y,
+                t1z,
+                J_row,
+            )
             for i in range(NV):
                 workspace[env, ws_Jt1_idx + c * NV + i] = J_row[i]
                 var mij: Scalar[DTYPE] = 0
                 for j in range(NV):
-                    mij += rebind[Scalar[DTYPE]](workspace[env, M_inv_idx + i * NV + j]) * J_row[j]
+                    mij += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, M_inv_idx + i * NV + j]
+                        )
+                        * J_row[j]
+                    )
                 workspace[env, ws_MinvJt1_idx + c * NV + i] = mij
 
             # Compute J_t2 and MinvJ_t2
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            ](env, state, model, workspace, body_a, body_b, px, py, pz, t2x, t2y, t2z, J_row)
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](
+                env,
+                state,
+                model,
+                workspace,
+                body_a,
+                body_b,
+                px,
+                py,
+                pz,
+                t2x,
+                t2y,
+                t2z,
+                J_row,
+            )
             for i in range(NV):
                 workspace[env, ws_Jt2_idx + c * NV + i] = J_row[i]
                 var mij: Scalar[DTYPE] = 0
                 for j in range(NV):
-                    mij += rebind[Scalar[DTYPE]](workspace[env, M_inv_idx + i * NV + j]) * J_row[j]
+                    mij += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, M_inv_idx + i * NV + j]
+                        )
+                        * J_row[j]
+                    )
                 workspace[env, ws_MinvJt2_idx + c * NV + i] = mij
 
             # D_n = 1/R_n, D_f = D_n/impratio
-            var inv_K_imp_c = rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp_idx + c])
+            var inv_K_imp_c = rebind[Scalar[DTYPE]](
+                workspace[env, ws_inv_K_imp_idx + c]
+            )
             var K_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_K_n_idx + c])
             var R_n_c = Scalar[DTYPE](1.0) / inv_K_imp_c - K_n_c
             if R_n_c < Scalar[DTYPE](1e-14):
@@ -805,7 +874,9 @@ struct CGSolver(ConstraintSolver):
             workspace[env, ws_D_f_idx + c] = D_n_c / impratio
 
             # Friction coefficient
-            var mu_c = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION])
+            var mu_c = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_FRICTION]
+            )
             if mu_c <= Scalar[DTYPE](0):
                 mu_c = Scalar[DTYPE](0.5)
             workspace[env, ws_mu_idx + c] = mu_c
@@ -815,8 +886,18 @@ struct CGSolver(ConstraintSolver):
             var bt2_c: Scalar[DTYPE] = 0
             for i in range(NV):
                 var qv_i = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-                bt1_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i]) * qv_i
-                bt2_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i]) * qv_i
+                bt1_c += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt1_idx + c * NV + i]
+                    )
+                    * qv_i
+                )
+                bt2_c += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt2_idx + c * NV + i]
+                    )
+                    * qv_i
+                )
             workspace[env, ws_bt1_idx + c] = B_damp * bt1_c
             workspace[env, ws_bt2_idx + c] = B_damp * bt2_c
 
@@ -849,7 +930,10 @@ struct CGSolver(ConstraintSolver):
         for i in range(NV):
             var s: Scalar[DTYPE] = 0
             for j in range(NV):
-                s += rebind[Scalar[DTYPE]](workspace[env, M_idx + i * NV + j]) * qacc[j]
+                s += (
+                    rebind[Scalar[DTYPE]](workspace[env, M_idx + i * NV + j])
+                    * qacc[j]
+                )
             Ma[i] = s
 
         # Scale = 1/trace(M) for convergence check
@@ -863,21 +947,44 @@ struct CGSolver(ConstraintSolver):
 
         # === Step 4: Compute initial jar and forces via 3-zone cone logic ===
         for c in range(nc):
-            if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) >= Scalar[DTYPE](0):
+            if rebind[Scalar[DTYPE]](
+                workspace[env, ws_c_dist_idx + c]
+            ) >= Scalar[DTYPE](0):
                 workspace[env, ws_fn_idx + c] = 0
                 workspace[env, ws_ft1_idx + c] = 0
                 workspace[env, ws_ft2_idx + c] = 0
                 workspace[env, ws_cstate_idx + c] = 0
                 continue
 
-            var jar_n_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias_idx + c])
-            var jar_t1_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_bt1_idx + c])
-            var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_bt2_idx + c])
+            var jar_n_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                workspace[env, ws_pos_bias_idx + c]
+            )
+            var jar_t1_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                workspace[env, ws_bt1_idx + c]
+            )
+            var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                workspace[env, ws_bt2_idx + c]
+            )
             for i in range(NV):
                 var qa_i = qacc[i]
-                jar_n_c += rebind[Scalar[DTYPE]](workspace[env, ws_J_n_idx + c * NV + i]) * qa_i
-                jar_t1_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i]) * qa_i
-                jar_t2_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i]) * qa_i
+                jar_n_c += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_J_n_idx + c * NV + i]
+                    )
+                    * qa_i
+                )
+                jar_t1_c += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt1_idx + c * NV + i]
+                    )
+                    * qa_i
+                )
+                jar_t2_c += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt2_idx + c * NV + i]
+                    )
+                    * qa_i
+                )
             workspace[env, ws_jar_n_idx + c] = jar_n_c
             workspace[env, ws_jar_t1_idx + c] = jar_t1_c
             workspace[env, ws_jar_t2_idx + c] = jar_t2_c
@@ -904,8 +1011,12 @@ struct CGSolver(ConstraintSolver):
                 var s = jar_n_c - mu_c * T_safe
                 var Dm = D_n_c / (Scalar[DTYPE](1.0) + mu_c * mu_c)
                 workspace[env, ws_fn_idx + c] = -Dm * s
-                workspace[env, ws_ft1_idx + c] = Dm * mu_c * s * jar_t1_c / T_safe
-                workspace[env, ws_ft2_idx + c] = Dm * mu_c * s * jar_t2_c / T_safe
+                workspace[env, ws_ft1_idx + c] = (
+                    Dm * mu_c * s * jar_t1_c / T_safe
+                )
+                workspace[env, ws_ft2_idx + c] = (
+                    Dm * mu_c * s * jar_t2_c / T_safe
+                )
                 workspace[env, ws_cstate_idx + c] = 2
 
         # === Step 5: Compute initial gradient and preconditioned gradient ===
@@ -913,15 +1024,23 @@ struct CGSolver(ConstraintSolver):
         for i in range(NV):
             var g: Scalar[DTYPE] = Ma[i] - qfrc_sm[i]
             for c in range(nc):
-                var cs = Int(rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c]))
+                var cs = Int(
+                    rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c])
+                )
                 if cs == 0:
                     continue
                 g -= (
-                    rebind[Scalar[DTYPE]](workspace[env, ws_J_n_idx + c * NV + i])
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, ws_J_n_idx + c * NV + i]
+                    )
                     * rebind[Scalar[DTYPE]](workspace[env, ws_fn_idx + c])
-                    + rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i])
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt1_idx + c * NV + i]
+                    )
                     * rebind[Scalar[DTYPE]](workspace[env, ws_ft1_idx + c])
-                    + rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i])
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, ws_Jt2_idx + c * NV + i]
+                    )
                     * rebind[Scalar[DTYPE]](workspace[env, ws_ft2_idx + c])
                 )
             grad[i] = g
@@ -944,7 +1063,12 @@ struct CGSolver(ConstraintSolver):
             for i in range(NV):
                 var s: Scalar[DTYPE] = 0
                 for j in range(NV):
-                    s += rebind[Scalar[DTYPE]](workspace[env, M_idx + i * NV + j]) * search[j]
+                    s += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, M_idx + i * NV + j]
+                        )
+                        * search[j]
+                    )
                 Mv[i] = s
 
             # Precompute J * search per contact direction (for linesearch)
@@ -955,12 +1079,29 @@ struct CGSolver(ConstraintSolver):
                 var js_n_c: Scalar[DTYPE] = 0
                 var js_t1_c: Scalar[DTYPE] = 0
                 var js_t2_c: Scalar[DTYPE] = 0
-                if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) < Scalar[DTYPE](0):
+                if rebind[Scalar[DTYPE]](
+                    workspace[env, ws_c_dist_idx + c]
+                ) < Scalar[DTYPE](0):
                     for i in range(NV):
                         var s_i = search[i]
-                        js_n_c += rebind[Scalar[DTYPE]](workspace[env, ws_J_n_idx + c * NV + i]) * s_i
-                        js_t1_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i]) * s_i
-                        js_t2_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i]) * s_i
+                        js_n_c += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_J_n_idx + c * NV + i]
+                            )
+                            * s_i
+                        )
+                        js_t1_c += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_Jt1_idx + c * NV + i]
+                            )
+                            * s_i
+                        )
+                        js_t2_c += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_Jt2_idx + c * NV + i]
+                            )
+                            * s_i
+                        )
                 Js_n[c] = js_n_c
                 Js_t1[c] = js_t1_c
                 Js_t2[c] = js_t2_c
@@ -984,17 +1125,31 @@ struct CGSolver(ConstraintSolver):
             # Current constraint cost
             var c_cost_0: Scalar[DTYPE] = 0
             for c in range(nc):
-                if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) >= Scalar[DTYPE](0):
+                if rebind[Scalar[DTYPE]](
+                    workspace[env, ws_c_dist_idx + c]
+                ) >= Scalar[DTYPE](0):
                     continue
-                var cs = Int(rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c]))
+                var cs = Int(
+                    rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c])
+                )
                 var N = rebind[Scalar[DTYPE]](workspace[env, ws_jar_n_idx + c])
-                var T1 = rebind[Scalar[DTYPE]](workspace[env, ws_jar_t1_idx + c])
-                var T2 = rebind[Scalar[DTYPE]](workspace[env, ws_jar_t2_idx + c])
+                var T1 = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_jar_t1_idx + c]
+                )
+                var T2 = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_jar_t2_idx + c]
+                )
                 var mu_c = rebind[Scalar[DTYPE]](workspace[env, ws_mu_idx + c])
-                var D_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_n_idx + c])
-                var D_f_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_f_idx + c])
+                var D_n_c = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_D_n_idx + c]
+                )
+                var D_f_c = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_D_f_idx + c]
+                )
                 if cs == 1:
-                    c_cost_0 += Scalar[DTYPE](0.5) * (D_n_c * N * N + D_f_c * (T1 * T1 + T2 * T2))
+                    c_cost_0 += Scalar[DTYPE](0.5) * (
+                        D_n_c * N * N + D_f_c * (T1 * T1 + T2 * T2)
+                    )
                 elif cs == 2:
                     var T_s = sqrt(T1 * T1 + T2 * T2)
                     if T_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
@@ -1012,26 +1167,51 @@ struct CGSolver(ConstraintSolver):
                 var trial_gauss = gauss_0 + alpha * g1 + alpha * alpha * g2
                 var trial_c_cost: Scalar[DTYPE] = 0
                 for c in range(nc):
-                    if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) >= Scalar[DTYPE](0):
+                    if rebind[Scalar[DTYPE]](
+                        workspace[env, ws_c_dist_idx + c]
+                    ) >= Scalar[DTYPE](0):
                         continue
-                    var trial_N = rebind[Scalar[DTYPE]](workspace[env, ws_jar_n_idx + c]) + alpha * Js_n[c]
-                    var trial_T1 = rebind[Scalar[DTYPE]](workspace[env, ws_jar_t1_idx + c]) + alpha * Js_t1[c]
-                    var trial_T2 = rebind[Scalar[DTYPE]](workspace[env, ws_jar_t2_idx + c]) + alpha * Js_t2[c]
-                    var mu_c = rebind[Scalar[DTYPE]](workspace[env, ws_mu_idx + c])
-                    var D_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_n_idx + c])
-                    var D_f_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_f_idx + c])
-                    var trial_T = sqrt(trial_T1 * trial_T1 + trial_T2 * trial_T2)
+                    var trial_N = (
+                        rebind[Scalar[DTYPE]](workspace[env, ws_jar_n_idx + c])
+                        + alpha * Js_n[c]
+                    )
+                    var trial_T1 = (
+                        rebind[Scalar[DTYPE]](workspace[env, ws_jar_t1_idx + c])
+                        + alpha * Js_t1[c]
+                    )
+                    var trial_T2 = (
+                        rebind[Scalar[DTYPE]](workspace[env, ws_jar_t2_idx + c])
+                        + alpha * Js_t2[c]
+                    )
+                    var mu_c = rebind[Scalar[DTYPE]](
+                        workspace[env, ws_mu_idx + c]
+                    )
+                    var D_n_c = rebind[Scalar[DTYPE]](
+                        workspace[env, ws_D_n_idx + c]
+                    )
+                    var D_f_c = rebind[Scalar[DTYPE]](
+                        workspace[env, ws_D_f_idx + c]
+                    )
+                    var trial_T = sqrt(
+                        trial_T1 * trial_T1 + trial_T2 * trial_T2
+                    )
                     var trial_T_safe = trial_T
                     if trial_T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                         trial_T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
                     if trial_N >= mu_c * trial_T_safe:
                         pass
                     elif mu_c * trial_N + trial_T <= Scalar[DTYPE](0):
-                        trial_c_cost += Scalar[DTYPE](0.5) * (D_n_c * trial_N * trial_N + D_f_c * (trial_T1 * trial_T1 + trial_T2 * trial_T2))
+                        trial_c_cost += Scalar[DTYPE](0.5) * (
+                            D_n_c * trial_N * trial_N
+                            + D_f_c
+                            * (trial_T1 * trial_T1 + trial_T2 * trial_T2)
+                        )
                     else:
                         var trial_s = trial_N - mu_c * trial_T_safe
                         var Dm = D_n_c / (Scalar[DTYPE](1.0) + mu_c * mu_c)
-                        trial_c_cost += Scalar[DTYPE](0.5) * Dm * trial_s * trial_s
+                        trial_c_cost += (
+                            Scalar[DTYPE](0.5) * Dm * trial_s * trial_s
+                        )
                 var trial_cost = trial_gauss + trial_c_cost
                 if trial_cost <= current_cost + armijo_c * alpha * gtd:
                     break
@@ -1047,23 +1227,50 @@ struct CGSolver(ConstraintSolver):
 
             # Recompute jar and forces (3-zone cone logic)
             for c in range(nc):
-                if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist_idx + c]) >= Scalar[DTYPE](0):
+                if rebind[Scalar[DTYPE]](
+                    workspace[env, ws_c_dist_idx + c]
+                ) >= Scalar[DTYPE](0):
                     continue
-                var jar_n_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias_idx + c])
-                var jar_t1_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_bt1_idx + c])
-                var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](workspace[env, ws_bt2_idx + c])
+                var jar_n_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_pos_bias_idx + c]
+                )
+                var jar_t1_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_bt1_idx + c]
+                )
+                var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_bt2_idx + c]
+                )
                 for i in range(NV):
                     var qa_i = qacc[i]
-                    jar_n_c += rebind[Scalar[DTYPE]](workspace[env, ws_J_n_idx + c * NV + i]) * qa_i
-                    jar_t1_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i]) * qa_i
-                    jar_t2_c += rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i]) * qa_i
+                    jar_n_c += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, ws_J_n_idx + c * NV + i]
+                        )
+                        * qa_i
+                    )
+                    jar_t1_c += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, ws_Jt1_idx + c * NV + i]
+                        )
+                        * qa_i
+                    )
+                    jar_t2_c += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, ws_Jt2_idx + c * NV + i]
+                        )
+                        * qa_i
+                    )
                 workspace[env, ws_jar_n_idx + c] = jar_n_c
                 workspace[env, ws_jar_t1_idx + c] = jar_t1_c
                 workspace[env, ws_jar_t2_idx + c] = jar_t2_c
 
                 var mu_c = rebind[Scalar[DTYPE]](workspace[env, ws_mu_idx + c])
-                var D_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_n_idx + c])
-                var D_f_c = rebind[Scalar[DTYPE]](workspace[env, ws_D_f_idx + c])
+                var D_n_c = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_D_n_idx + c]
+                )
+                var D_f_c = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_D_f_idx + c]
+                )
                 var T = sqrt(jar_t1_c * jar_t1_c + jar_t2_c * jar_t2_c)
                 var T_safe = T
                 if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
@@ -1082,8 +1289,12 @@ struct CGSolver(ConstraintSolver):
                     var s = jar_n_c - mu_c * T_safe
                     var Dm = D_n_c / (Scalar[DTYPE](1.0) + mu_c * mu_c)
                     workspace[env, ws_fn_idx + c] = -Dm * s
-                    workspace[env, ws_ft1_idx + c] = Dm * mu_c * s * jar_t1_c / T_safe
-                    workspace[env, ws_ft2_idx + c] = Dm * mu_c * s * jar_t2_c / T_safe
+                    workspace[env, ws_ft1_idx + c] = (
+                        Dm * mu_c * s * jar_t1_c / T_safe
+                    )
+                    workspace[env, ws_ft2_idx + c] = (
+                        Dm * mu_c * s * jar_t2_c / T_safe
+                    )
                     workspace[env, ws_cstate_idx + c] = Scalar[DTYPE](2)
 
             # Save old gradient for Polak-Ribiere
@@ -1096,15 +1307,23 @@ struct CGSolver(ConstraintSolver):
             for i in range(NV):
                 var g: Scalar[DTYPE] = Ma[i] - qfrc_sm[i]
                 for c in range(nc):
-                    var cs = Int(rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c]))
+                    var cs = Int(
+                        rebind[Scalar[DTYPE]](workspace[env, ws_cstate_idx + c])
+                    )
                     if cs == 0:
                         continue
                     g -= (
-                        rebind[Scalar[DTYPE]](workspace[env, ws_J_n_idx + c * NV + i])
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, ws_J_n_idx + c * NV + i]
+                        )
                         * rebind[Scalar[DTYPE]](workspace[env, ws_fn_idx + c])
-                        + rebind[Scalar[DTYPE]](workspace[env, ws_Jt1_idx + c * NV + i])
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, ws_Jt1_idx + c * NV + i]
+                        )
                         * rebind[Scalar[DTYPE]](workspace[env, ws_ft1_idx + c])
-                        + rebind[Scalar[DTYPE]](workspace[env, ws_Jt2_idx + c * NV + i])
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, ws_Jt2_idx + c * NV + i]
+                        )
                         * rebind[Scalar[DTYPE]](workspace[env, ws_ft2_idx + c])
                     )
                 grad[i] = g
@@ -1136,9 +1355,15 @@ struct CGSolver(ConstraintSolver):
         # Write forces to state buffer
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
-            state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[env, ws_fn_idx + c]
-            state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[env, ws_ft1_idx + c]
-            state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[env, ws_ft2_idx + c]
+            state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[
+                env, ws_fn_idx + c
+            ]
+            state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[
+                env, ws_ft1_idx + c
+            ]
+            state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[
+                env, ws_ft2_idx + c
+            ]
 
         comptime SOLVER_ITER_GPU: Int = 50
         detect_and_solve_limits_gpu[
@@ -1174,8 +1399,7 @@ struct CGSolver(ConstraintSolver):
             SOLVER_ITER_GPU,
         ](env, state, model, workspace)
 
-        @parameter
-        if MAX_TENDON > 0:
+        comptime if MAX_TENDON > 0:
             build_and_solve_tendon_gpu[
                 DTYPE,
                 NQ,

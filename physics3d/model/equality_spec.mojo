@@ -160,8 +160,7 @@ struct Equalities[*E: EqualitySpec]:
         """
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             total += Self.eq_types[i].NUM_ROWS
         return total
 
@@ -176,8 +175,8 @@ struct Equalities[*E: EqualitySpec]:
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -189,14 +188,13 @@ struct Equalities[*E: EqualitySpec]:
             Self.N,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
+            MAX_TENDON,
+            NSITE,
         ]
     ):
         """Populate model equality constraints from compile-time specs."""
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime E_item = Self.eq_types[i]
 
             model.equality_constraints[i] = EqualityConstraintDef[DTYPE](

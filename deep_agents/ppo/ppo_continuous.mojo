@@ -653,7 +653,10 @@ struct DeepPPOContinuousAgent[
                         quit_requested = True
                         break
                     # Skip physics step while paused (unless Right arrow pressed)
-                    if env.renderer_is_paused() and not env.renderer_step_once():
+                    if (
+                        env.renderer_is_paused()
+                        and not env.renderer_step_once()
+                    ):
                         continue
 
                 # stochastic=True samples from policy, False uses mean
@@ -886,8 +889,7 @@ struct DeepPPOContinuousAgent[
                 )
 
             # Step all environments
-            @parameter
-            if EVAL_TOTAL_WS > 0:
+            comptime if EVAL_TOTAL_WS > 0:
                 EnvType.step_kernel_gpu[
                     Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
                 ](
@@ -1968,8 +1970,7 @@ struct DeepPPOContinuousAgent[
                     # Critic grad kernel
                     var critic_grad_start = perf_counter_ns()
 
-                    @parameter
-                    if Self.clip_value:
+                    comptime if Self.clip_value:
                         ctx.enqueue_function[
                             critic_grad_clipped_wrapper,
                             critic_grad_clipped_wrapper,
@@ -2654,8 +2655,7 @@ struct DeepPPOContinuousAgent[
             rollout_count += 1
 
             # Update curriculum in pre-allocated workspace once per rollout
-            @parameter
-            if TOTAL_WS > 0:
+            comptime if TOTAL_WS > 0:
                 var rollout_progress = Scalar[dtype](
                     total_steps / annealing_target_steps
                 )
@@ -2761,8 +2761,7 @@ struct DeepPPOContinuousAgent[
                 # Step all environments on GPU with continuous actions
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
 
-                @parameter
-                if TOTAL_WS > 0:
+                comptime if TOTAL_WS > 0:
                     # Use pre-allocated workspace (curriculum updated per rollout above)
                     EnvType.step_kernel_gpu[
                         Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
@@ -3306,8 +3305,7 @@ struct DeepPPOContinuousAgent[
                     # Critic grad kernel
                     var critic_grad_start = perf_counter_ns()
 
-                    @parameter
-                    if Self.clip_value:
+                    comptime if Self.clip_value:
                         ctx.enqueue_function[
                             critic_grad_clipped_wrapper,
                             critic_grad_clipped_wrapper,

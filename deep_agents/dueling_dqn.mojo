@@ -168,7 +168,9 @@ struct DuelingDQNAgent[
         # Initialize target networks
         self.backbone_target = Self.BackboneNetwork(Adam(lr=lr), Kaiming())
         self.value_head_target = Self.ValueNetwork(Adam(lr=lr), Kaiming())
-        self.advantage_head_target = Self.AdvantageNetwork(Adam(lr=lr), Kaiming())
+        self.advantage_head_target = Self.AdvantageNetwork(
+            Adam(lr=lr), Kaiming()
+        )
 
         # Copy weights to target networks
         self.backbone_target.copy_params_from(self.backbone)
@@ -334,8 +336,7 @@ struct DuelingDQNAgent[
             uninitialized=True
         )
 
-        @parameter
-        if Self.double_dqn:
+        comptime if Self.double_dqn:
             # Double DQN: online network selects best action, target evaluates it
             var online_next_q = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
@@ -537,9 +538,9 @@ struct DuelingDQNAgent[
         if self.epsilon < self.epsilon_min:
             self.epsilon = self.epsilon_min
 
-    fn _list_to_inline[T: DType](
-        self, obs_list: List[Scalar[T]]
-    ) -> InlineArray[Scalar[dtype], Self.OBS]:
+    fn _list_to_inline[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> InlineArray[Scalar[dtype], Self.OBS]:
         """Convert List[Scalar[T]] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
         for i in range(Self.OBS):
@@ -608,7 +609,9 @@ struct DuelingDQNAgent[
             var done = result[2]
 
             var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
+            self.store_transition(
+                warmup_obs, action, Float64(reward), next_obs, done
+            )
 
             warmup_obs = next_obs^
             warmup_count += 1
@@ -644,7 +647,9 @@ struct DuelingDQNAgent[
                 var next_obs = self._list_to_inline(next_obs_list)
 
                 # Store transition
-                self.store_transition(obs, action, Float64(reward), next_obs, done)
+                self.store_transition(
+                    obs, action, Float64(reward), next_obs, done
+                )
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:

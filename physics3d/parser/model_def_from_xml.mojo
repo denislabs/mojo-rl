@@ -12,7 +12,7 @@ Enables zero-boilerplate physics environments from XML:
 
 CPU path:  parse_xml_full() → FlatModelDef.setup_model() + FK + invweight0.
 GPU path:  CPU Model → HostBuffer → DeviceBuffer → _compute_invweight0_gpu().
-GPU kernels: @parameter for loops over comptime scalar helpers.
+GPU kernels: comptimefor loops over comptime scalar helpers.
 Rendering: no-op stubs (XML models have no visual configuration yet).
 
 Note: Mojo nightly requires struct parameters to be accessed as 'Self.param'
@@ -165,7 +165,9 @@ struct ModelDefFromXML[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
-    comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (Self.nq - Self.obs_qpos_skip + Self.nv)
+    comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
+        Self.nq - Self.obs_qpos_skip + Self.nv
+    )
     comptime ACTION_DIM: Int = Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
 
@@ -222,12 +224,10 @@ struct ModelDefFromXML[
             Self.MAX_TENDON,
             Self.NSITE,  # MODEL_NSITE in setup_model's renamed param
         ](model)
-        @parameter
-        if _xml_compiler_inertiafromgeom[Self.xml]():
+        comptime if _xml_compiler_inertiafromgeom[Self.xml]():
             compute_inertia_from_geoms(model)
             comptime settotalmass = _xml_compiler_settotalmass[Self.xml]()
-            @parameter
-            if settotalmass > 0.0:
+            comptime if settotalmass > 0.0:
                 var total_mass = Scalar[DTYPE](0)
                 for i in range(1, Self.NBODY):
                     total_mass += model.body_mass[i]
@@ -235,10 +235,15 @@ struct ModelDefFromXML[
                     var scale = Scalar[DTYPE](settotalmass) / total_mass
                     for i in range(1, Self.NBODY):
                         model.body_mass[i] *= scale
-                        model.body_inv_mass[i] = Scalar[DTYPE](1.0) / model.body_mass[i]
+                        model.body_inv_mass[i] = (
+                            Scalar[DTYPE](1.0) / model.body_mass[i]
+                        )
                         for k in range(3):
                             model.body_inertia[i * 3 + k] *= scale
-                            model.body_inv_inertia[i * 3 + k] = Scalar[DTYPE](1.0) / model.body_inertia[i * 3 + k]
+                            model.body_inv_inertia[i * 3 + k] = (
+                                Scalar[DTYPE](1.0)
+                                / model.body_inertia[i * 3 + k]
+                            )
         forward_kinematics(model, data)
         compute_body_invweight0(model, data)
 
@@ -862,13 +867,11 @@ struct ModelDefFromXML[
                 return
             comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
 
-            @parameter
-            for act_i in range(Self.nact):
+            comptime for act_i in range(Self.nact):
                 comptime gear = _xml_nth_motor_gear[Self.xml, act_i]()
                 comptime dof = _xml_nth_motor_dof_adr[Self.xml, act_i]()
 
-                @parameter
-                if dof >= 0 and dof < Self.NV:
+                comptime if dof >= 0 and dof < Self.NV:
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
                     if ctrl > Scalar[DTYPE](1.0):
                         ctrl = Scalar[DTYPE](1.0)
@@ -907,12 +910,10 @@ struct ModelDefFromXML[
                 return
             comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
 
-            @parameter
-            for j in range(Self.njoint):
+            comptime for j in range(Self.njoint):
                 comptime limited = _xml_nth_joint_limited[Self.xml, j]()
 
-                @parameter
-                if limited:
+                comptime if limited:
                     comptime qp_adr = _xml_nth_joint_qpos_adr[Self.xml, j]()
                     comptime rmin = _xml_nth_joint_range_min[Self.xml, j]()
                     comptime rmax = _xml_nth_joint_range_max[Self.xml, j]()
@@ -1000,7 +1001,9 @@ struct ModelDefFromXML[
         comptime TOTAL_VALS = Self.NQ + Self.NV
         comptime NUM_BATCHES = (TOTAL_VALS + 3) // 4
 
-        var rng = PhiloxRandom(seed=seed * 2654435761 + env * 12345, offset=0)
+        var rng = PhiloxRandom(
+            seed=UInt64(seed * 2654435761 + env * 12345), offset=0
+        )
         var rand_vals = InlineArray[Scalar[DType.float32], NUM_BATCHES * 4](
             fill=Scalar[DType.float32](0)
         )
@@ -1045,12 +1048,10 @@ struct ModelDefFromXML[
         comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
         comptime qvel_base = qvel_offset[Self.NQ, Self.NV]()
 
-        @parameter
-        for i in range(Self.NQ - Self.obs_qpos_skip):
+        comptime for i in range(Self.NQ - Self.obs_qpos_skip):
             obs[env, i] = states[env, qpos_base + Self.obs_qpos_skip + i]
 
-        @parameter
-        for i in range(Self.NV):
+        comptime for i in range(Self.NV):
             obs[env, Self.NQ - Self.obs_qpos_skip + i] = states[
                 env, qvel_base + i
             ]

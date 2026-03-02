@@ -1617,7 +1617,7 @@ fn detect_contacts_sap_gpu[
 # Geom count at which the SAP broadphase becomes faster than the O(N²) bounding
 # sphere check.  Below this threshold detect_contacts is used; at or above it
 # detect_contacts_sap is used.  Both branches are dead-code-eliminated at
-# compile time via @parameter if, so there is zero runtime overhead.
+# compile time via comptime if, so there is zero runtime overhead.
 comptime SAP_THRESHOLD: Int = 16
 
 
@@ -1656,8 +1656,7 @@ fn detect_contacts_auto[
     compile time — only one code path is emitted per instantiation.
     """
 
-    @parameter
-    if NGEOM >= SAP_THRESHOLD:
+    comptime if NGEOM >= SAP_THRESHOLD:
         detect_contacts_sap[
             DTYPE,
             NQ,
@@ -1713,8 +1712,7 @@ fn detect_contacts_auto_gpu[
     compile time.
     """
 
-    @parameter
-    if NGEOM >= SAP_THRESHOLD:
+    comptime if NGEOM >= SAP_THRESHOLD:
         detect_contacts_sap_gpu[
             DTYPE,
             NQ,

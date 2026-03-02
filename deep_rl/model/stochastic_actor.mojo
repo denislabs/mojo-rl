@@ -455,8 +455,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-            @parameter
-            for k in range(TILE):
+            comptime for k in range(TILE):
                 mean_acc += x_shared[local_row, k] * W_shared[k, local_col]
 
             barrier()
@@ -546,8 +545,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-            @parameter
-            for k in range(TILE):
+            comptime for k in range(TILE):
                 mean_acc += x_shared[local_row, k] * W_shared[k, local_col]
 
             barrier()
@@ -765,8 +763,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-            @parameter
-            for k in range(TILE):
+            comptime for k in range(TILE):
                 acc += dy_shared[local_row, k] * W_T_shared[k, local_col]
 
             barrier()
@@ -828,8 +825,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-            @parameter
-            for k in range(TILE):
+            comptime for k in range(TILE):
                 acc += x_T_shared[local_row, k] * dy_shared[k, local_col]
 
             barrier()

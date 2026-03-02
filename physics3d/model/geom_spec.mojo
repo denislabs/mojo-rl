@@ -1073,11 +1073,8 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         """Count of static (worldbody) geoms (BODY_IDX == 0)."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
-
-            @parameter
-            if Self.geom_types[i].BODY_IDX == 0:
+        comptime for i in range(Self.N):
+            comptime if Self.geom_types[i].BODY_IDX == 0:
                 total += 1
         return total
 
@@ -1086,11 +1083,8 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         """Count of plane geoms (GEOM_TYPE == GEOM_PLANE)."""
         var total = 0
 
-        @parameter
-        for i in range(Self.N):
-
-            @parameter
-            if Self.geom_types[i].GEOM_TYPE == GEOM_PLANE:
+        comptime for i in range(Self.N):
+            comptime if Self.geom_types[i].GEOM_TYPE == GEOM_PLANE:
                 total += 1
         return total
 
@@ -1130,8 +1124,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         filtering, friction, and per-geom solref/solimp.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime G_item = Self.geom_types[i]
 
             # Geom arrays
@@ -1203,8 +1196,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             )
 
             # Compute bounding sphere radius
-            @parameter
-            if G_item.GEOM_TYPE == GEOM_SPHERE:
+            comptime if G_item.GEOM_TYPE == GEOM_SPHERE:
                 model.geom_rbound[i] = Scalar[DTYPE](G_item.RADIUS)
             elif G_item.GEOM_TYPE == GEOM_CAPSULE:
                 model.geom_rbound[i] = Scalar[DTYPE](
@@ -1233,8 +1225,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
 
             # Compute and store per-geom mass
             # Priority: explicit mass > explicit density > default density
-            @parameter
-            if G_item.GEOM_TYPE == GEOM_PLANE:
+            comptime if G_item.GEOM_TYPE == GEOM_PLANE:
                 model.geom_mass[i] = Scalar[DTYPE](0)
             elif G_item.GEOM_MASS >= 0.0:
                 # Explicit mass on the geom
@@ -1250,8 +1241,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                     Scalar[DTYPE](G_item.HALF_Z),
                 )
 
-                @parameter
-                if G_item.DENSITY >= 0.0:
+                comptime if G_item.DENSITY >= 0.0:
                     # Explicit density on the geom
                     model.geom_mass[i] = Scalar[DTYPE](G_item.DENSITY) * vol
                 else:
@@ -1273,8 +1263,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         Computes rbound and geom_mass per geom type.
         """
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime G_item = Self.geom_types[i]
             var off = model_geom_offset[NBODY, NJOINT](i)
 
@@ -1346,8 +1335,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             )
 
             # Compute bounding sphere radius
-            @parameter
-            if G_item.GEOM_TYPE == GEOM_SPHERE:
+            comptime if G_item.GEOM_TYPE == GEOM_SPHERE:
                 buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](G_item.RADIUS)
             elif G_item.GEOM_TYPE == GEOM_CAPSULE:
                 buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](
@@ -1383,12 +1371,10 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         """
         var masses = InlineArray[Scalar[DTYPE], Self.N](fill=Scalar[DTYPE](0))
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime G_item = Self.geom_types[i]
 
-            @parameter
-            if G_item.GEOM_TYPE == GEOM_PLANE:
+            comptime if G_item.GEOM_TYPE == GEOM_PLANE:
                 masses[i] = Scalar[DTYPE](0)
             elif G_item.GEOM_MASS >= 0.0:
                 masses[i] = Scalar[DTYPE](G_item.GEOM_MASS)
@@ -1402,8 +1388,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                     Scalar[DTYPE](G_item.HALF_Z),
                 )
 
-                @parameter
-                if G_item.DENSITY >= 0.0:
+                comptime if G_item.DENSITY >= 0.0:
                     masses[i] = Scalar[DTYPE](G_item.DENSITY) * vol
                 else:
                     masses[i] = Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
@@ -1419,37 +1404,33 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         """Draw plane geoms as ground grids, or a fallback grid if no planes."""
         var has_plane = False
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime GG = Self.geom_types[i]
 
-            @parameter
-            if GG.GEOM_TYPE == GEOM_PLANE:
+            comptime if GG.GEOM_TYPE == GEOM_PLANE:
                 has_plane = True
                 var max_radius: Float64 = 0.0
 
-                @parameter
-                for j in range(Self.N):
+                comptime for j in range(Self.N):
                     comptime HH = Self.geom_types[j]
 
-                    @parameter
-                    if HH.BODY_IDX > 0:
+                    comptime if HH.BODY_IDX > 0:
                         if HH.RADIUS > max_radius:
                             max_radius = HH.RADIUS
 
-                var ground_offset = GG.POS_Z - max_radius * (visual_radius_scale - 1.0)
+                var ground_offset = GG.POS_Z - max_radius * (
+                    visual_radius_scale - 1.0
+                )
                 var grid_center_x = torso_x if follow else 0.0
                 renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
         if not has_plane:
             var max_radius: Float64 = 0.0
 
-            @parameter
-            for i in range(Self.N):
+            comptime for i in range(Self.N):
                 comptime GG = Self.geom_types[i]
 
-                @parameter
-                if GG.BODY_IDX > 0:
+                comptime if GG.BODY_IDX > 0:
                     if GG.RADIUS > max_radius:
                         max_radius = GG.RADIUS
 
@@ -1466,21 +1447,18 @@ struct Geoms[*G: GeomSpec](GeomsLike):
     ) raises:
         """Draw all body-attached geoms (capsule, sphere, box, cylinder)."""
 
-        @parameter
-        for i in range(Self.N):
+        comptime for i in range(Self.N):
             comptime GG = Self.geom_types[i]
 
             # Skip worldbody geoms (planes rendered separately)
-            @parameter
-            if GG.BODY_IDX > 0:
+            comptime if GG.BODY_IDX > 0:
                 var body_pos = positions[GG.BODY_IDX]
                 var body_quat = quaternions[GG.BODY_IDX]
 
                 # Apply local position offset
                 var geom_pos: _RVec3
 
-                @parameter
-                if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
+                comptime if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
                     geom_pos = body_pos
                 else:
                     var local_pos = _RVec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
@@ -1489,8 +1467,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                 # Apply local rotation
                 var geom_quat: _RQuat
 
-                @parameter
-                if (
+                comptime if (
                     GG.QUAT_X == 0.0
                     and GG.QUAT_Y == 0.0
                     and GG.QUAT_Z == 0.0
@@ -1509,8 +1486,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                 comptime _refl: Float64 = 0.0 if GG.REFLECTANCE < 0.0 else GG.REFLECTANCE
 
                 # Dispatch draw call by geom type
-                @parameter
-                if GG.GEOM_TYPE == GEOM_CAPSULE:
+                comptime if GG.GEOM_TYPE == GEOM_CAPSULE:
                     renderer.draw_capsule(
                         center=geom_pos,
                         orientation=geom_quat,

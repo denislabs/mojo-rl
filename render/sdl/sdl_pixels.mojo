@@ -293,7 +293,7 @@ struct PixelFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __init__(out self, value: Int):
-        self.value = value
+        self.value = UInt32(value)
 
     @always_inline
     fn __int__(self) -> Int:
@@ -889,7 +889,7 @@ struct Palette(ImplicitlyCopyable, Movable):
 
     var ncolors: c_int
     """Number of elements in `colors`."""
-    var colors: Ptr[Color, AnyOrigin[True]]
+    var colors: Ptr[Color, MutAnyOrigin]
     """An array of colors, `ncolors` long."""
     var version: UInt32
     """Internal use only, do not touch."""
@@ -907,7 +907,7 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
     var format: PixelFormat
     var bits_per_pixel: UInt8
     var bytes_per_pixel: UInt8
-    var padding: ArrayHelper[UInt8, 2, AnyOrigin[True]]
+    var padding: ArrayHelper[UInt8, 2, MutAnyOrigin]
     var rmask: UInt32
     var gmask: UInt32
     var bmask: UInt32
@@ -924,7 +924,7 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
 
 fn get_pixel_format_name(
     format: PixelFormat,
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the human readable name of a pixel format.
 
     Args:
@@ -943,17 +943,17 @@ fn get_pixel_format_name(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatName",
-        fn(format: PixelFormat) -> Ptr[c_char, AnyOrigin[False]],
+        fn(format: PixelFormat) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(format)
 
 
 fn get_masks_for_pixel_format(
     format: PixelFormat,
-    bpp: Ptr[c_int, AnyOrigin[True]],
-    rmask: Ptr[UInt32, AnyOrigin[True]],
-    gmask: Ptr[UInt32, AnyOrigin[True]],
-    bmask: Ptr[UInt32, AnyOrigin[True]],
-    amask: Ptr[UInt32, AnyOrigin[True]],
+    bpp: Ptr[c_int, MutAnyOrigin],
+    rmask: Ptr[UInt32, MutAnyOrigin],
+    gmask: Ptr[UInt32, MutAnyOrigin],
+    bmask: Ptr[UInt32, MutAnyOrigin],
+    amask: Ptr[UInt32, MutAnyOrigin],
 ) raises:
     """Convert one of the enumerated pixel formats to a bpp value and RGBA masks.
 
@@ -980,11 +980,11 @@ fn get_masks_for_pixel_format(
         "SDL_GetMasksForPixelFormat",
         fn(
             format: PixelFormat,
-            bpp: Ptr[c_int, AnyOrigin[True]],
-            rmask: Ptr[UInt32, AnyOrigin[True]],
-            gmask: Ptr[UInt32, AnyOrigin[True]],
-            bmask: Ptr[UInt32, AnyOrigin[True]],
-            amask: Ptr[UInt32, AnyOrigin[True]],
+            bpp: Ptr[c_int, MutAnyOrigin],
+            rmask: Ptr[UInt32, MutAnyOrigin],
+            gmask: Ptr[UInt32, MutAnyOrigin],
+            bmask: Ptr[UInt32, MutAnyOrigin],
+            amask: Ptr[UInt32, MutAnyOrigin],
         ) -> Bool,
     ]()(format, bpp, rmask, gmask, bmask, amask)
     if not ret:
@@ -1031,7 +1031,7 @@ fn get_pixel_format_for_masks(
 
 fn get_pixel_format_details(
     format: PixelFormat,
-) raises -> Ptr[PixelFormatDetails, AnyOrigin[False]]:
+) raises -> Ptr[PixelFormatDetails, ImmutAnyOrigin]:
     """Create an SDL_PixelFormatDetails structure corresponding to a pixel format.
 
     Returned structure may come from a shared global cache (i.e. not newly
@@ -1054,11 +1054,11 @@ fn get_pixel_format_details(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatDetails",
-        fn(format: PixelFormat) -> Ptr[PixelFormatDetails, AnyOrigin[False]],
+        fn(format: PixelFormat) -> Ptr[PixelFormatDetails, ImmutAnyOrigin],
     ]()(format)
 
 
-fn create_palette(ncolors: c_int) raises -> Ptr[Palette, AnyOrigin[True]]:
+fn create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
     """Create a palette structure with the specified number of color entries.
 
     The palette entries are initialized to white.
@@ -1080,13 +1080,13 @@ fn create_palette(ncolors: c_int) raises -> Ptr[Palette, AnyOrigin[True]]:
     return _get_dylib_function[
         lib,
         "SDL_CreatePalette",
-        fn(ncolors: c_int) -> Ptr[Palette, AnyOrigin[True]],
+        fn(ncolors: c_int) -> Ptr[Palette, MutAnyOrigin],
     ]()(ncolors)
 
 
 fn set_palette_colors(
-    palette: Ptr[Palette, AnyOrigin[True]],
-    colors: Ptr[Color, AnyOrigin[False]],
+    palette: Ptr[Palette, MutAnyOrigin],
+    colors: Ptr[Color, ImmutAnyOrigin],
     firstcolor: c_int,
     ncolors: c_int,
 ) raises:
@@ -1113,8 +1113,8 @@ fn set_palette_colors(
         lib,
         "SDL_SetPaletteColors",
         fn(
-            palette: Ptr[Palette, AnyOrigin[True]],
-            colors: Ptr[Color, AnyOrigin[False]],
+            palette: Ptr[Palette, MutAnyOrigin],
+            colors: Ptr[Color, ImmutAnyOrigin],
             firstcolor: c_int,
             ncolors: c_int,
         ) -> Bool,
@@ -1123,7 +1123,7 @@ fn set_palette_colors(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_palette(palette: Ptr[Palette, AnyOrigin[True]]) raises -> None:
+fn destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
     """Free a palette created with SDL_CreatePalette().
 
     Args:
@@ -1139,13 +1139,13 @@ fn destroy_palette(palette: Ptr[Palette, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyPalette",
-        fn(palette: Ptr[Palette, AnyOrigin[True]]) -> None,
+        fn(palette: Ptr[Palette, MutAnyOrigin]) -> None,
     ]()(palette)
 
 
 fn map_rgb(
-    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-    palette: Ptr[Palette, AnyOrigin[False]],
+    format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+    palette: Ptr[Palette, ImmutAnyOrigin],
     r: UInt8,
     g: UInt8,
     b: UInt8,
@@ -1189,8 +1189,8 @@ fn map_rgb(
         lib,
         "SDL_MapRGB",
         fn(
-            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-            palette: Ptr[Palette, AnyOrigin[False]],
+            format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+            palette: Ptr[Palette, ImmutAnyOrigin],
             r: UInt8,
             g: UInt8,
             b: UInt8,
@@ -1199,8 +1199,8 @@ fn map_rgb(
 
 
 fn map_rgba(
-    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-    palette: Ptr[Palette, AnyOrigin[False]],
+    format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+    palette: Ptr[Palette, ImmutAnyOrigin],
     r: UInt8,
     g: UInt8,
     b: UInt8,
@@ -1246,8 +1246,8 @@ fn map_rgba(
         lib,
         "SDL_MapRGBA",
         fn(
-            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-            palette: Ptr[Palette, AnyOrigin[False]],
+            format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+            palette: Ptr[Palette, ImmutAnyOrigin],
             r: UInt8,
             g: UInt8,
             b: UInt8,
@@ -1258,11 +1258,11 @@ fn map_rgba(
 
 fn get_rgb(
     pixel: UInt32,
-    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-    palette: Ptr[Palette, AnyOrigin[False]],
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
+    format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+    palette: Ptr[Palette, ImmutAnyOrigin],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
 ) raises -> None:
     """Get RGB values from a pixel in the specified format.
 
@@ -1292,23 +1292,23 @@ fn get_rgb(
         "SDL_GetRGB",
         fn(
             pixel: UInt32,
-            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-            palette: Ptr[Palette, AnyOrigin[False]],
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
+            format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+            palette: Ptr[Palette, ImmutAnyOrigin],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
         ) -> None,
     ]()(pixel, format, palette, r, g, b)
 
 
 fn get_rgba(
     pixel: UInt32,
-    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-    palette: Ptr[Palette, AnyOrigin[False]],
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
-    a: Ptr[UInt8, AnyOrigin[True]],
+    format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+    palette: Ptr[Palette, ImmutAnyOrigin],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
+    a: Ptr[UInt8, MutAnyOrigin],
 ) raises -> None:
     """Get RGBA values from a pixel in the specified format.
 
@@ -1342,11 +1342,11 @@ fn get_rgba(
         "SDL_GetRGBA",
         fn(
             pixel: UInt32,
-            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
-            palette: Ptr[Palette, AnyOrigin[False]],
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
-            a: Ptr[UInt8, AnyOrigin[True]],
+            format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
+            palette: Ptr[Palette, ImmutAnyOrigin],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
+            a: Ptr[UInt8, MutAnyOrigin],
         ) -> None,
     ]()(pixel, format, palette, r, g, b, a)

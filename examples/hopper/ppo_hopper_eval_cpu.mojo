@@ -100,8 +100,7 @@ fn main() raises:
     print("  Max steps per episode:", MAX_STEPS)
     print("  Rendering:", RENDER)
 
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         print("  Controls: Close window to exit")
     print()
     print("-" * 70)

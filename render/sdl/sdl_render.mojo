@@ -183,7 +183,7 @@ fn get_num_render_drivers() raises -> c_int:
     ]()()
 
 
-fn get_render_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_render_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Use this function to get the name of a built in 2D rendering driver.
 
     The list of rendering drivers is given in the order that they are normally
@@ -211,7 +211,7 @@ fn get_render_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
     return _get_dylib_function[
         lib,
         "SDL_GetRenderDriver",
-        fn(index: c_int) -> Ptr[c_char, AnyOrigin[False]],
+        fn(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -220,8 +220,8 @@ fn create_window_and_renderer(
     width: c_int,
     height: c_int,
     window_flags: WindowFlags,
-    window: Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]],
-    renderer: Ptr[Ptr[Renderer, AnyOrigin[True]], AnyOrigin[True]],
+    window: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
+    renderer: Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
 ) raises:
     """Create a window and default renderer.
 
@@ -248,12 +248,12 @@ fn create_window_and_renderer(
         lib,
         "SDL_CreateWindowAndRenderer",
         fn(
-            title: Ptr[c_char, AnyOrigin[False]],
+            title: Ptr[c_char, ImmutAnyOrigin],
             width: c_int,
             height: c_int,
             window_flags: WindowFlags,
-            window: Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]],
-            renderer: Ptr[Ptr[Renderer, AnyOrigin[True]], AnyOrigin[True]],
+            window: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
+            renderer: Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
         ) -> Bool,
     ]()(
         title.as_c_string_slice().unsafe_ptr(),
@@ -268,8 +268,8 @@ fn create_window_and_renderer(
 
 
 fn create_renderer(
-    window: Ptr[Window, AnyOrigin[True]], var name: String
-) raises -> Ptr[Renderer, AnyOrigin[True]]:
+    window: Ptr[Window, MutAnyOrigin], var name: String
+) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D rendering context for a window.
 
     If you want a specific renderer, you can specify its name here. A list of
@@ -304,15 +304,15 @@ fn create_renderer(
         lib,
         "SDL_CreateRenderer",
         fn(
-            window: Ptr[Window, AnyOrigin[True]],
-            name: Ptr[c_char, AnyOrigin[False]],
-        ) -> Ptr[Renderer, AnyOrigin[True]],
+            window: Ptr[Window, MutAnyOrigin],
+            name: Ptr[c_char, ImmutAnyOrigin],
+        ) -> Ptr[Renderer, MutAnyOrigin],
     ]()(window, name.as_c_string_slice().unsafe_ptr())
 
 
 fn create_renderer_with_properties(
     props: PropertiesID,
-) raises -> Ptr[Renderer, AnyOrigin[True]]:
+) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D rendering context for a window, with the specified properties.
 
     These are the supported properties:
@@ -365,13 +365,13 @@ fn create_renderer_with_properties(
     return _get_dylib_function[
         lib,
         "SDL_CreateRendererWithProperties",
-        fn(props: PropertiesID) -> Ptr[Renderer, AnyOrigin[True]],
+        fn(props: PropertiesID) -> Ptr[Renderer, MutAnyOrigin],
     ]()(props)
 
 
 fn create_software_renderer(
-    surface: Ptr[Surface, AnyOrigin[True]]
-) raises -> Ptr[Renderer, AnyOrigin[True]]:
+    surface: Ptr[Surface, MutAnyOrigin]
+) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D software rendering context for a surface.
 
     Two other API which can be used to create SDL_Renderer:
@@ -396,15 +396,13 @@ fn create_software_renderer(
     return _get_dylib_function[
         lib,
         "SDL_CreateSoftwareRenderer",
-        fn(
-            surface: Ptr[Surface, AnyOrigin[True]]
-        ) -> Ptr[Renderer, AnyOrigin[True]],
+        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
     ]()(surface)
 
 
 fn get_renderer(
-    window: Ptr[Window, AnyOrigin[True]],
-    out ret: Ptr[Renderer, AnyOrigin[True]],
+    window: Ptr[Window, MutAnyOrigin],
+    out ret: Ptr[Renderer, MutAnyOrigin],
 ) raises:
     """Get the renderer associated with a window.
 
@@ -424,17 +422,15 @@ fn get_renderer(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRenderer",
-        fn(
-            window: Ptr[Window, AnyOrigin[True]]
-        ) -> Ptr[Renderer, AnyOrigin[True]],
+        fn(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_render_window(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    out ret: Ptr[Window, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    out ret: Ptr[Window, MutAnyOrigin],
 ) raises:
     """Get the window associated with a renderer.
 
@@ -454,17 +450,15 @@ fn get_render_window(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRenderWindow",
-        fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]]
-        ) -> Ptr[Window, AnyOrigin[True]],
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_renderer_name(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    out ret: Ptr[c_char, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    out ret: Ptr[c_char, ImmutAnyOrigin],
 ) raises:
     """Get the name of a renderer.
 
@@ -485,15 +479,15 @@ fn get_renderer_name(
         lib,
         "SDL_GetRendererName",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin]
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_renderer_properties(
-    renderer: Ptr[Renderer, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a renderer.
 
@@ -586,14 +580,14 @@ fn get_renderer_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetRendererProperties",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> PropertiesID,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> PropertiesID,
     ]()(renderer)
 
 
 fn get_render_output_size(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    w: Ptr[c_int, AnyOrigin[True]],
-    h: Ptr[c_int, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    w: Ptr[c_int, MutAnyOrigin],
+    h: Ptr[c_int, MutAnyOrigin],
 ) raises:
     """Get the output size in pixels of a rendering context.
 
@@ -622,9 +616,9 @@ fn get_render_output_size(
         lib,
         "SDL_GetRenderOutputSize",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            w: Ptr[c_int, AnyOrigin[True]],
-            h: Ptr[c_int, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            w: Ptr[c_int, MutAnyOrigin],
+            h: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, w, h)
     if not ret:
@@ -632,9 +626,9 @@ fn get_render_output_size(
 
 
 fn get_current_render_output_size(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    w: Ptr[c_int, AnyOrigin[True]],
-    h: Ptr[c_int, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    w: Ptr[c_int, MutAnyOrigin],
+    h: Ptr[c_int, MutAnyOrigin],
 ) raises:
     """Get the current output size in pixels of a rendering context.
 
@@ -663,9 +657,9 @@ fn get_current_render_output_size(
         lib,
         "SDL_GetCurrentRenderOutputSize",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            w: Ptr[c_int, AnyOrigin[True]],
-            h: Ptr[c_int, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            w: Ptr[c_int, MutAnyOrigin],
+            h: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, w, h)
     if not ret:
@@ -673,12 +667,12 @@ fn get_current_render_output_size(
 
 
 fn create_texture(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     format: PixelFormat,
     access: TextureAccess,
     w: c_int,
     h: c_int,
-    out ret: Ptr[Texture, AnyOrigin[True]],
+    out ret: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Create a texture for a rendering context.
 
@@ -705,21 +699,21 @@ fn create_texture(
         lib,
         "SDL_CreateTexture",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             format: PixelFormat,
             access: TextureAccess,
             w: c_int,
             h: c_int,
-        ) -> Ptr[Texture, AnyOrigin[True]],
+        ) -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, format, access, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn create_texture_from_surface(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    surface: Ptr[Surface, AnyOrigin[True]],
-    out ret: Ptr[Texture, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    surface: Ptr[Surface, MutAnyOrigin],
+    out ret: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Create a texture from an existing surface.
 
@@ -751,18 +745,18 @@ fn create_texture_from_surface(
         lib,
         "SDL_CreateTextureFromSurface",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            surface: Ptr[Surface, AnyOrigin[True]],
-        ) -> Ptr[Texture, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            surface: Ptr[Surface, MutAnyOrigin],
+        ) -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn create_texture_with_properties(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     props: PropertiesID,
-    out ret: Ptr[Texture, AnyOrigin[True]],
+    out ret: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Create a texture for a rendering context with the specified properties.
 
@@ -875,15 +869,15 @@ fn create_texture_with_properties(
         lib,
         "SDL_CreateTextureWithProperties",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]], props: PropertiesID
-        ) -> Ptr[Texture, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin], props: PropertiesID
+        ) -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_texture_properties(
-    texture: Ptr[Texture, AnyOrigin[True]]
+    texture: Ptr[Texture, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a texture.
 
@@ -978,13 +972,13 @@ fn get_texture_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetTextureProperties",
-        fn(texture: Ptr[Texture, AnyOrigin[True]]) -> PropertiesID,
+        fn(texture: Ptr[Texture, MutAnyOrigin]) -> PropertiesID,
     ]()(texture)
 
 
 fn get_renderer_from_texture(
-    texture: Ptr[Texture, AnyOrigin[True]]
-) raises -> Ptr[Renderer, AnyOrigin[True]]:
+    texture: Ptr[Texture, MutAnyOrigin]
+) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Get the renderer that created an SDL_Texture.
 
     Args:
@@ -1003,16 +997,14 @@ fn get_renderer_from_texture(
     return _get_dylib_function[
         lib,
         "SDL_GetRendererFromTexture",
-        fn(
-            texture: Ptr[Texture, AnyOrigin[True]]
-        ) -> Ptr[Renderer, AnyOrigin[True]],
+        fn(texture: Ptr[Texture, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
     ]()(texture)
 
 
 fn get_texture_size(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    w: Ptr[c_float, AnyOrigin[True]],
-    h: Ptr[c_float, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    w: Ptr[c_float, MutAnyOrigin],
+    h: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get the size of a texture, as floating point values.
 
@@ -1037,9 +1029,9 @@ fn get_texture_size(
         lib,
         "SDL_GetTextureSize",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            w: Ptr[c_float, AnyOrigin[True]],
-            h: Ptr[c_float, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            w: Ptr[c_float, MutAnyOrigin],
+            h: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, w, h)
     if not ret:
@@ -1047,7 +1039,7 @@ fn get_texture_size(
 
 
 fn set_texture_color_mod(
-    texture: Ptr[Texture, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+    texture: Ptr[Texture, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises:
     """Set an additional color value multiplied into render copy operations.
 
@@ -1080,7 +1072,7 @@ fn set_texture_color_mod(
         lib,
         "SDL_SetTextureColorMod",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+            texture: Ptr[Texture, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
         ) -> Bool,
     ]()(texture, r, g, b)
     if not ret:
@@ -1088,7 +1080,7 @@ fn set_texture_color_mod(
 
 
 fn set_texture_color_mod_float(
-    texture: Ptr[Texture, AnyOrigin[True]], r: c_float, g: c_float, b: c_float
+    texture: Ptr[Texture, MutAnyOrigin], r: c_float, g: c_float, b: c_float
 ) raises:
     """Set an additional color value multiplied into render copy operations.
 
@@ -1121,7 +1113,7 @@ fn set_texture_color_mod_float(
         lib,
         "SDL_SetTextureColorModFloat",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
             r: c_float,
             g: c_float,
             b: c_float,
@@ -1132,10 +1124,10 @@ fn set_texture_color_mod_float(
 
 
 fn get_texture_color_mod(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
 ) raises:
     """Get the additional color value multiplied into render copy operations.
 
@@ -1159,10 +1151,10 @@ fn get_texture_color_mod(
         lib,
         "SDL_GetTextureColorMod",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, r, g, b)
     if not ret:
@@ -1170,10 +1162,10 @@ fn get_texture_color_mod(
 
 
 fn get_texture_color_mod_float(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    r: Ptr[c_float, AnyOrigin[True]],
-    g: Ptr[c_float, AnyOrigin[True]],
-    b: Ptr[c_float, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    r: Ptr[c_float, MutAnyOrigin],
+    g: Ptr[c_float, MutAnyOrigin],
+    b: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get the additional color value multiplied into render copy operations.
 
@@ -1197,10 +1189,10 @@ fn get_texture_color_mod_float(
         lib,
         "SDL_GetTextureColorModFloat",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            r: Ptr[c_float, AnyOrigin[True]],
-            g: Ptr[c_float, AnyOrigin[True]],
-            b: Ptr[c_float, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            r: Ptr[c_float, MutAnyOrigin],
+            g: Ptr[c_float, MutAnyOrigin],
+            b: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, r, g, b)
     if not ret:
@@ -1208,7 +1200,7 @@ fn get_texture_color_mod_float(
 
 
 fn set_texture_alpha_mod(
-    texture: Ptr[Texture, AnyOrigin[True]], alpha: UInt8
+    texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8
 ) raises:
     """Set an additional alpha value multiplied into render copy operations.
 
@@ -1237,14 +1229,14 @@ fn set_texture_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaMod",
-        fn(texture: Ptr[Texture, AnyOrigin[True]], alpha: UInt8) -> Bool,
+        fn(texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8) -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn set_texture_alpha_mod_float(
-    texture: Ptr[Texture, AnyOrigin[True]], alpha: c_float
+    texture: Ptr[Texture, MutAnyOrigin], alpha: c_float
 ) raises:
     """Set an additional alpha value multiplied into render copy operations.
 
@@ -1273,14 +1265,14 @@ fn set_texture_alpha_mod_float(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaModFloat",
-        fn(texture: Ptr[Texture, AnyOrigin[True]], alpha: c_float) -> Bool,
+        fn(texture: Ptr[Texture, MutAnyOrigin], alpha: c_float) -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_texture_alpha_mod(
-    texture: Ptr[Texture, AnyOrigin[True]], alpha: Ptr[UInt8, AnyOrigin[True]]
+    texture: Ptr[Texture, MutAnyOrigin], alpha: Ptr[UInt8, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value multiplied into render copy operations.
 
@@ -1302,8 +1294,8 @@ fn get_texture_alpha_mod(
         lib,
         "SDL_GetTextureAlphaMod",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            alpha: Ptr[UInt8, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            alpha: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, alpha)
     if not ret:
@@ -1311,7 +1303,7 @@ fn get_texture_alpha_mod(
 
 
 fn get_texture_alpha_mod_float(
-    texture: Ptr[Texture, AnyOrigin[True]], alpha: Ptr[c_float, AnyOrigin[True]]
+    texture: Ptr[Texture, MutAnyOrigin], alpha: Ptr[c_float, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value multiplied into render copy operations.
 
@@ -1333,8 +1325,8 @@ fn get_texture_alpha_mod_float(
         lib,
         "SDL_GetTextureAlphaModFloat",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            alpha: Ptr[c_float, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            alpha: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, alpha)
     if not ret:
@@ -1342,7 +1334,7 @@ fn get_texture_alpha_mod_float(
 
 
 fn set_texture_blend_mode(
-    texture: Ptr[Texture, AnyOrigin[True]], blend_mode: BlendMode
+    texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode for a texture, used by SDL_RenderTexture().
 
@@ -1366,17 +1358,15 @@ fn set_texture_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureBlendMode",
-        fn(
-            texture: Ptr[Texture, AnyOrigin[True]], blend_mode: BlendMode
-        ) -> Bool,
+        fn(texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
     ]()(texture, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_texture_blend_mode(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
     """Get the blend mode used for texture copy operations.
 
@@ -1398,8 +1388,8 @@ fn get_texture_blend_mode(
         lib,
         "SDL_GetTextureBlendMode",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            blend_mode: Ptr[BlendMode, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, blend_mode)
     if not ret:
@@ -1407,7 +1397,7 @@ fn get_texture_blend_mode(
 
 
 fn set_texture_scale_mode(
-    texture: Ptr[Texture, AnyOrigin[True]], scale_mode: ScaleMode
+    texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode
 ) raises:
     """Set the scale mode used for texture scale operations.
 
@@ -1432,17 +1422,15 @@ fn set_texture_scale_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureScaleMode",
-        fn(
-            texture: Ptr[Texture, AnyOrigin[True]], scale_mode: ScaleMode
-        ) -> Bool,
+        fn(texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode) -> Bool,
     ]()(texture, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_texture_scale_mode(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    scale_mode: Ptr[ScaleMode, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    scale_mode: Ptr[ScaleMode, MutAnyOrigin],
 ) raises:
     """Get the scale mode used for texture scale operations.
 
@@ -1464,8 +1452,8 @@ fn get_texture_scale_mode(
         lib,
         "SDL_GetTextureScaleMode",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            scale_mode: Ptr[ScaleMode, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            scale_mode: Ptr[ScaleMode, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, scale_mode)
     if not ret:
@@ -1473,9 +1461,9 @@ fn get_texture_scale_mode(
 
 
 fn update_texture(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    pixels: Ptr[NoneType, AnyOrigin[False]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    pixels: Ptr[NoneType, ImmutAnyOrigin],
     pitch: c_int,
 ) raises:
     """Update the given texture rectangle with new pixel data.
@@ -1513,9 +1501,9 @@ fn update_texture(
         lib,
         "SDL_UpdateTexture",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-            pixels: Ptr[NoneType, AnyOrigin[False]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            pixels: Ptr[NoneType, ImmutAnyOrigin],
             pitch: c_int,
         ) -> Bool,
     ]()(texture, rect, pixels, pitch)
@@ -1524,13 +1512,13 @@ fn update_texture(
 
 
 fn update_yuv_texture(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    y_plane: Ptr[UInt8, AnyOrigin[False]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    y_plane: Ptr[UInt8, ImmutAnyOrigin],
     y_pitch: c_int,
-    uplane: Ptr[UInt8, AnyOrigin[False]],
+    uplane: Ptr[UInt8, ImmutAnyOrigin],
     upitch: c_int,
-    vplane: Ptr[UInt8, AnyOrigin[False]],
+    vplane: Ptr[UInt8, ImmutAnyOrigin],
     vpitch: c_int,
 ) raises:
     """Update a rectangle within a planar YV12 or IYUV texture with new pixel
@@ -1568,13 +1556,13 @@ fn update_yuv_texture(
         lib,
         "SDL_UpdateYUVTexture",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-            y_plane: Ptr[UInt8, AnyOrigin[False]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            y_plane: Ptr[UInt8, ImmutAnyOrigin],
             y_pitch: c_int,
-            uplane: Ptr[UInt8, AnyOrigin[False]],
+            uplane: Ptr[UInt8, ImmutAnyOrigin],
             upitch: c_int,
-            vplane: Ptr[UInt8, AnyOrigin[False]],
+            vplane: Ptr[UInt8, ImmutAnyOrigin],
             vpitch: c_int,
         ) -> Bool,
     ]()(texture, rect, y_plane, y_pitch, uplane, upitch, vplane, vpitch)
@@ -1583,11 +1571,11 @@ fn update_yuv_texture(
 
 
 fn update_nv_texture(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    y_plane: Ptr[UInt8, AnyOrigin[False]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    y_plane: Ptr[UInt8, ImmutAnyOrigin],
     y_pitch: c_int,
-    uv_plane: Ptr[UInt8, AnyOrigin[False]],
+    uv_plane: Ptr[UInt8, ImmutAnyOrigin],
     uv_pitch: c_int,
 ) raises:
     """Update a rectangle within a planar NV12 or NV21 texture with new pixels.
@@ -1621,11 +1609,11 @@ fn update_nv_texture(
         lib,
         "SDL_UpdateNVTexture",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-            y_plane: Ptr[UInt8, AnyOrigin[False]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            y_plane: Ptr[UInt8, ImmutAnyOrigin],
             y_pitch: c_int,
-            uv_plane: Ptr[UInt8, AnyOrigin[False]],
+            uv_plane: Ptr[UInt8, ImmutAnyOrigin],
             uv_pitch: c_int,
         ) -> Bool,
     ]()(texture, rect, y_plane, y_pitch, uv_plane, uv_pitch)
@@ -1634,10 +1622,10 @@ fn update_nv_texture(
 
 
 fn lock_texture(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    pixels: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
-    pitch: Ptr[c_int, AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    pixels: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
+    pitch: Ptr[c_int, MutAnyOrigin],
 ) raises:
     """Lock a portion of the texture for **write-only** pixel access.
 
@@ -1674,10 +1662,10 @@ fn lock_texture(
         lib,
         "SDL_LockTexture",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-            pixels: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
-            pitch: Ptr[c_int, AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            pixels: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
+            pitch: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(texture, rect, pixels, pitch)
     if not ret:
@@ -1685,9 +1673,9 @@ fn lock_texture(
 
 
 fn lock_texture_to_surface(
-    texture: Ptr[Texture, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    surface: Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]],
+    texture: Ptr[Texture, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    surface: Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
 ) raises:
     """Lock a portion of the texture for **write-only** pixel access, and expose
     it as a SDL surface.
@@ -1728,16 +1716,16 @@ fn lock_texture_to_surface(
         lib,
         "SDL_LockTextureToSurface",
         fn(
-            texture: Ptr[Texture, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-            surface: Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]],
+            texture: Ptr[Texture, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            surface: Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
         ) -> Bool,
     ]()(texture, rect, surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_texture(texture: Ptr[Texture, AnyOrigin[True]]) raises -> None:
+fn unlock_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     """Unlock a texture, uploading the changes to video memory, if needed.
 
     **Warning**: Please note that SDL_LockTexture() is intended to be
@@ -1760,13 +1748,13 @@ fn unlock_texture(texture: Ptr[Texture, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnlockTexture",
-        fn(texture: Ptr[Texture, AnyOrigin[True]]) -> None,
+        fn(texture: Ptr[Texture, MutAnyOrigin]) -> None,
     ]()(texture)
 
 
 fn set_render_target(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Set a texture as the current rendering target.
 
@@ -1799,8 +1787,8 @@ fn set_render_target(
         lib,
         "SDL_SetRenderTarget",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, texture)
     if not ret:
@@ -1808,8 +1796,8 @@ fn set_render_target(
 
 
 fn get_render_target(
-    renderer: Ptr[Renderer, AnyOrigin[True]]
-) raises -> Ptr[Texture, AnyOrigin[True]]:
+    renderer: Ptr[Renderer, MutAnyOrigin]
+) raises -> Ptr[Texture, MutAnyOrigin]:
     """Get the current render target.
 
     The default render target is the window for which the renderer was created,
@@ -1830,14 +1818,12 @@ fn get_render_target(
     return _get_dylib_function[
         lib,
         "SDL_GetRenderTarget",
-        fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]]
-        ) -> Ptr[Texture, AnyOrigin[True]],
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer)
 
 
 fn set_render_logical_presentation(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     w: c_int,
     h: c_int,
     mode: RendererLogicalPresentation,
@@ -1899,7 +1885,7 @@ fn set_render_logical_presentation(
         lib,
         "SDL_SetRenderLogicalPresentation",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             w: c_int,
             h: c_int,
             mode: RendererLogicalPresentation,
@@ -1910,10 +1896,10 @@ fn set_render_logical_presentation(
 
 
 fn get_render_logical_presentation(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    w: Ptr[c_int, AnyOrigin[True]],
-    h: Ptr[c_int, AnyOrigin[True]],
-    mode: Ptr[RendererLogicalPresentation, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    w: Ptr[c_int, MutAnyOrigin],
+    h: Ptr[c_int, MutAnyOrigin],
+    mode: Ptr[RendererLogicalPresentation, MutAnyOrigin],
 ) raises:
     """Get device independent resolution and presentation mode for rendering.
 
@@ -1943,10 +1929,10 @@ fn get_render_logical_presentation(
         lib,
         "SDL_GetRenderLogicalPresentation",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            w: Ptr[c_int, AnyOrigin[True]],
-            h: Ptr[c_int, AnyOrigin[True]],
-            mode: Ptr[RendererLogicalPresentation, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            w: Ptr[c_int, MutAnyOrigin],
+            h: Ptr[c_int, MutAnyOrigin],
+            mode: Ptr[RendererLogicalPresentation, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, w, h, mode)
     if not ret:
@@ -1954,7 +1940,7 @@ fn get_render_logical_presentation(
 
 
 fn get_render_logical_presentation_rect(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[FRect, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, MutAnyOrigin]
 ) raises:
     """Get the final presentation rectangle for rendering.
 
@@ -1985,8 +1971,8 @@ fn get_render_logical_presentation_rect(
         lib,
         "SDL_GetRenderLogicalPresentationRect",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[FRect, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[FRect, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -1994,11 +1980,11 @@ fn get_render_logical_presentation_rect(
 
 
 fn render_coordinates_from_window(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     window_x: c_float,
     window_y: c_float,
-    x: Ptr[c_float, AnyOrigin[True]],
-    y: Ptr[c_float, AnyOrigin[True]],
+    x: Ptr[c_float, MutAnyOrigin],
+    y: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get a point in render coordinates when given a point in window coordinates.
 
@@ -2030,11 +2016,11 @@ fn render_coordinates_from_window(
         lib,
         "SDL_RenderCoordinatesFromWindow",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             window_x: c_float,
             window_y: c_float,
-            x: Ptr[c_float, AnyOrigin[True]],
-            y: Ptr[c_float, AnyOrigin[True]],
+            x: Ptr[c_float, MutAnyOrigin],
+            y: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, window_x, window_y, x, y)
     if not ret:
@@ -2042,11 +2028,11 @@ fn render_coordinates_from_window(
 
 
 fn render_coordinates_to_window(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     x: c_float,
     y: c_float,
-    window_x: Ptr[c_float, AnyOrigin[True]],
-    window_y: Ptr[c_float, AnyOrigin[True]],
+    window_x: Ptr[c_float, MutAnyOrigin],
+    window_y: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get a point in window coordinates when given a point in render coordinates.
 
@@ -2080,11 +2066,11 @@ fn render_coordinates_to_window(
         lib,
         "SDL_RenderCoordinatesToWindow",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             x: c_float,
             y: c_float,
-            window_x: Ptr[c_float, AnyOrigin[True]],
-            window_y: Ptr[c_float, AnyOrigin[True]],
+            window_x: Ptr[c_float, MutAnyOrigin],
+            window_y: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, x, y, window_x, window_y)
     if not ret:
@@ -2092,7 +2078,7 @@ fn render_coordinates_to_window(
 
 
 fn convert_event_to_render_coordinates(
-    renderer: Ptr[Renderer, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) raises:
     """Convert the coordinates in an event to render coordinates.
 
@@ -2134,8 +2120,8 @@ fn convert_event_to_render_coordinates(
         lib,
         "SDL_ConvertEventToRenderCoordinates",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            event: Ptr[Event, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            event: Ptr[Event, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, event)
     if not ret:
@@ -2143,7 +2129,7 @@ fn convert_event_to_render_coordinates(
 
 
 fn set_render_viewport(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises:
     """Set the drawing area for rendering on the current target.
 
@@ -2175,8 +2161,8 @@ fn set_render_viewport(
         lib,
         "SDL_SetRenderViewport",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -2184,7 +2170,7 @@ fn set_render_viewport(
 
 
 fn get_render_viewport(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the drawing area for the current target.
 
@@ -2209,15 +2195,15 @@ fn get_render_viewport(
         lib,
         "SDL_GetRenderViewport",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_viewport_set(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> Bool:
+fn render_viewport_set(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     """Return whether an explicit rectangle was set as the viewport.
 
     This is useful if you're saving and restoring the viewport and want to know
@@ -2242,12 +2228,12 @@ fn render_viewport_set(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_RenderViewportSet",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
     ]()(renderer)
 
 
 fn get_render_safe_area(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the safe area for rendering within the current viewport.
 
@@ -2277,8 +2263,8 @@ fn get_render_safe_area(
         lib,
         "SDL_GetRenderSafeArea",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -2286,7 +2272,7 @@ fn get_render_safe_area(
 
 
 fn set_render_clip_rect(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises:
     """Set the clip rectangle for rendering on the specified target.
 
@@ -2312,8 +2298,8 @@ fn set_render_clip_rect(
         lib,
         "SDL_SetRenderClipRect",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -2321,7 +2307,7 @@ fn set_render_clip_rect(
 
 
 fn get_render_clip_rect(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the clip rectangle for the current target.
 
@@ -2347,15 +2333,15 @@ fn get_render_clip_rect(
         lib,
         "SDL_GetRenderClipRect",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_clip_enabled(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> Bool:
+fn render_clip_enabled(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     """Get whether clipping is enabled on the given render target.
 
     Each render target has its own clip rectangle. This function checks the
@@ -2377,12 +2363,12 @@ fn render_clip_enabled(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_RenderClipEnabled",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
     ]()(renderer)
 
 
 fn set_render_scale(
-    renderer: Ptr[Renderer, AnyOrigin[True]], scale_x: c_float, scale_y: c_float
+    renderer: Ptr[Renderer, MutAnyOrigin], scale_x: c_float, scale_y: c_float
 ) raises:
     """Set the drawing scale for rendering on the current target.
 
@@ -2416,7 +2402,7 @@ fn set_render_scale(
         lib,
         "SDL_SetRenderScale",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             scale_x: c_float,
             scale_y: c_float,
         ) -> Bool,
@@ -2426,9 +2412,9 @@ fn set_render_scale(
 
 
 fn get_render_scale(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    scale_x: Ptr[c_float, AnyOrigin[True]],
-    scale_y: Ptr[c_float, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    scale_x: Ptr[c_float, MutAnyOrigin],
+    scale_y: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get the drawing scale for the current target.
 
@@ -2454,9 +2440,9 @@ fn get_render_scale(
         lib,
         "SDL_GetRenderScale",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            scale_x: Ptr[c_float, AnyOrigin[True]],
-            scale_y: Ptr[c_float, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            scale_x: Ptr[c_float, MutAnyOrigin],
+            scale_y: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, scale_x, scale_y)
     if not ret:
@@ -2464,7 +2450,7 @@ fn get_render_scale(
 
 
 fn set_render_draw_color(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     r: UInt8,
     g: UInt8,
     b: UInt8,
@@ -2498,7 +2484,7 @@ fn set_render_draw_color(
         lib,
         "SDL_SetRenderDrawColor",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             r: UInt8,
             g: UInt8,
             b: UInt8,
@@ -2510,7 +2496,7 @@ fn set_render_draw_color(
 
 
 fn set_render_draw_color_float(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     r: c_float,
     g: c_float,
     b: c_float,
@@ -2544,7 +2530,7 @@ fn set_render_draw_color_float(
         lib,
         "SDL_SetRenderDrawColorFloat",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             r: c_float,
             g: c_float,
             b: c_float,
@@ -2556,11 +2542,11 @@ fn set_render_draw_color_float(
 
 
 fn get_render_draw_color(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    r: Ptr[UInt8, AnyOrigin[True]],
-    g: Ptr[UInt8, AnyOrigin[True]],
-    b: Ptr[UInt8, AnyOrigin[True]],
-    a: Ptr[UInt8, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    r: Ptr[UInt8, MutAnyOrigin],
+    g: Ptr[UInt8, MutAnyOrigin],
+    b: Ptr[UInt8, MutAnyOrigin],
+    a: Ptr[UInt8, MutAnyOrigin],
 ) raises:
     """Get the color used for drawing operations (Rect, Line and Clear).
 
@@ -2589,11 +2575,11 @@ fn get_render_draw_color(
         lib,
         "SDL_GetRenderDrawColor",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            r: Ptr[UInt8, AnyOrigin[True]],
-            g: Ptr[UInt8, AnyOrigin[True]],
-            b: Ptr[UInt8, AnyOrigin[True]],
-            a: Ptr[UInt8, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            r: Ptr[UInt8, MutAnyOrigin],
+            g: Ptr[UInt8, MutAnyOrigin],
+            b: Ptr[UInt8, MutAnyOrigin],
+            a: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
@@ -2601,11 +2587,11 @@ fn get_render_draw_color(
 
 
 fn get_render_draw_color_float(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    r: Ptr[c_float, AnyOrigin[True]],
-    g: Ptr[c_float, AnyOrigin[True]],
-    b: Ptr[c_float, AnyOrigin[True]],
-    a: Ptr[c_float, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    r: Ptr[c_float, MutAnyOrigin],
+    g: Ptr[c_float, MutAnyOrigin],
+    b: Ptr[c_float, MutAnyOrigin],
+    a: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get the color used for drawing operations (Rect, Line and Clear).
 
@@ -2634,11 +2620,11 @@ fn get_render_draw_color_float(
         lib,
         "SDL_GetRenderDrawColorFloat",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            r: Ptr[c_float, AnyOrigin[True]],
-            g: Ptr[c_float, AnyOrigin[True]],
-            b: Ptr[c_float, AnyOrigin[True]],
-            a: Ptr[c_float, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            r: Ptr[c_float, MutAnyOrigin],
+            g: Ptr[c_float, MutAnyOrigin],
+            b: Ptr[c_float, MutAnyOrigin],
+            a: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
@@ -2646,7 +2632,7 @@ fn get_render_draw_color_float(
 
 
 fn set_render_color_scale(
-    renderer: Ptr[Renderer, AnyOrigin[True]], scale: c_float
+    renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float
 ) raises:
     """Set the color scale used for render operations.
 
@@ -2675,15 +2661,15 @@ fn set_render_color_scale(
     ret = _get_dylib_function[
         lib,
         "SDL_SetRenderColorScale",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]], scale: c_float) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float) -> Bool,
     ]()(renderer, scale)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_render_color_scale(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    scale: Ptr[c_float, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    scale: Ptr[c_float, MutAnyOrigin],
 ) raises:
     """Get the color scale used for render operations.
 
@@ -2705,8 +2691,8 @@ fn get_render_color_scale(
         lib,
         "SDL_GetRenderColorScale",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            scale: Ptr[c_float, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            scale: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, scale)
     if not ret:
@@ -2714,7 +2700,7 @@ fn get_render_color_scale(
 
 
 fn set_render_draw_blend_mode(
-    renderer: Ptr[Renderer, AnyOrigin[True]], blend_mode: BlendMode
+    renderer: Ptr[Renderer, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode used for drawing operations (Fill and Line).
 
@@ -2738,7 +2724,7 @@ fn set_render_draw_blend_mode(
         lib,
         "SDL_SetRenderDrawBlendMode",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]], blend_mode: BlendMode
+            renderer: Ptr[Renderer, MutAnyOrigin], blend_mode: BlendMode
         ) -> Bool,
     ]()(renderer, blend_mode)
     if not ret:
@@ -2746,8 +2732,8 @@ fn set_render_draw_blend_mode(
 
 
 fn get_render_draw_blend_mode(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
     """Get the blend mode used for drawing operations.
 
@@ -2769,15 +2755,15 @@ fn get_render_draw_blend_mode(
         lib,
         "SDL_GetRenderDrawBlendMode",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            blend_mode: Ptr[BlendMode, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_clear(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
+fn render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Clear the current rendering target with the drawing color.
 
     This function clears the entire rendering target, ignoring the viewport and
@@ -2801,14 +2787,14 @@ fn render_clear(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RenderClear",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn render_point(
-    renderer: Ptr[Renderer, AnyOrigin[True]], x: c_float, y: c_float
+    renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
 ) raises:
     """Draw a point on the current rendering target at subpixel precision.
 
@@ -2831,7 +2817,7 @@ fn render_point(
         lib,
         "SDL_RenderPoint",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]], x: c_float, y: c_float
+            renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
         ) -> Bool,
     ]()(renderer, x, y)
     if not ret:
@@ -2839,8 +2825,8 @@ fn render_point(
 
 
 fn render_points(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    points: Ptr[FPoint, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
 ) raises:
     """Draw multiple points on the current rendering target at subpixel precision.
@@ -2864,8 +2850,8 @@ fn render_points(
         lib,
         "SDL_RenderPoints",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            points: Ptr[FPoint, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
         ) -> Bool,
     ]()(renderer, points, count)
@@ -2874,7 +2860,7 @@ fn render_points(
 
 
 fn render_line(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     x1: c_float,
     y1: c_float,
     x2: c_float,
@@ -2903,7 +2889,7 @@ fn render_line(
         lib,
         "SDL_RenderLine",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             x1: c_float,
             y1: c_float,
             x2: c_float,
@@ -2915,8 +2901,8 @@ fn render_line(
 
 
 fn render_lines(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    points: Ptr[FPoint, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
 ) raises:
     """Draw a series of connected lines on the current rendering target at
@@ -2941,8 +2927,8 @@ fn render_lines(
         lib,
         "SDL_RenderLines",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            points: Ptr[FPoint, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
         ) -> Bool,
     ]()(renderer, points, count)
@@ -2951,7 +2937,7 @@ fn render_lines(
 
 
 fn render_rect(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[FRect, AnyOrigin[False]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Draw a rectangle on the current rendering target at subpixel precision.
 
@@ -2974,8 +2960,8 @@ fn render_rect(
         lib,
         "SDL_RenderRect",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[FRect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -2983,8 +2969,8 @@ fn render_rect(
 
 
 fn render_rects(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    rects: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    rects: Ptr[FRect, ImmutAnyOrigin],
     count: c_int,
 ) raises:
     """Draw some number of rectangles on the current rendering target at subpixel
@@ -3009,8 +2995,8 @@ fn render_rects(
         lib,
         "SDL_RenderRects",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rects: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rects: Ptr[FRect, ImmutAnyOrigin],
             count: c_int,
         ) -> Bool,
     ]()(renderer, rects, count)
@@ -3019,7 +3005,7 @@ fn render_rects(
 
 
 fn render_fill_rect(
-    renderer: Ptr[Renderer, AnyOrigin[True]], rect: Ptr[FRect, AnyOrigin[False]]
+    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Fill a rectangle on the current rendering target with the drawing color at
     subpixel precision.
@@ -3043,8 +3029,8 @@ fn render_fill_rect(
         lib,
         "SDL_RenderFillRect",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[FRect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, rect)
     if not ret:
@@ -3052,8 +3038,8 @@ fn render_fill_rect(
 
 
 fn render_fill_rects(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    rects: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    rects: Ptr[FRect, ImmutAnyOrigin],
     count: c_int,
 ) raises:
     """Fill some number of rectangles on the current rendering target with the
@@ -3078,8 +3064,8 @@ fn render_fill_rects(
         lib,
         "SDL_RenderFillRects",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rects: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rects: Ptr[FRect, ImmutAnyOrigin],
             count: c_int,
         ) -> Bool,
     ]()(renderer, rects, count)
@@ -3088,10 +3074,10 @@ fn render_fill_rects(
 
 
 fn render_texture(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    srcrect: Ptr[FRect, AnyOrigin[False]],
-    dstrect: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    srcrect: Ptr[FRect, ImmutAnyOrigin],
+    dstrect: Ptr[FRect, ImmutAnyOrigin],
 ) raises:
     """Copy a portion of the texture to the current rendering target at subpixel
     precision.
@@ -3118,10 +3104,10 @@ fn render_texture(
         lib,
         "SDL_RenderTexture",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            srcrect: Ptr[FRect, AnyOrigin[False]],
-            dstrect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            srcrect: Ptr[FRect, ImmutAnyOrigin],
+            dstrect: Ptr[FRect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, texture, srcrect, dstrect)
     if not ret:
@@ -3129,12 +3115,12 @@ fn render_texture(
 
 
 fn render_texture_rotated(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    srcrect: Ptr[FRect, AnyOrigin[False]],
-    dstrect: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    srcrect: Ptr[FRect, ImmutAnyOrigin],
+    dstrect: Ptr[FRect, ImmutAnyOrigin],
     angle: c_double,
-    center: Ptr[FPoint, AnyOrigin[False]],
+    center: Ptr[FPoint, ImmutAnyOrigin],
     flip: FlipMode,
 ) raises:
     """Copy a portion of the source texture to the current rendering target, with
@@ -3169,12 +3155,12 @@ fn render_texture_rotated(
         lib,
         "SDL_RenderTextureRotated",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            srcrect: Ptr[FRect, AnyOrigin[False]],
-            dstrect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            srcrect: Ptr[FRect, ImmutAnyOrigin],
+            dstrect: Ptr[FRect, ImmutAnyOrigin],
             angle: c_double,
-            center: Ptr[FPoint, AnyOrigin[False]],
+            center: Ptr[FPoint, ImmutAnyOrigin],
             flip: FlipMode,
         ) -> Bool,
     ]()(renderer, texture, srcrect, dstrect, angle, center, flip)
@@ -3183,12 +3169,12 @@ fn render_texture_rotated(
 
 
 fn render_texture_affine(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    srcrect: Ptr[FRect, AnyOrigin[False]],
-    origin: Ptr[FPoint, AnyOrigin[False]],
-    right: Ptr[FPoint, AnyOrigin[False]],
-    down: Ptr[FPoint, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    srcrect: Ptr[FRect, ImmutAnyOrigin],
+    origin: Ptr[FPoint, ImmutAnyOrigin],
+    right: Ptr[FPoint, ImmutAnyOrigin],
+    down: Ptr[FPoint, ImmutAnyOrigin],
 ) raises:
     """Copy a portion of the source texture to the current rendering target, with
     affine transform, at subpixel precision.
@@ -3222,12 +3208,12 @@ fn render_texture_affine(
         lib,
         "SDL_RenderTextureAffine",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            srcrect: Ptr[FRect, AnyOrigin[False]],
-            origin: Ptr[FPoint, AnyOrigin[False]],
-            right: Ptr[FPoint, AnyOrigin[False]],
-            down: Ptr[FPoint, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            srcrect: Ptr[FRect, ImmutAnyOrigin],
+            origin: Ptr[FPoint, ImmutAnyOrigin],
+            right: Ptr[FPoint, ImmutAnyOrigin],
+            down: Ptr[FPoint, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, texture, srcrect, origin, right, down)
     if not ret:
@@ -3235,11 +3221,11 @@ fn render_texture_affine(
 
 
 fn render_texture_tiled(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    srcrect: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    srcrect: Ptr[FRect, ImmutAnyOrigin],
     scale: c_float,
-    dstrect: Ptr[FRect, AnyOrigin[False]],
+    dstrect: Ptr[FRect, ImmutAnyOrigin],
 ) raises:
     """Tile a portion of the texture to the current rendering target at subpixel
     precision.
@@ -3272,11 +3258,11 @@ fn render_texture_tiled(
         lib,
         "SDL_RenderTextureTiled",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            srcrect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            srcrect: Ptr[FRect, ImmutAnyOrigin],
             scale: c_float,
-            dstrect: Ptr[FRect, AnyOrigin[False]],
+            dstrect: Ptr[FRect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, texture, srcrect, scale, dstrect)
     if not ret:
@@ -3284,15 +3270,15 @@ fn render_texture_tiled(
 
 
 fn render_texture_9grid(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    srcrect: Ptr[FRect, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    srcrect: Ptr[FRect, ImmutAnyOrigin],
     left_width: c_float,
     right_width: c_float,
     top_height: c_float,
     bottom_height: c_float,
     scale: c_float,
-    dstrect: Ptr[FRect, AnyOrigin[False]],
+    dstrect: Ptr[FRect, ImmutAnyOrigin],
 ) raises:
     """Perform a scaled copy using the 9-grid algorithm to the current rendering
     target at subpixel precision.
@@ -3332,15 +3318,15 @@ fn render_texture_9grid(
         lib,
         "SDL_RenderTexture9Grid",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            srcrect: Ptr[FRect, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            srcrect: Ptr[FRect, ImmutAnyOrigin],
             left_width: c_float,
             right_width: c_float,
             top_height: c_float,
             bottom_height: c_float,
             scale: c_float,
-            dstrect: Ptr[FRect, AnyOrigin[False]],
+            dstrect: Ptr[FRect, ImmutAnyOrigin],
         ) -> Bool,
     ]()(
         renderer,
@@ -3358,11 +3344,11 @@ fn render_texture_9grid(
 
 
 fn render_geometry(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    vertices: Ptr[Vertex, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    vertices: Ptr[Vertex, ImmutAnyOrigin],
     num_vertices: c_int,
-    indices: Ptr[c_int, AnyOrigin[False]],
+    indices: Ptr[c_int, ImmutAnyOrigin],
     num_indices: c_int,
 ) raises:
     """Render a list of triangles, optionally using a texture and indices into the
@@ -3393,11 +3379,11 @@ fn render_geometry(
         lib,
         "SDL_RenderGeometry",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            vertices: Ptr[Vertex, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            vertices: Ptr[Vertex, ImmutAnyOrigin],
             num_vertices: c_int,
-            indices: Ptr[c_int, AnyOrigin[False]],
+            indices: Ptr[c_int, ImmutAnyOrigin],
             num_indices: c_int,
         ) -> Bool,
     ]()(renderer, texture, vertices, num_vertices, indices, num_indices)
@@ -3406,16 +3392,16 @@ fn render_geometry(
 
 
 fn render_geometry_raw(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    texture: Ptr[Texture, AnyOrigin[True]],
-    xy: Ptr[c_float, AnyOrigin[False]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    texture: Ptr[Texture, MutAnyOrigin],
+    xy: Ptr[c_float, ImmutAnyOrigin],
     xy_stride: c_int,
-    color: Ptr[FColor, AnyOrigin[False]],
+    color: Ptr[FColor, ImmutAnyOrigin],
     color_stride: c_int,
-    uv: Ptr[c_float, AnyOrigin[False]],
+    uv: Ptr[c_float, ImmutAnyOrigin],
     uv_stride: c_int,
     num_vertices: c_int,
-    indices: Ptr[NoneType, AnyOrigin[False]],
+    indices: Ptr[NoneType, ImmutAnyOrigin],
     num_indices: c_int,
     size_indices: c_int,
 ) raises:
@@ -3452,16 +3438,16 @@ fn render_geometry_raw(
         lib,
         "SDL_RenderGeometryRaw",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            texture: Ptr[Texture, AnyOrigin[True]],
-            xy: Ptr[c_float, AnyOrigin[False]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            texture: Ptr[Texture, MutAnyOrigin],
+            xy: Ptr[c_float, ImmutAnyOrigin],
             xy_stride: c_int,
-            color: Ptr[FColor, AnyOrigin[False]],
+            color: Ptr[FColor, ImmutAnyOrigin],
             color_stride: c_int,
-            uv: Ptr[c_float, AnyOrigin[False]],
+            uv: Ptr[c_float, ImmutAnyOrigin],
             uv_stride: c_int,
             num_vertices: c_int,
-            indices: Ptr[NoneType, AnyOrigin[False]],
+            indices: Ptr[NoneType, ImmutAnyOrigin],
             num_indices: c_int,
             size_indices: c_int,
         ) -> Bool,
@@ -3484,9 +3470,9 @@ fn render_geometry_raw(
 
 
 fn render_read_pixels(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
-    rect: Ptr[Rect, AnyOrigin[False]],
-    out ret: Ptr[Surface, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
     """Read pixels from the current rendering target.
 
@@ -3521,15 +3507,15 @@ fn render_read_pixels(
         lib,
         "SDL_RenderReadPixels",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            rect: Ptr[Rect, AnyOrigin[False]],
-        ) -> Ptr[Surface, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+        ) -> Ptr[Surface, MutAnyOrigin],
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_present(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
+fn render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Update the screen with any rendering performed since the previous call.
 
     SDL's rendering functions operate on a backbuffer; that is, calling a
@@ -3572,13 +3558,13 @@ fn render_present(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RenderPresent",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_texture(texture: Ptr[Texture, AnyOrigin[True]]) raises -> None:
+fn destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     """Destroy the specified texture.
 
     Passing NULL or an otherwise invalid texture will set the SDL error message
@@ -3596,11 +3582,11 @@ fn destroy_texture(texture: Ptr[Texture, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyTexture",
-        fn(texture: Ptr[Texture, AnyOrigin[True]]) -> None,
+        fn(texture: Ptr[Texture, MutAnyOrigin]) -> None,
     ]()(texture)
 
 
-fn destroy_renderer(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> None:
+fn destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
     """Destroy the rendering context for a window and free all associated
     textures.
 
@@ -3618,11 +3604,11 @@ fn destroy_renderer(renderer: Ptr[Renderer, AnyOrigin[True]]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyRenderer",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> None,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> None,
     ]()(renderer)
 
 
-fn flush_renderer(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
+fn flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Force the rendering context to flush any pending commands and state.
 
     You do not need to (and in fact, shouldn't) call this function unless you
@@ -3661,15 +3647,15 @@ fn flush_renderer(renderer: Ptr[Renderer, AnyOrigin[True]]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlushRenderer",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]]) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_render_metal_layer(
-    renderer: Ptr[Renderer, AnyOrigin[True]]
-) raises -> Ptr[NoneType, AnyOrigin[True]]:
+    renderer: Ptr[Renderer, MutAnyOrigin]
+) raises -> Ptr[NoneType, MutAnyOrigin]:
     """Get the CAMetalLayer associated with the given Metal renderer.
 
     This function returns `void *`, so SDL doesn't have to include Metal's
@@ -3692,14 +3678,14 @@ fn get_render_metal_layer(
         lib,
         "SDL_GetRenderMetalLayer",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]]
-        ) -> Ptr[NoneType, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin]
+        ) -> Ptr[NoneType, MutAnyOrigin],
     ]()(renderer)
 
 
 fn get_render_metal_command_encoder(
-    renderer: Ptr[Renderer, AnyOrigin[True]]
-) raises -> Ptr[NoneType, AnyOrigin[True]]:
+    renderer: Ptr[Renderer, MutAnyOrigin]
+) raises -> Ptr[NoneType, MutAnyOrigin]:
     """Get the Metal command encoder for the current frame.
 
     This function returns `void *`, so SDL doesn't have to include Metal's
@@ -3727,13 +3713,13 @@ fn get_render_metal_command_encoder(
         lib,
         "SDL_GetRenderMetalCommandEncoder",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]]
-        ) -> Ptr[NoneType, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin]
+        ) -> Ptr[NoneType, MutAnyOrigin],
     ]()(renderer)
 
 
 fn add_vulkan_render_semaphores(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     wait_stage_mask: UInt32,
     wait_semaphore: Int64,
     signal_semaphore: Int64,
@@ -3774,7 +3760,7 @@ fn add_vulkan_render_semaphores(
         lib,
         "SDL_AddVulkanRenderSemaphores",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             wait_stage_mask: UInt32,
             wait_semaphore: Int64,
             signal_semaphore: Int64,
@@ -3784,9 +3770,7 @@ fn add_vulkan_render_semaphores(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_vsync(
-    renderer: Ptr[Renderer, AnyOrigin[True]], vsync: c_int
-) raises:
+fn set_render_vsync(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) raises:
     """Toggle VSync of the given renderer.
 
     When a renderer is created, vsync defaults to SDL_RENDERER_VSYNC_DISABLED.
@@ -3815,14 +3799,14 @@ fn set_render_vsync(
     ret = _get_dylib_function[
         lib,
         "SDL_SetRenderVSync",
-        fn(renderer: Ptr[Renderer, AnyOrigin[True]], vsync: c_int) -> Bool,
+        fn(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) -> Bool,
     ]()(renderer, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_render_vsync(
-    renderer: Ptr[Renderer, AnyOrigin[True]], vsync: Ptr[c_int, AnyOrigin[True]]
+    renderer: Ptr[Renderer, MutAnyOrigin], vsync: Ptr[c_int, MutAnyOrigin]
 ) raises:
     """Get VSync of the given renderer.
 
@@ -3845,8 +3829,8 @@ fn get_render_vsync(
         lib,
         "SDL_GetRenderVSync",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
-            vsync: Ptr[c_int, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
+            vsync: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(renderer, vsync)
     if not ret:
@@ -3854,7 +3838,7 @@ fn get_render_vsync(
 
 
 fn render_debug_text(
-    renderer: Ptr[Renderer, AnyOrigin[True]],
+    renderer: Ptr[Renderer, MutAnyOrigin],
     x: c_float,
     y: c_float,
     var str: String,
@@ -3903,10 +3887,10 @@ fn render_debug_text(
         lib,
         "SDL_RenderDebugText",
         fn(
-            renderer: Ptr[Renderer, AnyOrigin[True]],
+            renderer: Ptr[Renderer, MutAnyOrigin],
             x: c_float,
             y: c_float,
-            str: Ptr[c_char, AnyOrigin[False]],
+            str: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
     ]()(renderer, x, y, str.as_c_string_slice().unsafe_ptr())
     if not ret:

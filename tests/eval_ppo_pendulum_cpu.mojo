@@ -124,8 +124,7 @@ fn main() raises:
     # Create environment
     var env = PendulumV2[dtype]()
 
-    @parameter
-    if RENDER:
+    comptime if RENDER:
         print("Initializing SDL2 renderer...")
         var renderer = Renderer2D(
             width=600, height=400, title="PPO Pendulum Continuous - CPU Eval"

@@ -79,7 +79,7 @@ struct FRect(ImplicitlyCopyable, Movable):
 
 
 fn has_rect_intersection(
-    a: Ptr[Rect, AnyOrigin[False]], b: Ptr[Rect, AnyOrigin[False]]
+    a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Determine whether two rectangles intersect.
 
@@ -101,16 +101,14 @@ fn has_rect_intersection(
     return _get_dylib_function[
         lib,
         "SDL_HasRectIntersection",
-        fn(
-            a: Ptr[Rect, AnyOrigin[False]], b: Ptr[Rect, AnyOrigin[False]]
-        ) -> Bool,
+        fn(a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]) -> Bool,
     ]()(a, b)
 
 
 fn get_rect_intersection(
-    a: Ptr[Rect, AnyOrigin[False]],
-    b: Ptr[Rect, AnyOrigin[False]],
-    result: Ptr[Rect, AnyOrigin[True]],
+    a: Ptr[Rect, ImmutAnyOrigin],
+    b: Ptr[Rect, ImmutAnyOrigin],
+    result: Ptr[Rect, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate the intersection of two rectangles.
 
@@ -132,17 +130,17 @@ fn get_rect_intersection(
         lib,
         "SDL_GetRectIntersection",
         fn(
-            a: Ptr[Rect, AnyOrigin[False]],
-            b: Ptr[Rect, AnyOrigin[False]],
-            result: Ptr[Rect, AnyOrigin[True]],
+            a: Ptr[Rect, ImmutAnyOrigin],
+            b: Ptr[Rect, ImmutAnyOrigin],
+            result: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(a, b, result)
 
 
 fn get_rect_union(
-    a: Ptr[Rect, AnyOrigin[False]],
-    b: Ptr[Rect, AnyOrigin[False]],
-    result: Ptr[Rect, AnyOrigin[True]],
+    a: Ptr[Rect, ImmutAnyOrigin],
+    b: Ptr[Rect, ImmutAnyOrigin],
+    result: Ptr[Rect, MutAnyOrigin],
 ) raises:
     """Calculate the union of two rectangles.
 
@@ -163,9 +161,9 @@ fn get_rect_union(
         lib,
         "SDL_GetRectUnion",
         fn(
-            a: Ptr[Rect, AnyOrigin[False]],
-            b: Ptr[Rect, AnyOrigin[False]],
-            result: Ptr[Rect, AnyOrigin[True]],
+            a: Ptr[Rect, ImmutAnyOrigin],
+            b: Ptr[Rect, ImmutAnyOrigin],
+            result: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(a, b, result)
     if not ret:
@@ -173,10 +171,10 @@ fn get_rect_union(
 
 
 fn get_rect_enclosing_points(
-    points: Ptr[Point, AnyOrigin[False]],
+    points: Ptr[Point, ImmutAnyOrigin],
     count: c_int,
-    clip: Ptr[Rect, AnyOrigin[False]],
-    result: Ptr[Rect, AnyOrigin[True]],
+    clip: Ptr[Rect, ImmutAnyOrigin],
+    result: Ptr[Rect, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate a minimal rectangle enclosing a set of points.
 
@@ -202,20 +200,20 @@ fn get_rect_enclosing_points(
         lib,
         "SDL_GetRectEnclosingPoints",
         fn(
-            points: Ptr[Point, AnyOrigin[False]],
+            points: Ptr[Point, ImmutAnyOrigin],
             count: c_int,
-            clip: Ptr[Rect, AnyOrigin[False]],
-            result: Ptr[Rect, AnyOrigin[True]],
+            clip: Ptr[Rect, ImmutAnyOrigin],
+            result: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
     ]()(points, count, clip, result)
 
 
 fn get_rect_and_line_intersection(
-    rect: Ptr[Rect, AnyOrigin[False]],
-    x1: Ptr[c_int, AnyOrigin[True]],
-    y1: Ptr[c_int, AnyOrigin[True]],
-    x2: Ptr[c_int, AnyOrigin[True]],
-    y2: Ptr[c_int, AnyOrigin[True]],
+    rect: Ptr[Rect, ImmutAnyOrigin],
+    x1: Ptr[c_int, MutAnyOrigin],
+    y1: Ptr[c_int, MutAnyOrigin],
+    x2: Ptr[c_int, MutAnyOrigin],
+    y2: Ptr[c_int, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate the intersection of a rectangle and line segment.
 
@@ -242,17 +240,17 @@ fn get_rect_and_line_intersection(
         lib,
         "SDL_GetRectAndLineIntersection",
         fn(
-            rect: Ptr[Rect, AnyOrigin[False]],
-            x1: Ptr[c_int, AnyOrigin[True]],
-            y1: Ptr[c_int, AnyOrigin[True]],
-            x2: Ptr[c_int, AnyOrigin[True]],
-            y2: Ptr[c_int, AnyOrigin[True]],
+            rect: Ptr[Rect, ImmutAnyOrigin],
+            x1: Ptr[c_int, MutAnyOrigin],
+            y1: Ptr[c_int, MutAnyOrigin],
+            x2: Ptr[c_int, MutAnyOrigin],
+            y2: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
     ]()(rect, x1, y1, x2, y2)
 
 
 fn has_rect_intersection_float(
-    a: Ptr[FRect, AnyOrigin[False]], b: Ptr[FRect, AnyOrigin[False]]
+    a: Ptr[FRect, ImmutAnyOrigin], b: Ptr[FRect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Determine whether two rectangles intersect with float precision.
 
@@ -272,15 +270,15 @@ fn has_rect_intersection_float(
         lib,
         "SDL_HasRectIntersectionFloat",
         fn(
-            a: Ptr[FRect, AnyOrigin[False]], b: Ptr[FRect, AnyOrigin[False]]
+            a: Ptr[FRect, ImmutAnyOrigin], b: Ptr[FRect, ImmutAnyOrigin]
         ) -> Bool,
     ]()(a, b)
 
 
 fn get_rect_intersection_float(
-    a: Ptr[FRect, AnyOrigin[False]],
-    b: Ptr[FRect, AnyOrigin[False]],
-    result: Ptr[FRect, AnyOrigin[True]],
+    a: Ptr[FRect, ImmutAnyOrigin],
+    b: Ptr[FRect, ImmutAnyOrigin],
+    result: Ptr[FRect, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate the intersection of two rectangles with float precision.
 
@@ -302,17 +300,17 @@ fn get_rect_intersection_float(
         lib,
         "SDL_GetRectIntersectionFloat",
         fn(
-            a: Ptr[FRect, AnyOrigin[False]],
-            b: Ptr[FRect, AnyOrigin[False]],
-            result: Ptr[FRect, AnyOrigin[True]],
+            a: Ptr[FRect, ImmutAnyOrigin],
+            b: Ptr[FRect, ImmutAnyOrigin],
+            result: Ptr[FRect, MutAnyOrigin],
         ) -> Bool,
     ]()(a, b, result)
 
 
 fn get_rect_union_float(
-    a: Ptr[FRect, AnyOrigin[False]],
-    b: Ptr[FRect, AnyOrigin[False]],
-    result: Ptr[FRect, AnyOrigin[True]],
+    a: Ptr[FRect, ImmutAnyOrigin],
+    b: Ptr[FRect, ImmutAnyOrigin],
+    result: Ptr[FRect, MutAnyOrigin],
 ) raises:
     """Calculate the union of two rectangles with float precision.
 
@@ -333,9 +331,9 @@ fn get_rect_union_float(
         lib,
         "SDL_GetRectUnionFloat",
         fn(
-            a: Ptr[FRect, AnyOrigin[False]],
-            b: Ptr[FRect, AnyOrigin[False]],
-            result: Ptr[FRect, AnyOrigin[True]],
+            a: Ptr[FRect, ImmutAnyOrigin],
+            b: Ptr[FRect, ImmutAnyOrigin],
+            result: Ptr[FRect, MutAnyOrigin],
         ) -> Bool,
     ]()(a, b, result)
     if not ret:
@@ -343,10 +341,10 @@ fn get_rect_union_float(
 
 
 fn get_rect_enclosing_points_float(
-    points: Ptr[FPoint, AnyOrigin[False]],
+    points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
-    clip: Ptr[FRect, AnyOrigin[False]],
-    result: Ptr[FRect, AnyOrigin[True]],
+    clip: Ptr[FRect, ImmutAnyOrigin],
+    result: Ptr[FRect, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate a minimal rectangle enclosing a set of points with float
     precision.
@@ -373,20 +371,20 @@ fn get_rect_enclosing_points_float(
         lib,
         "SDL_GetRectEnclosingPointsFloat",
         fn(
-            points: Ptr[FPoint, AnyOrigin[False]],
+            points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
-            clip: Ptr[FRect, AnyOrigin[False]],
-            result: Ptr[FRect, AnyOrigin[True]],
+            clip: Ptr[FRect, ImmutAnyOrigin],
+            result: Ptr[FRect, MutAnyOrigin],
         ) -> Bool,
     ]()(points, count, clip, result)
 
 
 fn get_rect_and_line_intersection_float(
-    rect: Ptr[FRect, AnyOrigin[False]],
-    x1: Ptr[c_float, AnyOrigin[True]],
-    y1: Ptr[c_float, AnyOrigin[True]],
-    x2: Ptr[c_float, AnyOrigin[True]],
-    y2: Ptr[c_float, AnyOrigin[True]],
+    rect: Ptr[FRect, ImmutAnyOrigin],
+    x1: Ptr[c_float, MutAnyOrigin],
+    y1: Ptr[c_float, MutAnyOrigin],
+    x2: Ptr[c_float, MutAnyOrigin],
+    y2: Ptr[c_float, MutAnyOrigin],
 ) raises -> Bool:
     """Calculate the intersection of a rectangle and line segment with float
     precision.
@@ -414,10 +412,10 @@ fn get_rect_and_line_intersection_float(
         lib,
         "SDL_GetRectAndLineIntersectionFloat",
         fn(
-            rect: Ptr[FRect, AnyOrigin[False]],
-            x1: Ptr[c_float, AnyOrigin[True]],
-            y1: Ptr[c_float, AnyOrigin[True]],
-            x2: Ptr[c_float, AnyOrigin[True]],
-            y2: Ptr[c_float, AnyOrigin[True]],
+            rect: Ptr[FRect, ImmutAnyOrigin],
+            x1: Ptr[c_float, MutAnyOrigin],
+            y1: Ptr[c_float, MutAnyOrigin],
+            x2: Ptr[c_float, MutAnyOrigin],
+            y2: Ptr[c_float, MutAnyOrigin],
         ) -> Bool,
     ]()(rect, x1, y1, x2, y2)

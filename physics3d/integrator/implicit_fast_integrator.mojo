@@ -281,8 +281,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             M.append(Scalar[DTYPE](0))
         var sM = SparseMassMatrix[DTYPE, NV, NM]()
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             build_sparse_pattern[
                 DTYPE,
                 NQ,
@@ -324,8 +323,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             var dof_adr = joint.dof_adr
             var arm = joint.armature
 
-            @parameter
-            if SPARSE:
+            comptime if SPARSE:
                 if joint.jnt_type == JNT_FREE:
                     for d in range(6):
                         sM.values[sM.diag_pos(dof_adr + d)] += arm
@@ -349,8 +347,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
 
         # 5c. Expand sparse to dense for M_hat (must be before ldl_factor_sparse mutates sM)
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             sparse_to_dense[DTYPE, NV, NM](sM, M)
 
         # 6. LDL factorize M and solve for qacc
@@ -361,8 +358,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(V_SIZE):
             D.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse(sM)
         else:
             ldl_factor[DTYPE, NV](M, L, D)
@@ -456,8 +452,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(V_SIZE):
             qacc.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse[DTYPE, NV, NM](sM, f_net, qacc)
         else:
             ldl_solve[DTYPE, NV](L, D, f_net, qacc)
@@ -467,8 +462,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         for _ in range(M_SIZE):
             M_inv.append(Scalar[DTYPE](0))
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             # Compute M_inv column-by-column: solve M * e_j = e_j for each j
             var e_col = List[Scalar[DTYPE]](capacity=V_SIZE)
             for _ in range(V_SIZE):
@@ -708,8 +702,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             qfrc_total.append(f_net[i] + qfrc_constraint[i])
 
         # 9c. Add dt*damping to M diagonal → M_hat = M + arm + dt*D
-        @parameter
-        if not SPARSE:
+        comptime if not SPARSE:
             for j in range(model.num_joints):
                 var joint = model.joints[j]
                 var dof_adr = joint.dof_adr
@@ -728,8 +721,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             qacc[i] = Scalar[DTYPE](0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             # Recompute sparse M, add armature + dt*damping to diagonal, then factor
             compute_mass_matrix_sparse[
                 DTYPE,
@@ -930,8 +922,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             _ = build_sparse_pattern_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
             ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
@@ -1005,8 +996,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model, workspace)
 
         # 6. Compute mass matrix using CRBA (reads cdof/crb, writes M in workspace)
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             compute_mass_matrix_sparse_gpu[
                 DTYPE,
                 NQ,
@@ -1059,8 +1049,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, idx] += arm
 
         # 7. LDL factorize M, compute M_inv
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
@@ -1240,8 +1229,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                         workspace[env, fnet_idx + dof_adr] = cur + floss
 
         # LDL solve: reads f_net from workspace, writes qacc to workspace
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
@@ -1258,16 +1246,18 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # but step_finalize uses M*qacc_constrained which never updates for nc=0).
         comptime meta_off_ws = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         var nc_for_ws = Int(
-            rebind[Scalar[DTYPE]](state[env, meta_off_ws + META_IDX_NUM_CONTACTS])
+            rebind[Scalar[DTYPE]](
+                state[env, meta_off_ws + META_IDX_NUM_CONTACTS]
+            )
         )
         if nc_for_ws > MAX_CONTACTS:
             nc_for_ws = MAX_CONTACTS
         var has_warmstart = False
         if nc_for_ws > 0:
             for i in range(NV):
-                if rebind[Scalar[DTYPE]](
-                    state[env, qacc_off + i]
-                ) != Scalar[DTYPE](0):
+                if rebind[Scalar[DTYPE]](state[env, qacc_off + i]) != Scalar[
+                    DTYPE
+                ](0):
                     has_warmstart = True
                     break
 
@@ -1348,8 +1338,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
         var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
 
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             _ = build_sparse_pattern_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
             ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
@@ -1396,8 +1385,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     workspace[env, idx] = cur + dt * damp
 
         # 9c. Re-factor M_hat, solve qacc_final = M_hat^{-1} * qfrc_total
-        @parameter
-        if SPARSE:
+        comptime if SPARSE:
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )

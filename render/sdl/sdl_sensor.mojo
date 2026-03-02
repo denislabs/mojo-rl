@@ -158,7 +158,7 @@ struct SensorType(Indexer, Intable, TrivialRegisterPassable):
 
 
 fn get_sensors(
-    count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[SensorID, AnyOrigin[True]]
+    count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[SensorID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected sensors.
 
@@ -177,9 +177,7 @@ fn get_sensors(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensors",
-        fn(
-            count: Ptr[c_int, AnyOrigin[True]]
-        ) -> Ptr[SensorID, AnyOrigin[True]],
+        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[SensorID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -187,7 +185,7 @@ fn get_sensors(
 
 fn get_sensor_name_for_id(
     instance_id: SensorID,
-) raises -> Ptr[c_char, AnyOrigin[False]]:
+) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a sensor.
 
     This can be called before any sensors are opened.
@@ -204,7 +202,7 @@ fn get_sensor_name_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorNameForID",
-        fn(instance_id: SensorID) -> Ptr[c_char, AnyOrigin[False]],
+        fn(instance_id: SensorID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -251,7 +249,7 @@ fn get_sensor_non_portable_type_for_id(instance_id: SensorID) raises -> c_int:
 
 
 fn open_sensor(
-    instance_id: SensorID, out ret: Ptr[Sensor, AnyOrigin[True]]
+    instance_id: SensorID, out ret: Ptr[Sensor, MutAnyOrigin]
 ) raises:
     """Open a sensor for use.
 
@@ -268,14 +266,14 @@ fn open_sensor(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenSensor",
-        fn(instance_id: SensorID) -> Ptr[Sensor, AnyOrigin[True]],
+        fn(instance_id: SensorID) -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_sensor_from_id(
-    instance_id: SensorID, out ret: Ptr[Sensor, AnyOrigin[True]]
+    instance_id: SensorID, out ret: Ptr[Sensor, MutAnyOrigin]
 ) raises:
     """Return the SDL_Sensor associated with an instance ID.
 
@@ -292,14 +290,14 @@ fn get_sensor_from_id(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensorFromID",
-        fn(instance_id: SensorID) -> Ptr[Sensor, AnyOrigin[True]],
+        fn(instance_id: SensorID) -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
 fn get_sensor_properties(
-    sensor: Ptr[Sensor, AnyOrigin[True]]
+    sensor: Ptr[Sensor, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a sensor.
 
@@ -316,12 +314,12 @@ fn get_sensor_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorProperties",
-        fn(sensor: Ptr[Sensor, AnyOrigin[True]]) -> PropertiesID,
+        fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> PropertiesID,
     ]()(sensor)
 
 
 fn get_sensor_name(
-    sensor: Ptr[Sensor, AnyOrigin[True]], out ret: Ptr[c_char, AnyOrigin[False]]
+    sensor: Ptr[Sensor, MutAnyOrigin], out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the implementation dependent name of a sensor.
 
@@ -338,15 +336,13 @@ fn get_sensor_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensorName",
-        fn(
-            sensor: Ptr[Sensor, AnyOrigin[True]]
-        ) -> Ptr[c_char, AnyOrigin[False]],
+        fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(sensor)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_sensor_type(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> SensorType:
+fn get_sensor_type(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorType:
     """Get the type of a sensor.
 
     Args:
@@ -362,12 +358,12 @@ fn get_sensor_type(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> SensorType:
     return _get_dylib_function[
         lib,
         "SDL_GetSensorType",
-        fn(sensor: Ptr[Sensor, AnyOrigin[True]]) -> SensorType,
+        fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> SensorType,
     ]()(sensor)
 
 
 fn get_sensor_non_portable_type(
-    sensor: Ptr[Sensor, AnyOrigin[True]]
+    sensor: Ptr[Sensor, MutAnyOrigin]
 ) raises -> c_int:
     """Get the platform dependent type of a sensor.
 
@@ -383,11 +379,11 @@ fn get_sensor_non_portable_type(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorNonPortableType",
-        fn(sensor: Ptr[Sensor, AnyOrigin[True]]) -> c_int,
+        fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> c_int,
     ]()(sensor)
 
 
-fn get_sensor_id(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> SensorID:
+fn get_sensor_id(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorID:
     """Get the instance ID of a sensor.
 
     Args:
@@ -403,13 +399,13 @@ fn get_sensor_id(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> SensorID:
     return _get_dylib_function[
         lib,
         "SDL_GetSensorID",
-        fn(sensor: Ptr[Sensor, AnyOrigin[True]]) -> SensorID,
+        fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> SensorID,
     ]()(sensor)
 
 
 fn get_sensor_data(
-    sensor: Ptr[Sensor, AnyOrigin[True]],
-    data: Ptr[c_float, AnyOrigin[True]],
+    sensor: Ptr[Sensor, MutAnyOrigin],
+    data: Ptr[c_float, MutAnyOrigin],
     num_values: c_int,
 ) raises:
     """Get the current state of an opened sensor.
@@ -432,8 +428,8 @@ fn get_sensor_data(
         lib,
         "SDL_GetSensorData",
         fn(
-            sensor: Ptr[Sensor, AnyOrigin[True]],
-            data: Ptr[c_float, AnyOrigin[True]],
+            sensor: Ptr[Sensor, MutAnyOrigin],
+            data: Ptr[c_float, MutAnyOrigin],
             num_values: c_int,
         ) -> Bool,
     ]()(sensor, data, num_values)
@@ -441,7 +437,7 @@ fn get_sensor_data(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_sensor(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> None:
+fn close_sensor(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> None:
     """Close a sensor previously opened with SDL_OpenSensor().
 
     Args:
@@ -451,7 +447,7 @@ fn close_sensor(sensor: Ptr[Sensor, AnyOrigin[True]]) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseSensor", fn(sensor: Ptr[Sensor, AnyOrigin[True]]) -> None
+        lib, "SDL_CloseSensor", fn(sensor: Ptr[Sensor, MutAnyOrigin]) -> None
     ]()(sensor)
 
 
