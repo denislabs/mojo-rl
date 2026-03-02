@@ -35,7 +35,7 @@ fn main() raises:
     var env = CartPoleEnv[DType.float64]()
 
     # Create polynomial feature extractor with normalization
-    var features = CartPoleEnv.make_poly_features(degree=2)
+    var features = CartPoleEnv[DType.float64].make_poly_features(degree=2)
 
     # Create agent
     var agent = LinearQLearningAgent(

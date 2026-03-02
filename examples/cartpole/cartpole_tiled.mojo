@@ -24,7 +24,7 @@ fn main() raises:
     # Train Q-learning
     print("-" * 60)
     # Create tile coding
-    var tc = CartPoleEnv.make_tile_coding(
+    var tc = CartPoleEnv[DType.float64].make_tile_coding(
         num_tilings=8,
         tiles_per_dim=8,
     )

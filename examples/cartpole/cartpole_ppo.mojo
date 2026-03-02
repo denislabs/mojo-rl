@@ -26,7 +26,7 @@ Usage:
 """
 
 from agents.ppo import PPOAgent, PPOAgentWithMinibatch
-from envs import CartPoleNative
+from envs import CartPoleEnv
 
 
 fn main() raises:
@@ -40,8 +40,8 @@ fn main() raises:
     print("-" * 60)
     print("Training PPO Agent")
     print("-" * 60)
-    var env = CartPoleNative()
-    var tile_coding = CartPoleNative.make_tile_coding(
+    var env = CartPoleEnv[DType.float64]()
+    var tile_coding = CartPoleEnv[DType.float64].make_tile_coding(
         num_tilings=8, tiles_per_dim=8
     )
     var agent = PPOAgent(

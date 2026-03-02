@@ -107,7 +107,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int](Model):
         ],
     ):
         """Backward through Linear → LayerNorm → Mish."""
-        Self._Inner.backward[BATCH](grad_output, grad_input, params, cache, grads)
+        Self._Inner.backward[BATCH](
+            grad_output, grad_input, params, cache, grads
+        )
 
     @staticmethod
     fn forward_gpu[

@@ -101,13 +101,15 @@ fn main() raises:
 
     # Test tile coding factory
     print("Testing tile coding factory...")
-    _ = AcrobotEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    _ = AcrobotEnv[DType.float64].make_tile_coding(
+        num_tilings=8, tiles_per_dim=8
+    )
     print("Tile coding created with", 8, "tilings")
     print()
 
     # Test polynomial features factory
     print("Testing polynomial features factory...")
-    _ = AcrobotEnv.make_poly_features(degree=2)
+    _ = AcrobotEnv[DType.float64].make_poly_features(degree=2)
     print("Polynomial features created with degree 2")
     print()
 

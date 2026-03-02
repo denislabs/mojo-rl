@@ -34,11 +34,11 @@ fn compute_bins[NUM_BINS: Int](
     var bins = InlineArray[Float32, NUM_BINS](fill=0)
     if NUM_BINS == 1:
         bins[0] = (v_min + v_max) * 0.5
-        return bins
+        return bins^
     var step = (v_max - v_min) / Float32(NUM_BINS - 1)
     for i in range(NUM_BINS):
         bins[i] = v_min + step * Float32(i)
-    return bins
+    return bins^
 
 
 fn two_hot_encode[NUM_BINS: Int](

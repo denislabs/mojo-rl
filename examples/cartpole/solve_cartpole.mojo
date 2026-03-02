@@ -44,7 +44,9 @@ fn main() raises:
     print("")
 
     # Create tile coding for CartPole's 4D state space
-    var tc = CartPoleEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    var tc = CartPoleEnv[DType.float64].make_tile_coding(
+        num_tilings=8, tiles_per_dim=8
+    )
     print("Tile coding configuration:")
     print("  Tilings:", tc.get_num_tilings())
     print("  Tiles per dim: 8")
@@ -93,7 +95,9 @@ fn main() raises:
     print("")
 
     # Create fresh tile coding
-    var tc_sl = CartPoleEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    var tc_sl = CartPoleEnv[DType.float64].make_tile_coding(
+        num_tilings=8, tiles_per_dim=8
+    )
 
     var env_sl = CartPoleEnv[DType.float64]()
     var agent_sl = TiledSARSALambdaAgent(
@@ -154,7 +158,9 @@ fn main() raises:
     print("-" * 60)
 
     var eval_q = agent_q.evaluate(env_q, tc, num_episodes=100, render=False)
-    var eval_sl = agent_sl.evaluate(env_sl, tc_sl, num_episodes=100, render=False)
+    var eval_sl = agent_sl.evaluate(
+        env_sl, tc_sl, num_episodes=100, render=False
+    )
 
     print("Tiled Q-Learning avg reward:", String(eval_q)[:8])
     print("Tiled SARSA(lambda) avg reward:", String(eval_sl)[:8])

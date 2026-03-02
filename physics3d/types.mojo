@@ -1170,6 +1170,7 @@ struct Data[
         NBODY: Number of rigid bodies.
         NJOINT: Number of joints.
         MAX_CONTACTS: Maximum number of contacts.
+        NSITE: Number of sites.
 
     State representation:
     - qpos: Joint positions (angles, quaternions, displacements)
@@ -1241,7 +1242,7 @@ struct Data[
             self.xipos.append(Scalar[Self.DTYPE](0))
             self.xvel.append(Scalar[Self.DTYPE](0))
             self.xangvel.append(Scalar[Self.DTYPE](0))
-        for i in range(Self.NBODY):
+        for _ in range(Self.NBODY):
             self.xquat.append(Scalar[Self.DTYPE](0))
             self.xquat.append(Scalar[Self.DTYPE](0))
             self.xquat.append(Scalar[Self.DTYPE](0))

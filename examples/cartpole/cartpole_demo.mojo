@@ -22,7 +22,7 @@ fn main() raises:
     var num_episodes = 2000  # More episodes for better policy
     var max_steps = 500
 
-    var num_states = CartPoleEnv.get_num_states(num_bins)
+    var num_states = CartPoleEnv[DType.float64].get_num_states(num_bins)
     var num_actions = 2
 
     print("Configuration:")
@@ -31,7 +31,7 @@ fn main() raises:
     print()
 
     # Initialize environment and agent
-    var env = CartPoleEnv(num_bins=num_bins)
+    var env = CartPoleEnv[DType.float64](num_bins=num_bins)
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=num_actions,

@@ -271,6 +271,38 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 |-----------|------|--------|---------|-----------|
 | `test_hopper_full_step_contact_cpu_vs_gpu.mojo` | Hopper full step with contacts CPU vs GPU (float32, elliptic) | PENDING | 5 (ground contact, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 |
 
+#### Swimmer CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_swimmer_fk_cpu_vs_gpu.mojo` | FK: xpos, xquat, xipos per body (float32, 4 bodies) | PASS | 5 (zeros, bent joints, displaced, moving+rotation, extreme joints) | pos: 1e-4, quat: 1e-4 |
+| `test_swimmer_full_step_cpu_vs_gpu.mojo` | Full step RK4+Newton, no contacts (float32) | PASS | 5 (zero state 1-step, bent joints 1-step, motor actions 1-step, moving+actions 1-step, motor actions 10-steps) | qpos: 3e-2, qvel: 5e-1 |
+
+#### Inverted Double Pendulum CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_inverted_double_pendulum_fk_cpu_vs_gpu.mojo` | FK: xpos, xquat, xipos per body (float32, 4 bodies incl. tip site) | PASS | 5 (zeros, displaced cart, first hinge, both hinges, large tilt) | pos: 1e-4, quat: 1e-4 |
+
+#### Walker2D CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_walker2d_fk_cpu_vs_gpu.mojo` | FK: xpos, xquat, xipos per body (float32, 8 bodies) | PASS | 5 (default standing rootz=1.25, large rootx, bent right leg, symmetric gait, extreme joints) | pos: 1e-4, quat: 1e-4 |
+
+#### Ant CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_ant_fk_cpu_vs_gpu.mojo` | FK: xpos, xquat, xipos per body (float32, 14 bodies, 3D free joint) | PASS | 5 (default init_qpos, raised torso, nonzero joints, rotated torso 30°, extreme joint angles) | pos: 1e-4, quat: 1e-4 |
+| `test_ant_full_step_cpu_vs_gpu.mojo` | Full step RK4+Newton, no contacts / free fall (float32) | PASS | 5 (free fall 1-step, free fall+actions 1-step, default joints raised 1-step, moving+actions 1-step, free fall 10-steps) | qpos: 3e-2, qvel: 5e-1 |
+
+#### Humanoid CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_humanoid_fk_cpu_vs_gpu.mojo` | FK: xpos, xquat, xipos per body (float32, 14 bodies, free joint + 17 hinge) | PASS | 5 (default standing, bent knees, arms extended, rotated torso 45°, full body pose) | pos: 1e-3, quat: 1e-3 (relaxed for nested quat chain) |
+
 ### Analytical / Standalone Tests
 
 | Test File | What | CPU/GPU | Status |
@@ -727,3 +759,13 @@ New Coverage Analysis
   5. test_inverted_double_pendulum_fk_vs_mujoco.mojo — DONE (5/5 PASS). Simplest model, slide+hinge chain. Machine precision.
   6. test_walker2d_fk_vs_mujoco.mojo — DONE (5/5 PASS). Biped topology, complements Hopper coverage. Machine precision.
   7. test_humanoid_fk_vs_mujoco.mojo — DONE (5/5 PASS). Body-level quat attrs, dense tree, free joint. Fixed _parse_quat bug (w,x,y,z order).
+
+  CPU vs GPU Equivalents (CREATED)
+
+  8.  test_swimmer_fk_cpu_vs_gpu.mojo — DONE. 5 configs (zeros, bent, displaced, moving, extreme). pos/quat tol=1e-4.
+  9.  test_swimmer_full_step_cpu_vs_gpu.mojo — DONE. 5 configs (zero 1-step, bent 1-step, actions 1-step, moving+actions 1-step, actions 10-steps). No contacts.
+  10. test_inverted_double_pendulum_fk_cpu_vs_gpu.mojo — DONE. 5 configs (zeros, cart, first hinge, both hinges, large tilt). NSITE=1 included.
+  11. test_walker2d_fk_cpu_vs_gpu.mojo — DONE. 5 configs (default standing rootz=1.25, large rootx, bent right leg, symmetric gait, extreme joints). pos/quat tol=1e-4.
+  12. test_ant_fk_cpu_vs_gpu.mojo — DONE. 5 configs (default init_qpos, raised, nonzero joints, rotated 30°, extreme). Free joint quaternion init. pos/quat tol=1e-4.
+  13. test_ant_full_step_cpu_vs_gpu.mojo — DONE. 5 configs (free fall, free fall+actions, default joints raised, moving+actions, free fall 10-steps). All z=2.0 (no contacts).
+  14. test_humanoid_fk_cpu_vs_gpu.mojo — DONE. 5 configs (default standing, bent knees, arms extended, rotated 45°, full body pose). pos/quat tol=1e-3 (lwaist quat accumulation).

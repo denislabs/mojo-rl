@@ -74,9 +74,9 @@ fn benchmark_native(
     """
     var max_steps = 1000
 
-    var env = CartPoleEnv(num_bins=num_bins)
+    var env = CartPoleEnv[DType.float64](num_bins=num_bins)
     var agent = QLearningAgent(
-        num_states=CartPoleEnv.get_num_states(num_bins),
+        num_states=CartPoleEnv[DType.float64].get_num_states(num_bins),
         num_actions=2,
         learning_rate=0.1,
         discount_factor=0.99,

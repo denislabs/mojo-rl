@@ -42,7 +42,7 @@ fn main() raises:
 
     # Use 6 bins per dimension -> 6^6 = 46,656 states
     var num_bins = 6
-    var num_states = AcrobotEnv.get_num_states(num_bins)
+    var num_states = AcrobotEnv[DType.float64].get_num_states(num_bins)
     print("Discretization: ", num_bins, "bins per dimension")
     print("Total discrete states:", num_states)
     print("")

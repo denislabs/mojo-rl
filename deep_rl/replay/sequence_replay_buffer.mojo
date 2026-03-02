@@ -21,7 +21,7 @@ struct SequenceReplayBuffer[
     obs_dim: Int,
     action_dim: Int,
     dtype: DType = DType.float32,
-]:
+](ImplicitlyCopyable, Movable):
     """Circular replay buffer that samples contiguous sequences.
 
     Sequences of length H+1 observations (H steps) are sampled such that
@@ -46,19 +46,43 @@ struct SequenceReplayBuffer[
     comptime ACTION_DIM: Int = Self.action_dim
 
     # Storage - heap-allocated to support large capacities
-    var obs: List[Scalar[Self.dtype]]      # [capacity * OBS_DIM]
+    var obs: List[Scalar[Self.dtype]]  # [capacity * OBS_DIM]
     var actions: List[Scalar[Self.dtype]]  # [capacity * ACTION_DIM]
     var rewards: List[Scalar[Self.dtype]]  # [capacity]
-    var dones: List[Scalar[Self.dtype]]    # [capacity] (1.0 = done)
-    var episode_id: List[Int]              # tracks which episode each step belongs to
+    var dones: List[Scalar[Self.dtype]]  # [capacity] (1.0 = done)
+    var episode_id: List[Int]  # tracks which episode each step belongs to
 
-    var ptr: Int   # next write position
+    var ptr: Int  # next write position
     var size: Int  # current number of stored transitions
     var current_episode: Int  # incremented on each done
 
+    fn __moveinit__(out self, deinit other: Self):
+        """Move constructor — transfers ownership of all heap storage."""
+        self.obs = other.obs^
+        self.actions = other.actions^
+        self.rewards = other.rewards^
+        self.dones = other.dones^
+        self.episode_id = other.episode_id^
+        self.ptr = other.ptr
+        self.size = other.size
+        self.current_episode = other.current_episode
+
+    fn __copyinit__(out self, other: Self):
+        """Deep copy — duplicates all underlying storage."""
+        self.obs = other.obs.copy()
+        self.actions = other.actions.copy()
+        self.rewards = other.rewards.copy()
+        self.dones = other.dones.copy()
+        self.episode_id = other.episode_id.copy()
+        self.ptr = other.ptr
+        self.size = other.size
+        self.current_episode = other.current_episode
+
     fn __init__(out self):
         """Initialize empty sequence replay buffer."""
-        self.obs = List[Scalar[Self.dtype]](capacity=Self.capacity * Self.OBS_DIM)
+        self.obs = List[Scalar[Self.dtype]](
+            capacity=Self.capacity * Self.OBS_DIM
+        )
         self.actions = List[Scalar[Self.dtype]](
             capacity=Self.capacity * Self.ACTION_DIM
         )
@@ -192,9 +216,7 @@ struct SequenceReplayBuffer[
         while sampled < BATCH and attempts < max_attempts:
             attempts += 1
             # Random starting index within valid range
-            var start = Int(
-                random_float64() * Float64(self.size)
-            ) % self.size
+            var start = Int(random_float64() * Float64(self.size)) % self.size
 
             # Adjust for circular buffer: start should be a valid past index
             var actual_start = (self.ptr - self.size + start) % Self.capacity
@@ -214,7 +236,9 @@ struct SequenceReplayBuffer[
             var end_idx = (actual_start + H) % Self.capacity
             # The end must be within the valid recorded range
             # (a valid index is in [ptr - size, ptr) mod capacity)
-            var end_age = (self.ptr - end_idx - 1 + Self.capacity) % Self.capacity
+            var end_age = (
+                self.ptr - end_idx - 1 + Self.capacity
+            ) % Self.capacity
             if end_age >= self.size:
                 continue  # end_idx is beyond recorded data
 

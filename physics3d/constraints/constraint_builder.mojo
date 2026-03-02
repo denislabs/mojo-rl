@@ -938,16 +938,7 @@ fn build_constraints[
         )
         if R_n < Scalar[DTYPE](1e-12):
             R_n = Scalar[DTYPE](1e-12)
-        # Recover imp_n from diagApprox: R_n = (1-imp)/imp * diagApprox
-        var diag_n_parent = constraints.rows[normal_row].diagApprox
-        var imp_n: Scalar[DTYPE]
-        if diag_n_parent > Scalar[DTYPE](1e-12):
-            imp_n = diag_n_parent / (diag_n_parent + R_n)
-        else:
-            imp_n = (
-                constraints.rows[normal_row].inv_K_imp
-                * constraints.rows[normal_row].K
-            )
+
         var R_f1 = R_n / model.impratio
         var inv_K_imp_f1 = Scalar[DTYPE](1.0) / (k1 + R_f1)
 

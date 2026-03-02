@@ -10,7 +10,7 @@ MPPI plans in latent space over a horizon H by:
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
-from math import exp, sqrt
+from math import exp, sqrt, cos, log
 from random import random_float64
 
 from deep_rl.constants import dtype
@@ -280,21 +280,6 @@ fn _gaussian_sample() -> Float64:
         u1 = 1e-10
     var z = sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979 * u2)
     return z
-
-
-@always_inline
-fn cos(x: Float64) -> Float64:
-    """Cosine using Taylor series (compile-time safe)."""
-    from math import cos as math_cos
-
-    return math_cos(x)
-
-
-@always_inline
-fn log(x: Float64) -> Float64:
-    from math import log as math_log
-
-    return math_log(x)
 
 
 @always_inline

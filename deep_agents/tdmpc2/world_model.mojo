@@ -82,14 +82,12 @@ struct WorldModel[
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
-    comptime DynInner = Sequential[
-        Linear[Self.LATENT_DIM, Self.LATENT_DIM],
-        SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
-    ]
+
     comptime DynModel = Sequential[
         NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
-        Self.DynInner,
+        Linear[Self.LATENT_DIM, Self.LATENT_DIM],
+        SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
 
     # Reward: (LATENT + ACTION) → NUM_BINS logits
@@ -100,14 +98,12 @@ struct WorldModel[
     ]
 
     # Termination: LATENT → scalar in (0,1)
-    comptime TermInner = Sequential[
-        Linear[Self.MLP_DIM, 1],
-        Sigmoid[1],
-    ]
+
     comptime TermModel = Sequential[
         NormedLinear[Self.LATENT_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
-        Self.TermInner,
+        Linear[Self.MLP_DIM, 1],
+        Sigmoid[1],
     ]
 
     # Policy: LATENT → (mean, log_std) for Gaussian actions

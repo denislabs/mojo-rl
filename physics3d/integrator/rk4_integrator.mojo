@@ -1650,16 +1650,33 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             var c3_i = v0_i + dt * a2_i
 
             # Combined velocity — store in A0 workspace for position integration
+            # NaN guard + clamp: if any stage solver produced NaN qacc, c1/c2/c3
+            # are NaN; clamp v_combined to prevent NaN qpos integration.
             var v_combined_i = (
                 ONE_SIXTH * v0_i
                 + ONE_THIRD * c1_i
                 + ONE_THIRD * c2_i
                 + ONE_SIXTH * c3_i
             )
+            var vpos_max = Scalar[DTYPE](100.0)
+            if v_combined_i != v_combined_i:  # NaN guard: no position change
+                v_combined_i = Scalar[DTYPE](0.0)
+            elif v_combined_i > vpos_max:
+                v_combined_i = vpos_max
+            elif v_combined_i < -vpos_max:
+                v_combined_i = -vpos_max
             workspace[env, A0_idx + i] = v_combined_i
 
-            # Integrate: qvel = v0 + qacc * dt
-            state[env, qvel_off + i] = v0_i + qacc_i * dt
+            # Integrate: qvel = v0 + qacc * dt  (with NaN guard + velocity clamp)
+            var qvel_new = v0_i + qacc_i * dt
+            var qvel_max = Scalar[DTYPE](100.0)
+            if qvel_new != qvel_new:  # NaN guard: reset to zero
+                qvel_new = Scalar[DTYPE](0.0)
+            elif qvel_new > qvel_max:
+                qvel_new = qvel_max
+            elif qvel_new < -qvel_max:
+                qvel_new = -qvel_max
+            state[env, qvel_off + i] = qvel_new
             state[env, qacc_off + i] = qacc_i
 
         # Second pass: integrate position using v_combined (quaternion-aware).
