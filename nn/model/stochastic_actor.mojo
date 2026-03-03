@@ -911,35 +911,38 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
-        var params_ptr = params_buf.unsafe_ptr()
-
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
+        ](params.ptr + Self._mean_W_offset())
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._mean_b_offset())
+        ](params.ptr + Self._mean_b_offset())
         var log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_offset())
-        var cache = LayoutTensor[
+        ](params.ptr + Self._log_std_offset())
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+        var cache_view = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](cache.ptr)
 
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -978,11 +981,11 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             W_mean,
             b_mean,
             log_std,
-            cache,
+            cache_view,
             grid_dim=(grid_x, grid_y),
             block_dim=(TILE, TILE),
         )
@@ -992,31 +995,32 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
-        var params_ptr = params_buf.unsafe_ptr()
-
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
+        ](params.ptr + Self._mean_W_offset())
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._mean_b_offset())
+        ](params.ptr + Self._mean_b_offset())
         var log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_offset())
+        ](params.ptr + Self._log_std_offset())
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
 
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -1047,7 +1051,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             W_mean,
             b_mean,
             log_std,
@@ -1060,12 +1064,22 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU.
 
@@ -1073,26 +1087,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         With state-independent log_std, no gradient flows to input from log_std.
         Uses fused kernels for better performance with small action_dim.
         """
-        var params_ptr = params_buf.unsafe_ptr()
-        var grads_ptr = grads_buf.unsafe_ptr()
-
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
-        var cache = LayoutTensor[
+        ](params.ptr + Self._mean_W_offset())
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grads = LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-        ](grads_ptr)
+        ](cache.ptr)
 
         # Fused kernel 1: Compute dx (elementwise, optimized for small action_dim)
         # Note: With state-independent log_std, only mean head contributes to dx
@@ -1119,7 +1124,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
         ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
             grad_input,
-            grad_output,
+            grad_output_immut,
             W_mean,
             grid_dim=(dx_grid,),
             block_dim=(TPB,),
@@ -1153,8 +1158,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dW_db_fused_kernel_wrapper, dW_db_fused_kernel_wrapper
         ](
             grads,
-            cache,
-            grad_output,
+            cache_immut,
+            grad_output_immut,
             grid_dim=(dW_db_grid,),
             block_dim=(TPB,),
         )

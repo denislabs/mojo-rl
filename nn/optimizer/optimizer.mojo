@@ -10,21 +10,25 @@ from gpu.host import DeviceContext, DeviceBuffer
 trait Optimizer(Movable & ImplicitlyCopyable):
     """Base trait for optimizers.
 
-    Optimizers update parameters using gradients. State (e.g., moments for Adam)
-    is passed externally by the trainer, making optimizers stateless with respect
-    to parameter-sized buffers.
+    Optimizers are stateless pure-computation types. All mutable state
+    (parameter moments, etc.) is passed externally via LayoutTensor views.
+    Hyperparameters (lr, beta1, etc.) are compile-time struct parameters.
 
     STATE_PER_PARAM defines how many state values are needed per parameter:
     - SGD: 1 (unused, but minimum for valid tensor dimensions)
     - Adam: 2 (m = first moment, v = second moment)
+    - RMSprop: 1 (squared gradient moving average)
+
+    step() and step_gpu() are @staticmethod - no instance needed.
+    The caller tracks step_num and passes it in (used for bias correction).
     """
 
     comptime STATE_PER_PARAM: Int
 
+    @staticmethod
     fn step[
         PARAM_SIZE: Int
     ](
-        mut self,
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
         ],
@@ -34,6 +38,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
         ],
+        step_num: Int,
     ):
         """Perform one optimization step.
 
@@ -41,6 +46,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             params: Flattened parameters to update (modified in place).
             grads: Flattened gradients.
             state: Optimizer state (e.g., moments). Layout: (PARAM_SIZE, STATE_PER_PARAM).
+            step_num: Global step counter (1-based). Used for bias correction in Adam/AdamW.
         """
         ...
 
@@ -48,21 +54,29 @@ trait Optimizer(Movable & ImplicitlyCopyable):
     # GPU methods
     # =========================================================================
 
+    @staticmethod
     fn step_gpu[
         PARAM_SIZE: Int
     ](
-        mut self,
         ctx: DeviceContext,
-        params_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        state_buf: DeviceBuffer[dtype],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype,
+            Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
+            MutAnyOrigin,
+        ],
+        step_num: Int,
     ) raises:
         """Perform one optimization step on GPU.
 
         Args:
             ctx: GPU device context.
-            params_buf: Parameters buffer [PARAM_SIZE] (modified in place).
-            grads_buf: Gradients buffer [PARAM_SIZE].
-            state_buf: Optimizer state buffer [PARAM_SIZE * STATE_PER_PARAM].
+            params: Parameters [PARAM_SIZE] (modified in place).
+            grads: Gradients [PARAM_SIZE].
+            state: Optimizer state [PARAM_SIZE, STATE_PER_PARAM].
+            step_num: Global step counter (1-based).
         """
         ...

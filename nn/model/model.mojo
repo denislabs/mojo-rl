@@ -20,11 +20,13 @@ trait Model(Movable & ImplicitlyCopyable):
       For Sequential, this includes intermediate activation buffers.
       Total workspace = BATCH * WORKSPACE_SIZE_PER_SAMPLE.
 
-    All tensors use LayoutTensor for consistent zero-copy views:
+    All CPU and GPU tensors use LayoutTensor for consistent zero-copy views:
     - input/output: [BATCH, DIM] layout
     - params/grads: [PARAM_SIZE] layout (1D)
     - cache: [BATCH, CACHE_SIZE] layout
-    - workspace: [BATCH * WORKSPACE_SIZE_PER_SAMPLE] layout (1D, GPU only)
+
+    GPU workspace is kept as DeviceBuffer (size may be 0 for leaf layers,
+    allocated as max(1, BATCH * WORKSPACE_SIZE_PER_SAMPLE) by the caller).
     """
 
     comptime IN_DIM: Int
@@ -123,11 +125,12 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     # =========================================================================
-    # GPU methods with workspace (for Sequential - avoids internal allocation)
-    # =========================================================================
-
-    # =========================================================================
     # GPU forward passes
+    # =========================================================================
+    # Shaped tensors (input, output, params, cache) are passed as LayoutTensor
+    # for a uniform API matching the CPU interface.
+    # workspace is kept as DeviceBuffer because its size may be 0 for leaf
+    # layers (allocated as max(1, BATCH * WORKSPACE_SIZE_PER_SAMPLE) by caller).
     # =========================================================================
 
     @staticmethod
@@ -135,24 +138,29 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward pass with pre-allocated workspace (for training).
-
-        For leaf layers (Linear, ReLU, etc.), this just calls forward_gpu.
-        For Sequential, workspace holds intermediate activation buffers.
+        """GPU forward pass with caching (for training).
 
         Args:
             ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE].
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+            output: Output [BATCH, OUT_DIM] (written).
+            input: Input [BATCH, IN_DIM].
+            params: Parameters [PARAM_SIZE].
+            cache: Cache [BATCH, CACHE_SIZE] (written).
+            workspace: Pre-allocated workspace for Sequential intermediate buffers.
         """
         ...
 
@@ -161,19 +169,25 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward pass without caching, with pre-allocated workspace (for inference).
+        """GPU forward pass without caching (for inference).
 
         Args:
             ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+            output: Output [BATCH, OUT_DIM] (written).
+            input: Input [BATCH, IN_DIM].
+            params: Parameters [PARAM_SIZE].
+            workspace: Pre-allocated workspace for Sequential intermediate buffers.
         """
         ...
 
@@ -186,25 +200,32 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward pass with pre-allocated workspace.
-
-        For leaf layers (Linear, ReLU, etc.), this just calls backward_gpu.
-        For Sequential, workspace holds intermediate gradient buffers.
+        """GPU backward pass.
 
         Args:
             ctx: GPU device context.
-            grad_input_buf: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
-            grad_output_buf: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache from forward pass [BATCH * CACHE_SIZE].
-            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+            grad_input: Gradient w.r.t. input [BATCH, IN_DIM] (written).
+            grad_output: Gradient w.r.t. output [BATCH, OUT_DIM].
+            params: Parameters [PARAM_SIZE].
+            cache: Cache from forward pass [BATCH, CACHE_SIZE].
+            grads: Parameter gradients [PARAM_SIZE] (accumulated).
+            workspace: Pre-allocated workspace for Sequential intermediate buffers.
         """
         ...

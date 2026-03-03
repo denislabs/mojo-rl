@@ -116,30 +116,42 @@ struct NormedLinear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward with caching."""
-        Self._Inner.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
-        )
+        Self._Inner.forward_gpu[BATCH](ctx, output, input, params, cache, workspace)
 
     @staticmethod
     fn forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward without caching (inference)."""
         Self._Inner.forward_gpu_no_cache[BATCH](
-            ctx, output_buf, input_buf, params_buf, workspace_buf
+            ctx, output, input, params, workspace
         )
 
     @staticmethod
@@ -147,20 +159,24 @@ struct NormedLinear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU backward."""
         Self._Inner.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-            workspace_buf,
+            ctx, grad_input, grad_output, params, cache, grads, workspace
         )

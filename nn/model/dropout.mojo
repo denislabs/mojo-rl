@@ -290,31 +290,29 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     # =========================================================================
 
     @staticmethod
-    fn _forward_gpu_impl[
+    fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused
-        cache_buf: DeviceBuffer[dtype],
-        seed_base: UInt64,
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """Launch forward pass on GPU with caching (internal implementation)."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        """Launch forward pass on GPU with caching."""
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        ](input.ptr)
 
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
         comptime if Self.training:
-            var cache = LayoutTensor[
+            # CACHE_SIZE == Self.dim when training=True, so cache has the right layout
+            var cache_view = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-            ](cache_buf.unsafe_ptr())
+            ](cache.ptr)
 
             @always_inline
             fn kernel_wrapper(
@@ -333,14 +331,13 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
                 output,
-                input,
-                cache,
-                seed_base,
+                input_immut,
+                cache_view,
+                Self.SEED,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
         else:
-
             @always_inline
             fn kernel_wrapper_infer(
                 output: LayoutTensor[
@@ -354,49 +351,25 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
             ctx.enqueue_function[kernel_wrapper_infer, kernel_wrapper_infer](
                 output,
-                input,
+                input_immut,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
-    ) raises:
-        """GPU forward with workspace ."""
-
-        Self._forward_gpu_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, Self.SEED
-        )
 
     @staticmethod
     fn forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (identity)."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        ](input.ptr)
 
         @always_inline
         fn kernel_wrapper(
@@ -414,7 +387,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -424,28 +397,26 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU."""
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
+        var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
+        ](grad_output.ptr)
 
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
         comptime if Self.training:
-            var cache = LayoutTensor[
+            # CACHE_SIZE == Self.dim when training=True
+            var cache_immut = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-            ](cache_buf.unsafe_ptr())
+            ](cache.ptr)
 
             @always_inline
             fn kernel_wrapper(
@@ -458,19 +429,17 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 cache: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
                 ],
-                batch_size: Int,
             ):
                 Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
 
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
                 grad_input,
-                grad_output,
-                cache,
+                grad_output_immut,
+                cache_immut,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
         else:
-
             @always_inline
             fn kernel_wrapper_infer(
                 grad_input: LayoutTensor[
@@ -491,7 +460,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
             ctx.enqueue_function[kernel_wrapper_infer, kernel_wrapper_infer](
                 grad_input,
-                grad_output,
+                grad_output_immut,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )

@@ -850,11 +850,26 @@ struct DeepPPOContinuousAgent[
         var step = 0
         while episodes_completed < num_episodes and step < max_steps:
             # Forward actor to get mean and log_std
+            var eval_actor_out_tensor = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.n_envs, Self.ActorNetwork.MODEL.OUT_DIM),
+                MutAnyOrigin,
+            ](actor_out_buf.unsafe_ptr())
+            var eval_obs_tensor = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.n_envs, Self.ActorNetwork.MODEL.IN_DIM),
+                MutAnyOrigin,
+            ](obs_buf.unsafe_ptr())
+            var eval_actor_params_tensor = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+                MutAnyOrigin,
+            ](actor_params_buf.unsafe_ptr())
             Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
-                actor_out_buf,
-                obs_buf,
-                actor_params_buf,
+                eval_actor_out_tensor,
+                eval_obs_tensor,
+                eval_actor_params_tensor,
                 actor_workspace_buf,
             )
 
@@ -1319,10 +1334,14 @@ struct DeepPPOContinuousAgent[
         ](kl_divergences_buf.unsafe_ptr())
 
         var actor_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(ACTOR_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](actor_grads_buf.unsafe_ptr())
         var critic_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(CRITIC_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
@@ -1330,6 +1349,57 @@ struct DeepPPOContinuousAgent[
         var critic_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](critic_grad_partial_sums_buf.unsafe_ptr())
+        var actor_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](actor_params_buf.unsafe_ptr())
+        var critic_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](critic_params_buf.unsafe_ptr())
+        var actor_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](actor_cache_buf.unsafe_ptr())
+        var critic_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](critic_cache_buf.unsafe_ptr())
+        var actor_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](actor_grad_input_buf.unsafe_ptr())
+        var critic_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](critic_grad_input_buf.unsafe_ptr())
+        var values_rollout_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](values_buf.unsafe_ptr())
+        var actor_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.ActorNetwork.MODEL.PARAM_SIZE,
+                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](actor_state_buf.unsafe_ptr())
+        var critic_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.CriticNetwork.MODEL.PARAM_SIZE,
+                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](critic_state_buf.unsafe_ptr())
 
         # =====================================================================
         # Initialize all CPU environments and copy observations to GPU
@@ -1457,18 +1527,18 @@ struct DeepPPOContinuousAgent[
                 # Forward actor on GPU to get mean and log_std
                 Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    actor_output_buf,
-                    obs_buf,
-                    actor_params_buf,
+                    actor_output_tensor,
+                    obs_tensor,
+                    actor_params_tensor,
                     actor_env_workspace_buf,
                 )
 
                 # Forward critic on GPU to get values
                 Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    values_buf,
-                    obs_buf,
-                    critic_params_buf,
+                    values_rollout_tensor,
+                    obs_tensor,
+                    critic_params_tensor,
                     critic_env_workspace_buf,
                 )
                 ctx.synchronize()
@@ -1643,9 +1713,9 @@ struct DeepPPOContinuousAgent[
             # Get bootstrap values from final observations
             Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
-                values_buf,
-                obs_buf,
-                critic_params_buf,
+                values_rollout_tensor,
+                obs_tensor,
+                critic_params_tensor,
                 critic_env_workspace_buf,
             )
 
@@ -1733,8 +1803,7 @@ struct DeepPPOContinuousAgent[
                 var lr_multiplier = 1.0 - progress
                 current_actor_lr = initial_actor_lr * lr_multiplier
                 current_critic_lr = initial_critic_lr * lr_multiplier
-                self.actor.optimizer.lr = current_actor_lr
-                self.critic.optimizer.lr = current_critic_lr
+                # Note: Adam LR is a compile-time parameter; runtime annealing not supported.
 
             if self.anneal_entropy:
                 current_entropy_coef = initial_entropy_coef * (1.0 - progress)
@@ -1830,10 +1899,10 @@ struct DeepPPOContinuousAgent[
                     ctx.enqueue_memset(actor_grads_buf, 0)
                     Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        actor_output_mb_buf,
-                        mb_obs_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
+                        actor_output_mb_tensor,
+                        mb_obs_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     # No sync needed - grad kernel uses forward output
@@ -1890,11 +1959,11 @@ struct DeepPPOContinuousAgent[
                     var actor_bwd_start = perf_counter_ns()
                     Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        actor_grad_input_buf,
-                        actor_grad_output_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
-                        actor_grads_buf,
+                        actor_grad_input_tensor,
+                        actor_grad_output_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
+                        actor_grads_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     # No sync needed - grad clip uses backward output
@@ -1928,11 +1997,15 @@ struct DeepPPOContinuousAgent[
 
                     # Actor optimizer step
                     var actor_optim_start = perf_counter_ns()
-                    self.actor.optimizer.step_gpu[ACTOR_PARAMS](
+                    self.actor.step_num += 1
+                    Self.ActorNetwork.OPTIMIZER.step_gpu[
+                        Self.ActorNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        actor_params_buf,
-                        actor_grads_buf,
-                        actor_state_buf,
+                        actor_params_tensor,
+                        actor_grads_tensor,
+                        actor_state_tensor,
+                        self.actor.step_num,
                     )
 
                     # Clamp log_std params to prevent drift to extreme values
@@ -1969,10 +2042,10 @@ struct DeepPPOContinuousAgent[
                     ctx.enqueue_memset(critic_grads_buf, 0)
                     Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        critic_values_buf,
-                        mb_obs_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
+                        critic_values_tensor,
+                        mb_obs_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     # No sync needed - grad kernel uses forward output
@@ -2015,11 +2088,11 @@ struct DeepPPOContinuousAgent[
                     var critic_bwd_start = perf_counter_ns()
                     Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        critic_grad_input_buf,
-                        critic_grad_output_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
-                        critic_grads_buf,
+                        critic_grad_input_tensor,
+                        critic_grad_output_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
+                        critic_grads_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     # No sync needed - grad clip uses backward output
@@ -2053,11 +2126,15 @@ struct DeepPPOContinuousAgent[
 
                     # Critic optimizer step
                     var critic_optim_start = perf_counter_ns()
-                    self.critic.optimizer.step_gpu[CRITIC_PARAMS](
+                    self.critic.step_num += 1
+                    Self.CriticNetwork.OPTIMIZER.step_gpu[
+                        Self.CriticNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        critic_params_buf,
-                        critic_grads_buf,
-                        critic_state_buf,
+                        critic_params_tensor,
+                        critic_grads_tensor,
+                        critic_state_tensor,
+                        self.critic.step_num,
                     )
                     # Sync at end of minibatch to ensure all GPU work completes
                     # before next iteration (params must be updated for next forward)
@@ -2485,10 +2562,14 @@ struct DeepPPOContinuousAgent[
         ](kl_divergences_buf.unsafe_ptr())
 
         var actor_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(ACTOR_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](actor_grads_buf.unsafe_ptr())
         var critic_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(CRITIC_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
@@ -2496,6 +2577,57 @@ struct DeepPPOContinuousAgent[
         var critic_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](critic_grad_partial_sums_buf.unsafe_ptr())
+        var actor_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](actor_params_buf.unsafe_ptr())
+        var critic_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](critic_params_buf.unsafe_ptr())
+        var actor_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](actor_cache_buf.unsafe_ptr())
+        var critic_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](critic_cache_buf.unsafe_ptr())
+        var actor_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](actor_grad_input_buf.unsafe_ptr())
+        var critic_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](critic_grad_input_buf.unsafe_ptr())
+        var values_rollout_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](values_buf.unsafe_ptr())
+        var actor_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.ActorNetwork.MODEL.PARAM_SIZE,
+                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](actor_state_buf.unsafe_ptr())
+        var critic_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.CriticNetwork.MODEL.PARAM_SIZE,
+                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](critic_state_buf.unsafe_ptr())
 
         # =====================================================================
         # Define kernel wrappers
@@ -2691,18 +2823,18 @@ struct DeepPPOContinuousAgent[
                 # Forward actor on GPU to get mean and log_std
                 Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    actor_output_buf,
-                    obs_buf,
-                    actor_params_buf,
+                    actor_output_tensor,
+                    obs_tensor,
+                    actor_params_tensor,
                     actor_env_workspace_buf,
                 )
 
                 # Forward critic on GPU to get values
                 Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    values_buf,
-                    obs_buf,
-                    critic_params_buf,
+                    values_rollout_tensor,
+                    obs_tensor,
+                    critic_params_tensor,
                     critic_env_workspace_buf,
                 )
                 ctx.synchronize()
@@ -2970,9 +3102,9 @@ struct DeepPPOContinuousAgent[
             # Get bootstrap values from final observations
             Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
-                values_buf,
-                obs_buf,
-                critic_params_buf,
+                values_rollout_tensor,
+                obs_tensor,
+                critic_params_tensor,
                 critic_env_workspace_buf,
             )
 
@@ -3068,8 +3200,7 @@ struct DeepPPOContinuousAgent[
                 var lr_multiplier = 1.0 - progress
                 current_actor_lr = initial_actor_lr * lr_multiplier
                 current_critic_lr = initial_critic_lr * lr_multiplier
-                self.actor.optimizer.lr = current_actor_lr
-                self.critic.optimizer.lr = current_critic_lr
+                # Note: Adam LR is a compile-time parameter; runtime annealing not supported.
 
             if self.anneal_entropy:
                 current_entropy_coef = initial_entropy_coef * (1.0 - progress)
@@ -3165,10 +3296,10 @@ struct DeepPPOContinuousAgent[
                     ctx.enqueue_memset(actor_grads_buf, 0)
                     Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        actor_output_mb_buf,
-                        mb_obs_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
+                        actor_output_mb_tensor,
+                        mb_obs_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     # No sync needed - grad kernel uses forward output
@@ -3225,11 +3356,11 @@ struct DeepPPOContinuousAgent[
                     var actor_bwd_start = perf_counter_ns()
                     Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        actor_grad_input_buf,
-                        actor_grad_output_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
-                        actor_grads_buf,
+                        actor_grad_input_tensor,
+                        actor_grad_output_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
+                        actor_grads_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     # No sync needed - grad clip uses backward output
@@ -3263,11 +3394,15 @@ struct DeepPPOContinuousAgent[
 
                     # Actor optimizer step
                     var actor_optim_start = perf_counter_ns()
-                    self.actor.optimizer.step_gpu[ACTOR_PARAMS](
+                    self.actor.step_num += 1
+                    Self.ActorNetwork.OPTIMIZER.step_gpu[
+                        Self.ActorNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        actor_params_buf,
-                        actor_grads_buf,
-                        actor_state_buf,
+                        actor_params_tensor,
+                        actor_grads_tensor,
+                        actor_state_tensor,
+                        self.actor.step_num,
                     )
 
                     # Clamp log_std params to prevent drift to extreme values
@@ -3304,10 +3439,10 @@ struct DeepPPOContinuousAgent[
                     ctx.enqueue_memset(critic_grads_buf, 0)
                     Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        critic_values_buf,
-                        mb_obs_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
+                        critic_values_tensor,
+                        mb_obs_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     # No sync needed - grad kernel uses forward output
@@ -3350,11 +3485,11 @@ struct DeepPPOContinuousAgent[
                     var critic_bwd_start = perf_counter_ns()
                     Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        critic_grad_input_buf,
-                        critic_grad_output_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
-                        critic_grads_buf,
+                        critic_grad_input_tensor,
+                        critic_grad_output_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
+                        critic_grads_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     # No sync needed - grad clip uses backward output
@@ -3388,11 +3523,15 @@ struct DeepPPOContinuousAgent[
 
                     # Critic optimizer step
                     var critic_optim_start = perf_counter_ns()
-                    self.critic.optimizer.step_gpu[CRITIC_PARAMS](
+                    self.critic.step_num += 1
+                    Self.CriticNetwork.OPTIMIZER.step_gpu[
+                        Self.CriticNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        critic_params_buf,
-                        critic_grads_buf,
-                        critic_state_buf,
+                        critic_params_tensor,
+                        critic_grads_tensor,
+                        critic_state_tensor,
+                        self.critic.step_num,
                     )
                     # Sync at end of minibatch to ensure all GPU work completes
                     # before next iteration (params must be updated for next forward)

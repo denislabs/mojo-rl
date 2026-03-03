@@ -18,10 +18,10 @@ Usage:
         model, optimizer, loss, Kaiming()
     )
 """
-
+from layout import LayoutTensor, Layout
 from ..constants import dtype
-from math import sqrt
-from random import random_float64
+from math import sqrt, log, cos, sin, pi
+from random.philox import Random as PhiloxRandom
 
 
 trait Initializer(Copyable & Movable & ImplicitlyCopyable):
@@ -32,9 +32,10 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
     activation functions and network architectures.
     """
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         """Initialize parameters.
 
         Parameters:
@@ -42,13 +43,13 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
             FAN_IN: Number of input features (used by some initializers).
             FAN_OUT: Number of output features (used by some initializers).
 
-        Returns:
-            Initialized parameter list of length SIZE.
+        Args:
+            params: LayoutTensor to initialize.
         """
         ...
 
 
-struct Xavier(Initializer):
+struct Xavier[SEED: UInt64 = 0](Initializer):
     """Xavier/Glorot initialization.
 
     Weights are drawn from U(-sqrt(6/(fan_in+fan_out)), sqrt(6/(fan_in+fan_out)))
@@ -66,17 +67,18 @@ struct Xavier(Initializer):
     fn __init__(out self, *, deinit take: Self):
         pass
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        var std = sqrt(2.0 / Float64(FAN_IN + FAN_OUT))
-        for _ in range(SIZE):
-            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
+        var rand_vals = rng.step_uniform()
+        var std = sqrt(2.0 / Scalar[dtype](FAN_IN + FAN_OUT))
+        for i in range(SIZE):
+            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
 
 
-struct Kaiming(Copyable, ImplicitlyCopyable, Initializer, Movable):
+struct Kaiming[SEED: UInt64 = 0](Initializer):
     """Kaiming/He initialization.
 
     Weights are drawn from N(0, sqrt(2/fan_in)).
@@ -94,17 +96,18 @@ struct Kaiming(Copyable, ImplicitlyCopyable, Initializer, Movable):
     fn __init__(out self, *, deinit take: Self):
         pass
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        var std = sqrt(2.0 / Float64(FAN_IN))
-        for _ in range(SIZE):
-            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        var std = sqrt(2.0 / Scalar[dtype](FAN_IN))
+        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
+        var rand_vals = rng.step_uniform()
+        for i in range(SIZE):
+            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
 
 
-struct LeCun(Initializer):
+struct LeCun[SEED: UInt64 = 0](Initializer):
     """LeCun initialization.
 
     Weights are drawn from N(0, sqrt(1/fan_in)).
@@ -122,14 +125,15 @@ struct LeCun(Initializer):
     fn __init__(out self, *, deinit take: Self):
         pass
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        var std = sqrt(1.0 / Float64(FAN_IN))
-        for _ in range(SIZE):
-            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        var std = sqrt(1.0 / Scalar[dtype](FAN_IN))
+        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
+        var rand_vals = rng.step_uniform()
+        for i in range(SIZE):
+            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
 
 
 struct Zeros(Initializer):
@@ -148,13 +152,12 @@ struct Zeros(Initializer):
     fn __init__(out self, *, deinit take: Self):
         pass
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        for _ in range(SIZE):
-            params.append(Scalar[dtype](0))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        for i in range(SIZE):
+            params[i] = 0
 
 
 struct Ones(Initializer):
@@ -169,113 +172,67 @@ struct Ones(Initializer):
     fn __init__(out self, *, deinit take: Self):
         pass
 
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        for _ in range(SIZE):
-            params.append(Scalar[dtype](1))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        for i in range(SIZE):
+            params[i] = 1
 
 
-struct Constant(Initializer):
+struct Constant[VALUE: Scalar[dtype]](Initializer):
     """Initialize all parameters to a constant value."""
 
-    var value: Scalar[dtype]
-
-    fn __init__(out self, value: Scalar[dtype] = 0):
-        self.value = value
-
-    fn __init__(out self, *, copy: Self):
-        self.value = copy.value
-
-    fn __init__(out self, *, deinit take: Self):
-        self.value = take.value
-
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        for _ in range(SIZE):
-            params.append(self.value)
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        for i in range(SIZE):
+            params[i] = Self.VALUE
 
 
-struct Uniform(Initializer):
+struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
     """Initialize parameters from uniform distribution U(low, high)."""
 
-    var low: Float64
-    var high: Float64
-
-    fn __init__(out self, low: Float64 = -1.0, high: Float64 = 1.0):
-        self.low = low
-        self.high = high
-
-    fn __init__(out self, *, copy: Self):
-        self.low = copy.low
-        self.high = copy.high
-
-    fn __init__(out self, *, deinit take: Self):
-        self.low = take.low
-        self.high = take.high
-
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        var range_val = self.high - self.low
-        for _ in range(SIZE):
-            params.append(Scalar[dtype](random_float64() * range_val + self.low))
-        return params^
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        var range_val = Scalar[dtype](Self.HIGH - Self.LOW)
+        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
+        var rand_vals = rng.step_uniform()
+        for i in range(SIZE):
+            params[i] = Scalar[dtype](rand_vals[i] * range_val + Self.LOW)
 
 
-struct Normal(Initializer):
+struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
     """Initialize parameters from normal distribution N(mean, std).
 
     Uses Box-Muller transform to generate normal random numbers.
     """
 
-    var mean: Float64
-    var std: Float64
-
-    fn __init__(out self, mean: Float64 = 0.0, std: Float64 = 1.0):
-        self.mean = mean
-        self.std = std
-
-    fn __init__(out self, *, copy: Self):
-        self.mean = copy.mean
-        self.std = copy.std
-
-    fn __init__(out self, *, deinit take: Self):
-        self.mean = take.mean
-        self.std = take.std
-
+    @staticmethod
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> List[Scalar[dtype]]:
-        from math import log, cos, sin
-
-        var params = List[Scalar[dtype]](capacity=SIZE)
-        var pi = 3.14159265358979323846
-
+    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
+        var rand_vals = rng.step_uniform()
         # Box-Muller transform generates pairs of normal random numbers
         var i = 0
         while i < SIZE:
-            var u1 = random_float64()
-            var u2 = random_float64()
+            var u1 = rand_vals[i]
+            var u2 = rand_vals[i + 1]
 
             # Avoid log(0)
             if u1 < 1e-10:
                 u1 = 1e-10
 
             var z0 = sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
-            params.append(Scalar[dtype](z0 * self.std + self.mean))
+            params[i] = Scalar[dtype](z0 * Self.STD + Self.MEAN)
             i += 1
 
             # Use the second value if we have space
             if i < SIZE:
                 var z1 = sqrt(-2.0 * log(u1)) * sin(2.0 * pi * u2)
-                params.append(Scalar[dtype](z1 * self.std + self.mean))
+                params[i] = Scalar[dtype](z1 * Self.STD + Self.MEAN)
                 i += 1
-
-        return params^

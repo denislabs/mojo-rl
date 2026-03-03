@@ -18,7 +18,7 @@ from .model import (
 )
 from .loss import LossFunction, MSELoss, HuberLoss, CrossEntropyLoss
 from .optimizer import Optimizer, SGD, Adam, RMSprop, AdamW
-from .training import Trainer, TrainResult, Network
+from .training import Trainer, TrainResult, Network, NetworkState, GPUNetworkState
 from .initializer import (
     Initializer,
     Xavier,

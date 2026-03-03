@@ -1,3 +1,7 @@
+# =============================================================================
+# Soft Cross-Entropy Loss
+# =============================================================================
+
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
@@ -25,65 +29,68 @@ struct SoftCrossEntropyLoss(LossFunction):
     that soft (non-integer) targets are expected, as in two-hot encoding.
     """
 
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
     fn forward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ) -> Float64:
-        """Soft cross-entropy: L = -sum(target * log_softmax(output)).
+        """Soft cross-entropy: per-sample L = -sum(target * log_softmax(output)), averaged over batch."""
+        var total_loss: Float64 = 0.0
+        for row in range(BATCH):
+            var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
+            for col in range(1, OUT_DIM):
+                var v = Float64(rebind[Scalar[dtype]](output[row, col]))
+                if v > max_val:
+                    max_val = v
+            var sum_exp: Float64 = 0.0
+            for col in range(OUT_DIM):
+                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+            var log_sum_exp = max_val + log(sum_exp)
+            var sample_loss: Float64 = 0.0
+            for col in range(OUT_DIM):
+                var log_sm = Float64(rebind[Scalar[dtype]](output[row, col])) - log_sum_exp
+                sample_loss -= Float64(rebind[Scalar[dtype]](target[row, col])) * log_sm
+            total_loss += sample_loss
+        return total_loss / Float64(BATCH)
 
-        Args:
-            output: Logits over bins [SIZE].
-            target: Soft target distribution (e.g. two-hot) [SIZE].
-
-        Returns:
-            Scalar loss value.
-        """
-        # Find max for numerical stability
-        var max_val = Float64(output[0])
-        for i in range(1, SIZE):
-            var v = Float64(output[i])
-            if v > max_val:
-                max_val = v
-
-        # Compute log_sum_exp
-        var sum_exp: Float64 = 0.0
-        for i in range(SIZE):
-            sum_exp += exp(Float64(output[i]) - max_val)
-        var log_sum_exp = max_val + log(sum_exp)
-
-        # Compute -sum(target * log_softmax)
-        var loss: Float64 = 0.0
-        for i in range(SIZE):
-            var log_softmax_i = Float64(output[i]) - log_sum_exp
-            loss -= Float64(target[i]) * log_softmax_i
-
-        return loss
-
+    @staticmethod
     fn backward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
-        mut grad: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ):
-        """Gradient: dL/dy = softmax(output) - target."""
-        var max_val = Float64(output[0])
-        for i in range(1, SIZE):
-            var v = Float64(output[i])
-            if v > max_val:
-                max_val = v
-
-        var sum_exp: Float64 = 0.0
-        for i in range(SIZE):
-            sum_exp += exp(Float64(output[i]) - max_val)
-
-        for i in range(SIZE):
-            var softmax_i = exp(Float64(output[i]) - max_val) / sum_exp
-            grad[i] = Scalar[dtype](softmax_i - Float64(target[i]))
+        """Gradient: dL/dy = (softmax(output) - target) / BATCH."""
+        for row in range(BATCH):
+            var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
+            for col in range(1, OUT_DIM):
+                var v = Float64(rebind[Scalar[dtype]](output[row, col]))
+                if v > max_val:
+                    max_val = v
+            var sum_exp: Float64 = 0.0
+            for col in range(OUT_DIM):
+                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+            for col in range(OUT_DIM):
+                var sm = exp(
+                    Float64(rebind[Scalar[dtype]](output[row, col])) - max_val
+                ) / sum_exp
+                grad[row, col] = Scalar[dtype](
+                    (sm - Float64(rebind[Scalar[dtype]](target[row, col]))) / Float64(BATCH)
+                )
 
     # =========================================================================
     # GPU kernel implementations
@@ -196,20 +203,15 @@ struct SoftCrossEntropyLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        loss_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
         """Launch forward pass on GPU."""
-        var loss = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            loss_buf.unsafe_ptr()
-        )
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
 
         @always_inline
         fn kernel_wrapper(
@@ -234,20 +236,17 @@ struct SoftCrossEntropyLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
         """Launch backward pass on GPU."""
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
 
         @always_inline
         fn kernel_wrapper(

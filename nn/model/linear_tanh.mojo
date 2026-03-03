@@ -354,32 +354,23 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch fused forward pass on GPU with caching."""
-        var params_ptr = params_buf.unsafe_ptr()
-        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
+        ](params.ptr)
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](b_ptr)
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](params.ptr + Self.IN_DIM * Self.OUT_DIM)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
 
-        # Use optimized tile size for Apple Silicon
         comptime grid_x = (Self.OUT_DIM + TILE_APPLE - 1) // TILE_APPLE
         comptime grid_y = (BATCH + TILE_APPLE - 1) // TILE_APPLE
 
@@ -407,7 +398,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             W,
             b,
             cache,
@@ -420,26 +411,21 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-         """Launch fused forward pass on GPU without caching (inference)."""
-        var params_ptr = params_buf.unsafe_ptr()
-        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        """Launch fused forward pass on GPU without caching (inference)."""
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
+        ](params.ptr)
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](b_ptr)
+        ](params.ptr + Self.IN_DIM * Self.OUT_DIM)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
 
         comptime grid_x = (Self.OUT_DIM + TILE_APPLE - 1) // TILE_APPLE
         comptime grid_y = (BATCH + TILE_APPLE - 1) // TILE_APPLE
@@ -465,7 +451,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             W,
             b,
             grid_dim=(grid_x, grid_y),
@@ -477,34 +463,29 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch fused backward pass on GPU."""
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var cache = LayoutTensor[
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grads_ptr = grads_buf.unsafe_ptr()
+        ](cache.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
         var dW = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ](grads_ptr)
-        var db_ptr = grads_ptr + Self.IN_DIM * Self.OUT_DIM
+        ](grads.ptr)
         var db = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-        ](db_ptr)
+        ](grads.ptr + Self.IN_DIM * Self.OUT_DIM)
 
         comptime dx_grid_x = (Self.IN_DIM + TILE_APPLE - 1) // TILE_APPLE
         comptime dx_grid_y = (BATCH + TILE_APPLE - 1) // TILE_APPLE
@@ -547,9 +528,9 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
             grad_input,
             dW,
             db,
-            grad_output,
+            grad_output_immut,
             W,
-            cache,
+            cache_immut,
             grid_dim=(fused_grid_x, fused_grid_y),
             block_dim=(TILE_APPLE, TILE_APPLE),
         )

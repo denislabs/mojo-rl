@@ -315,24 +315,18 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](input.ptr)
 
-        comptime total = BATCH * Self.N_GROUPS
+        var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
@@ -351,7 +345,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             cache,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
@@ -362,20 +356,17 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        ](input.ptr)
 
-        comptime total = BATCH * Self.N_GROUPS
+        var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
@@ -391,7 +382,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -401,25 +392,22 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU."""
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
+        var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var cache = LayoutTensor[
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](cache.ptr)
 
-        comptime total = BATCH * Self.N_GROUPS
+        var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
@@ -438,8 +426,8 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_input,
-            grad_output,
-            cache,
+            grad_output_immut,
+            cache_immut,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )

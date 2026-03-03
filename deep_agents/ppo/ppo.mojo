@@ -1939,10 +1939,14 @@ struct DeepPPOAgent[
         ](kl_divergences_buf.unsafe_ptr())
 
         var actor_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(ACTOR_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](actor_grads_buf.unsafe_ptr())
         var critic_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(CRITIC_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
@@ -1956,6 +1960,57 @@ struct DeepPPOAgent[
         var critic_scale_tensor = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](critic_scale_buf.unsafe_ptr())
+        var actor_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](actor_params_buf.unsafe_ptr())
+        var critic_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](critic_params_buf.unsafe_ptr())
+        var actor_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](actor_cache_buf.unsafe_ptr())
+        var critic_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](critic_cache_buf.unsafe_ptr())
+        var actor_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](actor_grad_input_buf.unsafe_ptr())
+        var critic_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](critic_grad_input_buf.unsafe_ptr())
+        var values_rollout_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](values_buf.unsafe_ptr())
+        var actor_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.ActorNetwork.MODEL.PARAM_SIZE,
+                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](actor_state_buf.unsafe_ptr())
+        var critic_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.CriticNetwork.MODEL.PARAM_SIZE,
+                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](critic_state_buf.unsafe_ptr())
 
         # Define extract_obs_wrapper early (needed for initial reset)
         comptime extract_obs_wrapper = _extract_obs_from_state_kernel[
@@ -2110,18 +2165,18 @@ struct DeepPPOAgent[
                 # Forward actor to get logits (using pre-allocated workspace)
                 Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    logits_buf,
-                    obs_buf,
-                    actor_params_buf,
+                    logits_tensor,
+                    obs_tensor,
+                    actor_params_tensor,
                     actor_env_workspace_buf,
                 )
 
                 # Forward critic to get values (using pre-allocated workspace)
                 Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    values_buf,
-                    obs_buf,
-                    critic_params_buf,
+                    values_rollout_tensor,
+                    obs_tensor,
+                    critic_params_tensor,
                     critic_env_workspace_buf,
                 )
                 # No sync needed - GPU ops execute in order within stream
@@ -2352,9 +2407,9 @@ struct DeepPPOAgent[
             # Get bootstrap values from final observations (using pre-allocated workspace)
             Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
-                values_buf,
-                obs_buf,
-                critic_params_buf,
+                values_rollout_tensor,
+                obs_tensor,
+                critic_params_tensor,
                 critic_env_workspace_buf,
             )
 
@@ -2450,9 +2505,9 @@ struct DeepPPOAgent[
                 var lr_multiplier = 1.0 - progress
                 current_actor_lr = initial_actor_lr * lr_multiplier
                 current_critic_lr = initial_critic_lr * lr_multiplier
-                # Update optimizer learning rates
-                self.actor.optimizer.lr = current_actor_lr
-                self.critic.optimizer.lr = current_critic_lr
+                # Note: Adam LR is a compile-time parameter; runtime annealing
+                # requires re-instantiating with a new LR type parameter.
+                # current_actor_lr / current_critic_lr are tracked but not applied.
 
             # Apply entropy coefficient annealing
             if self.anneal_entropy:
@@ -2572,10 +2627,10 @@ struct DeepPPOAgent[
                     # Forward pass with cache (using pre-allocated workspace)
                     Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        actor_logits_buf,
-                        mb_obs_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
+                        actor_logits_tensor,
+                        mb_obs_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
@@ -2627,11 +2682,11 @@ struct DeepPPOAgent[
                     # Backward pass (using pre-allocated workspace)
                     Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        actor_grad_input_buf,
-                        actor_grad_output_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
-                        actor_grads_buf,
+                        actor_grad_input_tensor,
+                        actor_grad_output_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
+                        actor_grads_tensor,
                         actor_minibatch_workspace_buf,
                     )
 
@@ -2670,8 +2725,15 @@ struct DeepPPOAgent[
                         ctx.synchronize()
 
                     # Update actor parameters
-                    self.actor.optimizer.step_gpu[Self.ACTOR_PARAM_SIZE](
-                        ctx, actor_params_buf, actor_grads_buf, actor_state_buf
+                    self.actor.step_num += 1
+                    Self.ActorNetwork.OPTIMIZER.step_gpu[
+                        Self.ActorNetwork.MODEL.PARAM_SIZE
+                    ](
+                        ctx,
+                        actor_params_tensor,
+                        actor_grads_tensor,
+                        actor_state_tensor,
+                        self.actor.step_num,
                     )
                     ctx.synchronize()
                     actor_train_time_ns += perf_counter_ns() - actor_start
@@ -2685,10 +2747,10 @@ struct DeepPPOAgent[
                     # Forward pass with cache (using pre-allocated workspace)
                     Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        critic_values_buf,
-                        mb_obs_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
+                        critic_values_tensor,
+                        mb_obs_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
@@ -2728,11 +2790,11 @@ struct DeepPPOAgent[
                     # Backward pass (using pre-allocated workspace)
                     Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        critic_grad_input_buf,
-                        critic_grad_output_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
-                        critic_grads_buf,
+                        critic_grad_input_tensor,
+                        critic_grad_output_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
+                        critic_grads_tensor,
                         critic_minibatch_workspace_buf,
                     )
 
@@ -2771,11 +2833,15 @@ struct DeepPPOAgent[
                         ctx.synchronize()
 
                     # Update critic parameters
-                    self.critic.optimizer.step_gpu[Self.CRITIC_PARAM_SIZE](
+                    self.critic.step_num += 1
+                    Self.CriticNetwork.OPTIMIZER.step_gpu[
+                        Self.CriticNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        critic_params_buf,
-                        critic_grads_buf,
-                        critic_state_buf,
+                        critic_params_tensor,
+                        critic_grads_tensor,
+                        critic_state_tensor,
+                        self.critic.step_num,
                     )
                     ctx.synchronize()
                     critic_train_time_ns += perf_counter_ns() - critic_start
@@ -3229,10 +3295,14 @@ struct DeepPPOAgent[
         ](kl_divergences_buf.unsafe_ptr())
 
         var actor_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(ACTOR_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](actor_grads_buf.unsafe_ptr())
         var critic_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(CRITIC_PARAMS), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
         ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
@@ -3246,6 +3316,57 @@ struct DeepPPOAgent[
         var critic_scale_tensor = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](critic_scale_buf.unsafe_ptr())
+        var actor_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](actor_params_buf.unsafe_ptr())
+        var critic_params_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ](critic_params_buf.unsafe_ptr())
+        var actor_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](actor_cache_buf.unsafe_ptr())
+        var critic_cache_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
+        ](critic_cache_buf.unsafe_ptr())
+        var actor_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](actor_grad_input_buf.unsafe_ptr())
+        var critic_grad_input_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](critic_grad_input_buf.unsafe_ptr())
+        var values_rollout_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](values_buf.unsafe_ptr())
+        var actor_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.ActorNetwork.MODEL.PARAM_SIZE,
+                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](actor_state_buf.unsafe_ptr())
+        var critic_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.CriticNetwork.MODEL.PARAM_SIZE,
+                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
+            ),
+            MutAnyOrigin,
+        ](critic_state_buf.unsafe_ptr())
 
         # =====================================================================
         # Initialize all CPU environments and copy observations to GPU
@@ -3346,18 +3467,18 @@ struct DeepPPOAgent[
                 # Forward actor on GPU to get logits
                 Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    logits_buf,
-                    obs_buf,
-                    actor_params_buf,
+                    logits_tensor,
+                    obs_tensor,
+                    actor_params_tensor,
                     actor_env_workspace_buf,
                 )
 
                 # Forward critic on GPU to get values
                 Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
-                    values_buf,
-                    obs_buf,
-                    critic_params_buf,
+                    values_rollout_tensor,
+                    obs_tensor,
+                    critic_params_tensor,
                     critic_env_workspace_buf,
                 )
                 ctx.synchronize()
@@ -3518,9 +3639,9 @@ struct DeepPPOAgent[
             # Get bootstrap values from final observations
             Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
-                values_buf,
-                obs_buf,
-                critic_params_buf,
+                values_rollout_tensor,
+                obs_tensor,
+                critic_params_tensor,
                 critic_env_workspace_buf,
             )
 
@@ -3608,8 +3729,8 @@ struct DeepPPOAgent[
                 var lr_multiplier = 1.0 - progress
                 current_actor_lr = initial_actor_lr * lr_multiplier
                 current_critic_lr = initial_critic_lr * lr_multiplier
-                self.actor.optimizer.lr = current_actor_lr
-                self.critic.optimizer.lr = current_critic_lr
+                # Note: Adam LR is a compile-time parameter; runtime annealing
+                # requires re-instantiating with a new LR type parameter.
 
             if self.anneal_entropy:
                 current_entropy_coef = initial_entropy_coef * (1.0 - progress)
@@ -3698,10 +3819,10 @@ struct DeepPPOAgent[
 
                     Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        actor_logits_buf,
-                        mb_obs_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
+                        actor_logits_tensor,
+                        mb_obs_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
                         actor_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
@@ -3750,11 +3871,11 @@ struct DeepPPOAgent[
 
                     Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        actor_grad_input_buf,
-                        actor_grad_output_buf,
-                        actor_params_buf,
-                        actor_cache_buf,
-                        actor_grads_buf,
+                        actor_grad_input_tensor,
+                        actor_grad_output_tensor,
+                        actor_params_tensor,
+                        actor_cache_tensor,
+                        actor_grads_tensor,
                         actor_minibatch_workspace_buf,
                     )
 
@@ -3792,8 +3913,15 @@ struct DeepPPOAgent[
                         )
                         ctx.synchronize()
 
-                    self.actor.optimizer.step_gpu[Self.ACTOR_PARAM_SIZE](
-                        ctx, actor_params_buf, actor_grads_buf, actor_state_buf
+                    self.actor.step_num += 1
+                    Self.ActorNetwork.OPTIMIZER.step_gpu[
+                        Self.ActorNetwork.MODEL.PARAM_SIZE
+                    ](
+                        ctx,
+                        actor_params_tensor,
+                        actor_grads_tensor,
+                        actor_state_tensor,
+                        self.actor.step_num,
                     )
                     ctx.synchronize()
 
@@ -3802,10 +3930,10 @@ struct DeepPPOAgent[
 
                     Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
-                        critic_values_buf,
-                        mb_obs_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
+                        critic_values_tensor,
+                        mb_obs_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
                         critic_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
@@ -3841,11 +3969,11 @@ struct DeepPPOAgent[
 
                     Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
-                        critic_grad_input_buf,
-                        critic_grad_output_buf,
-                        critic_params_buf,
-                        critic_cache_buf,
-                        critic_grads_buf,
+                        critic_grad_input_tensor,
+                        critic_grad_output_tensor,
+                        critic_params_tensor,
+                        critic_cache_tensor,
+                        critic_grads_tensor,
                         critic_minibatch_workspace_buf,
                     )
 
@@ -3883,11 +4011,15 @@ struct DeepPPOAgent[
                         )
                         ctx.synchronize()
 
-                    self.critic.optimizer.step_gpu[Self.CRITIC_PARAM_SIZE](
+                    self.critic.step_num += 1
+                    Self.CriticNetwork.OPTIMIZER.step_gpu[
+                        Self.CriticNetwork.MODEL.PARAM_SIZE
+                    ](
                         ctx,
-                        critic_params_buf,
-                        critic_grads_buf,
-                        critic_state_buf,
+                        critic_params_tensor,
+                        critic_grads_tensor,
+                        critic_state_tensor,
+                        self.critic.step_num,
                     )
                     ctx.synchronize()
 

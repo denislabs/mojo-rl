@@ -1,3 +1,7 @@
+# =============================================================================
+# MSE Loss
+# =============================================================================
+
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
@@ -6,36 +10,54 @@ from gpu.primitives import block
 from gpu.host import DeviceContext, DeviceBuffer
 
 
-@fieldwise_init
 struct MSELoss(LossFunction):
     """Mean Squared Error loss: L = mean((output - target)^2)."""
 
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
     fn forward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ) -> Float64:
         """Mean Squared Error loss: L = mean((output - target)^2)."""
+        comptime SIZE = BATCH * OUT_DIM
         var loss: Float64 = 0.0
-        for i in range(SIZE):
-            var diff = Float64(output[i]) - Float64(target[i])
-            loss += diff * diff
+        for row in range(BATCH):
+            for col in range(OUT_DIM):
+                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
+                    rebind[Scalar[dtype]](target[row, col])
+                )
+                loss += diff * diff
         return loss / Float64(SIZE)
 
+    @staticmethod
     fn backward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
-        mut grad: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ):
         """Gradient of MSE loss: dL/dy = 2 * (output - target) / size."""
-        for i in range(SIZE):
-            var diff = Float64(output[i]) - Float64(target[i])
-            grad[i] = Scalar[dtype](2.0 * diff) / Scalar[dtype](SIZE)
+        comptime SIZE = BATCH * OUT_DIM
+        for row in range(BATCH):
+            for col in range(OUT_DIM):
+                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
+                    rebind[Scalar[dtype]](target[row, col])
+                )
+                grad[row, col] = Scalar[dtype](2.0 * diff / Float64(SIZE))
 
     # =========================================================================
     # GPU kernel implementations (inlinable for fusion)
@@ -116,30 +138,16 @@ struct MSELoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        loss_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """Launch forward pass on GPU to compute MSE loss.
+        """Launch forward pass on GPU to compute MSE loss."""
 
-        Args:
-            ctx: GPU device context.
-            loss_buf: Output buffer [1] for scalar loss value.
-            predictions_buf: Predictions buffer [BATCH * OUT_DIM].
-            targets_buf: Targets buffer [BATCH * OUT_DIM].
-        """
-        # Create LayoutTensor views
-        var loss = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            loss_buf.unsafe_ptr()
-        )
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
-
-        # Kernel wrapper with explicit parameters
         @always_inline
         fn kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -152,7 +160,6 @@ struct MSELoss(LossFunction):
         ):
             Self.forward_kernel_impl[BATCH, OUT_DIM](loss, predictions, targets)
 
-        # Launch with single block for reduction
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             loss,
             predictions,
@@ -167,30 +174,18 @@ struct MSELoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """Launch backward pass on GPU to compute loss gradient.
+        """Launch backward pass on GPU to compute loss gradient."""
 
-        Args:
-            ctx: GPU device context.
-            grad_output_buf: Gradient buffer [BATCH * OUT_DIM] (written).
-            predictions_buf: Predictions buffer [BATCH * OUT_DIM].
-            targets_buf: Targets buffer [BATCH * OUT_DIM].
-        """
-        # Create LayoutTensor views
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
-
-        # Kernel wrapper with explicit parameters
         @always_inline
         fn kernel_wrapper(
             grad_output: LayoutTensor[
@@ -207,7 +202,6 @@ struct MSELoss(LossFunction):
                 grad_output, predictions, targets
             )
 
-        # Launch with enough threads
         comptime total = BATCH * OUT_DIM
         comptime grid_size = (total + TPB - 1) // TPB
 

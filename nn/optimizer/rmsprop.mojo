@@ -10,7 +10,11 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 
 
-struct RMSprop(Optimizer):
+struct RMSprop[
+    LR: Float64 = 0.01,
+    ALPHA: Float64 = 0.99,
+    EPS: Float64 = 1e-8,
+](Optimizer):
     """RMSprop optimizer with adaptive learning rates.
 
     Update rule:
@@ -20,36 +24,24 @@ struct RMSprop(Optimizer):
     STATE_PER_PARAM = 1:
         - state[i, 0] = v (squared gradient moving average)
 
-    State is managed externally by the trainer and passed to step().
+    All hyperparameters are compile-time struct parameters.
     """
 
     comptime STATE_PER_PARAM: Int = 1
 
-    var lr: Float64
-    var alpha: Float64  # Decay rate for squared gradient average
-    var eps: Float64
+    fn __init__(out self):
+        pass
 
-    fn __init__(
-        out self,
-        lr: Float64 = 0.01,
-        alpha: Float64 = 0.99,
-        eps: Float64 = 1e-8,
-    ):
-        """Initialize RMSprop optimizer.
+    fn __init__(out self, *, copy: Self):
+        pass
 
-        Args:
-            lr: Learning rate (default 0.01, typical for RMSprop).
-            alpha: Decay rate for squared gradient average (default 0.99).
-            eps: Small constant for numerical stability.
-        """
-        self.lr = lr
-        self.alpha = alpha
-        self.eps = eps
+    fn __init__(out self, *, deinit take: Self):
+        pass
 
+    @staticmethod
     fn step[
         PARAM_SIZE: Int
     ](
-        mut self,
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
         ],
@@ -59,32 +51,21 @@ struct RMSprop(Optimizer):
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
         ],
+        step_num: Int,
     ):
-        """RMSprop update step.
-
-        Args:
-            params: Parameters to update.
-            grads: Gradients.
-            state: Optimizer state with layout `(PARAM_SIZE, 1)`.
-        """
-        var alpha = Scalar[dtype](self.alpha)
-        var one_minus_alpha = Scalar[dtype](1.0 - self.alpha)
-        var lr = Scalar[dtype](self.lr)
-        var eps = Scalar[dtype](self.eps)
+        """RMSprop update step. step_num is unused."""
+        var alpha = Scalar[dtype](Self.ALPHA)
+        var one_minus_alpha = Scalar[dtype](1.0 - Self.ALPHA)
+        var lr = Scalar[dtype](Self.LR)
+        var eps = Scalar[dtype](Self.EPS)
 
         for i in range(PARAM_SIZE):
             var g = rebind[Scalar[dtype]](grads[i])
-
-            # Read current squared gradient average from state
             var v = rebind[Scalar[dtype]](state[i, 0])
 
-            # Update squared gradient average
             var v_new = alpha * v + one_minus_alpha * g * g
-
-            # Write updated state back
             state[i, 0] = v_new
 
-            # Update parameters
             var p = rebind[Scalar[dtype]](params[i])
             params[i] = p - lr * g / (sqrt(v_new) + eps)
 
@@ -106,10 +87,6 @@ struct RMSprop(Optimizer):
         alpha: Scalar[dtype],
         eps: Scalar[dtype],
     ):
-        """RMSprop optimizer kernel.
-
-        state layout: (PARAM_SIZE, 1) where state[i, 0] = v.
-        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= PARAM_SIZE:
             return
@@ -117,14 +94,10 @@ struct RMSprop(Optimizer):
         var g = rebind[Scalar[dtype]](grads[idx])
         var v_val = rebind[Scalar[dtype]](state[idx, 0])
 
-        # Update squared gradient average
         var one = Scalar[dtype](1.0)
         var v_new = alpha * v_val + (one - alpha) * g * g
-
-        # Write updated state back
         state[idx, 0] = v_new
 
-        # Update parameters
         params[idx] = rebind[Scalar[dtype]](params[idx]) - lr * g / (
             sqrt(v_new) + eps
         )
@@ -133,39 +106,27 @@ struct RMSprop(Optimizer):
     # GPU launcher
     # =========================================================================
 
+    @staticmethod
     fn step_gpu[
         PARAM_SIZE: Int
     ](
-        mut self,
         ctx: DeviceContext,
-        params_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        state_buf: DeviceBuffer[dtype],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype,
+            Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
+            MutAnyOrigin,
+        ],
+        step_num: Int,
     ) raises:
-        """Launch RMSprop optimization step on GPU.
+        """Launch RMSprop optimization step on GPU. step_num is unused."""
+        var lr = Scalar[dtype](Self.LR)
+        var alpha = Scalar[dtype](Self.ALPHA)
+        var eps = Scalar[dtype](Self.EPS)
 
-        Args:
-            ctx: GPU device context.
-            params_buf: Parameters buffer [PARAM_SIZE] (modified in place).
-            grads_buf: Gradients buffer [PARAM_SIZE].
-            state_buf: State buffer [PARAM_SIZE] (squared gradient average).
-        """
-        var lr = Scalar[dtype](self.lr)
-        var alpha = Scalar[dtype](self.alpha)
-        var eps = Scalar[dtype](self.eps)
-
-        # Create LayoutTensor views
-        var params = LayoutTensor[
-            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var grads = LayoutTensor[
-            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-        ](grads_buf.unsafe_ptr())
-        var state = LayoutTensor[
-            dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
-
-        # Kernel wrapper
         @always_inline
         fn kernel_wrapper(
             params: LayoutTensor[
@@ -185,7 +146,6 @@ struct RMSprop(Optimizer):
                 params, grads, state, lr, alpha, eps
             )
 
-        # Launch
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

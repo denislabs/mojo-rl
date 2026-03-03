@@ -457,55 +457,28 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
     # GPU Launchers (with DeviceContext)
     # =========================================================================
-    #
-    # These functions handle buffer-to-tensor conversion, grid/block config,
-    # and kernel launch. They call the _kernel_impl functions.
-    # =========================================================================
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # Linear is a leaf layer, so workspace is unused - just delegate to regular methods.
-    # =========================================================================
 
     @staticmethod
     fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """Launch forward pass on GPU with caching.
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
-            cache_buf: Cache buffer [BATCH * IN_DIM] for backward pass.
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
-        """
-        # Create tensor views from buffers
-        var params_ptr = params_buf.unsafe_ptr()
-        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        """Launch forward pass on GPU with caching."""
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
+        ](params.ptr)
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](b_ptr)
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](params.ptr + Self.IN_DIM * Self.OUT_DIM)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
 
         comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -534,7 +507,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[forward_wrapper, forward_wrapper](
             output,
-            input,
+            input_immut,
             W,
             b,
             cache,
@@ -547,34 +520,21 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-       """Launch forward pass on GPU without caching (for inference).
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
-        """
-        var params_ptr = params_buf.unsafe_ptr()
-        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
+        """Launch forward pass on GPU without caching (for inference)."""
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
+        ](params.ptr)
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](b_ptr)
+        ](params.ptr + Self.IN_DIM * Self.OUT_DIM)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
 
         comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -600,7 +560,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
+            input_immut,
             W,
             b,
             grid_dim=(grid_x, grid_y),
@@ -612,50 +572,32 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU using three tiled kernels.
 
-        Computes all gradients in three separate tiled matmul kernels:
-        - grad_input = grad_output @ W.T  (tiled 2D)
-        - dW = cache.T @ grad_output      (tiled 2D)
-        - db = sum(grad_output, axis=0)   (block reduction)
-
-        Args:
-            ctx: GPU device context.
-            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
-            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
-            cache_buf: Cached input from forward pass [BATCH * IN_DIM].
-            grads_buf: Parameter gradients [PARAM_SIZE] = [dW_flat | db] (written).
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
+        Computes: grad_input = grad_output @ W.T, dW = cache.T @ grad_output, db = sum(dy, axis=0).
         """
-        # Create tensor views
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var cache = LayoutTensor[
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grads_ptr = grads_buf.unsafe_ptr()
+        ](cache.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
         var dW = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ](grads_ptr)
-        var db_ptr = grads_ptr + Self.IN_DIM * Self.OUT_DIM
+        ](grads.ptr)
         var db = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-        ](db_ptr)
+        ](grads.ptr + Self.IN_DIM * Self.OUT_DIM)
 
         # Kernel 1: dx = grad_output @ W.T  (tiled 2D)
         comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
@@ -679,7 +621,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[backward_dx_wrapper, backward_dx_wrapper](
             grad_input,
-            grad_output,
+            grad_output_immut,
             W,
             grid_dim=(dx_grid_x, dx_grid_y),
             block_dim=(TILE, TILE),
@@ -705,8 +647,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[backward_dW_wrapper, backward_dW_wrapper](
             dW,
-            cache,
-            grad_output,
+            cache_immut,
+            grad_output_immut,
             grid_dim=(dW_grid_x, dW_grid_y),
             block_dim=(TILE, TILE),
         )
@@ -725,7 +667,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         ctx.enqueue_function[backward_db_wrapper, backward_db_wrapper](
             db,
-            grad_output,
+            grad_output_immut,
             grid_dim=(Self.OUT_DIM,),
             block_dim=(TPB,),
         )

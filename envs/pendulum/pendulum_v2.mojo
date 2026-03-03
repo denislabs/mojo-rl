@@ -664,7 +664,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         comptime META_OFF = PendulumLayout.METADATA_OFFSET  # 4
 
         # Generate random initial state using Philox RNG
-        var rng = PhiloxRandom(seed=seed, offset=0)
+        var rng = PhiloxRandom(seed=UInt64(seed), offset=0)
         var rand_vals = rng.step_uniform()
 
         # Random angle in [-π, π] using dtype-native pi to avoid Float64

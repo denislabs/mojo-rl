@@ -1,26 +1,48 @@
+"""Trainer: all-static training loops for neural networks.
+
+All methods are @staticmethod — no stored state.  The caller owns and passes
+NetworkState (CPU) or GPUNetworkState (GPU) directly, so GPU-only pipelines
+never allocate a CPU state.
+
+Usage:
+    from nn import seq, Linear, ReLU, Adam, MSELoss, Kaiming
+    from nn.training import Trainer, NetworkState, GPUNetworkState
+
+    alias M = typeof(seq(Linear[4, 64](), ReLU[64](), Linear[64, 2]()))
+
+    # CPU training — init_state creates and initializes NetworkState in one call
+    var state = Trainer[M, Adam, MSELoss].init_state[Kaiming]()
+    var result = Trainer[M, Adam, MSELoss].train[BATCH](
+        mut state, input_t, target_t, epochs=100, print_every=10
+    )
+
+    # GPU-only training — init_state_gpu creates GPUNetworkState directly,
+    # no persistent CPU NetworkState needed
+    var gpu = Trainer[M, Adam, MSELoss].init_state_gpu[Kaiming](ctx)
+    var result = Trainer[M, Adam, MSELoss].train_gpu[BATCH](
+        mut gpu, ctx, input_t, target_t, epochs=100, print_every=10
+    )
+
+    # Evaluate — accepts params LayoutTensor, works for both CPU and GPU state
+    var loss = Trainer[M, Adam, MSELoss].evaluate[BATCH](
+        state.params_view(), input_t, target_t   # or gpu.params_view() if on CPU
+    )
+"""
+
 from ..model import Model
 from ..optimizer import Optimizer
 from ..loss import LossFunction
-from ..constants import dtype
 from ..initializer import Initializer, Xavier
-from ..checkpoint import (
-    write_checkpoint_header,
-    write_float_section_list,
-    write_metadata_section,
-    parse_checkpoint_header,
-    read_checkpoint_file,
-    read_float_section_list,
-    read_metadata_section,
-    get_metadata_value,
-    save_checkpoint_file,
-)
+from ..constants import dtype
+from .network_state import NetworkState
+from .gpu_network_state import GPUNetworkState
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from gpu.host import DeviceContext, DeviceBuffer
 
 
-struct TrainResult:
-    """Result of training containing loss history."""
+struct TrainResult(ImplicitlyCopyable, Movable):
+    """Result of a training run."""
 
     var final_loss: Float64
     var epochs_trained: Int
@@ -34,467 +56,360 @@ struct Trainer[
     MODEL: Model,
     OPTIMIZER: Optimizer,
     LOSS_FUNCTION: LossFunction,
-    INITIALIZER: Initializer = Xavier,
 ]:
-    """Training configuration for neural networks.
+    """All-static training loop namespace.
 
-    The Trainer manages model parameters and gradients externally.
-    Parameters are initialized using the specified Initializer.
-
-    Usage:
-        # Default Xavier initialization
-        var trainer = Trainer[MODEL, OPTIMIZER, LOSS_FUNCTION](
-            model, optimizer, loss_function
-        )
-
-        # Kaiming initialization for ReLU networks
-        var trainer = Trainer[MODEL, OPTIMIZER, LOSS_FUNCTION, Kaiming](
-            model, optimizer, loss_function, Kaiming()
-        )
+    No stored state — the caller manages NetworkState (CPU) or GPUNetworkState
+    (GPU) and passes it to each method.  This means GPU-only training never
+    allocates a CPU NetworkState.
 
     Parameters:
-        MODEL: The model to train (stateless).
-        OPTIMIZER: The optimizer to use.
-        LOSS_FUNCTION: The loss function to use.
-        INITIALIZER: The initializer for parameters (default: Xavier).
+        MODEL: Stateless model architecture (implements Model trait).
+        OPTIMIZER: Stateless optimizer (implements Optimizer trait).
+        LOSS_FUNCTION: Stateless loss function (implements LossFunction trait).
     """
 
-    var epochs: Int
-    var print_every: Int
-    var checkpoint_every: Int  # Save checkpoint every N epochs (0 to disable)
-    var checkpoint_path: String  # Path for auto-checkpointing
-    var optimizer: Self.OPTIMIZER
-    var loss_function: Self.LOSS_FUNCTION
-    var initializer: Self.INITIALIZER
-    # Use heap-allocated List instead of stack-allocated InlineArray
-    # to avoid stack overflow with large models
-    var params: List[Scalar[dtype]]
-    var grads: List[Scalar[dtype]]
-    var optimizer_state: List[Scalar[dtype]]
+    # =========================================================================
+    # State Initialization Helpers
+    # =========================================================================
 
-    fn __init__(
-        out self,
-        optimizer: Self.OPTIMIZER,
-        loss_function: Self.LOSS_FUNCTION,
-        initializer: Self.INITIALIZER,
-        epochs: Int = 100,
-        print_every: Int = 10,
-        checkpoint_every: Int = 0,
-        checkpoint_path: String = "",
-    ):
-        """Initialize trainer with the specified initializer.
+    @staticmethod
+    fn init_state[
+        INITIALIZER: Initializer = Xavier
+    ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER]:
+        """Create and initialize a CPU NetworkState.
+
+        Parameters:
+            INITIALIZER: Weight initialization strategy (default: Xavier).
+
+        Returns:
+            Initialized NetworkState ready for CPU training or upload to GPU.
+        """
+        var state = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        state.initialize[INITIALIZER]()
+        return state^
+
+    @staticmethod
+    fn init_state_gpu[
+        INITIALIZER: Initializer = Xavier
+    ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER]:
+        """Create a GPUNetworkState with initialized weights, no persistent CPU state.
+
+        Allocates a transient CPU NetworkState, initializes weights, uploads to
+        GPU, then discards the CPU copy.  The caller never needs to manage a
+        CPU NetworkState for GPU-only training.
+
+        Parameters:
+            INITIALIZER: Weight initialization strategy (default: Xavier).
 
         Args:
-            optimizer: The optimizer to use.
-            loss_function: The loss function to use.
-            initializer: The weight initializer.
-            epochs: Number of training epochs.
-            print_every: Print loss every N epochs (0 to disable).
-            checkpoint_every: Save checkpoint every N epochs (0 to disable).
-            checkpoint_path: Path to save checkpoints (required if checkpoint_every > 0).
+            ctx: GPU device context.
+
+        Returns:
+            GPUNetworkState with initialized weights on device.
         """
-        self.epochs = epochs
-        self.print_every = print_every
-        self.checkpoint_every = checkpoint_every
-        self.checkpoint_path = checkpoint_path
-        self.optimizer = optimizer
-        self.loss_function = loss_function
-        self.initializer = initializer
+        var state = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        state.initialize[INITIALIZER]()
+        var state = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
+        state.upload_from(state, ctx)
+        return state^
 
-        # Initialize params using the initializer (heap-allocated, avoids large InlineArray)
-        self.params = self.initializer.init[
-            Self.MODEL.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
-        ]()
+    # =========================================================================
+    # CPU Training
+    # =========================================================================
 
-        # Initialize grads to zero (heap-allocated)
-        self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
-        for _ in range(Self.MODEL.PARAM_SIZE):
-            self.grads.append(0)
-
-        # Initialize optimizer state to zero (heap-allocated)
-        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-        self.optimizer_state = List[Scalar[dtype]](capacity=STATE_SIZE)
-        for _ in range(STATE_SIZE):
-            self.optimizer_state.append(0)
-
+    @staticmethod
     fn train[
         BATCH: Int
     ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        target: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        mut state: NetworkState[Self.MODEL, Self.OPTIMIZER],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        epochs: Int = 100,
+        print_every: Int = 0,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ) -> TrainResult:
-        """Train the model for the configured number of epochs.
+        """Train on CPU for the given number of epochs.
+
+        Intermediate buffers are heap-allocated internally to avoid stack
+        overflow.  The caller's NetworkState is updated in-place.
+
+        Args:
+            state: Network state (params, grads, optimizer state) — updated.
+            input: Input tensor [BATCH, IN_DIM] — caller manages memory.
+            target: Target tensor [BATCH, OUT_DIM] — caller manages memory.
+            epochs: Number of training epochs.
+            print_every: Print loss every N epochs (0 = never).
+            checkpoint_every: Save checkpoint every N epochs (0 = never).
+            checkpoint_path: Base path for checkpoint files.
 
         Returns:
-            TrainResult with final loss and epochs trained.
+            TrainResult with final_loss and epochs_trained.
         """
-        # Allocate storage and create LayoutTensor views
-        var output_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
-        ](uninitialized=True)
-        var grad_output_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
-        ](uninitialized=True)
-        var grad_input_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.MODEL.IN_DIM
-        ](uninitialized=True)
-        var cache_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE
-        ](uninitialized=True)
+        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
+        comptime IN_SIZE = BATCH * Self.MODEL.IN_DIM
+        comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
 
-        # Create LayoutTensor views using unsafe_ptr()
-        var input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input.unsafe_ptr())
-        var output_tensor = LayoutTensor[
+        # Heap-allocated intermediate buffers
+        var output_data = List[Scalar[dtype]](capacity=OUT_SIZE)
+        var grad_out_data = List[Scalar[dtype]](capacity=OUT_SIZE)
+        var grad_in_data = List[Scalar[dtype]](capacity=IN_SIZE)
+        var cache_data = List[Scalar[dtype]](capacity=CACHE_SIZE_)
+        for _ in range(OUT_SIZE):
+            output_data.append(Scalar[dtype](0))
+            grad_out_data.append(Scalar[dtype](0))
+        for _ in range(IN_SIZE):
+            grad_in_data.append(Scalar[dtype](0))
+        for _ in range(CACHE_SIZE_):
+            cache_data.append(Scalar[dtype](0))
+
+        # 2D LayoutTensor views (zero-copy, created once from List.unsafe_ptr())
+        var output_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](output_storage.unsafe_ptr())
-        var params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
-        var grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.grads.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
+        ](output_data.unsafe_ptr())
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](grad_out_data.unsafe_ptr())
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](grad_in_data.unsafe_ptr())
+        var cache_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache_storage.unsafe_ptr())
-        var grad_output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](grad_output_storage.unsafe_ptr())
-        var grad_input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_input_storage.unsafe_ptr())
-        var optimizer_state_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                Self.MODEL.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM
-            ),
-            MutAnyOrigin,
-        ](self.optimizer_state.unsafe_ptr())
+        ](cache_data.unsafe_ptr())
+
+        # State views — lvalue vars required (params/state are mut in step())
+        var params = state.params_view()
+        var grads = state.grads_view()
+        var opt_state = state.state_view()
 
         var final_loss: Float64 = 0.0
 
-        for epoch in range(self.epochs):
-            # Forward pass (with cache and params)
-            Self.MODEL.forward[BATCH](
-                input_tensor,
-                output_tensor,
-                params_tensor,
-                cache_tensor,
+        for epoch in range(epochs):
+            Self.MODEL.forward[BATCH](input, output_t, params, cache_t)
+
+            # Loss: CPU LossFunction takes 2D [BATCH, OUT_DIM] — no reshape needed
+            var loss = Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
+                output_t, target
+            )
+            Self.LOSS_FUNCTION.backward[BATCH, Self.MODEL.OUT_DIM](
+                output_t, target, grad_out_t
             )
 
-            # Compute loss and gradient (still uses InlineArray for now)
-            var loss = self.loss_function.forward[BATCH * Self.MODEL.OUT_DIM](
-                output_storage, target
-            )
-            self.loss_function.backward[BATCH * Self.MODEL.OUT_DIM](
-                output_storage, target, grad_output_storage
-            )
-
-            # Zero gradients before backward pass
-            for i in range(Self.MODEL.PARAM_SIZE):
-                self.grads[i] = 0
-
-            # Backward pass (with cache, params, and grads)
+            state.zero_grads()
             Self.MODEL.backward[BATCH](
-                grad_output_tensor,
-                grad_input_tensor,
-                params_tensor,
-                cache_tensor,
-                grads_tensor,
+                grad_out_t, grad_in_t, params, cache_t, grads
             )
 
-            # Update parameters using optimizer
-            self.optimizer.step[Self.MODEL.PARAM_SIZE](
-                params_tensor, grads_tensor, optimizer_state_tensor
+            state.step_num += 1
+            Self.OPTIMIZER.step[Self.MODEL.PARAM_SIZE](
+                params, grads, opt_state, state.step_num
             )
 
             final_loss = loss
 
-            if self.print_every > 0 and epoch % self.print_every == 0:
+            if print_every > 0 and epoch % print_every == 0:
                 print("Epoch " + String(epoch) + " - Loss: " + String(loss))
 
-            # Auto-checkpoint
-            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
-                if (epoch + 1) % self.checkpoint_every == 0:
+            if checkpoint_every > 0 and len(checkpoint_path) > 0:
+                if (epoch + 1) % checkpoint_every == 0:
                     try:
-                        self.save_checkpoint(self.checkpoint_path)
+                        state.save_checkpoint(checkpoint_path)
                         print("Checkpoint saved at epoch " + String(epoch + 1))
                     except:
                         print(
-                            "Warning: Failed to save checkpoint at epoch "
+                            "Warning: failed to save checkpoint at epoch "
                             + String(epoch + 1)
                         )
 
-        return TrainResult(final_loss, self.epochs)
+        return TrainResult(final_loss, epochs)
 
+    # =========================================================================
+    # CPU Evaluation (no gradient computation)
+    # =========================================================================
+
+    @staticmethod
     fn evaluate[
         BATCH: Int
     ](
-        self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        target: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-    ) -> Float64:
-        """Evaluate the model on the given input and target (no cache allocation).
-        """
-        var output_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
-        ](uninitialized=True)
-
-        # Create LayoutTensor views using unsafe_ptr()
-        var input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input.unsafe_ptr())
-        var output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](output_storage.unsafe_ptr())
-        var params_tensor = LayoutTensor[
+        params: LayoutTensor[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+    ) -> Float64:
+        """CPU forward pass + loss, no gradient computation.
 
-        # Use forward - no cache needed for evaluation
-        Self.MODEL.forward[BATCH](
-            input_tensor,
-            output_tensor,
-            params_tensor,
+        Accepts a params LayoutTensor so it works with either
+        state.params_view() (CPU NetworkState) or — after downloading
+        via gpu.download_to(state, ctx) — state.params_view() from GPU.
+
+        Args:
+            params: Model parameters [PARAM_SIZE] (e.g. state.params_view()).
+            input: Input tensor [BATCH, IN_DIM].
+            target: Target tensor [BATCH, OUT_DIM].
+
+        Returns:
+            Scalar loss value.
+        """
+        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
+
+        var output_data = List[Scalar[dtype]](capacity=OUT_SIZE)
+        for _ in range(OUT_SIZE):
+            output_data.append(Scalar[dtype](0))
+
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](output_data.unsafe_ptr())
+
+        # params is already an lvalue from the caller — pass directly
+        Self.MODEL.forward[BATCH](input, output_t, params)
+
+        return Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
+            output_t, target
         )
 
-        return self.loss_function.forward[BATCH * Self.MODEL.OUT_DIM](
-            output_storage, target
-        )
+    # =========================================================================
+    # GPU Training
+    # =========================================================================
 
+    @staticmethod
     fn train_gpu[
         BATCH: Int
     ](
-        mut self,
+        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,
-        input: UnsafePointer[Scalar[dtype]],
-        target: UnsafePointer[Scalar[dtype]],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        epochs: Int = 100,
+        print_every: Int = 0,
     ) raises -> TrainResult:
-        """Train the model on GPU for the configured number of epochs.
+        """Train on GPU for the given number of epochs.
+
+        The caller owns GPUNetworkState and is responsible for uploading params
+        before calling and downloading results afterwards (e.g. via
+        gpu.download_to(state, ctx)).  Input/target are CPU-side LayoutTensors
+        uploaded to device once before the loop.
 
         Args:
+            state: GPU network state — updated in-place.
             ctx: GPU device context.
-            input: Input data [BATCH * IN_DIM].
-            target: Target data [BATCH * OUT_DIM].
+            input: CPU input tensor [BATCH, IN_DIM] — caller manages memory.
+            target: CPU target tensor [BATCH, OUT_DIM] — caller manages memory.
+            epochs: Number of training epochs.
+            print_every: Print loss every N epochs (0 = never).
 
         Returns:
-            TrainResult with final loss and epochs trained.
+            TrainResult with final_loss and epochs_trained.
         """
-        # Dimension constants
         comptime IN_SIZE = BATCH * Self.MODEL.IN_DIM
         comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
-        comptime CACHE_SIZE = BATCH * Self.MODEL.CACHE_SIZE
-        comptime STATE_SIZE = PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-        comptime WORKSPACE_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
+        comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
+        comptime WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
 
-        # Create host buffers for input/target and copy data
+        # Upload input and target via pinned host buffers (once before loop).
+        # LayoutTensor has no unsafe_ptr() — copy via 2D element indexing.
         var input_host = ctx.enqueue_create_host_buffer[dtype](IN_SIZE)
         var target_host = ctx.enqueue_create_host_buffer[dtype](OUT_SIZE)
-        for i in range(IN_SIZE):
-            input_host[i] = input[i]
-        for i in range(OUT_SIZE):
-            target_host[i] = target[i]
-
-        # Create host buffer for params and copy current params
-        var params_host = ctx.enqueue_create_host_buffer[dtype](PARAM_SIZE)
-        for i in range(PARAM_SIZE):
-            params_host[i] = self.params[i]
-
-        # Create host buffer for optimizer state and copy
-        var state_host = ctx.enqueue_create_host_buffer[dtype](STATE_SIZE)
-        for i in range(STATE_SIZE):
-            state_host[i] = self.optimizer_state[i]
-
-        # Create device buffers
+        for row in range(BATCH):
+            for col in range(Self.MODEL.IN_DIM):
+                input_host[row * Self.MODEL.IN_DIM + col] = rebind[
+                    Scalar[dtype]
+                ](input[row, col])
+        for row in range(BATCH):
+            for col in range(Self.MODEL.OUT_DIM):
+                target_host[row * Self.MODEL.OUT_DIM + col] = rebind[
+                    Scalar[dtype]
+                ](target[row, col])
         var input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
         var target_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
-        var output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
-        var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
-        var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
-        var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
-        var state_buf = ctx.enqueue_create_buffer[dtype](STATE_SIZE)
-        var loss_buf = ctx.enqueue_create_buffer[dtype](1)
-        # Pre-allocate workspace buffer (avoids allocation on every forward/backward)
-        var workspace_buf = ctx.enqueue_create_buffer[dtype](
-            WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
-        )
-
-        # Copy input, target, params, and state to device
         ctx.enqueue_copy(input_buf, input_host)
         ctx.enqueue_copy(target_buf, target_host)
-        ctx.enqueue_copy(params_buf, params_host)
-        ctx.enqueue_copy(state_buf, state_host)
 
-        # Host buffer for reading loss back
+        # Per-epoch device buffers (allocated once, reused each epoch)
+        var output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE_)
+        var grad_out_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var grad_in_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
+        var loss_buf = ctx.enqueue_create_buffer[dtype](1)
+        var ws_buf = ctx.enqueue_create_buffer[dtype](
+            WS_SIZE if WS_SIZE > 0 else 1
+        )
+
+        # LayoutTensor views over device buffers (created once)
+        var input_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](input_buf.unsafe_ptr())
+        var target_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](target_buf.unsafe_ptr())
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](grad_out_buf.unsafe_ptr())
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](grad_in_buf.unsafe_ptr())
+        var loss_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            loss_buf.unsafe_ptr()
+        )
         var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
 
         var final_loss: Float64 = 0.0
 
-        for epoch in range(self.epochs):
-            # Zero gradients on GPU
-            ctx.enqueue_memset(grads_buf, 0)
+        for epoch in range(epochs):
+            state.zero_grads(ctx)
 
-            # Forward pass (using workspace to avoid internal allocation)
+            # Fresh lvalue views each epoch
+            var params = state.params_view()
+            var grads = state.grads_view()
+
             Self.MODEL.forward_gpu[BATCH](
-                ctx,
-                output_buf,
-                input_buf,
-                params_buf,
-                cache_buf,
-                workspace_buf,
+                ctx, output_t, input_t, params, cache_t, ws_buf
             )
-
-            # Compute loss gradient (backward of loss function)
             Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                ctx, grad_output_buf, output_buf, target_buf
+                ctx, grad_out_t, output_t, target_t
             )
-
-            # Backward pass through model (using workspace to avoid internal allocation)
             Self.MODEL.backward_gpu[BATCH](
-                ctx,
-                grad_input_buf,
-                grad_output_buf,
-                params_buf,
-                cache_buf,
-                grads_buf,
-                workspace_buf,
+                ctx, grad_in_t, grad_out_t, params, cache_t, grads, ws_buf
             )
+            state.optimizer_step(ctx)
 
-            # Optimizer step
-            self.optimizer.step_gpu[PARAM_SIZE](
-                ctx, params_buf, grads_buf, state_buf
-            )
-
-            # Optionally compute and print loss
-            if self.print_every > 0 and epoch % self.print_every == 0:
-                # Compute loss value
+            if print_every > 0 and epoch % print_every == 0:
                 Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                    ctx, loss_buf, output_buf, target_buf
+                    ctx, loss_t, output_t, target_t
                 )
-                # Copy loss back to host (only sync when printing)
                 ctx.enqueue_copy(loss_host, loss_buf)
                 ctx.synchronize()
                 final_loss = Float64(loss_host[0])
                 print(
                     "Epoch " + String(epoch) + " - Loss: " + String(final_loss)
                 )
-            # Note: No sync here - GPU ops queue up and execute in order.
-            # We only sync when reading results back (loss printing) or at the end.
 
-            # Auto-checkpoint (requires copying params back from GPU)
-            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
-                if (epoch + 1) % self.checkpoint_every == 0:
-                    # Copy params and state from GPU to host
-                    ctx.enqueue_copy(params_host, params_buf)
-                    ctx.enqueue_copy(state_host, state_buf)
-                    ctx.synchronize()
-                    # Update trainer's params temporarily for checkpoint
-                    for i in range(PARAM_SIZE):
-                        self.params[i] = params_host[i]
-                    for i in range(STATE_SIZE):
-                        self.optimizer_state[i] = state_host[i]
-                    # Save checkpoint
-                    self.save_checkpoint(self.checkpoint_path)
-                    print("Checkpoint saved at epoch " + String(epoch + 1))
-
-        # Compute final loss if not already computed
-        if self.print_every == 0 or (self.epochs - 1) % self.print_every != 0:
+        # Compute final loss if the last epoch was not a print epoch
+        if print_every == 0 or (epochs - 1) % print_every != 0:
             Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                ctx, loss_buf, output_buf, target_buf
+                ctx, loss_t, output_t, target_t
             )
             ctx.enqueue_copy(loss_host, loss_buf)
             ctx.synchronize()
             final_loss = Float64(loss_host[0])
 
-        # Copy updated params and state back to host
-        ctx.enqueue_copy(params_host, params_buf)
-        ctx.enqueue_copy(state_host, state_buf)
-        ctx.synchronize()
-
-        # Update trainer's params and optimizer state
-        for i in range(PARAM_SIZE):
-            self.params[i] = params_host[i]
-        for i in range(STATE_SIZE):
-            self.optimizer_state[i] = state_host[i]
-
-        return TrainResult(final_loss, self.epochs)
-
-    # =========================================================================
-    # Checkpoint Save/Load
-    # =========================================================================
-
-    fn save_checkpoint(self, filepath: String) raises:
-        """Save trainer parameters and optimizer state to a checkpoint file.
-
-        Args:
-            filepath: Path to save the checkpoint file.
-
-        Example:
-            trainer.save_checkpoint("trainer.ckpt")
-        """
-        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
-        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-
-        var content = write_checkpoint_header("trainer", PARAM_SIZE, STATE_SIZE)
-        content += write_float_section_list("params:", self.params)
-        content += write_float_section_list(
-            "optimizer_state:", self.optimizer_state
-        )
-
-        # Add metadata
-        var metadata = List[String]()
-        metadata.append("epochs=" + String(self.epochs))
-        metadata.append("print_every=" + String(self.print_every))
-        content += write_metadata_section(metadata)
-
-        save_checkpoint_file(filepath, content)
-
-    fn load_checkpoint(mut self, filepath: String) raises:
-        """Load trainer parameters and optimizer state from a checkpoint file.
-
-        Args:
-            filepath: Path to the checkpoint file.
-
-        Example:
-            trainer.load_checkpoint("trainer.ckpt")
-        """
-        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
-        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-
-        var content = read_checkpoint_file(filepath)
-        var header = parse_checkpoint_header(content)
-
-        # Validate sizes match
-        if header.param_size != PARAM_SIZE:
-            print(
-                "Warning: checkpoint param_size ("
-                + String(header.param_size)
-                + ") != trainer PARAM_SIZE ("
-                + String(PARAM_SIZE)
-                + ")"
-            )
-
-        # Load parameters
-        var loaded_params = read_float_section_list(
-            content, "params:", PARAM_SIZE
-        )
-        for i in range(PARAM_SIZE):
-            self.params[i] = loaded_params[i]
-
-        # Load optimizer state
-        var loaded_state = read_float_section_list(
-            content, "optimizer_state:", STATE_SIZE
-        )
-        for i in range(STATE_SIZE):
-            self.optimizer_state[i] = loaded_state[i]
-
-        # Load metadata (optional)
-        var metadata = read_metadata_section(content)
-        var epochs_str = get_metadata_value(metadata, "epochs")
-        if len(epochs_str) > 0:
-            self.epochs = Int(atol(epochs_str))
+        return TrainResult(final_loss, epochs)

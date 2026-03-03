@@ -1095,6 +1095,9 @@ struct TDMPC2Agent[
         var bins_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BINS), MutAnyOrigin
         ](bins_buf.unsafe_ptr())
+        var enc_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
+        ](enc_params_buf.unsafe_ptr())
 
         # ── Zero per-step intermediate gradient buffers ──
         ctx.enqueue_memset(grad_z_pred_buf, 0)
@@ -1151,7 +1154,7 @@ struct TDMPC2Agent[
 
         # ── Consistency target: encode obs_{t+1} (stop-grad) ──
         Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-            ctx, z_next_buf, obs_next_step_buf, enc_params_buf, enc_batch_ws_buf
+            ctx, z_next_tensor, obs_next_step_tensor, enc_params_tensor, enc_batch_ws_buf
         )
 
         # ── Consistency loss gradient → grad_z_pred ──
@@ -1917,6 +1920,46 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
         ](z_pred_buf.unsafe_ptr())
 
+        # Params LayoutTensor views (for forward_gpu_no_cache calls)
+        var enc_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
+        ](enc_params_buf.unsafe_ptr())
+        var pol_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.POL_P), MutAnyOrigin
+        ](pol_params_buf.unsafe_ptr())
+        var dyn_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
+        ](dyn_params_buf.unsafe_ptr())
+        var q1_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q1_params_buf.unsafe_ptr())
+        var q2_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q2_params_buf.unsafe_ptr())
+        var q1t_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q1t_params_buf.unsafe_ptr())
+        var q2t_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q2t_params_buf.unsafe_ptr())
+        var q3t_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q3t_params_buf.unsafe_ptr())
+        var q4t_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q4t_params_buf.unsafe_ptr())
+        var q5t_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q5t_params_buf.unsafe_ptr())
+        # n_envs-sized tensors for data collection phase
+        var env_z_tensor = LayoutTensor[
+            dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
+        ](env_z_buf.unsafe_ptr())
+        # Encoder output reusing env_pi_out_buf (n_envs x LATENT view, temp)
+        var env_pi_enc_tensor = LayoutTensor[
+            dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
+        ](env_pi_out_buf.unsafe_ptr())
+
         # =================================================================
         # n_envs-dependent kernel wrappers (all others live at struct level)
         # =================================================================
@@ -2018,24 +2061,24 @@ struct TDMPC2Agent[
                 # Policy-based exploration: encode obs → policy → sample actions
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
-                    env_pi_out_buf,  # temp: use pi_out buf as output
-                    env_obs_buf,
-                    enc_params_buf,
+                    env_pi_enc_tensor,  # temp: use pi_out buf as output (n_envs x LATENT)
+                    env_obs_tensor,
+                    enc_params_tensor,
                     enc_env_ws_buf,
                 )
                 # Actually encode obs → z (not pi_out) — reuse env_z_buf
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
-                    env_z_buf,
-                    env_obs_buf,
-                    enc_params_buf,
+                    env_z_tensor,
+                    env_obs_tensor,
+                    enc_params_tensor,
                     enc_env_ws_buf,
                 )
                 Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
-                    env_pi_out_buf,
-                    env_z_buf,
-                    pol_params_buf,
+                    env_pi_out_tensor,
+                    env_z_tensor,
+                    pol_params_tensor,
                     pol_env_ws_buf,
                 )
                 ctx.enqueue_function[sample_act_wrapper, sample_act_wrapper](
@@ -2264,18 +2307,18 @@ struct TDMPC2Agent[
                 # Encode next obs (stop-grad)
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                     ctx,
-                    z_next_buf,
-                    obs_next_step_buf,
-                    enc_params_buf,
+                    z_next_tensor,
+                    obs_next_step_tensor,
+                    enc_params_tensor,
                     enc_batch_ws_buf,
                 )
 
                 # Policy forward (stop-grad) on z_next → pi_out
                 Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                     ctx,
-                    pi_out_buf,
-                    z_next_buf,
-                    pol_params_buf,
+                    pi_out_tensor,
+                    z_next_tensor,
+                    pol_params_tensor,
                     pol_batch_ws_buf,
                 )
 
@@ -2302,7 +2345,7 @@ struct TDMPC2Agent[
 
                 # Q1_target forward → decode → init q_min
                 Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, logits_buf, za_buf, q1t_params_buf, qt_batch_ws_buf
+                    ctx, logits_tensor, za_tensor, q1t_params_tensor, qt_batch_ws_buf
                 )
                 ctx.enqueue_function[
                     tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2316,7 +2359,7 @@ struct TDMPC2Agent[
 
                 # Q2..Q5 target forward → fused decode + min-reduce (one launch each)
                 Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, logits_buf, za_buf, q2t_params_buf, qt_batch_ws_buf
+                    ctx, logits_tensor, za_tensor, q2t_params_tensor, qt_batch_ws_buf
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2329,7 +2372,7 @@ struct TDMPC2Agent[
                 )
 
                 Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, logits_buf, za_buf, q3t_params_buf, qt_batch_ws_buf
+                    ctx, logits_tensor, za_tensor, q3t_params_tensor, qt_batch_ws_buf
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2342,7 +2385,7 @@ struct TDMPC2Agent[
                 )
 
                 Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, logits_buf, za_buf, q4t_params_buf, qt_batch_ws_buf
+                    ctx, logits_tensor, za_tensor, q4t_params_tensor, qt_batch_ws_buf
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2355,7 +2398,7 @@ struct TDMPC2Agent[
                 )
 
                 Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, logits_buf, za_buf, q5t_params_buf, qt_batch_ws_buf
+                    ctx, logits_tensor, za_tensor, q5t_params_tensor, qt_batch_ws_buf
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2691,7 +2734,7 @@ struct TDMPC2Agent[
 
                 # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx, z_buf, obs_step_buf, enc_params_buf, enc_batch_ws_buf
+                    ctx, z_tensor, obs_step_tensor, enc_params_tensor, enc_batch_ws_buf
                 )
                 # obs_step_buf still contains obs_0 from the world model step
 
@@ -2734,7 +2777,7 @@ struct TDMPC2Agent[
 
                     # Q1 forward (stop-grad) → decode → init q_min
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                        ctx, logits_buf, za_buf, q1_params_buf, q1_batch_ws_buf
+                        ctx, logits_tensor, za_tensor, q1_params_tensor, q1_batch_ws_buf
                     )
                     ctx.enqueue_function[
                         tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2748,7 +2791,7 @@ struct TDMPC2Agent[
 
                     # Q2 forward → fused decode + min-reduce (use 2 Qs for policy, as in CPU)
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                        ctx, logits_buf, za_buf, q2_params_buf, q2_batch_ws_buf
+                        ctx, logits_tensor, za_tensor, q2_params_tensor, q2_batch_ws_buf
                     )
                     ctx.enqueue_function[
                         tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS], tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS]
@@ -2790,9 +2833,9 @@ struct TDMPC2Agent[
                             Self.BATCH
                         ](
                             ctx,
-                            z_pred_buf,
-                            za_buf,
-                            dyn_params_buf,
+                            z_pred_tensor,
+                            za_tensor,
+                            dyn_params_tensor,
                             dyn_batch_ws_buf,
                         )
                         ctx.enqueue_function[

@@ -442,11 +442,19 @@ struct Sequential[*LAYERS: Model](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward pass using pre-allocated workspace.
 
@@ -454,35 +462,33 @@ struct Sequential[*LAYERS: Model](Model):
         """
 
         comptime if Self.N == 1:
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
             Self.model_types[0].forward_gpu[BATCH](
-                ctx,
-                output_buf,
-                input_buf,
-                params_buf,
-                cache_buf,
-                workspace_buf,
+                ctx, output, input, p_v, c_v, workspace
             )
         else:
-            var ws_ptr = workspace_buf.unsafe_ptr()
-            var p_ptr = params_buf.unsafe_ptr()
-            var c_ptr = cache_buf.unsafe_ptr()
+            var ws_ptr = workspace.unsafe_ptr()
 
             comptime for i in range(Self.N):
-                # Params view
-                var li_params = DeviceBuffer[dtype](
-                    ctx,
-                    p_ptr + Self._param_offset[i](),
-                    Self.model_types[i].PARAM_SIZE,
-                    owning=False,
-                )
-                # Cache view
-                var li_cache = DeviceBuffer[dtype](
-                    ctx,
-                    c_ptr + BATCH * Self._cache_offset[i](),
-                    BATCH * Self.model_types[i].CACHE_SIZE,
-                    owning=False,
-                )
-                # Layer workspace view
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
                 var li_ws_size = (
                     BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
                 )
@@ -494,55 +500,36 @@ struct Sequential[*LAYERS: Model](Model):
                 )
 
                 comptime if i == 0:
-                    var inter_out = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr,
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
                     Self.model_types[i].forward_gpu[BATCH](
-                        ctx,
-                        inter_out,
-                        input_buf,
-                        li_params,
-                        li_cache,
-                        li_ws,
+                        ctx, inter_out, input, li_p, li_c, li_ws
                     )
                 elif i == Self.N - 1:
-                    var inter_in = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].forward_gpu[BATCH](
-                        ctx,
-                        output_buf,
-                        inter_in,
-                        li_params,
-                        li_cache,
-                        li_ws,
+                        ctx, output, inter_in, li_p, li_c, li_ws
                     )
                 else:
-                    var inter_in = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
-                    var inter_out = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i](),
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward_gpu[BATCH](
-                        ctx,
-                        inter_out,
-                        inter_in,
-                        li_params,
-                        li_cache,
-                        li_ws,
+                        ctx, inter_out, inter_in, li_p, li_c, li_ws
                     )
 
     # =========================================================================
@@ -554,26 +541,35 @@ struct Sequential[*LAYERS: Model](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         comptime if Self.N == 1:
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
             Self.model_types[0].forward_gpu_no_cache[BATCH](
-                ctx, output_buf, input_buf, params_buf, workspace_buf
+                ctx, output, input, p_v, workspace
             )
         else:
-            var ws_ptr = workspace_buf.unsafe_ptr()
-            var p_ptr = params_buf.unsafe_ptr()
+            var ws_ptr = workspace.unsafe_ptr()
 
             comptime for i in range(Self.N):
-                var li_params = DeviceBuffer[dtype](
-                    ctx,
-                    p_ptr + Self._param_offset[i](),
-                    Self.model_types[i].PARAM_SIZE,
-                    owning=False,
-                )
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
                 var li_ws_size = (
                     BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
                 )
@@ -585,40 +581,36 @@ struct Sequential[*LAYERS: Model](Model):
                 )
 
                 comptime if i == 0:
-                    var inter_out = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr,
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
                     Self.model_types[i].forward_gpu_no_cache[BATCH](
-                        ctx, inter_out, input_buf, li_params, li_ws
+                        ctx, inter_out, input, li_p, li_ws
                     )
                 elif i == Self.N - 1:
-                    var inter_in = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].forward_gpu_no_cache[BATCH](
-                        ctx, output_buf, inter_in, li_params, li_ws
+                        ctx, output, inter_in, li_p, li_ws
                     )
                 else:
-                    var inter_in = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
-                    var inter_out = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i](),
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward_gpu_no_cache[BATCH](
-                        ctx, inter_out, inter_in, li_params, li_ws
+                        ctx, inter_out, inter_in, li_p, li_ws
                     )
 
     # =========================================================================
@@ -630,54 +622,67 @@ struct Sequential[*LAYERS: Model](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU backward pass. Workspace inter region reused for gradient intermediates.
         """
 
         comptime if Self.N == 1:
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var g_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr)
             Self.model_types[0].backward_gpu[BATCH](
-                ctx,
-                grad_input_buf,
-                grad_output_buf,
-                params_buf,
-                cache_buf,
-                grads_buf,
-                workspace_buf,
+                ctx, grad_input, grad_output, p_v, c_v, g_v, workspace
             )
         else:
-            var ws_ptr = workspace_buf.unsafe_ptr()
-            var p_ptr = params_buf.unsafe_ptr()
-            var c_ptr = cache_buf.unsafe_ptr()
-            var g_ptr = grads_buf.unsafe_ptr()
+            var ws_ptr = workspace.unsafe_ptr()
 
             # Reverse iteration
             comptime for _ri in range(Self.N):
                 comptime i = Self.N - 1 - _ri
 
-                var li_params = DeviceBuffer[dtype](
-                    ctx,
-                    p_ptr + Self._param_offset[i](),
-                    Self.model_types[i].PARAM_SIZE,
-                    owning=False,
-                )
-                var li_cache = DeviceBuffer[dtype](
-                    ctx,
-                    c_ptr + BATCH * Self._cache_offset[i](),
-                    BATCH * Self.model_types[i].CACHE_SIZE,
-                    owning=False,
-                )
-                var li_grads = DeviceBuffer[dtype](
-                    ctx,
-                    g_ptr + Self._param_offset[i](),
-                    Self.model_types[i].PARAM_SIZE,
-                    owning=False,
-                )
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var li_g = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](grads.ptr + Self._param_offset[i]())
                 var li_ws_size = (
                     BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
                 )
@@ -690,58 +695,36 @@ struct Sequential[*LAYERS: Model](Model):
 
                 comptime if i == Self.N - 1:
                     # Last layer: grad_output -> grad_inter[i-1]
-                    var gi_buf = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward_gpu[BATCH](
-                        ctx,
-                        gi_buf,
-                        grad_output_buf,
-                        li_params,
-                        li_cache,
-                        li_grads,
-                        li_ws,
+                        ctx, gi, grad_output, li_p, li_c, li_g, li_ws
                     )
                 elif i == 0:
                     # First layer: grad_inter[0] -> grad_input
-                    var go_buf = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr,
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
                     Self.model_types[i].backward_gpu[BATCH](
-                        ctx,
-                        grad_input_buf,
-                        go_buf,
-                        li_params,
-                        li_cache,
-                        li_grads,
-                        li_ws,
+                        ctx, grad_input, go, li_p, li_c, li_g, li_ws
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
-                    var go_buf = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i](),
-                        BATCH * Self.model_types[i].OUT_DIM,
-                        owning=False,
-                    )
-                    var gi_buf = DeviceBuffer[dtype](
-                        ctx,
-                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
-                        BATCH * Self.model_types[i].IN_DIM,
-                        owning=False,
-                    )
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward_gpu[BATCH](
-                        ctx,
-                        gi_buf,
-                        go_buf,
-                        li_params,
-                        li_cache,
-                        li_grads,
-                        li_ws,
+                        ctx, gi, go, li_p, li_c, li_g, li_ws
                     )

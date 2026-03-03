@@ -1,3 +1,7 @@
+# =============================================================================
+# Cross-Entropy Loss
+# =============================================================================
+
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
@@ -26,62 +30,69 @@ struct CrossEntropyLoss(LossFunction):
     - target: one-hot encoded action or action probabilities [num_actions]
     """
 
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
     fn forward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ) -> Float64:
-        """Cross-Entropy Loss: L = -sum(target * log_softmax(output)).
+        """Cross-Entropy Loss: per-sample log-softmax, averaged over batch.
 
-        Uses log-sum-exp for numerical stability.
+        Uses log-sum-exp trick per sample for numerical stability.
         """
-        # Find max for numerical stability
-        var max_val = Float64(output[0])
-        for i in range(1, SIZE):
-            var val = Float64(output[i])
-            if val > max_val:
-                max_val = val
+        var total_loss: Float64 = 0.0
+        for row in range(BATCH):
+            var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
+            for col in range(1, OUT_DIM):
+                var val = Float64(rebind[Scalar[dtype]](output[row, col]))
+                if val > max_val:
+                    max_val = val
+            var sum_exp: Float64 = 0.0
+            for col in range(OUT_DIM):
+                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+            var log_sum_exp = max_val + log(sum_exp)
+            var sample_loss: Float64 = 0.0
+            for col in range(OUT_DIM):
+                var log_sm = Float64(rebind[Scalar[dtype]](output[row, col])) - log_sum_exp
+                sample_loss -= Float64(rebind[Scalar[dtype]](target[row, col])) * log_sm
+            total_loss += sample_loss
+        return total_loss / Float64(BATCH)
 
-        # Compute log_sum_exp
-        var sum_exp: Float64 = 0.0
-        for i in range(SIZE):
-            sum_exp += exp(Float64(output[i]) - max_val)
-        var log_sum_exp = max_val + log(sum_exp)
-
-        # Compute cross-entropy: -sum(target * (output - log_sum_exp))
-        var loss: Float64 = 0.0
-        for i in range(SIZE):
-            var log_softmax = Float64(output[i]) - log_sum_exp
-            loss -= Float64(target[i]) * log_softmax
-
-        return loss
-
+    @staticmethod
     fn backward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
-        mut grad: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ):
-        """Gradient of Cross-Entropy: dL/dy = softmax(output) - target."""
-        # Find max for numerical stability
-        var max_val = Float64(output[0])
-        for i in range(1, SIZE):
-            var val = Float64(output[i])
-            if val > max_val:
-                max_val = val
-
-        # Compute softmax
-        var sum_exp: Float64 = 0.0
-        for i in range(SIZE):
-            sum_exp += exp(Float64(output[i]) - max_val)
-
-        for i in range(SIZE):
-            var softmax_val = exp(Float64(output[i]) - max_val) / sum_exp
-            grad[i] = Scalar[dtype](softmax_val - Float64(target[i]))
+        """Gradient of Cross-Entropy: dL/dy = (softmax(output) - target) / BATCH."""
+        for row in range(BATCH):
+            var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
+            for col in range(1, OUT_DIM):
+                var val = Float64(rebind[Scalar[dtype]](output[row, col]))
+                if val > max_val:
+                    max_val = val
+            var sum_exp: Float64 = 0.0
+            for col in range(OUT_DIM):
+                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+            for col in range(OUT_DIM):
+                var sm = exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val) / sum_exp
+                grad[row, col] = Scalar[dtype](
+                    (sm - Float64(rebind[Scalar[dtype]](target[row, col]))) / Float64(BATCH)
+                )
 
     # =========================================================================
     # GPU kernel implementations
@@ -108,7 +119,7 @@ struct CrossEntropyLoss(LossFunction):
         """
         var local_i = thread_idx.x
 
-        var my_value: Scalar[dtype] = 0
+        var my_value: predictions.element_type = 0.0
 
         comptime BATCH_SIZE = BATCH * OUT_DIM
 
@@ -116,24 +127,24 @@ struct CrossEntropyLoss(LossFunction):
         var batch_idx = Int(local_i)
         while batch_idx < BATCH_SIZE:
             # Find max for this sample
-            var max_val = rebind[Scalar[dtype]](predictions[batch_idx, 0])
+            var max_val = predictions[batch_idx, 0]
             for j in range(1, OUT_DIM):
-                var val = rebind[Scalar[dtype]](predictions[batch_idx, j])
+                var val = predictions[batch_idx, j]
                 if val > max_val:
                     max_val = val
 
             # Compute log_sum_exp
-            var sum_exp: Scalar[dtype] = 0.0
+            var sum_exp: predictions.element_type = 0.0
             for j in range(OUT_DIM):
-                var pred = rebind[Scalar[dtype]](predictions[batch_idx, j])
+                var pred = predictions[batch_idx, j]
                 sum_exp = sum_exp + exp(pred - max_val)
             var log_sum_exp = max_val + log(sum_exp)
 
             # Compute cross-entropy for this sample
-            var sample_loss: Scalar[dtype] = 0.0
+            var sample_loss: predictions.element_type = 0.0
             for j in range(OUT_DIM):
-                var pred = rebind[Scalar[dtype]](predictions[batch_idx, j])
-                var tgt = rebind[Scalar[dtype]](targets[batch_idx, j])
+                var pred = predictions[batch_idx, j]
+                var tgt = targets[batch_idx, j]
                 var log_softmax = pred - log_sum_exp
                 sample_loss = sample_loss - tgt * log_softmax
 
@@ -206,27 +217,15 @@ struct CrossEntropyLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        loss_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """Launch forward pass on GPU to compute Cross-Entropy loss.
-
-        Args:
-            ctx: GPU device context.
-            loss_buf: Output buffer [1] for scalar loss value.
-            predictions_buf: Logits buffer [BATCH * OUT_DIM].
-            targets_buf: One-hot or soft targets buffer [BATCH * OUT_DIM].
-        """
-        var loss = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            loss_buf.unsafe_ptr()
-        )
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
+        """Launch forward pass on GPU to compute Cross-Entropy loss."""
 
         @always_inline
         fn kernel_wrapper(
@@ -240,7 +239,6 @@ struct CrossEntropyLoss(LossFunction):
         ):
             Self.forward_kernel_impl[BATCH, OUT_DIM](loss, predictions, targets)
 
-        # Single block for reduction
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             loss,
             predictions,
@@ -255,27 +253,17 @@ struct CrossEntropyLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """Launch backward pass on GPU to compute loss gradient.
-
-        Args:
-            ctx: GPU device context.
-            grad_output_buf: Gradient buffer [BATCH * OUT_DIM] (written).
-            predictions_buf: Logits buffer [BATCH * OUT_DIM].
-            targets_buf: One-hot or soft targets buffer [BATCH * OUT_DIM].
-        """
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
+        """Launch backward pass on GPU to compute loss gradient."""
 
         @always_inline
         fn kernel_wrapper(
@@ -293,7 +281,6 @@ struct CrossEntropyLoss(LossFunction):
                 grad_output, predictions, targets
             )
 
-        # One block per sample for softmax computation
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_output,
             predictions,

@@ -1,23 +1,17 @@
+# =============================================================================
+# Huber Loss
+# =============================================================================
+
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.primitives import block
 from gpu.host import DeviceContext, DeviceBuffer
+from math import abs
 
 
-fn _abs(val: Scalar[dtype]) -> Scalar[dtype]:
-    """Absolute value helper for Scalar[dtype]."""
-    var zero = Scalar[dtype](0.0)
-    return val if val >= zero else -val
-
-
-fn _abs_f64(val: Float64) -> Float64:
-    """Absolute value helper for Float64."""
-    return val if val >= 0.0 else -val
-
-
-struct HuberLoss(LossFunction):
+struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     """Huber Loss (Smooth L1): robust to outliers, useful for DQN.
 
     L = 0.5 * (y - t)^2                     if |y - t| <= delta
@@ -26,73 +20,73 @@ struct HuberLoss(LossFunction):
     Gradient:
     dL/dy = (y - t)                         if |y - t| <= delta
     dL/dy = delta * sign(y - t)             otherwise
+
+    delta is a compile-time struct parameter.
     """
 
-    var delta: Float64
-
-    fn __init__(out self, delta: Float64 = 1.0):
-        """Initialize HuberLoss with delta threshold.
-
-        Args:
-            delta: Threshold for switching between quadratic and linear loss.
-                   Default is 1.0 (standard Smooth L1).
-        """
-        self.delta = delta
-
-    fn __init__(out self, *, deinit take: Self):
-        self.delta = take.delta
+    fn __init__(out self):
+        pass
 
     fn __init__(out self, *, copy: Self):
-        self.delta = copy.delta
+        pass
 
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
     fn forward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ) -> Float64:
         """Huber Loss forward pass."""
+        comptime SIZE = BATCH * OUT_DIM
         var loss: Float64 = 0.0
-        var delta = self.delta
-        var half_delta_sq = 0.5 * delta * delta
+        var d = Self.delta
+        var half_delta_sq = 0.5 * d * d
+        for row in range(BATCH):
+            for col in range(OUT_DIM):
+                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
+                    rebind[Scalar[dtype]](target[row, col])
+                )
+                var abs_diff = abs(diff)
+                if abs_diff <= d:
+                    loss += 0.5 * diff * diff
+                else:
+                    loss += d * abs_diff - half_delta_sq
+        return loss / Float64(SIZE)
 
-        for i in range(SIZE):
-            var diff = Float64(output[i]) - Float64(target[i])
-            var abs_diff = _abs_f64(diff)
-            if abs_diff <= delta:
-                # Quadratic region
-                loss += 0.5 * diff * diff
-            else:
-                # Linear region
-                loss += delta * abs_diff - half_delta_sq
-
-        return loss / SIZE
-
+    @staticmethod
     fn backward[
-        SIZE: Int
+        BATCH: Int,
+        OUT_DIM: Int,
     ](
-        self,
-        output: InlineArray[Scalar[dtype], SIZE],
-        target: InlineArray[Scalar[dtype], SIZE],
-        mut grad: InlineArray[Scalar[dtype], SIZE],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     ):
         """Huber Loss backward pass: gradient dL/dy."""
-        var delta = self.delta
-
-        for i in range(SIZE):
-            var diff = Float64(output[i]) - Float64(target[i])
-            var abs_diff = _abs_f64(diff)
-            if abs_diff <= delta:
-                # Quadratic region: gradient is (y - t)
-                grad[i] = Scalar[dtype](diff / SIZE)
-            else:
-                # Linear region: gradient is delta * sign(diff)
-                var sign: Float64 = 1.0 if diff > 0 else -1.0
-                grad[i] = Scalar[dtype](delta * sign / SIZE)
+        comptime SIZE = BATCH * OUT_DIM
+        var d = Self.delta
+        var inv_n = 1.0 / Float64(SIZE)
+        for row in range(BATCH):
+            for col in range(OUT_DIM):
+                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
+                    rebind[Scalar[dtype]](target[row, col])
+                )
+                var abs_diff = abs(diff)
+                if abs_diff <= d:
+                    grad[row, col] = Scalar[dtype](diff * inv_n)
+                else:
+                    var sign: Float64 = 1.0 if diff > 0 else -1.0
+                    grad[row, col] = Scalar[dtype](d * sign * inv_n)
 
     # =========================================================================
     # GPU kernel implementations
+    # Note: kernel params use 'd' instead of 'delta' to avoid shadowing
+    # the struct's compile-time 'delta' parameter.
     # =========================================================================
 
     @always_inline
@@ -108,14 +102,14 @@ struct HuberLoss(LossFunction):
         targets: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
         ],
-        delta: Scalar[dtype],
+        d: Scalar[dtype],
     ):
         """Compute Huber loss using block reduction.
 
         Must be launched with grid_dim=(1,), block_dim=(TPB,).
         """
         var local_i = thread_idx.x
-        var half_delta_sq = Scalar[dtype](0.5) * delta * delta
+        var half_d_sq = Scalar[dtype](0.5) * d * d
 
         var my_value: Scalar[dtype] = 0
         var idx = Int(local_i)
@@ -124,14 +118,14 @@ struct HuberLoss(LossFunction):
             var row = idx // OUT_DIM
             var col = idx % OUT_DIM
             var pred = rebind[Scalar[dtype]](predictions[row, col])
-            var target = rebind[Scalar[dtype]](targets[row, col])
-            var diff = pred - target
-            var abs_diff = _abs(diff)
+            var tgt = rebind[Scalar[dtype]](targets[row, col])
+            var diff = pred - tgt
+            var abs_diff = abs(diff)
 
-            if abs_diff <= delta:
+            if abs_diff <= d:
                 my_value = my_value + Scalar[dtype](0.5) * diff * diff
             else:
-                my_value = my_value + delta * abs_diff - half_delta_sq
+                my_value = my_value + d * abs_diff - half_d_sq
 
             idx += TPB
 
@@ -155,7 +149,7 @@ struct HuberLoss(LossFunction):
         targets: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
         ],
-        delta: Scalar[dtype],
+        d: Scalar[dtype],
     ):
         """Compute gradient of Huber loss."""
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -165,22 +159,20 @@ struct HuberLoss(LossFunction):
 
         var row = idx // OUT_DIM
         var col = idx % OUT_DIM
-        var pred = rebind[Scalar[dtype]](predictions[row, col])
-        var target = rebind[Scalar[dtype]](targets[row, col])
-        var diff = pred - target
-        var abs_diff = _abs(diff)
+        var pred = predictions[row, col]
+        var tgt = targets[row, col]
+        var diff = pred - tgt
+        var abs_diff = abs(diff)
         var n = Scalar[dtype](SIZE)
-        var zero = Scalar[dtype](0.0)
+        var zero: predictions.element_type = 0.0
 
-        if abs_diff <= delta:
-            # Quadratic region
+        if abs_diff <= d:
             grad_output[row, col] = diff / n
         else:
-            # Linear region
-            var sign: Scalar[dtype] = Scalar[dtype](
-                1.0
-            ) if diff > zero else Scalar[dtype](-1.0)
-            grad_output[row, col] = delta * sign / n
+            var sign: predictions.element_type = 1.0 if diff > zero else Scalar[
+                dtype
+            ](-1.0)
+            grad_output[row, col] = d * sign / n
 
     # =========================================================================
     # GPU launchers
@@ -192,45 +184,16 @@ struct HuberLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        loss_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU (trait-compatible, uses delta=1.0)."""
-        Self._forward_gpu_impl[BATCH, OUT_DIM](
-            ctx, loss_buf, predictions_buf, targets_buf, 1.0
-        )
-
-    @staticmethod
-    fn _forward_gpu_impl[
-        BATCH: Int,
-        OUT_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        loss_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
-        delta: Float64,
-    ) raises:
-        """Launch forward pass on GPU to compute Huber loss.
-
-        Args:
-            ctx: GPU device context.
-            loss_buf: Output buffer [1] for scalar loss value.
-            predictions_buf: Predictions buffer [BATCH * OUT_DIM].
-            targets_buf: Targets buffer [BATCH * OUT_DIM].
-            delta: Huber loss delta threshold.
-        """
-        var loss = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            loss_buf.unsafe_ptr()
-        )
-        var predictions = LayoutTensor[
+        mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+        predictions: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
+        ],
+        targets: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
-        var delta_scalar = Scalar[dtype](delta)
+        ],
+    ) raises:
+        """Launch forward pass on GPU to compute Huber loss."""
+        var d_scalar = Scalar[dtype](Self.delta)
 
         @always_inline
         fn kernel_wrapper(
@@ -241,17 +204,17 @@ struct HuberLoss(LossFunction):
             targets: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
-            delta: Scalar[dtype],
+            d: Scalar[dtype],
         ):
             Self.forward_kernel_impl[BATCH, OUT_DIM](
-                loss, predictions, targets, delta
+                loss, predictions, targets, d
             )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             loss,
             predictions,
             targets,
-            delta_scalar,
+            d_scalar,
             grid_dim=(1,),
             block_dim=(TPB,),
         )
@@ -262,46 +225,18 @@ struct HuberLoss(LossFunction):
         OUT_DIM: Int,
     ](
         ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
+        mut grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        predictions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        targets: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """Launch backward pass on GPU (trait-compatible, uses delta=1.0)."""
-        Self._backward_gpu_impl[BATCH, OUT_DIM](
-            ctx, grad_output_buf, predictions_buf, targets_buf, 1.0
-        )
-
-    @staticmethod
-    fn _backward_gpu_impl[
-        BATCH: Int,
-        OUT_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        predictions_buf: DeviceBuffer[dtype],
-        targets_buf: DeviceBuffer[dtype],
-        delta: Float64,
-    ) raises:
-        """Launch backward pass on GPU to compute loss gradient.
-
-        Args:
-            ctx: GPU device context.
-            grad_output_buf: Gradient buffer [BATCH * OUT_DIM] (written).
-            predictions_buf: Predictions buffer [BATCH * OUT_DIM].
-            targets_buf: Targets buffer [BATCH * OUT_DIM].
-            delta: Huber loss delta threshold.
-            size: Size of the loss function.
-        """
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var predictions = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](predictions_buf.unsafe_ptr())
-        var targets = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
-        var delta_scalar = Scalar[dtype](delta)
+        """Launch backward pass on GPU to compute loss gradient."""
+        var d_scalar = Scalar[dtype](Self.delta)
 
         @always_inline
         fn kernel_wrapper(
@@ -314,10 +249,10 @@ struct HuberLoss(LossFunction):
             targets: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
-            delta: Scalar[dtype],
+            d: Scalar[dtype],
         ):
             Self.backward_kernel_impl[BATCH, OUT_DIM](
-                grad_output, predictions, targets, delta
+                grad_output, predictions, targets, d
             )
 
         comptime total = BATCH * OUT_DIM
@@ -327,7 +262,7 @@ struct HuberLoss(LossFunction):
             grad_output,
             predictions,
             targets,
-            delta_scalar,
+            d_scalar,
             grid_dim=(grid_size,),
             block_dim=(TPB,),
         )

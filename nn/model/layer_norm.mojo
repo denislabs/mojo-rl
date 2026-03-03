@@ -396,30 +396,24 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     # =========================================================================
 
     @staticmethod
-    fn _forward_gpu_impl[
+    fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        eps: Float64,
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var params = LayoutTensor[
+        ](input.ptr)
+        var params_immut = LayoutTensor[
             dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim + 2), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var eps_scalar = Scalar[dtype](eps)
+        ](params.ptr)
+        var eps_scalar = Scalar[dtype](Self.EPSILON)
 
         @always_inline
         fn kernel_wrapper(
@@ -441,8 +435,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
-            params,
+            input_immut,
+            params_immut,
             cache,
             eps_scalar,
             grid_dim=(BATCH,),
@@ -450,26 +444,23 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn _forward_gpu_no_cache_impl[
+    fn forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        eps: Float64,
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """Launch forward pass on GPU without caching."""
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
+        """Launch forward pass on GPU without caching (for inference)."""
+        var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var params = LayoutTensor[
+        ](input.ptr)
+        var params_immut = LayoutTensor[
             dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var eps_scalar = Scalar[dtype](eps)
+        ](params.ptr)
+        var eps_scalar = Scalar[dtype](Self.EPSILON)
 
         @always_inline
         fn kernel_wrapper(
@@ -488,46 +479,11 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
-            input,
-            params,
+            input_immut,
+            params_immut,
             eps_scalar,
             grid_dim=(BATCH,),
             block_dim=(1,),
-        )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU with caching (trait-compatible)."""
-        Self._forward_gpu_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, Self.EPSILON
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward without cache, with workspace (trait-compatible)."""
-        Self._forward_gpu_no_cache_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, Self.EPSILON
         )
 
     @staticmethod
@@ -535,29 +491,23 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward pass with pre-allocated workspace."""
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
+        """Launch backward pass on GPU."""
+        var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var params = LayoutTensor[
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
             dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr())
-        var cache = LayoutTensor[
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grads = LayoutTensor[
-            dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
-        ](grads_buf.unsafe_ptr())
+        ](cache.ptr)
 
         @always_inline
         fn kernel_wrapper(
@@ -583,9 +533,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_input,
-            grad_output,
-            params,
-            cache,
+            grad_output_immut,
+            params_immut,
+            cache_immut,
             grads,
             grid_dim=(BATCH,),
             block_dim=(1,),
