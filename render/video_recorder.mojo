@@ -42,7 +42,7 @@ struct VideoRecorder(Movable):
         self._ctypes = None
         self._channel_idx = None
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.is_recording = take.is_recording
         self.frame_count = take.frame_count
         self.fps = take.fps

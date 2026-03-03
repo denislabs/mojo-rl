@@ -9,8 +9,7 @@ Run with:
     pixi run mojo run physics3d/tests/test_pendulum.mojo
 """
 
-from math import sqrt, pi, sin, cos
-from builtin.math import abs
+from math import sqrt, pi, sin, cos, abs
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -32,7 +31,7 @@ fn setup_pendulum(
     model.set_body(1, name="bob", mass=m, inertia=(I_cm, I_cm, I_cm))
     model.set_body_parent(1, 0)
     model.set_body_local_frame(1, pos=(0.0, 0.0, 0.0))  # body at pivot (origin)
-    model.set_body_ipos_iquat(1, ipos=(0.0, 0.0, -L))   # CoM at -L below pivot
+    model.set_body_ipos_iquat(1, ipos=(0.0, 0.0, -L))  # CoM at -L below pivot
     _ = model.add_hinge_joint(
         body_id=1,
         pos=(0.0, 0.0, 0.0),
@@ -104,7 +103,10 @@ fn test_pendulum_period() raises:
 
     if zero_crossings < 2:
         print("  FAIL: Not enough zero crossings detected")
-        assert_true(False, "Pendulum period test failed: not enough zero crossings detected")
+        assert_true(
+            False,
+            "Pendulum period test failed: not enough zero crossings detected",
+        )
 
     # Period = time between consecutive positive-to-negative crossings
     # Each such crossing occurs once per full period
@@ -125,7 +127,10 @@ fn test_pendulum_period() raises:
         print("  PASS: Period within 2% of analytical value")
     else:
         print("  FAIL: Period error exceeds 2%")
-        assert_true(error_pct < Float64(2.0), "Pendulum period test failed: period error exceeds 2%")
+        assert_true(
+            error_pct < Float64(2.0),
+            "Pendulum period test failed: period error exceeds 2%",
+        )
 
 
 fn test_energy_conservation() raises:
@@ -161,7 +166,9 @@ fn test_energy_conservation() raises:
         I_cm: Float64,
     ) -> Float64:
         var z_com = data.xipos[5]  # body 1 CoM, z component
-        var h = z_com + L  # Height relative to lowest point (CoM z = -L at theta=0)
+        var h = (
+            z_com + L
+        )  # Height relative to lowest point (CoM z = -L at theta=0)
         var PE = m * g * h
         var omega = data.qvel[0]
         var I_pivot = I_cm + m * L * L
@@ -172,7 +179,9 @@ fn test_energy_conservation() raises:
     print("  Initial energy:", initial_energy, "J")
 
     # Run for 5 periods
-    var expected_period = Float64(2.0) * pi * sqrt((I_cm + m*L*L) / (m*g*L))
+    var expected_period = (
+        Float64(2.0) * pi * sqrt((I_cm + m * L * L) / (m * g * L))
+    )
     var sim_time = Float64(5.0) * expected_period
     var steps = Int(sim_time / Float64(model.timestep))
 
@@ -194,7 +203,10 @@ fn test_energy_conservation() raises:
         print("  PASS: Energy drift < 5%")
     else:
         print("  FAIL: Energy drift exceeds 5%")
-        assert_true(drift_pct < Float64(5.0), "Energy conservation test failed: energy drift exceeds 5%")
+        assert_true(
+            drift_pct < Float64(5.0),
+            "Energy conservation test failed: energy drift exceeds 5%",
+        )
 
 
 fn test_gravity_swinging() raises:
@@ -226,7 +238,12 @@ fn test_gravity_swinging() raises:
         print("  PASS: Pendulum is swinging")
     else:
         print("  FAIL: Pendulum did not swing")
-        assert_true(angle_change > Float64(0.1) and abs(data.qvel[0]) > Float64(0.1), "Gravity swinging test failed: pendulum did not swing, angle_change=" + String(angle_change))
+        assert_true(
+            angle_change > Float64(0.1) and abs(data.qvel[0]) > Float64(0.1),
+            "Gravity swinging test failed: pendulum did not swing,"
+            " angle_change="
+            + String(angle_change),
+        )
 
 
 fn main() raises:

@@ -45,7 +45,7 @@ struct HintPriority(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline

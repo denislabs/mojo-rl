@@ -10,7 +10,6 @@ from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric, Mat4 as Mat4Generic
 from ffi import _get_dylib_function
 from .sdl import (
     Ptr,
-    AnyOrigin,
     lib,
     c_char,
     c_float,
@@ -213,13 +212,13 @@ struct LineColorEntry(Copyable, Movable):
         self.b = color[2]
         self.a = color[3]
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.r = copy.r
         self.g = copy.g
         self.b = copy.b
         self.a = copy.a
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.r = take.r
         self.g = take.g
         self.b = take.b
@@ -234,7 +233,7 @@ struct LineColorEntry(Copyable, Movable):
         return out^
 
 
-struct Renderer3D(ImplicitlyCopyable, Movable):
+struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
     Uses Metal (MSL) shaders for Blinn-Phong lit solid rendering with
@@ -457,7 +456,7 @@ struct Renderer3D(ImplicitlyCopyable, Movable):
                 )
             )
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.window = take.window
         self.device = take.device
         self.solid_pipeline = take.solid_pipeline
@@ -1465,7 +1464,7 @@ struct Renderer3D(ImplicitlyCopyable, Movable):
     fn _create_text_resources(mut self) raises:
         """Create font atlas texture, sampler, text pipeline and buffers."""
         # --- 1. Build and upload R8_UNORM font atlas (128×64) ---
-        var atlas = build_font_atlas_r8()  # InlineArray[UInt8, 8192]
+        var atlas = build_font_atlas_r8()  # List[UInt8], 8192 bytes
         var atlas_size = UInt32(8192)  # 128 * 64 * 1 byte
 
         var atlas_tex_info = GPUTextureCreateInfo(
@@ -1998,7 +1997,9 @@ struct Renderer3D(ImplicitlyCopyable, Movable):
         Dark tile is always black (0, 0, 0), matching MuJoCo's rgb1=black convention.
 
         Args:
-            r/g/b: Checker light tile color (RGB, 0-1). Dark tile is black.
+            r: Checker light tile color red (0-1). Dark tile is black.
+            g: Checker light tile color green (0-1). Dark tile is black.
+            b: Checker light tile color blue (0-1). Dark tile is black.
         """
         self.scene_uniforms.ground_params[0] = r
         self.scene_uniforms.ground_params[1] = g

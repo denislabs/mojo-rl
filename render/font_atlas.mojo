@@ -8,7 +8,6 @@ Expanded to R8_UNORM atlas: 128×64 pixels (16 cols × 8 rows of glyphs).
 Glyph 'c': col = c%16, row = c/16.  UV = (col/16, row/8) to ((col+1)/16, (row+1)/8).
 """
 
-from collections import InlineArray
 
 comptime FONT_GLYPH_W = 8
 comptime FONT_GLYPH_H = 8
@@ -18,12 +17,14 @@ comptime FONT_ATLAS_W = 128  # atlas width  in pixels (16 * 8)
 comptime FONT_ATLAS_H = 64  # atlas height in pixels  (8 * 8)
 
 
-fn _make_font_bitmap() -> InlineArray[UInt8, 1024]:
+fn _make_font_bitmap() -> List[UInt8]:
     """Build 8×8 bitmap font for ASCII 0-127 (LSB = leftmost pixel).
 
     Based on the public-domain font8x8 library by Daniel Hepper.
     """
-    var d = InlineArray[UInt8, 1024](fill=UInt8(0))
+    var d = List[UInt8](capacity=1024)
+    for _ in range(1024):
+        d.append(UInt8(0))
     # --- 0x20 space: all zeros (already zero) ---
     # --- 0x21 ! ---
     d[0x21 * 8 + 0] = 0x18
@@ -875,7 +876,7 @@ fn _make_font_bitmap() -> InlineArray[UInt8, 1024]:
     return d^
 
 
-fn build_font_atlas_r8() -> InlineArray[UInt8, 8192]:
+fn build_font_atlas_r8() -> List[UInt8]:
     """Expand packed font bitmap to a 128×64 R8 atlas for GPU upload.
 
     Each glyph occupies an 8×8 block. Atlas layout:
@@ -886,7 +887,9 @@ fn build_font_atlas_r8() -> InlineArray[UInt8, 8192]:
         128×64 UInt8 array, one byte per pixel (0 or 255).
     """
     var bitmap = _make_font_bitmap()
-    var atlas = InlineArray[UInt8, 8192](fill=UInt8(0))
+    var atlas = List[UInt8](capacity=8192)
+    for _ in range(8192):
+        atlas.append(UInt8(0))
     for c in range(128):
         var glyph_col = c % 16
         var glyph_row = c // 16

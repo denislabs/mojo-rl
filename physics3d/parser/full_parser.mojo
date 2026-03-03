@@ -176,6 +176,7 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         if len(sil_s) > 0:
             var parts = List[String]()
             from .xml_parser import _split_spaces
+
             _split_spaces(sil_s, parts)
             if len(parts) >= 1:
                 d.joint_solimp_limit_0 = _parse_float(parts[0])
@@ -226,6 +227,7 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         if len(si0_s) > 0:
             var parts = List[String]()
             from .xml_parser import _split_spaces
+
             _split_spaces(si0_s, parts)
             if len(parts) >= 1:
                 d.geom_solimp_0 = _parse_float(parts[0])
@@ -375,6 +377,7 @@ fn _parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
     """Parse "r g b" string into three Float64 values."""
     var parts = List[String]()
     from .xml_parser import _split_spaces
+
     _split_spaces(s, parts)
     var r = Float64(0)
     var g = Float64(0)
@@ -392,6 +395,7 @@ fn _parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Parse "r g b a" string into four Float64 values."""
     var parts = List[String]()
     from .xml_parser import _split_spaces
+
     _split_spaces(s, parts)
     var r = Float64(1)
     var g = Float64(1)
@@ -416,6 +420,7 @@ fn _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """
     var parts = List[String]()
     from .xml_parser import _split_spaces, _sqrt_f64
+
     _split_spaces(s, parts)
     if len(parts) < 6:
         return (Float64(0), Float64(0), Float64(0), Float64(1))
@@ -499,7 +504,9 @@ fn _fill_assets[
     NSITE: Int,
 ](
     asset_sec: String,
-    mut result: FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE],
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ],
 ):
     """Parse <asset> section: fill result.textures[] and result.materials[]."""
 
@@ -637,7 +644,9 @@ fn _fill_model[
 ](
     worldbody: String,
     defaults: DefaultsData,
-    mut result: FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE],
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ],
     deg_factor: Float64 = 1.0,
 ):
     """Single-pass DFS over worldbody XML to populate bodies, joints, geoms,
@@ -654,7 +663,7 @@ fn _fill_model[
     # depth 0 = worldbody level (body_id=0)
     var body_id_stack = InlineArray[Int, NBODY + 1](fill=0)
     var depth = 0
-    var body_count = 0   # bodies[0..NBODY-2] → model body indices 1..NBODY-1
+    var body_count = 0  # bodies[0..NBODY-2] → model body indices 1..NBODY-1
     var joint_count = 0
     var geom_count = 0
     var light_count = 0
@@ -895,6 +904,7 @@ fn _fill_model[
                 if len(sil_s) > 0:
                     var parts2 = List[String]()
                     from .xml_parser import _split_spaces
+
                     _split_spaces(sil_s, parts2)
                     if len(parts2) >= 1:
                         jd.solimp_limit_0 = _parse_float(parts2[0])
@@ -963,7 +973,7 @@ fn _fill_model[
                     ld.ambient_b = c[2]
 
                 var dir_flag_s = _extract_attr(tag, "directional")
-                ld.directional = (dir_flag_s == "true")
+                ld.directional = dir_flag_s == "true"
 
                 var shadow_s = _extract_attr(tag, "castshadow")
                 if shadow_s == "false":
@@ -1083,6 +1093,7 @@ fn _fill_model[
                 if len(size_s) > 0:
                     var parts = List[String]()
                     from .xml_parser import _split_spaces
+
                     _split_spaces(size_s, parts)
                     if len(parts) >= 1:
                         sd.size_0 = _parse_float(parts[0])
@@ -1155,6 +1166,7 @@ fn _fill_model[
                 if len(size_s) > 0:
                     var size_parts = List[String]()
                     from .xml_parser import _split_spaces
+
                     _split_spaces(size_s, size_parts)
                     var s0 = Float64(0)
                     var s1 = Float64(0)
@@ -1205,13 +1217,22 @@ fn _fill_model[
 
                 # contype / conaffinity / condim
                 var ct_s = _extract_attr(tag, "contype")
-                gd.contype = _parse_int_str(ct_s) if len(ct_s) > 0 else defaults.geom_contype
+                gd.contype = (
+                    _parse_int_str(ct_s) if len(ct_s)
+                    > 0 else defaults.geom_contype
+                )
 
                 var ca_s = _extract_attr(tag, "conaffinity")
-                gd.conaffinity = _parse_int_str(ca_s) if len(ca_s) > 0 else defaults.geom_conaffinity
+                gd.conaffinity = (
+                    _parse_int_str(ca_s) if len(ca_s)
+                    > 0 else defaults.geom_conaffinity
+                )
 
                 var cd_s = _extract_attr(tag, "condim")
-                gd.condim = _parse_int_str(cd_s) if len(cd_s) > 0 else defaults.geom_condim
+                gd.condim = (
+                    _parse_int_str(cd_s) if len(cd_s)
+                    > 0 else defaults.geom_condim
+                )
 
                 # solref / solimp
                 var sr_s = _extract_attr(tag, "solref")
@@ -1227,6 +1248,7 @@ fn _fill_model[
                 if len(si_s) > 0:
                     var sip = List[String]()
                     from .xml_parser import _split_spaces
+
                     _split_spaces(si_s, sip)
                     if len(sip) >= 1:
                         gd.solimp_0 = _parse_float(sip[0])
@@ -1247,11 +1269,17 @@ fn _fill_model[
 
                 # margin
                 var mg_s = _extract_attr(tag, "margin")
-                gd.margin = _parse_float(mg_s) if len(mg_s) > 0 else defaults.geom_margin
+                gd.margin = (
+                    _parse_float(mg_s) if len(mg_s)
+                    > 0 else defaults.geom_margin
+                )
 
                 # density (per-geom overrides default; used when mass is absent)
                 var dens_s = _extract_attr(tag, "density")
-                gd.density = _parse_float(dens_s) if len(dens_s) > 0 else defaults.geom_density
+                gd.density = (
+                    _parse_float(dens_s) if len(dens_s)
+                    > 0 else defaults.geom_density
+                )
 
                 # mass: explicit if provided, else compute from density * volume
                 var ms_s = _extract_attr(tag, "mass")
@@ -1262,15 +1290,37 @@ fn _fill_model[
                     var PI: Float64 = 3.14159265358979323846
                     var vol: Float64 = 0.0
                     if gd.geom_type == _GEOM_SPHERE:
-                        vol = (Float64(4.0) / Float64(3.0)) * PI * gd.radius * gd.radius * gd.radius
+                        vol = (
+                            (Float64(4.0) / Float64(3.0))
+                            * PI
+                            * gd.radius
+                            * gd.radius
+                            * gd.radius
+                        )
                     elif gd.geom_type == _GEOM_CAPSULE:
-                        var cyl_vol = PI * gd.radius * gd.radius * (Float64(2.0) * gd.half_length)
-                        var sph_vol = (Float64(4.0) / Float64(3.0)) * PI * gd.radius * gd.radius * gd.radius
+                        var cyl_vol = (
+                            PI
+                            * gd.radius
+                            * gd.radius
+                            * (Float64(2.0) * gd.half_length)
+                        )
+                        var sph_vol = (
+                            (Float64(4.0) / Float64(3.0))
+                            * PI
+                            * gd.radius
+                            * gd.radius
+                            * gd.radius
+                        )
                         vol = cyl_vol + sph_vol
                     elif gd.geom_type == _GEOM_BOX:
                         vol = Float64(8.0) * gd.half_x * gd.half_y * gd.half_z
                     elif gd.geom_type == _GEOM_CYLINDER:
-                        vol = PI * gd.radius * gd.radius * (Float64(2.0) * gd.half_length)
+                        vol = (
+                            PI
+                            * gd.radius
+                            * gd.radius
+                            * (Float64(2.0) * gd.half_length)
+                        )
                     # PLANE has no volume → mass stays 0
                     if vol > Float64(0):
                         gd.mass = gd.density * vol
@@ -1324,7 +1374,9 @@ fn _fill_actuators[
     actuator_sec: String,
     worldbody: String,
     defaults: DefaultsData,
-    mut result: FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE],
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ],
 ):
     """Parse <actuator> section and populate result.actuators[]."""
     var act_count = 0
@@ -1421,7 +1473,9 @@ fn _resolve_geom_materials[
 ](
     worldbody: String,
     asset_sec: String,
-    mut result: FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE],
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ],
 ):
     """Resolve material="name" on geoms → material index; copy material rgba."""
     var scan_pos = 0
@@ -1442,11 +1496,7 @@ fn _resolve_geom_materials[
             result.geoms[geom_idx].material_id = mid
             # Only inherit material rgba when the geom has no explicit rgba attr
             var has_explicit_rgba = len(_extract_attr(tag, "rgba")) > 0
-            if (
-                not has_explicit_rgba
-                and mid >= 0
-                and mid < NMAT
-            ):
+            if not has_explicit_rgba and mid >= 0 and mid < NMAT:
                 var md = result.materials[mid]
                 result.geoms[geom_idx].rgba_r = md.rgba_r
                 result.geoms[geom_idx].rgba_g = md.rgba_g
@@ -1473,7 +1523,9 @@ fn parse_xml_full[
     NLIGHT: Int = 0,
     NCAM: Int = 0,
     NSITE: Int = 0,
-](xml: String) -> FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE]:
+](xml: String) -> FlatModelDef[
+    NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+]:
     """Full MJCF parse: returns a populated FlatModelDef.
 
     Caller must obtain dimensions via parse_xml() first:
@@ -1488,7 +1540,9 @@ fn parse_xml_full[
     compatibility — existing callers omitting them get no visual element arrays.
     All operations are comptime-safe (String.find + slice arithmetic only).
     """
-    var result = FlatModelDef[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE]()
+    var result = FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ]()
 
     # Extract top-level sections
     var worldbody = _extract_section(xml, "worldbody")
@@ -1517,23 +1571,23 @@ fn parse_xml_full[
                 deg_factor = Float64(3.141592653589793) / Float64(180.0)
 
     # Assets: textures and materials
-    _fill_assets[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
-        asset_sec, result
-    )
+    _fill_assets[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ](asset_sec, result)
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
-    _fill_model[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
-        worldbody, defaults, result, deg_factor
-    )
+    _fill_model[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ](worldbody, defaults, result, deg_factor)
 
     # Actuators
-    _fill_actuators[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
-        actuator_sec, worldbody, defaults, result
-    )
+    _fill_actuators[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ](actuator_sec, worldbody, defaults, result)
 
     # Post-pass: resolve geom material="name" references
-    _resolve_geom_materials[NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE](
-        worldbody, asset_sec, result
-    )
+    _resolve_geom_materials[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    ](worldbody, asset_sec, result)
 
     return result^

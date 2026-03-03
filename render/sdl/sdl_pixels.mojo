@@ -88,7 +88,7 @@ struct PixelType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -128,7 +128,7 @@ struct BitmapOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -157,7 +157,7 @@ struct PackedOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -192,7 +192,7 @@ struct ArrayOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -225,7 +225,7 @@ struct PackedLayout(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -292,8 +292,8 @@ struct PixelFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
-        self.value = UInt32(value)
+    fn __init__(out self, value: UInt32):
+        self.value = value
 
     @always_inline
     fn __int__(self) -> Int:
@@ -469,7 +469,7 @@ struct ColorType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -499,7 +499,7 @@ struct ColorRange(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -531,7 +531,7 @@ struct ColorPrimaries(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -584,7 +584,7 @@ struct TransferCharacteristics(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -644,7 +644,7 @@ struct MatrixCoefficients(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -694,7 +694,7 @@ struct ChromaLocation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -732,7 +732,7 @@ struct Colorspace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline

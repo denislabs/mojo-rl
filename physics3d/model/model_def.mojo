@@ -216,7 +216,7 @@ trait ModelDefLike:
     # === CPU: Model setup (calls Bodies/Joints/Geoms/Defaults internally) ===
     @staticmethod
     fn setup_model_and_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut model: Model[
             DTYPE,
@@ -246,7 +246,7 @@ trait ModelDefLike:
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
     fn reset_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -262,7 +262,7 @@ trait ModelDefLike:
 
     @staticmethod
     fn extract_obs[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         data: Data[
             DTYPE,
@@ -279,7 +279,7 @@ trait ModelDefLike:
 
     @staticmethod
     fn enforce_limits[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -295,7 +295,7 @@ trait ModelDefLike:
 
     @staticmethod
     fn apply_actions[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -315,14 +315,14 @@ trait ModelDefLike:
     # === GPU: Model init ===
     @staticmethod
     fn init_model_gpu[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         ...
 
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
     fn apply_actions_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         ACTION_DIM: Int,
@@ -335,7 +335,7 @@ trait ModelDefLike:
 
     @staticmethod
     fn enforce_limits_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
@@ -343,7 +343,7 @@ trait ModelDefLike:
 
     @staticmethod
     fn extract_obs_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -586,7 +586,7 @@ struct ModelDef[
             MAX_CONTACTS,
             Self.NSITE,
         ],
-    ) where DTYPE.is_floating_point():
+    ):
         """Run FK + compute_body_invweight0 in the correct order.
 
         Must be called after Bodies/Joints/Geoms.setup_model and after
@@ -626,7 +626,7 @@ struct ModelDef[
 
     @staticmethod
     fn setup_model_and_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut model: Model[
             DTYPE,
@@ -662,7 +662,7 @@ struct ModelDef[
     # === GPU: Model init ===
     @staticmethod
     fn init_model_gpu[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         """Initialize GPU model buffer by writing directly to HostBuffer.
 
@@ -825,7 +825,7 @@ struct ModelDef[
 
     @staticmethod
     fn _compute_invweight0_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
         """Compute invweight0 on GPU via a single-thread kernel.
 
@@ -1244,7 +1244,7 @@ struct ModelDef[
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
     fn reset_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -1260,7 +1260,7 @@ struct ModelDef[
 
     @staticmethod
     fn extract_obs[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         data: Data[
             DTYPE,
@@ -1277,7 +1277,7 @@ struct ModelDef[
 
     @staticmethod
     fn enforce_limits[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -1293,7 +1293,7 @@ struct ModelDef[
 
     @staticmethod
     fn apply_actions[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -1311,7 +1311,7 @@ struct ModelDef[
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
     fn apply_actions_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         ACTION_DIM: Int,
@@ -1326,7 +1326,7 @@ struct ModelDef[
 
     @staticmethod
     fn enforce_limits_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
@@ -1336,7 +1336,7 @@ struct ModelDef[
 
     @staticmethod
     fn extract_obs_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,

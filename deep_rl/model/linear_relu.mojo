@@ -36,11 +36,11 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         """Initialize stateless LinearReLU layer."""
         pass
 
-    fn __init__(out self, take: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor for Sequential composition."""
         pass
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
 

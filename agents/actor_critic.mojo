@@ -116,34 +116,27 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         for _ in range(self.num_tiles):
             self.critic_weights.append(init_value)
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
-            var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
-            self.theta.append(action_params^)
-        self.critic_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.critic_weights.append(existing.critic_weights[t])
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.entropy_coef = copy.entropy_coef
+        self.theta = copy.theta.copy()
+        self.critic_weights = copy.critic_weights.copy()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.theta = existing.theta^
-        self.critic_weights = existing.critic_weights^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.entropy_coef = take.entropy_coef
+        self.theta = take.theta^
+        self.critic_weights = take.critic_weights^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
@@ -329,7 +322,9 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
@@ -338,7 +333,9 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
+                var next_tiles = tile_coding.get_tiles_simd4(
+                    next_obs.cast[DType.float64]()
+                )
                 self.update(tiles, action, reward, next_tiles, done)
 
                 total_reward += reward
@@ -394,7 +391,9 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
@@ -755,7 +754,9 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
@@ -764,7 +765,9 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
+                var next_tiles = tile_coding.get_tiles_simd4(
+                    next_obs.cast[DType.float64]()
+                )
                 self.update(tiles, action, reward, next_tiles, done)
 
                 total_reward += reward
@@ -820,7 +823,9 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
@@ -1210,7 +1215,9 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
@@ -1221,7 +1228,9 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 
                 self.store_transition(tiles, action, reward)
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs.cast[DType.float64]())
+                var next_tiles = tile_coding.get_tiles_simd4(
+                    next_obs.cast[DType.float64]()
+                )
                 self.update(next_tiles, done)
 
                 total_reward += reward
@@ -1277,7 +1286,9 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                var tiles = tile_coding.get_tiles_simd4(obs.cast[DType.float64]())
+                var tiles = tile_coding.get_tiles_simd4(
+                    obs.cast[DType.float64]()
+                )
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
@@ -1324,7 +1335,9 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     return result
 
 
-fn _list_to_simd4_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
+fn _list_to_simd4_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].
 
     Always returns float64, avoiding dependent type inference issues with E.dtype.

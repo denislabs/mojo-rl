@@ -11,8 +11,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_solver_debug.mojo
 """
 
-from math import sqrt
-from builtin.math import abs
+from math import sqrt, abs
 
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
@@ -206,14 +205,12 @@ fn debug_step[
             if joint_d.jnt_type == JNT_FREE:
                 for d in range(6):
                     f_net[dof_adr_d + d] = (
-                        f_net[dof_adr_d + d]
-                        - damp_d * data.qvel[dof_adr_d + d]
+                        f_net[dof_adr_d + d] - damp_d * data.qvel[dof_adr_d + d]
                     )
             elif joint_d.jnt_type == JNT_BALL:
                 for d in range(3):
                     f_net[dof_adr_d + d] = (
-                        f_net[dof_adr_d + d]
-                        - damp_d * data.qvel[dof_adr_d + d]
+                        f_net[dof_adr_d + d] - damp_d * data.qvel[dof_adr_d + d]
                     )
             else:
                 f_net[dof_adr_d] = (
@@ -285,40 +282,64 @@ fn debug_step[
     )
 
     if verbose:
-        print("  [CONSTRAINTS] num_rows:", constraints.num_rows,
-              "normals:", constraints.num_normals,
-              "friction:", constraints.num_friction,
-              "limits:", constraints.num_limits)
+        print(
+            "  [CONSTRAINTS] num_rows:",
+            constraints.num_rows,
+            "normals:",
+            constraints.num_normals,
+            "friction:",
+            constraints.num_friction,
+            "limits:",
+            constraints.num_limits,
+        )
         for r in range(constraints.num_rows):
             var row = constraints.rows[r]
             print(
-                "    row", r, ":",
+                "    row",
+                r,
+                ":",
                 constraint_type_name(Int(row.constraint_type)),
-                " K=", Float64(row.K),
-                " bias=", Float64(row.bias),
-                " inv_K_imp=", Float64(row.inv_K_imp),
-                " lambda=", Float64(row.lambda_val),
-                " lo=", Float64(row.lo),
-                " hi=", Float64(row.hi),
+                " K=",
+                Float64(row.K),
+                " bias=",
+                Float64(row.bias),
+                " inv_K_imp=",
+                Float64(row.inv_K_imp),
+                " lambda=",
+                Float64(row.lambda_val),
+                " lo=",
+                Float64(row.lo),
+                " hi=",
+                Float64(row.hi),
             )
             if Int(row.constraint_type) == CNSTR_NORMAL:
                 # Show J · qvel (velocity) and J · qacc (acceleration)
                 var j_dot_qvel: Float64 = 0
                 var j_dot_qacc: Float64 = 0
                 for i in range(NV):
-                    j_dot_qvel += Float64(constraints.J[r * NV + i]) * Float64(data.qvel[i])
-                    j_dot_qacc += Float64(constraints.J[r * NV + i]) * Float64(qacc[i])
+                    j_dot_qvel += Float64(constraints.J[r * NV + i]) * Float64(
+                        data.qvel[i]
+                    )
+                    j_dot_qacc += Float64(constraints.J[r * NV + i]) * Float64(
+                        qacc[i]
+                    )
                 print(
-                    "      J·qvel=", j_dot_qvel,
-                    " J·qacc=", j_dot_qacc,
-                    " (a_n + bias)=", j_dot_qacc + Float64(row.bias),
+                    "      J·qvel=",
+                    j_dot_qvel,
+                    " J·qacc=",
+                    j_dot_qacc,
+                    " (a_n + bias)=",
+                    j_dot_qacc + Float64(row.bias),
                 )
                 if Int(row.source_contact_idx) >= 0:
                     var ci = Int(row.source_contact_idx)
                     print(
-                        "      contact[", ci, "]: pen=",
+                        "      contact[",
+                        ci,
+                        "]: pen=",
                         -Float64(data.contacts[ci].dist),
-                        " friction_coef=", Float64(row.friction_coef),
+                        " friction_coef=",
+                        Float64(row.friction_coef),
                     )
 
     # 6. Solve constraints
@@ -351,7 +372,13 @@ fn debug_step[
         print("    final lambdas:", end="")
         for r in range(constraints.num_rows):
             if Int(constraints.rows[r].constraint_type) == CNSTR_NORMAL:
-                print(" n[", r, "]=", Float64(constraints.rows[r].lambda_val), end="")
+                print(
+                    " n[",
+                    r,
+                    "]=",
+                    Float64(constraints.rows[r].lambda_val),
+                    end="",
+                )
         print("")
 
         # Show J·qacc after solve (should be close to aref for active contacts)
@@ -359,11 +386,18 @@ fn debug_step[
             if Int(constraints.rows[r].constraint_type) == CNSTR_NORMAL:
                 var j_dot_qacc_post: Float64 = 0
                 for i in range(NV):
-                    j_dot_qacc_post += Float64(constraints.J[r * NV + i]) * Float64(qacc[i])
+                    j_dot_qacc_post += Float64(
+                        constraints.J[r * NV + i]
+                    ) * Float64(qacc[i])
                 print(
-                    "    row", r, ": J·qacc_post=", j_dot_qacc_post,
-                    " bias=", Float64(constraints.rows[r].bias),
-                    " (a+bias)=", j_dot_qacc_post + Float64(constraints.rows[r].bias),
+                    "    row",
+                    r,
+                    ": J·qacc_post=",
+                    j_dot_qacc_post,
+                    " bias=",
+                    Float64(constraints.rows[r].bias),
+                    " (a+bias)=",
+                    j_dot_qacc_post + Float64(constraints.rows[r].bias),
                 )
 
     # 7. Writeback
@@ -402,8 +436,12 @@ fn debug_step[
         for i in range(NV):
             print(" ", Float64(data.qvel[i]), end="")
         print("")
-        print("    rootz=", Float64(data.qpos[JOINT_ROOTZ]),
-              " vz=", Float64(data.qvel[JOINT_ROOTZ]))
+        print(
+            "    rootz=",
+            Float64(data.qpos[JOINT_ROOTZ]),
+            " vz=",
+            Float64(data.qvel[JOINT_ROOTZ]),
+        )
 
 
 fn main():
@@ -418,10 +456,26 @@ fn main():
 
     var dt = Float64(env.model.timestep)
     print("dt =", dt, "s")
-    print("solref_contact =", env.model.solref_contact[0], env.model.solref_contact[1])
-    print("solimp_contact =", env.model.solimp_contact[0], env.model.solimp_contact[1], env.model.solimp_contact[2])
-    print("solref_limit =", env.model.solref_limit[0], env.model.solref_limit[1])
-    print("solimp_limit =", env.model.solimp_limit[0], env.model.solimp_limit[1], env.model.solimp_limit[2])
+    print(
+        "solref_contact =",
+        env.model.solref_contact[0],
+        env.model.solref_contact[1],
+    )
+    print(
+        "solimp_contact =",
+        env.model.solimp_contact[0],
+        env.model.solimp_contact[1],
+        env.model.solimp_contact[2],
+    )
+    print(
+        "solref_limit =", env.model.solref_limit[0], env.model.solref_limit[1]
+    )
+    print(
+        "solimp_limit =",
+        env.model.solimp_limit[0],
+        env.model.solimp_limit[1],
+        env.model.solimp_limit[2],
+    )
     print("")
 
     # Show initial state
@@ -446,7 +500,11 @@ fn main():
         var verbose = False
         if step < 3:
             verbose = True
-        elif first_contact > 0 and step >= first_contact - 1 and step <= first_contact + 10:
+        elif (
+            first_contact > 0
+            and step >= first_contact - 1
+            and step <= first_contact + 10
+        ):
             verbose = True
 
         if verbose:
@@ -474,11 +532,16 @@ fn main():
                 if pen > max_pen:
                     max_pen = pen
             print(
-                "  step", step + 1,
-                ": rootz=", rootz,
-                " vz=", vz,
-                " contacts=", nc,
-                " max_pen=", max_pen,
+                "  step",
+                step + 1,
+                ": rootz=",
+                rootz,
+                " vz=",
+                vz,
+                " contacts=",
+                nc,
+                " max_pen=",
+                max_pen,
             )
 
     print("")

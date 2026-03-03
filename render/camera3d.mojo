@@ -66,29 +66,29 @@ struct Camera3D(Copyable, Movable):
         self.screen_width = screen_width
         self.screen_height = screen_height
 
-    fn __copyinit__(out self, read other: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor."""
-        self.eye = other.eye
-        self.target = other.target
-        self.up = other.up
-        self.fov = other.fov
-        self.aspect = other.aspect
-        self.near = other.near
-        self.far = other.far
-        self.screen_width = other.screen_width
-        self.screen_height = other.screen_height
+        self.eye = copy.eye
+        self.target = copy.target
+        self.up = copy.up
+        self.fov = copy.fov
+        self.aspect = copy.aspect
+        self.near = copy.near
+        self.far = copy.far
+        self.screen_width = copy.screen_width
+        self.screen_height = copy.screen_height
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.eye = other.eye
-        self.target = other.target
-        self.up = other.up
-        self.fov = other.fov
-        self.aspect = other.aspect
-        self.near = other.near
-        self.far = other.far
-        self.screen_width = other.screen_width
-        self.screen_height = other.screen_height
+        self.eye = take.eye
+        self.target = take.target
+        self.up = take.up
+        self.fov = take.fov
+        self.aspect = take.aspect
+        self.near = take.near
+        self.far = take.far
+        self.screen_width = take.screen_width
+        self.screen_height = take.screen_height
 
     fn get_view_matrix(self) -> Mat4:
         """Compute the view matrix (world to camera transform).

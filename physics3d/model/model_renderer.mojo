@@ -127,21 +127,21 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.step_count = 0
         self.initialized = False
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.renderer = other.renderer^
-        self.initialized = other.initialized
-        self.follow = other.follow
-        self.show_velocity = other.show_velocity
-        self.show_sites = other.show_sites
-        self.visual_radius_scale = other.visual_radius_scale
-        self.cameras = other.cameras^
-        self.camera_modes = other.camera_modes^
-        self.active_camera = other.active_camera
-        self.axes_offset = other.axes_offset
-        self.vel_arrow_height = other.vel_arrow_height
-        self.vel_arrow_scale = other.vel_arrow_scale
-        self.vel_color = other.vel_color
-        self.step_count = other.step_count
+    fn __init__(out self, *, deinit take: Self):
+        self.renderer = take.renderer^
+        self.initialized = take.initialized
+        self.follow = take.follow
+        self.show_velocity = take.show_velocity
+        self.show_sites = take.show_sites
+        self.visual_radius_scale = take.visual_radius_scale
+        self.cameras = take.cameras^
+        self.camera_modes = take.camera_modes^
+        self.active_camera = take.active_camera
+        self.axes_offset = take.axes_offset
+        self.vel_arrow_height = take.vel_arrow_height
+        self.vel_arrow_scale = take.vel_arrow_scale
+        self.vel_color = take.vel_color
+        self.step_count = take.step_count
 
     fn init(mut self) raises -> None:
         var title = String("Model Environment")
@@ -320,29 +320,42 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             pass
 
     fn _draw_hud(mut self):
-        """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator."""
+        """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator.
+        """
         var x0 = Float32(12)
         var y = Float32(12)
         var s = 2  # 2× scale → 16×16 px per char
 
         # Controls (dim white) — shadow then bright
         var dim = Color(180, 180, 180, 200)
-        self.renderer.draw_text(x0 + 1, y + 1, "[Spc] Pause", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[Spc] Pause", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[Spc] Pause", dim, s)
         y += 20
-        self.renderer.draw_text(x0 + 1, y + 1, "[->]  Step", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[->]  Step", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[->]  Step", dim, s)
         y += 20
-        self.renderer.draw_text(x0 + 1, y + 1, "[1-9] Camera", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[1-9] Camera", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[1-9] Camera", dim, s)
         y += 20
-        self.renderer.draw_text(x0 + 1, y + 1, "[R]   Reset cam", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[R]   Reset cam", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[R]   Reset cam", dim, s)
         y += 20
-        self.renderer.draw_text(x0 + 1, y + 1, "[S]   Screenshot", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[S]   Screenshot", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[S]   Screenshot", dim, s)
         y += 20
-        self.renderer.draw_text(x0 + 1, y + 1, "[V]   Record", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(
+            x0 + 1, y + 1, "[V]   Record", Color(0, 0, 0, 160), s
+        )
         self.renderer.draw_text(x0, y, "[V]   Record", dim, s)
         y += 28  # gap
 
@@ -360,8 +373,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         # Pause indicator (yellow, only when paused)
         if self.renderer.is_paused:
-            self.renderer.draw_text(x0 + 1, y + 1, "[PAUSED]", Color(0, 0, 0, 160), s)
-            self.renderer.draw_text(x0, y, "[PAUSED]", Color(255, 220, 0, 255), s)
+            self.renderer.draw_text(
+                x0 + 1, y + 1, "[PAUSED]", Color(0, 0, 0, 160), s
+            )
+            self.renderer.draw_text(
+                x0, y, "[PAUSED]", Color(255, 220, 0, 255), s
+            )
             y += 20
 
         # Recording indicator (red, only when recording)
@@ -369,7 +386,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             var rec_str = (
                 "* REC  " + String(self.renderer.recorder.frame_count) + "f"
             )
-            self.renderer.draw_text(x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s)
+            self.renderer.draw_text(
+                x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s
+            )
             self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
 
     fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):

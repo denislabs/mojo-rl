@@ -196,7 +196,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
-    ) where DTYPE.is_floating_point():
+    ):
         """Execute one simulation step with constraint-based contacts.
 
         Args:
@@ -204,6 +204,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             data: Mutable simulation state.
             verbose: Whether to print debug information.
         """
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
         var dt = model.timestep
         comptime M_SIZE = _max_one[NV * NV]()
         comptime V_SIZE = _max_one[NV]()
@@ -662,8 +665,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
-    ) where DTYPE.is_floating_point():
+    ):
         """Run simulation for multiple steps on CPU."""
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
         for _ in range(num_steps):
             Self.step[
                 DTYPE,

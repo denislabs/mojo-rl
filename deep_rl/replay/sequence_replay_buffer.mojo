@@ -56,7 +56,7 @@ struct SequenceReplayBuffer[
     var size: Int  # current number of stored transitions
     var current_episode: Int  # incremented on each done
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor — transfers ownership of all heap storage."""
         self.obs = take.obs^
         self.actions = take.actions^
@@ -67,16 +67,16 @@ struct SequenceReplayBuffer[
         self.size = take.size
         self.current_episode = take.current_episode
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         """Deep copy — duplicates all underlying storage."""
-        self.obs = other.obs.copy()
-        self.actions = other.actions.copy()
-        self.rewards = other.rewards.copy()
-        self.dones = other.dones.copy()
-        self.episode_id = other.episode_id.copy()
-        self.ptr = other.ptr
-        self.size = other.size
-        self.current_episode = other.current_episode
+        self.obs = copy.obs.copy()
+        self.actions = copy.actions.copy()
+        self.rewards = copy.rewards.copy()
+        self.dones = copy.dones.copy()
+        self.episode_id = copy.episode_id.copy()
+        self.ptr = copy.ptr
+        self.size = copy.size
+        self.current_episode = copy.current_episode
 
     fn __init__(out self):
         """Initialize empty sequence replay buffer."""

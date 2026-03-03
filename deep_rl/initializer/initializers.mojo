@@ -60,10 +60,10 @@ struct Xavier(Initializer):
     fn __init__(out self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
     fn init[
@@ -76,7 +76,7 @@ struct Xavier(Initializer):
         return params^
 
 
-struct Kaiming(Initializer):
+struct Kaiming(Copyable, ImplicitlyCopyable, Initializer, Movable):
     """Kaiming/He initialization.
 
     Weights are drawn from N(0, sqrt(2/fan_in)).
@@ -88,10 +88,10 @@ struct Kaiming(Initializer):
     fn __init__(out self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
     fn init[
@@ -116,10 +116,10 @@ struct LeCun(Initializer):
     fn __init__(out self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
     fn init[
@@ -142,10 +142,10 @@ struct Zeros(Initializer):
     fn __init__(out self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
     fn init[
@@ -163,10 +163,10 @@ struct Ones(Initializer):
     fn __init__(out self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
     fn init[
@@ -186,11 +186,11 @@ struct Constant(Initializer):
     fn __init__(out self, value: Scalar[dtype] = 0):
         self.value = value
 
-    fn __copyinit__(out self, other: Self):
-        self.value = other.value
+    fn __init__(out self, *, copy: Self):
+        self.value = copy.value
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.value = other.value
+    fn __init__(out self, *, deinit take: Self):
+        self.value = take.value
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
@@ -211,13 +211,13 @@ struct Uniform(Initializer):
         self.low = low
         self.high = high
 
-    fn __copyinit__(out self, other: Self):
-        self.low = other.low
-        self.high = other.high
+    fn __init__(out self, *, copy: Self):
+        self.low = copy.low
+        self.high = copy.high
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.low = other.low
-        self.high = other.high
+    fn __init__(out self, *, deinit take: Self):
+        self.low = take.low
+        self.high = take.high
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
@@ -242,13 +242,13 @@ struct Normal(Initializer):
         self.mean = mean
         self.std = std
 
-    fn __copyinit__(out self, other: Self):
-        self.mean = other.mean
-        self.std = other.std
+    fn __init__(out self, *, copy: Self):
+        self.mean = copy.mean
+        self.std = copy.std
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.mean = other.mean
-        self.std = other.std
+    fn __init__(out self, *, deinit take: Self):
+        self.mean = take.mean
+        self.std = take.std
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int

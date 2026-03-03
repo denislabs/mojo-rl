@@ -144,7 +144,7 @@ fn _strip_xml_comments(s: String) -> String:
         var end = result.find("-->", start + 4)
         if end == -1:
             break  # Malformed XML, stop stripping
-        result = result[:start] + result[end + 3:]
+        result = result[:start] + result[end + 3 :]
     return result
 
 
@@ -672,7 +672,8 @@ fn _xml_compiler_angle_is_deg[xml: String]() -> Bool:
 
 
 fn _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
-    """Return True when <compiler inertiafromgeom="true"/> is present. Comptime-safe."""
+    """Return True when <compiler inertiafromgeom="true"/> is present. Comptime-safe.
+    """
     var t = xml.find("<compiler")
     if t == -1:
         return False
@@ -685,7 +686,8 @@ fn _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
 
 
 fn _xml_compiler_settotalmass[xml: String]() -> Float64:
-    """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe."""
+    """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe.
+    """
     var t = xml.find("<compiler")
     if t == -1:
         return Float64(-1.0)

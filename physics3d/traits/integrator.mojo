@@ -59,7 +59,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool = False,
-    ) where DTYPE.is_floating_point():
+    ):
         """Perform one physics simulation step on CPU.
 
         Args:
@@ -100,7 +100,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         num_steps: Int,
-    ) where DTYPE.is_floating_point():
+    ):
         """Run simulation for multiple steps on CPU.
 
         Args:

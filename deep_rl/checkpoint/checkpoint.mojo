@@ -180,7 +180,7 @@ fn split_lines(content: String) -> List[String]:
     var bytes = content.as_bytes()
     for i in range(len(bytes)):
         var c = bytes[i]
-        if c == ord("\n"):
+        if c == UInt8(ord("\n")):
             lines.append(current_line)
             current_line = String("")
         else:
@@ -246,7 +246,9 @@ fn find_section_start(lines: List[String], section_name: String) -> Int:
 
 fn read_float_section[
     SIZE: Int
-](content: String, section_name: String) raises -> InlineArray[Scalar[dtype], SIZE]:
+](content: String, section_name: String) raises -> InlineArray[
+    Scalar[dtype], SIZE
+]:
     """Read a float array section from checkpoint content.
 
     Args:

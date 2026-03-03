@@ -94,27 +94,27 @@ struct PhysicsConfig(Copyable, Movable):
         self.velocity_iterations = velocity_iterations
         self.position_iterations = position_iterations
 
-    fn __copyinit__(out self, existing: Self):
-        self.gravity_x = existing.gravity_x
-        self.gravity_y = existing.gravity_y
-        self.dt = existing.dt
-        self.friction = existing.friction
-        self.restitution = existing.restitution
-        self.baumgarte = existing.baumgarte
-        self.slop = existing.slop
-        self.velocity_iterations = existing.velocity_iterations
-        self.position_iterations = existing.position_iterations
+    fn __init__(out self, *, copy: Self):
+        self.gravity_x = copy.gravity_x
+        self.gravity_y = copy.gravity_y
+        self.dt = copy.dt
+        self.friction = copy.friction
+        self.restitution = copy.restitution
+        self.baumgarte = copy.baumgarte
+        self.slop = copy.slop
+        self.velocity_iterations = copy.velocity_iterations
+        self.position_iterations = copy.position_iterations
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.gravity_x = existing.gravity_x
-        self.gravity_y = existing.gravity_y
-        self.dt = existing.dt
-        self.friction = existing.friction
-        self.restitution = existing.restitution
-        self.baumgarte = existing.baumgarte
-        self.slop = existing.slop
-        self.velocity_iterations = existing.velocity_iterations
-        self.position_iterations = existing.position_iterations
+    fn __init__(out self, *, deinit take: Self):
+        self.gravity_x = take.gravity_x
+        self.gravity_y = take.gravity_y
+        self.dt = take.dt
+        self.friction = take.friction
+        self.restitution = take.restitution
+        self.baumgarte = take.baumgarte
+        self.slop = take.slop
+        self.velocity_iterations = take.velocity_iterations
+        self.position_iterations = take.position_iterations
 
 
 struct CollisionType:

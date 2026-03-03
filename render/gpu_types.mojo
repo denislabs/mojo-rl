@@ -95,31 +95,31 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
         self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
 
-    fn __copyinit__(out self, read other: Self):
-        self.view_proj = other.view_proj.copy()
-        self.camera_pos = other.camera_pos.copy()
-        self.light0_dir = other.light0_dir.copy()
-        self.light0_color = other.light0_color.copy()
-        self.light1_dir = other.light1_dir.copy()
-        self.light1_color = other.light1_color.copy()
-        self.light2_dir = other.light2_dir.copy()
-        self.light2_color = other.light2_color.copy()
-        self.light3_dir = other.light3_dir.copy()
-        self.light3_color = other.light3_color.copy()
-        self.ground_params = other.ground_params.copy()
+    fn __init__(out self, *, copy: Self):
+        self.view_proj = copy.view_proj.copy()
+        self.camera_pos = copy.camera_pos.copy()
+        self.light0_dir = copy.light0_dir.copy()
+        self.light0_color = copy.light0_color.copy()
+        self.light1_dir = copy.light1_dir.copy()
+        self.light1_color = copy.light1_color.copy()
+        self.light2_dir = copy.light2_dir.copy()
+        self.light2_color = copy.light2_color.copy()
+        self.light3_dir = copy.light3_dir.copy()
+        self.light3_color = copy.light3_color.copy()
+        self.ground_params = copy.ground_params.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.view_proj = other.view_proj^
-        self.camera_pos = other.camera_pos^
-        self.light0_dir = other.light0_dir^
-        self.light0_color = other.light0_color^
-        self.light1_dir = other.light1_dir^
-        self.light1_color = other.light1_color^
-        self.light2_dir = other.light2_dir^
-        self.light2_color = other.light2_color^
-        self.light3_dir = other.light3_dir^
-        self.light3_color = other.light3_color^
-        self.ground_params = other.ground_params^
+    fn __init__(out self, *, deinit take: Self):
+        self.view_proj = take.view_proj^
+        self.camera_pos = take.camera_pos^
+        self.light0_dir = take.light0_dir^
+        self.light0_color = take.light0_color^
+        self.light1_dir = take.light1_dir^
+        self.light1_color = take.light1_color^
+        self.light2_dir = take.light2_dir^
+        self.light2_color = take.light2_color^
+        self.light3_dir = take.light3_dir^
+        self.light3_color = take.light3_color^
+        self.ground_params = take.ground_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
@@ -143,15 +143,15 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
         self.material[0] = 0.5
         self.material[1] = 0.5
 
-    fn __copyinit__(out self, read other: Self):
-        self.model = other.model.copy()
-        self.color = other.color.copy()
-        self.material = other.material.copy()
+    fn __init__(out self, *, copy: Self):
+        self.model = copy.model.copy()
+        self.color = copy.color.copy()
+        self.material = copy.material.copy()
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.model = other.model^
-        self.color = other.color^
-        self.material = other.material^
+    fn __init__(out self, *, deinit take: Self):
+        self.model = take.model^
+        self.color = take.color^
+        self.material = take.material^
 
 
 struct SkyboxUniforms(ImplicitlyCopyable, Movable):
@@ -178,11 +178,11 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
         self.bottom_color[2] = 0.5
         self.bottom_color[3] = 1.0
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.top_color = copy.top_color.copy()
         self.bottom_color = copy.bottom_color.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.top_color = take.top_color^
         self.bottom_color = take.bottom_color^
 
@@ -202,11 +202,11 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.color = InlineArray[Float32, 4](fill=Float32(0))
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
         self.color = copy.color.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.view_proj = take.view_proj^
         self.color = take.color^
 
@@ -229,11 +229,11 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
         self.params[0] = 0.5
         self.params[1] = 0.005
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.light_view_proj = copy.light_view_proj.copy()
         self.params = copy.params.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.light_view_proj = take.light_view_proj^
         self.params = take.params^
 
@@ -251,7 +251,7 @@ struct MeshData(Movable):
         self.vertices = List[GPUVertex]()
         self.indices = List[UInt16]()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.vertices = take.vertices^
         self.indices = take.indices^
 
@@ -288,13 +288,13 @@ struct MeshHandle(Copyable, Movable):
         self.num_indices = num_indices
         self.num_vertices = num_vertices
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.vertex_buffer = copy.vertex_buffer
         self.index_buffer = copy.index_buffer
         self.num_indices = copy.num_indices
         self.num_vertices = copy.num_vertices
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.vertex_buffer = take.vertex_buffer
         self.index_buffer = take.index_buffer
         self.num_indices = take.num_indices
@@ -323,20 +323,20 @@ struct CapsuleCacheEntry(Copyable, Movable):
             mesh.num_vertices,
         )
 
-    fn __copyinit__(out self, read other: Self):
-        self.radius = other.radius
-        self.half_height = other.half_height
+    fn __init__(out self, *, copy: Self):
+        self.radius = copy.radius
+        self.half_height = copy.half_height
         self.mesh = MeshHandle(
-            other.mesh.vertex_buffer,
-            other.mesh.index_buffer,
-            other.mesh.num_indices,
-            other.mesh.num_vertices,
+            copy.mesh.vertex_buffer,
+            copy.mesh.index_buffer,
+            copy.mesh.num_indices,
+            copy.mesh.num_vertices,
         )
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.radius = other.radius
-        self.half_height = other.half_height
-        self.mesh = other.mesh^
+    fn __init__(out self, *, deinit take: Self):
+        self.radius = take.radius
+        self.half_height = take.half_height
+        self.mesh = take.mesh^
 
     fn matches(self, radius: Float32, half_height: Float32) -> Bool:
         """Check if this entry matches the given dimensions (within tolerance).
@@ -368,13 +368,13 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.is_capsule = is_capsule
         self.capsule_cache_idx = capsule_cache_idx
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.mesh_idx = copy.mesh_idx
         self.uniforms = copy.uniforms
         self.is_capsule = copy.is_capsule
         self.capsule_cache_idx = copy.capsule_cache_idx
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.mesh_idx = take.mesh_idx
         self.uniforms = take.uniforms
         self.is_capsule = take.is_capsule
@@ -602,8 +602,8 @@ struct TextUniforms(ImplicitlyCopyable, Movable):
     fn __init__(out self):
         self.ortho_proj = make_identity_f32()
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.ortho_proj = copy.ortho_proj.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.ortho_proj = take.ortho_proj^

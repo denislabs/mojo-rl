@@ -23,7 +23,9 @@ comptime LOG_STD_MAX: Float64 = 2.0  # Maximum log_std (std ≈ 7.4)
 comptime EPS: Float64 = 1e-6  # Small constant for numerical stability
 
 
-struct StochasticActor[in_dim: Int, action_dim: Int](Model):
+struct StochasticActor[in_dim: Int, action_dim: Int](
+    Copyable, ImplicitlyCopyable, Model, Movable
+):
     """Stochastic Actor (Unbounded Gaussian Policy) for continuous action spaces.
 
     This layer implements a diagonal Gaussian policy with learned mean and
@@ -74,11 +76,11 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         """Initialize StochasticActor."""
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor for Sequential composition."""
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
 

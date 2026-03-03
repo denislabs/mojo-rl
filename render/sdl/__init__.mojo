@@ -40,9 +40,6 @@ from .sdl_version import *
 from .sdl_video import *
 
 
-comptime AnyOrigin[mut: Bool] = __mlir_attr[
-    `#lit.any.origin<`, mut._mlir_value, `>: !lit.origin<`, mut._mlir_value, `>`
-]
 comptime Ptr = UnsafePointer
 
 
@@ -76,7 +73,7 @@ fn _init_sdl_handle() -> OwnedDLHandle:
             return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.so")
         else:
             comptime assert False, "OS is not supported"
-            return _uninit[OwnedDLHandle]()
+            # return _uninit[OwnedDLHandle]()
     except:
         print("libSDL3 not found at .pixi/envs/default/lib/")
         return _uninit[OwnedDLHandle]()

@@ -152,54 +152,54 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.value_loss_coef = existing.value_loss_coef
-        self.num_epochs = existing.num_epochs
-        self.normalize_advantages = existing.normalize_advantages
+    fn __copyinit__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.gae_lambda = copy.gae_lambda
+        self.clip_epsilon = copy.clip_epsilon
+        self.entropy_coef = copy.entropy_coef
+        self.value_loss_coef = copy.value_loss_coef
+        self.num_epochs = copy.num_epochs
+        self.normalize_advantages = copy.normalize_advantages
         self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
             self.theta.append(action_params^)
         self.critic_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.critic_weights.append(existing.critic_weights[t])
+        for t in range(copy.num_tiles):
+            self.critic_weights.append(copy.critic_weights[t])
         self.buffer_tiles = List[List[Int]]()
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.value_loss_coef = existing.value_loss_coef
-        self.num_epochs = existing.num_epochs
-        self.normalize_advantages = existing.normalize_advantages
-        self.theta = existing.theta^
-        self.critic_weights = existing.critic_weights^
-        self.buffer_tiles = existing.buffer_tiles^
-        self.buffer_actions = existing.buffer_actions^
-        self.buffer_rewards = existing.buffer_rewards^
-        self.buffer_log_probs = existing.buffer_log_probs^
-        self.buffer_values = existing.buffer_values^
+    fn __moveinit__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.gae_lambda = take.gae_lambda
+        self.clip_epsilon = take.clip_epsilon
+        self.entropy_coef = take.entropy_coef
+        self.value_loss_coef = take.value_loss_coef
+        self.num_epochs = take.num_epochs
+        self.normalize_advantages = take.normalize_advantages
+        self.theta = take.theta^
+        self.critic_weights = take.critic_weights^
+        self.buffer_tiles = take.buffer_tiles^
+        self.buffer_actions = take.buffer_actions^
+        self.buffer_rewards = take.buffer_rewards^
+        self.buffer_log_probs = take.buffer_log_probs^
+        self.buffer_values = take.buffer_values^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
@@ -394,7 +394,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                 var ratio = exp(new_log_prob - old_log_prob)
 
                 # Clipped surrogate objective
-                var surr1 = ratio * advantage
+                # var surr1 = ratio * advantage
                 var clipped_ratio: Float64
                 if advantage >= 0:
                     clipped_ratio = min(ratio, 1.0 + self.clip_epsilon)
@@ -547,7 +547,9 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
-                self.store_transition(tiles, action, Float64(reward), log_prob, value)
+                self.store_transition(
+                    tiles, action, Float64(reward), log_prob, value
+                )
                 total_reward += Float64(reward)
                 steps += 1
                 total_steps += 1
@@ -733,56 +735,56 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.value_loss_coef = existing.value_loss_coef
-        self.num_epochs = existing.num_epochs
-        self.minibatch_size = existing.minibatch_size
-        self.normalize_advantages = existing.normalize_advantages
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.gae_lambda = copy.gae_lambda
+        self.clip_epsilon = copy.clip_epsilon
+        self.entropy_coef = copy.entropy_coef
+        self.value_loss_coef = copy.value_loss_coef
+        self.num_epochs = copy.num_epochs
+        self.minibatch_size = copy.minibatch_size
+        self.normalize_advantages = copy.normalize_advantages
         self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
             self.theta.append(action_params^)
         self.critic_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.critic_weights.append(existing.critic_weights[t])
+        for t in range(copy.num_tiles):
+            self.critic_weights.append(copy.critic_weights[t])
         self.buffer_tiles = List[List[Int]]()
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.value_loss_coef = existing.value_loss_coef
-        self.num_epochs = existing.num_epochs
-        self.minibatch_size = existing.minibatch_size
-        self.normalize_advantages = existing.normalize_advantages
-        self.theta = existing.theta^
-        self.critic_weights = existing.critic_weights^
-        self.buffer_tiles = existing.buffer_tiles^
-        self.buffer_actions = existing.buffer_actions^
-        self.buffer_rewards = existing.buffer_rewards^
-        self.buffer_log_probs = existing.buffer_log_probs^
-        self.buffer_values = existing.buffer_values^
+    fn __moveinit__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.gae_lambda = take.gae_lambda
+        self.clip_epsilon = take.clip_epsilon
+        self.entropy_coef = take.entropy_coef
+        self.value_loss_coef = take.value_loss_coef
+        self.num_epochs = take.num_epochs
+        self.minibatch_size = take.minibatch_size
+        self.normalize_advantages = take.normalize_advantages
+        self.theta = take.theta^
+        self.critic_weights = take.critic_weights^
+        self.buffer_tiles = take.buffer_tiles^
+        self.buffer_actions = take.buffer_actions^
+        self.buffer_rewards = take.buffer_rewards^
+        self.buffer_log_probs = take.buffer_log_probs^
+        self.buffer_values = take.buffer_values^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
@@ -1059,7 +1061,9 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                 var reward = result[1]
                 var done = result[2]
 
-                self.store_transition(tiles, action, Float64(reward), log_prob, value)
+                self.store_transition(
+                    tiles, action, Float64(reward), log_prob, value
+                )
                 total_reward += Float64(reward)
                 steps += 1
                 total_steps += 1
@@ -1144,7 +1148,9 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         return total_reward / Float64(num_episodes)
 
 
-fn _ppo_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+fn _ppo_obs_to_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
     var result = List[Scalar[DType.float64]](capacity=len(obs))
     for i in range(len(obs)):

@@ -123,12 +123,24 @@ struct Transform2D(ImplicitlyCopyable, Movable):
 
     fn with_offset(self, offset: Vec2) -> Self:
         """Return new transform with position offset in world space."""
-        return Self(self.x + offset.x, self.y + offset.y, self.angle, self.scale_x, self.scale_y)
+        return Self(
+            self.x + offset.x,
+            self.y + offset.y,
+            self.angle,
+            self.scale_x,
+            self.scale_y,
+        )
 
     fn with_local_offset(self, offset: Vec2) -> Self:
         """Return new transform with position offset in local space."""
         var world_offset = self.apply_direction(offset)
-        return Self(self.x + world_offset.x, self.y + world_offset.y, self.angle, self.scale_x, self.scale_y)
+        return Self(
+            self.x + world_offset.x,
+            self.y + world_offset.y,
+            self.angle,
+            self.scale_x,
+            self.scale_y,
+        )
 
 
 struct Camera(ImplicitlyCopyable, Movable):
@@ -182,12 +194,19 @@ struct Camera(ImplicitlyCopyable, Movable):
         Returns:
             Screen position as SDL_Point.
         """
-        var sx = (world_x - self.x) * self.zoom + Float64(self.screen_width) / 2.0
+        var sx = (world_x - self.x) * self.zoom + Float64(
+            self.screen_width
+        ) / 2.0
         var sy: Float64
         if self.flip_y:
-            sy = Float64(self.screen_height) / 2.0 - (world_y - self.y) * self.zoom
+            sy = (
+                Float64(self.screen_height) / 2.0
+                - (world_y - self.y) * self.zoom
+            )
         else:
-            sy = (world_y - self.y) * self.zoom + Float64(self.screen_height) / 2.0
+            sy = (world_y - self.y) * self.zoom + Float64(
+                self.screen_height
+            ) / 2.0
         return SDL_Point(Int32(sx), Int32(sy))
 
     fn world_to_screen_vec(self, world: Vec2) -> Vec2:
@@ -199,12 +218,19 @@ struct Camera(ImplicitlyCopyable, Movable):
         Returns:
             Screen position as Vec2.
         """
-        var sx = (world.x - self.x) * self.zoom + Float64(self.screen_width) / 2.0
+        var sx = (world.x - self.x) * self.zoom + Float64(
+            self.screen_width
+        ) / 2.0
         var sy: Float64
         if self.flip_y:
-            sy = Float64(self.screen_height) / 2.0 - (world.y - self.y) * self.zoom
+            sy = (
+                Float64(self.screen_height) / 2.0
+                - (world.y - self.y) * self.zoom
+            )
         else:
-            sy = (world.y - self.y) * self.zoom + Float64(self.screen_height) / 2.0
+            sy = (world.y - self.y) * self.zoom + Float64(
+                self.screen_height
+            ) / 2.0
         return Vec2(sx, sy)
 
     fn screen_to_world(self, screen_x: Int, screen_y: Int) -> Vec2:
@@ -217,12 +243,18 @@ struct Camera(ImplicitlyCopyable, Movable):
         Returns:
             World position as Vec2.
         """
-        var wx = (Float64(screen_x) - Float64(self.screen_width) / 2.0) / self.zoom + self.x
+        var wx = (
+            Float64(screen_x) - Float64(self.screen_width) / 2.0
+        ) / self.zoom + self.x
         var wy: Float64
         if self.flip_y:
-            wy = (Float64(self.screen_height) / 2.0 - Float64(screen_y)) / self.zoom + self.y
+            wy = (
+                Float64(self.screen_height) / 2.0 - Float64(screen_y)
+            ) / self.zoom + self.y
         else:
-            wy = (Float64(screen_y) - Float64(self.screen_height) / 2.0) / self.zoom + self.y
+            wy = (
+                Float64(screen_y) - Float64(self.screen_height) / 2.0
+            ) / self.zoom + self.y
         return Vec2(wx, wy)
 
     fn world_to_screen_scale(self, world_size: Float64) -> Int:
@@ -383,8 +415,14 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
         self.zoom = zoom
         self.screen_width = screen_width
         self.screen_height = screen_height
-        self.screen_center_x = screen_center_x if screen_center_x >= 0 else Float64(screen_width) / 2.0
-        self.screen_center_y = screen_center_y if screen_center_y >= 0 else Float64(screen_height) / 2.0
+        self.screen_center_x = (
+            screen_center_x if screen_center_x
+            >= 0 else Float64(screen_width) / 2.0
+        )
+        self.screen_center_y = (
+            screen_center_y if screen_center_y
+            >= 0 else Float64(screen_height) / 2.0
+        )
 
     fn world_to_screen(self, world_x: Float64, world_y: Float64) -> SDL_Point:
         """Convert world coordinates to screen coordinates with rotation.
@@ -452,7 +490,13 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
         """Set camera rotation angle."""
         self.angle = angle
 
-    fn follow(mut self, target_x: Float64, target_y: Float64, target_angle: Float64, smoothing: Float64 = 1.0):
+    fn follow(
+        mut self,
+        target_x: Float64,
+        target_y: Float64,
+        target_angle: Float64,
+        smoothing: Float64 = 1.0,
+    ):
         """Move camera toward target position and angle.
 
         Args:

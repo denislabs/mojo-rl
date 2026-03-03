@@ -26,14 +26,16 @@ struct PendulumV2Action[DTYPE: DType](
     fn __init__(out self, torque: Scalar[Self.DTYPE]):
         self.torque = torque
 
-    fn __copyinit__(out self, existing: Self):
-        self.torque = existing.torque
+    fn __init__(out self, *, copy: Self):
+        self.torque = copy.torque
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.torque = existing.torque
+    fn __init__(out self, *, deinit take: Self):
+        self.torque = take.torque
 
     @staticmethod
-    fn from_list(values: List[Scalar[Self.DTYPE]]) -> PendulumV2Action[Self.DTYPE]:
+    fn from_list(
+        values: List[Scalar[Self.DTYPE]],
+    ) -> PendulumV2Action[Self.DTYPE]:
         """Create action from list (for agent interface)."""
         var action = PendulumV2Action[Self.DTYPE]()
         if len(values) > 0:
@@ -85,8 +87,11 @@ struct PendulumV2Action[DTYPE: DType](
         """Maximum positive torque (+2.0)."""
         return PendulumV2Action[Self.DTYPE](torque=2.0)
 
-    fn clamp(self, max_torque: Scalar[Self.DTYPE] = 2.0) -> PendulumV2Action[Self.DTYPE]:
-        """Return a new action with torque clamped to [-max_torque, max_torque]."""
+    fn clamp(
+        self, max_torque: Scalar[Self.DTYPE] = 2.0
+    ) -> PendulumV2Action[Self.DTYPE]:
+        """Return a new action with torque clamped to [-max_torque, max_torque].
+        """
         var clamped = self.torque
         if clamped > max_torque:
             clamped = max_torque

@@ -18,8 +18,7 @@ from layout import Layout, LayoutTensor
 from utils import IndexList
 from algorithm.functional import elementwise
 from sys import simd_width_of, align_of
-from builtin.math import max as builtin_max
-from math import tanh, exp
+from math import tanh, exp, max
 
 
 fn gpu_add[
@@ -146,14 +145,14 @@ fn gpu_relu[
         x = input.aligned_load[width=sw](idx, 0)
         # ReLU: max(x, 0)
         zero = SIMD[dtype, sw](0)
-        result = builtin_max(x, zero)
+        result = max(x, zero)
         output.aligned_store[sw](idx, 0, result)
 
     elementwise[relu_kernel, simd_width, target="gpu"](size, ctx)
 
 
 fn gpu_tanh[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     layout: Layout,
     size: Int,
 ](
@@ -184,7 +183,7 @@ fn gpu_tanh[
 
 
 fn gpu_sigmoid[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     layout: Layout,
     size: Int,
 ](

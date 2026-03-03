@@ -28,17 +28,17 @@ struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.steps = steps
         self.epsilon = epsilon
 
-    fn __copyinit__(out self, existing: Self):
-        self.episode = existing.episode
-        self.total_reward = existing.total_reward
-        self.steps = existing.steps
-        self.epsilon = existing.epsilon
+    fn __init__(out self, *, copy: Self):
+        self.episode = copy.episode
+        self.total_reward = copy.total_reward
+        self.steps = copy.steps
+        self.epsilon = copy.epsilon
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.episode = existing.episode
-        self.total_reward = existing.total_reward
-        self.steps = existing.steps
-        self.epsilon = existing.epsilon
+    fn __init__(out self, *, deinit take: Self):
+        self.episode = take.episode
+        self.total_reward = take.total_reward
+        self.steps = take.steps
+        self.epsilon = take.epsilon
 
 
 struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
@@ -74,12 +74,12 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.algorithm_name = algorithm_name
         self.environment_name = environment_name
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.episodes = copy.episodes.copy()
         self.algorithm_name = copy.algorithm_name
         self.environment_name = copy.environment_name
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.episodes = take.episodes^
         self.algorithm_name = take.algorithm_name^
         self.environment_name = take.environment_name^

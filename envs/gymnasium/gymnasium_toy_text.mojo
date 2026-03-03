@@ -25,11 +25,11 @@ struct GymFrozenLakeState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
         return self.index == other.index

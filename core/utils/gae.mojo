@@ -62,7 +62,7 @@ fn compute_gae(
         # ... collect trajectory ...
         var advantages = compute_gae(
             rewards, values, next_value, done, 0.99, 0.95
-        )
+        ).
     """
     var num_steps = len(rewards)
     var advantages = List[Float64]()
@@ -119,7 +119,7 @@ fn compute_returns_from_advantages(
     Example:
         var advantages = compute_gae(...)
         var returns = compute_returns_from_advantages(advantages, values)
-        # Use returns as targets for critic: loss = (V(s) - returns)^2
+        # Use returns as targets for critic: loss = (V(s) - returns)^2.
     """
     var returns = List[Float64]()
     for t in range(len(advantages)):
@@ -217,7 +217,7 @@ fn compute_nstep_returns(
         List of n-step returns [G_0, G_1, ..., G_{T-1}].
 
     Example:
-        var returns = compute_nstep_returns(rewards, next_value, done, 0.99)
+        var returns = compute_nstep_returns(rewards, next_value, done, 0.99).
     """
     var num_steps = len(rewards)
     var returns = List[Float64]()
@@ -264,7 +264,7 @@ fn compute_td_targets(
 
     Example:
         var targets = compute_td_targets(rewards, values, next_value, done, 0.99)
-        # Use targets to update critic: loss = (V(s) - target)^2
+        # Use targets to update critic: loss = (V(s) - target)^2.
     """
     var num_steps = len(rewards)
     var targets = List[Float64]()

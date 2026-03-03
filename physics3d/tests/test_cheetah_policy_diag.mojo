@@ -8,8 +8,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_cheetah_policy_diag.mojo
 """
 
-from math import sqrt, pi
-from builtin.math import abs
+from math import sqrt, pi, abs
 from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
@@ -133,7 +132,7 @@ fn main() raises:
         var max_imp_n = Float64(0.0)
         var episode_reward = Float64(0.0)
         var worst_pen_step = 0
-        var worst_pen_actions = InlineArray[Float64, 6](0, 0, 0, 0, 0, 0)
+        var worst_pen_actions: InlineArray[Float64, 6] = [0, 0, 0, 0, 0, 0]
 
         print()
         print(

@@ -591,7 +591,7 @@ fn test_running_gait_impact() raises:
 
 fn test_fthigh_at_limit_impact() raises:
     """
-    fthigh at upper limit (0.7) + fast downward impact.
+    Fthigh at upper limit (0.7) + fast downward impact.
 
     This reproduces the policy rollout bug: fthigh pinned at range_max=0.7
     while the foot strikes the ground at high velocity.  Previously,

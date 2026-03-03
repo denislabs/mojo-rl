@@ -26,11 +26,11 @@ struct ContAction[N: Int](Action, Copyable, Movable):
         """Initialize from an existing InlineArray."""
         self.data = data.copy()
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.data = copy.data.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.data = take.data^
 

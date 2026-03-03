@@ -661,12 +661,12 @@ struct PhysicsStateOwned[
         self.contact_counts = List[Scalar[dtype]](capacity=1)
         self.contact_counts.append(existing.contact_counts[0])
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.state = existing.state^
-        self.shapes = existing.shapes^
-        self.contacts = existing.contacts^
-        self.contact_counts = existing.contact_counts^
+        self.state = take.state^
+        self.shapes = take.shapes^
+        self.contacts = take.contacts^
+        self.contact_counts = take.contact_counts^
 
     # =========================================================================
     # Tensor Views

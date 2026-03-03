@@ -64,7 +64,8 @@ fn _sample_continuous_actions_kernel[
         # Sample Gaussian noise using Box-Muller transform with PhiloxRandom
         # Each (i, j) pair gets unique seed and offset for independent random streams
         var philox = PhiloxRandom(
-            seed=Int(rng_seed) + i * ACTION_DIM + j, offset=0
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
         )
         var rand_vals = philox.step_uniform()
         var u1 = rand_vals[0]

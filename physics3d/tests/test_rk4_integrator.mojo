@@ -9,8 +9,7 @@ Run with:
     pixi run mojo run physics3d/tests/test_rk4_integrator.mojo
 """
 
-from math import sqrt, pi, cos
-from builtin.math import abs
+from math import sqrt, pi, cos, abs
 from physics3d.types import Model, Data
 from physics3d.integrator import EulerIntegrator
 from physics3d.integrator.rk4_integrator import RK4Integrator
@@ -18,6 +17,8 @@ from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
 from testing import assert_true, TestSuite
+
+
 # Pendulum model setup:
 # - Body origin at (0,0,0) = pivot point
 # - CoM at (0,0,-L) via ipos (MuJoCo convention)
@@ -59,7 +60,19 @@ fn test_rk4_compiles_halfcheetah() raises:
     comptime NGEOM = HC.NGEOM
     comptime MAX_CONTACTS = HC.MAX_CONTACTS
 
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HC.MAX_EQUALITY, HC.CONE_TYPE, HC.MAX_TENDON, HC.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HC.MAX_EQUALITY,
+        HC.CONE_TYPE,
+        HC.MAX_TENDON,
+        HC.NSITE,
+    ]()
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HC.NSITE]()
     HC.setup_model_and_data[DTYPE](model, data)
 
@@ -91,7 +104,13 @@ fn test_rk4_compiles_halfcheetah() raises:
     else:
         print("  FAIL: State did not change after RK4 step")
         print("  q_changed:", q_changed, "v_changed:", v_changed)
-        assert_true(False, "RK4 compiles halfcheetah test failed: state did not change after RK4 step")
+        assert_true(
+            False,
+            (
+                "RK4 compiles halfcheetah test failed: state did not change"
+                " after RK4 step"
+            ),
+        )
 
 
 # =========================================================================
@@ -208,7 +227,13 @@ fn test_energy_conservation_rk4_vs_euler() raises:
             improvement,
             "x is less than 10x",
         )
-        assert_true(improvement >= Float64(10.0), "Energy conservation RK4 vs Euler test failed: RK4 improvement ratio is less than 10x")
+        assert_true(
+            improvement >= Float64(10.0),
+            (
+                "Energy conservation RK4 vs Euler test failed: RK4 improvement"
+                " ratio is less than 10x"
+            ),
+        )
 
 
 # =========================================================================
@@ -304,7 +329,13 @@ fn test_trajectory_comparison() raises:
         print("  PASS: RK4 is more accurate (Euler error larger but expected)")
     else:
         print("  FAIL: RK4 is less accurate than Euler")
-        assert_true(False, "Trajectory comparison test failed: RK4 is less accurate than Euler")
+        assert_true(
+            False,
+            (
+                "Trajectory comparison test failed: RK4 is less accurate than"
+                " Euler"
+            ),
+        )
 
 
 fn main() raises:

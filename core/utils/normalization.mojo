@@ -141,7 +141,7 @@ fn compute_std(values: List[Float64], mean: Float64) -> Float64:
         variance += diff * diff
     variance /= Float64(n)
 
-    return variance ** 0.5
+    return variance**0.5
 
 
 fn compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
@@ -156,7 +156,7 @@ fn compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
         Tuple of (mean, std).
 
     Example:
-        var (mean, std) = compute_mean_std(rewards)
+        var (mean, std) = compute_mean_std(rewards).
     """
     var n = len(values)
     if n == 0:
@@ -177,7 +177,7 @@ fn compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
         variance += diff * diff
     variance /= Float64(n)
 
-    return (mean, variance ** 0.5)
+    return (mean, variance**0.5)
 
 
 # =============================================================================
@@ -223,9 +223,7 @@ struct RunningMeanStd:
         """Return the running standard deviation."""
         return (self.variance() + 1e-8) ** 0.5
 
-    fn update[
-        dt: DType
-    ](mut self, buffer: HostBuffer[dt], n: Int):
+    fn update[dt: DType](mut self, buffer: HostBuffer[dt], n: Int):
         """Update running statistics with a batch of values.
 
         Uses Welford's online algorithm for numerically stable updates.

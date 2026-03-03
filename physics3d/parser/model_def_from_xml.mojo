@@ -177,7 +177,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn setup_model_and_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut model: Model[
             DTYPE,
@@ -203,6 +203,9 @@ struct ModelDefFromXML[
         ],
     ):
         """Parse XML, populate model struct, run FK and compute invweight0."""
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be a floating point type"
         var fmd = parse_xml_full[
             Self.NBODY,
             Self.NJOINT,
@@ -253,7 +256,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn reset_data[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -275,7 +278,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn extract_obs[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         data: Data[
             DTYPE,
@@ -296,7 +299,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn enforce_limits[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -335,7 +338,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn apply_actions[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](
         mut data: Data[
             DTYPE,
@@ -381,7 +384,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn init_model_gpu[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         """Serialize CPU model to GPU buffer, then compute invweight0 on GPU.
 
@@ -445,7 +448,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn _compute_invweight0_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
         """Compute invweight0 on GPU via a single-thread kernel.
 
@@ -830,7 +833,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn apply_actions_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         ACTION_DIM: Int,
@@ -888,7 +891,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn enforce_limits_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
@@ -933,7 +936,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     fn extract_obs_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,

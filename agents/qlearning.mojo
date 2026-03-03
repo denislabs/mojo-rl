@@ -26,12 +26,12 @@ struct QTable(Copyable, ImplicitlyCopyable, Movable):
         for _ in range(total_size):
             self.data.append(initial_value)
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.num_states = copy.num_states
         self.num_actions = copy.num_actions
         self.data = copy.data.copy()
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.data = take.data^
         self.num_states = take.num_states
         self.num_actions = take.num_actions
@@ -83,7 +83,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var epsilon_min: Float64
     var num_actions: Int
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.q_table = copy.q_table.copy()
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -92,7 +92,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.epsilon_min = copy.epsilon_min
         self.num_actions = copy.num_actions
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor

@@ -9,8 +9,7 @@ Run with:
     pixi run mojo run physics3d/generalized/tests/test_forward_kinematics.mojo
 """
 
-from math import sqrt, pi
-from builtin.math import abs
+from math import sqrt, pi, abs
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.kinematics.quat_math import quat_rotate
@@ -60,11 +59,25 @@ fn test_fk_identity() raises:
 
     var tol = Float64(1e-6)
 
-    if abs(x - expected_x) > tol or abs(y - expected_y) > tol or abs(
-        z - expected_z
-    ) > tol:
-        print("  FAIL: xpos =", x, y, z, "expected", expected_x, expected_y, expected_z)
-        assert_true(False, "FK identity test failed: xpos does not match expected position")
+    if (
+        abs(x - expected_x) > tol
+        or abs(y - expected_y) > tol
+        or abs(z - expected_z) > tol
+    ):
+        print(
+            "  FAIL: xpos =",
+            x,
+            y,
+            z,
+            "expected",
+            expected_x,
+            expected_y,
+            expected_z,
+        )
+        assert_true(
+            False,
+            "FK identity test failed: xpos does not match expected position",
+        )
 
     print("  PASS: xpos =", x, y, z)
 
@@ -165,13 +178,25 @@ fn test_fk_double_pendulum() raises:
 
     if abs(x0 - 0.0) > tol or abs(y0 - 0.0) > tol or abs(z0 - (-0.5)) > tol:
         print("  FAIL: body1 xpos =", x0, y0, z0, "expected (0, 0, -0.5)")
-        assert_true(False, "FK double pendulum test failed: body1 xpos does not match expected (0, 0, -0.5)")
+        assert_true(
+            False,
+            (
+                "FK double pendulum test failed: body1 xpos does not match"
+                " expected (0, 0, -0.5)"
+            ),
+        )
     else:
         print("  PASS: body1 xpos =", x0, y0, z0)
 
     if abs(x1 - 0.0) > tol or abs(y1 - 0.0) > tol or abs(z1 - (-1.0)) > tol:
         print("  FAIL: body2 xpos =", x1, y1, z1, "expected (0, 0, -1)")
-        assert_true(False, "FK double pendulum test failed: body2 xpos does not match expected (0, 0, -1)")
+        assert_true(
+            False,
+            (
+                "FK double pendulum test failed: body2 xpos does not match"
+                " expected (0, 0, -1)"
+            ),
+        )
     else:
         print("  PASS: body2 xpos =", x1, y1, z1)
 

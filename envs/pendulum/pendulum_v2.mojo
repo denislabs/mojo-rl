@@ -194,26 +194,26 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.max_speed = existing.max_speed
-        self.max_torque = existing.max_torque
-        self.dt = existing.dt
-        self.g = existing.g
-        self.m = existing.m
-        self.l = existing.l
-        self.theta = existing.theta
-        self.theta_dot = existing.theta_dot
-        self.steps = existing.steps
-        self.max_steps = existing.max_steps
-        self.done = existing.done
-        self.total_reward = existing.total_reward
-        self.last_torque = existing.last_torque
-        self.num_bins_angle = existing.num_bins_angle
-        self.num_bins_velocity = existing.num_bins_velocity
+        self.max_speed = take.max_speed
+        self.max_torque = take.max_torque
+        self.dt = take.dt
+        self.g = take.g
+        self.m = take.m
+        self.l = take.l
+        self.theta = take.theta
+        self.theta_dot = take.theta_dot
+        self.steps = take.steps
+        self.max_steps = take.max_steps
+        self.done = take.done
+        self.total_reward = take.total_reward
+        self.last_torque = take.last_torque
+        self.num_bins_angle = take.num_bins_angle
+        self.num_bins_velocity = take.num_bins_velocity
         # Transfer renderer ownership
-        self._renderer = existing._renderer
-        self._renderer_initialized = existing._renderer_initialized
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
 
     # =========================================================================
     # GPU Batch Operations (Static Methods) - GPUContinuousEnv Trait

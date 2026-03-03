@@ -20,13 +20,13 @@ struct WireframeLine(Copyable, Movable):
         self.start = start
         self.end = end
 
-    fn __copyinit__(out self, other: Self):
-        self.start = other.start
-        self.end = other.end
+    fn __init__(out self, *, copy: Self):
+        self.start = copy.start
+        self.end = copy.end
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.start = other.start
-        self.end = other.end
+    fn __init__(out self, *, deinit take: Self):
+        self.start = take.start
+        self.end = take.end
 
 
 struct WireframeSphere:

@@ -488,7 +488,7 @@ struct GPUPrimitiveType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -525,7 +525,7 @@ struct GPULoadOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -558,7 +558,7 @@ struct GPUStoreOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -592,7 +592,7 @@ struct GPUIndexElementSize(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -897,7 +897,7 @@ struct GPUTextureType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -936,7 +936,7 @@ struct GPUSampleCount(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -972,7 +972,7 @@ struct GPUCubeMapFace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1051,7 +1051,7 @@ struct GPUTransferBufferUsage(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1079,7 +1079,7 @@ struct GPUShaderStage(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1144,7 +1144,7 @@ struct GPUVertexElementFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1225,7 +1225,7 @@ struct GPUVertexInputRate(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1255,7 +1255,7 @@ struct GPUFillMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1285,7 +1285,7 @@ struct GPUCullMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1318,7 +1318,7 @@ struct GPUFrontFace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1348,7 +1348,7 @@ struct GPUCompareOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1392,7 +1392,7 @@ struct GPUStencilOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1439,7 +1439,7 @@ struct GPUBlendOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1480,7 +1480,7 @@ struct GPUBlendFactor(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1533,8 +1533,8 @@ struct GPUColorComponentFlags(Intable, TrivialRegisterPassable):
     var value: UInt8
 
     @always_inline
-    fn __init__(out self, value: UInt8):
-        self.value = value
+    fn __init__(out self, value: Int):
+        self.value = UInt8(value)
 
     @always_inline
     fn __int__(self) -> Int:
@@ -1563,7 +1563,7 @@ struct GPUFilter(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1593,7 +1593,7 @@ struct GPUSamplerMipmapMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1624,7 +1624,7 @@ struct GPUSamplerAddressMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1672,7 +1672,7 @@ struct GPUPresentMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -1718,7 +1718,7 @@ struct GPUSwapchainComposition(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline

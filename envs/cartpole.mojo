@@ -88,10 +88,10 @@ struct CartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
@@ -104,10 +104,10 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod

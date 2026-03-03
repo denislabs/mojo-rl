@@ -116,7 +116,7 @@ struct Renderer2D(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    fn __init__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.window = take.window
         self.sdl_renderer = take.sdl_renderer
         self.screen_width = take.screen_width

@@ -25,25 +25,25 @@ struct LunarLanderState[dtype: DType](
         self.left_leg_contact = 0.0
         self.right_leg_contact = 0.0
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angle = other.angle
-        self.angular_velocity = other.angular_velocity
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
+    fn __init__(out self, *, deinit take: Self):
+        self.x = take.x
+        self.y = take.y
+        self.vx = take.vx
+        self.vy = take.vy
+        self.angle = take.angle
+        self.angular_velocity = take.angular_velocity
+        self.left_leg_contact = take.left_leg_contact
+        self.right_leg_contact = take.right_leg_contact
 
-    fn __copyinit__(out self, other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angle = other.angle
-        self.angular_velocity = other.angular_velocity
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
+    fn __init__(out self, *, copy: Self):
+        self.x = copy.x
+        self.y = copy.y
+        self.vx = copy.vx
+        self.vy = copy.vy
+        self.angle = copy.angle
+        self.angular_velocity = copy.angular_velocity
+        self.left_leg_contact = copy.left_leg_contact
+        self.right_leg_contact = copy.right_leg_contact
 
     fn __eq__(self, other: Self) -> Bool:
         """Check equality of two states."""

@@ -106,7 +106,7 @@ struct SystemTheme(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -178,7 +178,7 @@ struct DisplayOrientation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -301,7 +301,7 @@ struct FlashOperation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -476,7 +476,7 @@ struct GLAttr(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
@@ -3690,7 +3690,7 @@ struct HitTestResult(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: Int):
+    fn __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
