@@ -16,7 +16,7 @@ from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype
+from nn.constants import dtype
 
 
 # =============================================================================
@@ -793,7 +793,7 @@ def main():
         + String(best_combo_tpb)
     )
     print()
-    print("Current defaults in deep_rl/constants.mojo:")
+    print("Current defaults in nn/constants.mojo:")
     print("  TILE = 16")
     print("  TPB = 256")
     print()

@@ -19,7 +19,7 @@ from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
-from deep_rl.constants import dtype
+from nn.constants import dtype
 
 comptime TILE = 16
 
@@ -32,6 +32,7 @@ comptime OUT_DIM = 32
 # Pattern A: Dimension as compile-time Int (current approach)
 # The kernel has [BATCH: Int] which causes recompilation for each batch size
 # =============================================================================
+
 
 @always_inline
 fn pattern_a_kernel[
@@ -54,36 +55,44 @@ fn pattern_a_kernel[
         output[row, col] = acc
 
 
-fn launch_pattern_a[BATCH: Int](
+fn launch_pattern_a[
+    BATCH: Int
+](
     ctx: DeviceContext,
     output_buf: DeviceBuffer[dtype],
     input_buf: DeviceBuffer[dtype],
     W_buf: DeviceBuffer[dtype],
 ) raises:
     """Launch Pattern A kernel."""
-    var output = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](
-        output_buf.unsafe_ptr()
-    )
-    var input = LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin](
-        input_buf.unsafe_ptr()
-    )
-    var W = LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin](
-        W_buf.unsafe_ptr()
-    )
+    var output = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
+    var input = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+    ](input_buf.unsafe_ptr())
+    var W = LayoutTensor[
+        dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin
+    ](W_buf.unsafe_ptr())
 
     comptime grid_x = (OUT_DIM + TILE - 1) // TILE
     comptime grid_y = (BATCH + TILE - 1) // TILE
 
     @always_inline
     fn wrapper(
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+        ],
         W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
     ):
         pattern_a_kernel[BATCH](output, input, W)
 
     ctx.enqueue_function[wrapper, wrapper](
-        output, input, W,
+        output,
+        input,
+        W,
         grid_dim=(grid_x, grid_y),
         block_dim=(TILE, TILE),
     )
@@ -94,6 +103,7 @@ fn launch_pattern_a[BATCH: Int](
 # The kernel has [out_layout: Layout] - the layout TYPE, not a dimension Int
 # Size is passed as runtime UInt for bounds checking
 # =============================================================================
+
 
 @always_inline
 fn pattern_b_kernel[
@@ -140,9 +150,7 @@ fn launch_pattern_b[
     var input = LayoutTensor[dtype, in_layout, MutAnyOrigin](
         input_buf.unsafe_ptr()
     )
-    var W = LayoutTensor[dtype, W_layout, MutAnyOrigin](
-        W_buf.unsafe_ptr()
-    )
+    var W = LayoutTensor[dtype, W_layout, MutAnyOrigin](W_buf.unsafe_ptr())
 
     comptime grid_x = (OUT_DIM + TILE - 1) // TILE
     var grid_y = (actual_batch + TILE - 1) // TILE  # Runtime grid!
@@ -151,7 +159,9 @@ fn launch_pattern_b[
     comptime kernel = pattern_b_kernel[out_layout, in_layout, W_layout]
 
     ctx.enqueue_function[kernel, kernel](
-        output, input, W,
+        output,
+        input,
+        W,
         UInt(actual_batch),  # Pass batch as runtime UInt
         grid_dim=(grid_x, grid_y),
         block_dim=(TILE, TILE),
@@ -161,6 +171,7 @@ fn launch_pattern_b[
 # =============================================================================
 # Main test
 # =============================================================================
+
 
 fn main() raises:
     seed(42)
@@ -193,14 +204,18 @@ fn main() raises:
         ctx.enqueue_copy(W_buf, W_host)
 
         # Initialize input
-        var input_host = ctx.enqueue_create_host_buffer[dtype](BUFFER_SIZE * IN_DIM)
+        var input_host = ctx.enqueue_create_host_buffer[dtype](
+            BUFFER_SIZE * IN_DIM
+        )
         for i in range(BUFFER_SIZE * IN_DIM):
             input_host[i] = Scalar[dtype](random_float64())
         ctx.enqueue_copy(input_buf, input_host)
         ctx.synchronize()
 
         print("-" * 70)
-        print("Pattern A: [BATCH: Int] compile-time dimension (current approach)")
+        print(
+            "Pattern A: [BATCH: Int] compile-time dimension (current approach)"
+        )
         print("  Each batch size triggers kernel recompilation")
         print("-" * 70)
 
@@ -217,7 +232,9 @@ fn main() raises:
         for _ in range(bench_iters):
             launch_pattern_a[256](ctx, output_buf, input_buf, W_buf)
         ctx.synchronize()
-        var time_a = Float64(perf_counter_ns() - start_a) / Float64(bench_iters) / 1e3
+        var time_a = (
+            Float64(perf_counter_ns() - start_a) / Float64(bench_iters) / 1e3
+        )
         print("  Batch 256: ", String(time_a)[:8], " μs/iter")
 
         print()
@@ -228,7 +245,9 @@ fn main() raises:
 
         # Warmup - same kernel for all batch sizes!
         for _ in range(warmup_iters):
-            launch_pattern_b[BUFFER_SIZE](ctx, output_buf, input_buf, W_buf, 256)
+            launch_pattern_b[BUFFER_SIZE](
+                ctx, output_buf, input_buf, W_buf, 256
+            )
         ctx.synchronize()
 
         # Benchmark different batch sizes - SAME kernel!
@@ -236,9 +255,15 @@ fn main() raises:
             var batch = test_batches[batch_idx]
             var start_b = perf_counter_ns()
             for _ in range(bench_iters):
-                launch_pattern_b[BUFFER_SIZE](ctx, output_buf, input_buf, W_buf, batch)
+                launch_pattern_b[BUFFER_SIZE](
+                    ctx, output_buf, input_buf, W_buf, batch
+                )
             ctx.synchronize()
-            var time_b = Float64(perf_counter_ns() - start_b) / Float64(bench_iters) / 1e3
+            var time_b = (
+                Float64(perf_counter_ns() - start_b)
+                / Float64(bench_iters)
+                / 1e3
+            )
             print("  Batch", batch, ":", String(time_b)[:8], " μs/iter")
 
         print()

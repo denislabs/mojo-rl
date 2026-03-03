@@ -14,12 +14,12 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, seq
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam, SGD, RMSprop, AdamW
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Tanh, seq
+from nn.loss import MSELoss
+from nn.optimizer import Adam, SGD, RMSprop, AdamW
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -63,7 +63,11 @@ fn test_rmsprop_gpu():
     # RMSprop optimizer
     var optimizer = RMSprop(lr=0.01, alpha=0.99, eps=1e-8)
     print("\n  Optimizer: RMSprop(lr=0.01, alpha=0.99)")
-    print("  STATE_PER_PARAM: " + String(optimizer.STATE_PER_PARAM) + " (squared gradient avg)")
+    print(
+        "  STATE_PER_PARAM: "
+        + String(optimizer.STATE_PER_PARAM)
+        + " (squared gradient avg)"
+    )
 
     var loss_fn = MSELoss()
 
@@ -86,12 +90,20 @@ fn test_rmsprop_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
         for j in range(OUTPUT_DIM):
             var sum_val: Float64 = 0.0
             for k in range(INPUT_DIM // OUTPUT_DIM):
-                sum_val += Float64(input_data[i * INPUT_DIM + j * (INPUT_DIM // OUTPUT_DIM) + k])
-            target_data[i * OUTPUT_DIM + j] = Scalar[dtype](sum_val / Float64(INPUT_DIM // OUTPUT_DIM))
+                sum_val += Float64(
+                    input_data[
+                        i * INPUT_DIM + j * (INPUT_DIM // OUTPUT_DIM) + k
+                    ]
+                )
+            target_data[i * OUTPUT_DIM + j] = Scalar[dtype](
+                sum_val / Float64(INPUT_DIM // OUTPUT_DIM)
+            )
 
     print("\n  Training on GPU...")
     print("-" * 70)
@@ -100,7 +112,9 @@ fn test_rmsprop_gpu():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 
@@ -109,7 +123,11 @@ fn test_rmsprop_gpu():
             print("  Final loss: " + String(result.final_loss))
             print("  Epochs: " + String(result.epochs_trained))
             print("  Time: " + String(elapsed_ms)[:8] + " ms")
-            print("  Avg per epoch: " + String(elapsed_ms / Float64(NUM_EPOCHS))[:6] + " ms")
+            print(
+                "  Avg per epoch: "
+                + String(elapsed_ms / Float64(NUM_EPOCHS))[:6]
+                + " ms"
+            )
 
             if result.final_loss < 0.5:
                 print("\n  PASS: RMSprop GPU training succeeded")
@@ -148,9 +166,15 @@ fn test_adamw_gpu():
     print("  PARAM_SIZE: " + String(model.PARAM_SIZE))
 
     # AdamW optimizer
-    var optimizer = AdamW(lr=0.005, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01)
+    var optimizer = AdamW(
+        lr=0.005, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01
+    )
     print("\n  Optimizer: AdamW(lr=0.005, weight_decay=0.01)")
-    print("  STATE_PER_PARAM: " + String(optimizer.STATE_PER_PARAM) + " (m and v moments)")
+    print(
+        "  STATE_PER_PARAM: "
+        + String(optimizer.STATE_PER_PARAM)
+        + " (m and v moments)"
+    )
 
     var loss_fn = MSELoss()
 
@@ -173,12 +197,17 @@ fn test_adamw_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
         # Linear combination targets
         for j in range(OUTPUT_DIM):
             var idx1 = j * 2
             var idx2 = j * 2 + 1
-            target_data[i * OUTPUT_DIM + j] = input_data[i * INPUT_DIM + idx1] + input_data[i * INPUT_DIM + idx2]
+            target_data[i * OUTPUT_DIM + j] = (
+                input_data[i * INPUT_DIM + idx1]
+                + input_data[i * INPUT_DIM + idx2]
+            )
 
     print("\n  Training on GPU...")
     print("-" * 70)
@@ -187,7 +216,9 @@ fn test_adamw_gpu():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 
@@ -196,7 +227,11 @@ fn test_adamw_gpu():
             print("  Final loss: " + String(result.final_loss))
             print("  Epochs: " + String(result.epochs_trained))
             print("  Time: " + String(elapsed_ms)[:8] + " ms")
-            print("  Avg per epoch: " + String(elapsed_ms / Float64(NUM_EPOCHS))[:6] + " ms")
+            print(
+                "  Avg per epoch: "
+                + String(elapsed_ms / Float64(NUM_EPOCHS))[:6]
+                + " ms"
+            )
 
             if result.final_loss < 0.3:
                 print("\n  PASS: AdamW GPU training succeeded")
@@ -233,7 +268,9 @@ fn compare_optimizers_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
         for j in range(OUTPUT_DIM):
             var idx1 = j * 2
             var idx2 = j * 2 + 1
@@ -256,13 +293,25 @@ fn compare_optimizers_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_sgd = Trainer(
-                model_sgd, SGD(lr=0.1), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_sgd,
+                SGD(lr=0.1),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_sgd = perf_counter_ns()
-            var result_sgd = trainer_sgd.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_sgd = trainer_sgd.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_sgd = Float64(perf_counter_ns() - start_sgd) / 1e6
-            print("  SGD(lr=0.1):           loss = " + String(result_sgd.final_loss)[:8] + "  time = " + String(time_sgd)[:6] + " ms")
+            print(
+                "  SGD(lr=0.1):           loss = "
+                + String(result_sgd.final_loss)[:8]
+                + "  time = "
+                + String(time_sgd)[:6]
+                + " ms"
+            )
 
             # Test Adam
             var model_adam = seq(
@@ -271,13 +320,25 @@ fn compare_optimizers_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_adam = Trainer(
-                model_adam, Adam(lr=0.01), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_adam,
+                Adam(lr=0.01),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_adam = perf_counter_ns()
-            var result_adam = trainer_adam.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_adam = trainer_adam.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_adam = Float64(perf_counter_ns() - start_adam) / 1e6
-            print("  Adam(lr=0.01):         loss = " + String(result_adam.final_loss)[:8] + "  time = " + String(time_adam)[:6] + " ms")
+            print(
+                "  Adam(lr=0.01):         loss = "
+                + String(result_adam.final_loss)[:8]
+                + "  time = "
+                + String(time_adam)[:6]
+                + " ms"
+            )
 
             # Test RMSprop
             var model_rmsprop = seq(
@@ -286,13 +347,25 @@ fn compare_optimizers_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_rmsprop = Trainer(
-                model_rmsprop, RMSprop(lr=0.01), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_rmsprop,
+                RMSprop(lr=0.01),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_rmsprop = perf_counter_ns()
-            var result_rmsprop = trainer_rmsprop.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_rmsprop = trainer_rmsprop.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_rmsprop = Float64(perf_counter_ns() - start_rmsprop) / 1e6
-            print("  RMSprop(lr=0.01):      loss = " + String(result_rmsprop.final_loss)[:8] + "  time = " + String(time_rmsprop)[:6] + " ms")
+            print(
+                "  RMSprop(lr=0.01):      loss = "
+                + String(result_rmsprop.final_loss)[:8]
+                + "  time = "
+                + String(time_rmsprop)[:6]
+                + " ms"
+            )
 
             # Test AdamW
             var model_adamw = seq(
@@ -301,13 +374,25 @@ fn compare_optimizers_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_adamw = Trainer(
-                model_adamw, AdamW(lr=0.01, weight_decay=0.01), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_adamw,
+                AdamW(lr=0.01, weight_decay=0.01),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_adamw = perf_counter_ns()
-            var result_adamw = trainer_adamw.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_adamw = trainer_adamw.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_adamw = Float64(perf_counter_ns() - start_adamw) / 1e6
-            print("  AdamW(lr=0.01, wd=0.01): loss = " + String(result_adamw.final_loss)[:8] + "  time = " + String(time_adamw)[:6] + " ms")
+            print(
+                "  AdamW(lr=0.01, wd=0.01): loss = "
+                + String(result_adamw.final_loss)[:8]
+                + "  time = "
+                + String(time_adamw)[:6]
+                + " ms"
+            )
 
             print("\n  All optimizers trained on GPU successfully!")
 
@@ -341,9 +426,15 @@ fn test_adamw_weight_decay_effect():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
-        target_data[i * OUTPUT_DIM + 0] = input_data[i * INPUT_DIM + 0] + input_data[i * INPUT_DIM + 1]
-        target_data[i * OUTPUT_DIM + 1] = input_data[i * INPUT_DIM + 2] + input_data[i * INPUT_DIM + 3]
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
+        target_data[i * OUTPUT_DIM + 0] = (
+            input_data[i * INPUT_DIM + 0] + input_data[i * INPUT_DIM + 1]
+        )
+        target_data[i * OUTPUT_DIM + 1] = (
+            input_data[i * INPUT_DIM + 2] + input_data[i * INPUT_DIM + 3]
+        )
 
     print("  Comparing different weight decay values...")
     print("  Model: Linear[4, 64] -> ReLU[64] -> Linear[64, 2]")
@@ -360,11 +451,19 @@ fn test_adamw_weight_decay_effect():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_wd0 = Trainer(
-                model_wd0, AdamW(lr=0.01, weight_decay=0.0), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_wd0,
+                AdamW(lr=0.01, weight_decay=0.0),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
-            var result_wd0 = trainer_wd0.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
-            print("  AdamW(wd=0.0):   loss = " + String(result_wd0.final_loss)[:8])
+            var result_wd0 = trainer_wd0.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
+            print(
+                "  AdamW(wd=0.0):   loss = " + String(result_wd0.final_loss)[:8]
+            )
 
             # AdamW with light weight decay
             var model_wd01 = seq(
@@ -373,11 +472,20 @@ fn test_adamw_weight_decay_effect():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_wd01 = Trainer(
-                model_wd01, AdamW(lr=0.01, weight_decay=0.01), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_wd01,
+                AdamW(lr=0.01, weight_decay=0.01),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
-            var result_wd01 = trainer_wd01.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
-            print("  AdamW(wd=0.01):  loss = " + String(result_wd01.final_loss)[:8])
+            var result_wd01 = trainer_wd01.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
+            print(
+                "  AdamW(wd=0.01):  loss = "
+                + String(result_wd01.final_loss)[:8]
+            )
 
             # AdamW with moderate weight decay
             var model_wd05 = seq(
@@ -386,11 +494,20 @@ fn test_adamw_weight_decay_effect():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_wd05 = Trainer(
-                model_wd05, AdamW(lr=0.01, weight_decay=0.05), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_wd05,
+                AdamW(lr=0.01, weight_decay=0.05),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
-            var result_wd05 = trainer_wd05.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
-            print("  AdamW(wd=0.05):  loss = " + String(result_wd05.final_loss)[:8])
+            var result_wd05 = trainer_wd05.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
+            print(
+                "  AdamW(wd=0.05):  loss = "
+                + String(result_wd05.final_loss)[:8]
+            )
 
             # AdamW with strong weight decay
             var model_wd1 = seq(
@@ -399,13 +516,24 @@ fn test_adamw_weight_decay_effect():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_wd1 = Trainer(
-                model_wd1, AdamW(lr=0.01, weight_decay=0.1), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_wd1,
+                AdamW(lr=0.01, weight_decay=0.1),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
-            var result_wd1 = trainer_wd1.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
-            print("  AdamW(wd=0.1):   loss = " + String(result_wd1.final_loss)[:8])
+            var result_wd1 = trainer_wd1.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
+            print(
+                "  AdamW(wd=0.1):   loss = " + String(result_wd1.final_loss)[:8]
+            )
 
-            print("\n  Note: Higher weight decay may increase loss but improve generalization")
+            print(
+                "\n  Note: Higher weight decay may increase loss but improve"
+                " generalization"
+            )
             print("  PASS: Weight decay effect demonstrated")
 
     except e:

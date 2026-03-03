@@ -19,7 +19,7 @@ from envs.half_cheetah import (
     HalfCheetahConfig,
     HalfCheetahCurriculum,
 )
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 
 
 # =============================================================================

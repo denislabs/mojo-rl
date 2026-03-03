@@ -15,7 +15,7 @@ from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.half_cheetah import HalfCheetah, HalfCheetahConfig
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 
 
 # =============================================================================

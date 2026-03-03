@@ -9,17 +9,17 @@ Run with:
 from random import seed, random_float64
 from math import exp, log, sqrt
 
-from deep_rl.constants import dtype
-from deep_rl.model import (
+from nn.constants import dtype
+from nn.model import (
     Linear,
     ReLU,
     StochasticActor,
-    seq,
+    Sequential,
 )
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -33,7 +33,9 @@ fn print_test_header(name: String):
     print("=" * 70)
 
 
-fn assert_close(actual: Float64, expected: Float64, tol: Float64, msg: String) -> Bool:
+fn assert_close(
+    actual: Float64, expected: Float64, tol: Float64, msg: String
+) -> Bool:
     """Check if two values are close within tolerance."""
     var diff = actual - expected
     if diff < 0:
@@ -58,35 +60,51 @@ fn test_stochastic_actor_structure():
     comptime IN_DIM = 8
     comptime ACTION_DIM = 2
 
-    var actor = StochasticActor[IN_DIM, ACTION_DIM]()
+    comptime ACTOR = StochasticActor[IN_DIM, ACTION_DIM]
 
-    print("  StochasticActor[" + String(IN_DIM) + ", " + String(ACTION_DIM) + "]")
-    print("  IN_DIM: " + String(actor.IN_DIM))
-    print("  OUT_DIM: " + String(actor.OUT_DIM) + " (mean + log_std)")
-    print("  PARAM_SIZE: " + String(actor.PARAM_SIZE))
-    print("  CACHE_SIZE: " + String(actor.CACHE_SIZE))
+    print(
+        "  StochasticActor[" + String(IN_DIM) + ", " + String(ACTION_DIM) + "]"
+    )
+    print("  IN_DIM: " + String(ACTOR.IN_DIM))
+    print("  OUT_DIM: " + String(ACTOR.OUT_DIM) + " (mean + log_std)")
+    print("  PARAM_SIZE: " + String(ACTOR.PARAM_SIZE))
+    print("  CACHE_SIZE: " + String(ACTOR.CACHE_SIZE))
 
     # Verify dimensions
     var expected_out_dim = ACTION_DIM * 2  # mean and log_std
-    var expected_param_size = 2 * (IN_DIM * ACTION_DIM + ACTION_DIM)  # Two linear heads
+    var expected_param_size = 2 * (
+        IN_DIM * ACTION_DIM + ACTION_DIM
+    )  # Two linear heads
     var expected_cache_size = IN_DIM  # Cache input
 
     var all_passed = True
 
-    if actor.OUT_DIM == expected_out_dim:
-        print("  PASS: OUT_DIM = " + String(expected_out_dim) + " (action_dim * 2)")
+    if ACTOR.OUT_DIM == expected_out_dim:
+        print(
+            "  PASS: OUT_DIM = "
+            + String(expected_out_dim)
+            + " (action_dim * 2)"
+        )
     else:
         print("  FAIL: OUT_DIM should be " + String(expected_out_dim))
         all_passed = False
 
-    if actor.PARAM_SIZE == expected_param_size:
-        print("  PASS: PARAM_SIZE = " + String(expected_param_size) + " (2 linear heads)")
+    if ACTOR.PARAM_SIZE == expected_param_size:
+        print(
+            "  PASS: PARAM_SIZE = "
+            + String(expected_param_size)
+            + " (2 linear heads)"
+        )
     else:
         print("  FAIL: PARAM_SIZE should be " + String(expected_param_size))
         all_passed = False
 
-    if actor.CACHE_SIZE == expected_cache_size:
-        print("  PASS: CACHE_SIZE = " + String(expected_cache_size) + " (caches input)")
+    if ACTOR.CACHE_SIZE == expected_cache_size:
+        print(
+            "  PASS: CACHE_SIZE = "
+            + String(expected_cache_size)
+            + " (caches input)"
+        )
     else:
         print("  FAIL: CACHE_SIZE should be " + String(expected_cache_size))
         all_passed = False
@@ -140,7 +158,9 @@ fn test_reparameterization_math():
     action = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
 
     var expected_action = (exp(0.5) - exp(-0.5)) / (exp(0.5) + exp(-0.5))
-    if assert_close(action, expected_action, 1e-6, "action when mean=0.5, noise=0"):
+    if assert_close(
+        action, expected_action, 1e-6, "action when mean=0.5, noise=0"
+    ):
         print("  PASS: tanh(0.5) ≈ " + String(expected_action)[:6])
     else:
         all_passed = False
@@ -189,7 +209,9 @@ fn test_log_prob_formula():
 
     # log_gaussian at mean with std=1
     var z_normalized = (z - mean) / exp(log_std)
-    var log_gaussian = -0.5 * (LOG_2PI + 2.0 * log_std + z_normalized * z_normalized)
+    var log_gaussian = -0.5 * (
+        LOG_2PI + 2.0 * log_std + z_normalized * z_normalized
+    )
 
     # At z=0, tanh(0)=0, so squashing correction is -log(1 - 0 + eps) ≈ 0
     var action = 0.0
@@ -238,32 +260,45 @@ fn test_training_simple():
     comptime EPOCHS = 100
 
     # Simple model: just the actor head
-    var model = StochasticActor[IN_DIM, ACTION_DIM]()
+    comptime MODEL = StochasticActor[IN_DIM, ACTION_DIM]
 
-    print("  Model: StochasticActor[" + String(IN_DIM) + ", " + String(ACTION_DIM) + "]")
+    print(
+        "  Model: StochasticActor["
+        + String(IN_DIM)
+        + ", "
+        + String(ACTION_DIM)
+        + "]"
+    )
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
     print("  Target: mean=0.5, log_std=-1.0")
 
-    var trainer = Trainer(
-        model,
-        Adam(lr=0.05),  # Higher LR for simple model
-        MSELoss(),
-        Kaiming(),
+    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
+        optimizer=Adam(lr=0.05),
+        loss_function=MSELoss(),
+        initializer=Kaiming(),
         epochs=EPOCHS,
-        print_every=0,  # Quiet training
+        print_every=0,
     )
 
     # Generate data with fixed pattern
-    var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](uninitialized=True)
-    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](uninitialized=True)
+    var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](
+        uninitialized=True
+    )
+    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](
+        uninitialized=True
+    )
 
     for b in range(BATCH):
         for i in range(IN_DIM):
-            input_data[b * IN_DIM + i] = Scalar[dtype](random_float64(-1.0, 1.0))
+            input_data[b * IN_DIM + i] = Scalar[dtype](
+                random_float64(-1.0, 1.0)
+            )
         for j in range(ACTION_DIM):
             target_data[b * OUT_DIM + j] = Scalar[dtype](0.5)  # mean
-            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](-1.0)  # log_std
+            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
+                -1.0
+            )  # log_std
 
     # Train
     print("\n  Training...")
@@ -298,41 +333,50 @@ fn test_training_with_backbone():
     comptime EPOCHS = 200
 
     # Full policy network
-    var model = seq(
-        Linear[OBS_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        StochasticActor[HIDDEN_DIM, ACTION_DIM](),
-    )
+    comptime MODEL = Sequential[
+        Linear[OBS_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        StochasticActor[HIDDEN_DIM, ACTION_DIM],
+    ]
 
     print("  Architecture:")
     print("    Linear[4, 16] -> ReLU[16] -> StochasticActor[16, 2]")
-    print("  PARAM_SIZE: " + String(model.PARAM_SIZE))
+    print("  PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    var trainer = Trainer(
-        model,
-        Adam(lr=0.01),
-        MSELoss(),
-        Kaiming(),
+    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
+        optimizer=Adam(lr=0.01),
+        loss_function=MSELoss(),
+        initializer=Kaiming(),
         epochs=EPOCHS,
         print_every=0,
     )
 
     # Generate data
-    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](uninitialized=True)
-    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](uninitialized=True)
+    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
+        uninitialized=True
+    )
+    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](
+        uninitialized=True
+    )
 
     for b in range(BATCH):
         for i in range(OBS_DIM):
-            input_data[b * OBS_DIM + i] = Scalar[dtype](random_float64(-1.0, 1.0))
+            input_data[b * OBS_DIM + i] = Scalar[dtype](
+                random_float64(-1.0, 1.0)
+            )
         # Target: learned mapping from inputs to outputs
         var sum_input: Float64 = 0.0
         for i in range(OBS_DIM):
             sum_input += Float64(input_data[b * OBS_DIM + i])
         for j in range(ACTION_DIM):
-            target_data[b * OUT_DIM + j] = Scalar[dtype](0.2 * sum_input)  # mean
-            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](-0.5)  # log_std
+            target_data[b * OUT_DIM + j] = Scalar[dtype](
+                0.2 * sum_input
+            )  # mean
+            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
+                -0.5
+            )  # log_std
 
     print("\n  Training...")
     var result = trainer.train[BATCH](input_data, target_data)
@@ -359,7 +403,7 @@ fn test_deterministic_action():
     # In evaluation mode, we use action = tanh(mean) without noise
     print("  Deterministic policy: action = tanh(mean)")
 
-    var test_means = InlineArray[Float64, 5](0.0, 0.5, 1.0, -0.5, 2.0)
+    var test_means: InlineArray[Float64, 5] = [0.0, 0.5, 1.0, -0.5, 2.0]
     var all_passed = True
 
     for i in range(5):

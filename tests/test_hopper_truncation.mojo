@@ -12,7 +12,7 @@ from layout import Layout, LayoutTensor
 from envs.hopper import Hopper
 from envs.hopper.hopper_def import HopperConstantsGPU
 from core import ContAction
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     state_size,
     metadata_offset,
@@ -257,9 +257,7 @@ fn main() raises:
 
         var cpu_done_with_health = -1
         for step in range(100):
-            var result = env_with_health.step(
-                _make_test_action()
-            )
+            var result = env_with_health.step(_make_test_action())
             if result[2]:  # done
                 cpu_done_with_health = step + 1
                 break
@@ -278,9 +276,7 @@ fn main() raises:
 
         var cpu_done_no_health = -1
         for step in range(100):
-            var result = env_no_health.step(
-                _make_test_action()
-            )
+            var result = env_no_health.step(_make_test_action())
             if result[2]:  # done
                 cpu_done_no_health = step + 1
                 break

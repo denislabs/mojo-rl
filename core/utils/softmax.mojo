@@ -5,7 +5,7 @@ to probability distributions. These are standalone functions (not neural
 network layers) used for action sampling in policy gradient methods.
 
 For neural network layers with backpropagation support, use
-`deep_rl.model.Softmax[dim]` instead.
+`nn.model.Softmax[dim]` instead.
 
 Example usage:
     from core.utils.softmax import softmax, softmax_inline

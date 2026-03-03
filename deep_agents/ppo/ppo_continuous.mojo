@@ -1,7 +1,7 @@
 """Deep PPO (Proximal Policy Optimization) Agent for Continuous Action Spaces.
 
 This PPO implementation supports continuous action spaces using a Gaussian policy:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - StochasticActor for Gaussian policy with reparameterization trick
 - Clipped surrogate objective for stable policy updates
@@ -41,8 +41,8 @@ from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import (
     Linear,
     ReLU,
     LinearReLU,
@@ -50,16 +50,16 @@ from deep_rl.model import (
     Sequential,
     StochasticActor,
 )
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Xavier, Kaiming
-from deep_rl.training import Network
-from deep_rl.checkpoint import (
+from nn.optimizer import Adam
+from nn.initializer import Xavier, Kaiming
+from nn.training import Network
+from nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from deep_rl.gpu import (
+from nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
@@ -71,7 +71,7 @@ from deep_rl.gpu import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from deep_rl.gpu.random import gaussian_noise
+from nn.gpu.random import gaussian_noise
 from core import (
     TrainingMetrics,
     BoxContinuousActionEnv,

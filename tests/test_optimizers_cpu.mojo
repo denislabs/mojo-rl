@@ -11,12 +11,12 @@ Run with:
 from random import seed, random_float64
 from math import sqrt
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, seq
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam, SGD, RMSprop, AdamW
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Tanh, seq
+from nn.loss import MSELoss
+from nn.optimizer import Adam, SGD, RMSprop, AdamW
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -30,7 +30,9 @@ fn print_test_header(name: String):
     print("=" * 70)
 
 
-fn assert_close(actual: Float64, expected: Float64, tol: Float64, msg: String) -> Bool:
+fn assert_close(
+    actual: Float64, expected: Float64, tol: Float64, msg: String
+) -> Bool:
     """Check if two values are close within tolerance."""
     var diff = actual - expected
     if diff < 0:
@@ -307,7 +309,9 @@ fn test_adamw_training():
     print("  PARAM_SIZE: " + String(model.PARAM_SIZE))
 
     # AdamW optimizer
-    var optimizer = AdamW(lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01)
+    var optimizer = AdamW(
+        lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01
+    )
     print("\n  Optimizer: AdamW(lr=0.001, weight_decay=0.01)")
 
     var loss_fn = MSELoss()
@@ -406,11 +410,17 @@ fn compare_optimizers():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_sgd = Trainer(
-        model_sgd, SGD(lr=0.1), MSELoss(), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_sgd,
+        SGD(lr=0.1),
+        MSELoss(),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
     var result_sgd = trainer_sgd.train[BATCH_SIZE](input_data, target_data)
-    print("  SGD(lr=0.1):           loss = " + String(result_sgd.final_loss)[:8])
+    print(
+        "  SGD(lr=0.1):           loss = " + String(result_sgd.final_loss)[:8]
+    )
 
     # Test Adam
     var model_adam = seq(
@@ -419,11 +429,17 @@ fn compare_optimizers():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_adam = Trainer(
-        model_adam, Adam(lr=0.01), MSELoss(), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_adam,
+        Adam(lr=0.01),
+        MSELoss(),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
     var result_adam = trainer_adam.train[BATCH_SIZE](input_data, target_data)
-    print("  Adam(lr=0.01):         loss = " + String(result_adam.final_loss)[:8])
+    print(
+        "  Adam(lr=0.01):         loss = " + String(result_adam.final_loss)[:8]
+    )
 
     # Test RMSprop
     var model_rmsprop = seq(
@@ -432,11 +448,20 @@ fn compare_optimizers():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_rmsprop = Trainer(
-        model_rmsprop, RMSprop(lr=0.01), MSELoss(), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_rmsprop,
+        RMSprop(lr=0.01),
+        MSELoss(),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
-    var result_rmsprop = trainer_rmsprop.train[BATCH_SIZE](input_data, target_data)
-    print("  RMSprop(lr=0.01):      loss = " + String(result_rmsprop.final_loss)[:8])
+    var result_rmsprop = trainer_rmsprop.train[BATCH_SIZE](
+        input_data, target_data
+    )
+    print(
+        "  RMSprop(lr=0.01):      loss = "
+        + String(result_rmsprop.final_loss)[:8]
+    )
 
     # Test AdamW
     var model_adamw = seq(
@@ -445,11 +470,18 @@ fn compare_optimizers():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_adamw = Trainer(
-        model_adamw, AdamW(lr=0.01, weight_decay=0.01), MSELoss(), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_adamw,
+        AdamW(lr=0.01, weight_decay=0.01),
+        MSELoss(),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
     var result_adamw = trainer_adamw.train[BATCH_SIZE](input_data, target_data)
-    print("  AdamW(lr=0.01, wd=0.01): loss = " + String(result_adamw.final_loss)[:8])
+    print(
+        "  AdamW(lr=0.01, wd=0.01): loss = "
+        + String(result_adamw.final_loss)[:8]
+    )
 
     print("\n  All optimizers trained successfully!")
 

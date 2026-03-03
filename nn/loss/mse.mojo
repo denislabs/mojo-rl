@@ -22,7 +22,7 @@ struct MSELoss(LossFunction):
         for i in range(SIZE):
             var diff = Float64(output[i]) - Float64(target[i])
             loss += diff * diff
-        return loss / SIZE
+        return loss / Float64(SIZE)
 
     fn backward[
         SIZE: Int
@@ -35,7 +35,7 @@ struct MSELoss(LossFunction):
         """Gradient of MSE loss: dL/dy = 2 * (output - target) / size."""
         for i in range(SIZE):
             var diff = Float64(output[i]) - Float64(target[i])
-            grad[i] = Scalar[dtype](2.0 * diff / SIZE)
+            grad[i] = Scalar[dtype](2.0 * diff) / Scalar[dtype](SIZE)
 
     # =========================================================================
     # GPU kernel implementations (inlinable for fusion)
@@ -76,7 +76,7 @@ struct MSELoss(LossFunction):
         var total = block.sum[block_size=TPB, broadcast=False](val=my_value)
 
         if local_i == 0:
-            loss[0] = total[0] / SIZE
+            loss[0] = total[0] / Scalar[dtype](SIZE)
 
     @always_inline
     @staticmethod
@@ -104,7 +104,7 @@ struct MSELoss(LossFunction):
         var col = idx % OUT_DIM
         var pred = predictions[row, col]
         var target = targets[row, col]
-        grad_output[row, col] = 2.0 * (pred - target) / SIZE
+        grad_output[row, col] = 2.0 * (pred - target) / Scalar[dtype](SIZE)
 
     # =========================================================================
     # GPU launchers

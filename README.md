@@ -76,99 +76,110 @@ pixi run -e apple mojo run examples/lunar_lander_dqn.mojo
 pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 ```
 
-
 ## Algorithms
 
 ### TD Methods
-| Algorithm | Description |
-|-----------|-------------|
-| **Q-Learning** | Off-policy TD learning: `Q(s,a) += α(r + γ·max Q(s',a') - Q(s,a))` |
-| **SARSA** | On-policy TD learning: `Q(s,a) += α(r + γ·Q(s',a') - Q(s,a))` |
-| **Expected SARSA** | Uses expected value: `Q(s,a) += α(r + γ·E[Q(s',a')] - Q(s,a))` |
-| **Double Q-Learning** | Two Q-tables to reduce overestimation bias |
+
+| Algorithm             | Description                                                        |
+| --------------------- | ------------------------------------------------------------------ |
+| **Q-Learning**        | Off-policy TD learning: `Q(s,a) += α(r + γ·max Q(s',a') - Q(s,a))` |
+| **SARSA**             | On-policy TD learning: `Q(s,a) += α(r + γ·Q(s',a') - Q(s,a))`      |
+| **Expected SARSA**    | Uses expected value: `Q(s,a) += α(r + γ·E[Q(s',a')] - Q(s,a))`     |
+| **Double Q-Learning** | Two Q-tables to reduce overestimation bias                         |
 
 ### Multi-step & Eligibility Traces
-| Algorithm | Description |
-|-----------|-------------|
+
+| Algorithm        | Description                                         |
+| ---------------- | --------------------------------------------------- |
 | **N-step SARSA** | n-step returns, configurable bias-variance tradeoff |
-| **SARSA(λ)** | Eligibility traces for efficient credit assignment |
-| **Monte Carlo** | First-visit MC with complete episode returns |
+| **SARSA(λ)**     | Eligibility traces for efficient credit assignment  |
+| **Monte Carlo**  | First-visit MC with complete episode returns        |
 
 ### Model-based Planning
-| Algorithm | Description |
-|-----------|-------------|
-| **Dyna-Q** | Q-Learning + simulated experience from learned model |
-| **Priority Sweeping** | Prioritized updates by TD error magnitude |
+
+| Algorithm             | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| **Dyna-Q**            | Q-Learning + simulated experience from learned model |
+| **Priority Sweeping** | Prioritized updates by TD error magnitude            |
 
 ### With Experience Replay
-| Algorithm | Description |
-|-----------|-------------|
+
+| Algorithm               | Description                            |
+| ----------------------- | -------------------------------------- |
 | **Q-Learning + Replay** | Off-policy learning with replay buffer |
 
 ### Function Approximation (Tile Coding)
-| Algorithm | Description |
-|-----------|-------------|
+
+| Algorithm            | Description                                       |
+| -------------------- | ------------------------------------------------- |
 | **Tiled Q-Learning** | Q-Learning with tile coding for continuous states |
-| **Tiled SARSA** | On-policy SARSA with tile coding |
-| **Tiled SARSA(λ)** | Eligibility traces + tile coding |
+| **Tiled SARSA**      | On-policy SARSA with tile coding                  |
+| **Tiled SARSA(λ)**   | Eligibility traces + tile coding                  |
 
 ### Function Approximation (Linear with Arbitrary Features)
-| Algorithm | Description |
-|-----------|-------------|
-| **Linear Q-Learning** | Q-Learning with polynomial, RBF, or custom features |
-| **Linear SARSA** | On-policy SARSA with arbitrary feature vectors |
-| **Linear SARSA(λ)** | Eligibility traces with linear function approximation |
+
+| Algorithm             | Description                                           |
+| --------------------- | ----------------------------------------------------- |
+| **Linear Q-Learning** | Q-Learning with polynomial, RBF, or custom features   |
+| **Linear SARSA**      | On-policy SARSA with arbitrary feature vectors        |
+| **Linear SARSA(λ)**   | Eligibility traces with linear function approximation |
 
 ### Policy Gradient Methods
-| Algorithm | Description |
-|-----------|-------------|
-| **REINFORCE** | Monte Carlo policy gradient with softmax policy |
-| **REINFORCE + Baseline** | Variance reduction using learned value baseline |
-| **Actor-Critic** | One-step TD policy gradient with online updates |
-| **Actor-Critic(λ)** | Actor-Critic with eligibility traces for actor and critic |
-| **A2C** | Advantage Actor-Critic with n-step returns and entropy bonus |
-| **PPO** | Proximal Policy Optimization with clipped surrogate objective |
-| **PPO + Minibatch** | PPO with minibatch sampling for larger rollouts |
+
+| Algorithm                | Description                                                   |
+| ------------------------ | ------------------------------------------------------------- |
+| **REINFORCE**            | Monte Carlo policy gradient with softmax policy               |
+| **REINFORCE + Baseline** | Variance reduction using learned value baseline               |
+| **Actor-Critic**         | One-step TD policy gradient with online updates               |
+| **Actor-Critic(λ)**      | Actor-Critic with eligibility traces for actor and critic     |
+| **A2C**                  | Advantage Actor-Critic with n-step returns and entropy bonus  |
+| **PPO**                  | Proximal Policy Optimization with clipped surrogate objective |
+| **PPO + Minibatch**      | PPO with minibatch sampling for larger rollouts               |
 
 ### Continuous Control (Deterministic Policy Gradient)
-| Algorithm | Description |
-|-----------|-------------|
-| **DDPG** | Deep Deterministic Policy Gradient with linear function approximation |
-| **TD3** | Twin Delayed DDPG with twin Q-networks, delayed policy updates, target smoothing |
-| **SAC** | Soft Actor-Critic with maximum entropy RL and automatic temperature tuning |
+
+| Algorithm | Description                                                                      |
+| --------- | -------------------------------------------------------------------------------- |
+| **DDPG**  | Deep Deterministic Policy Gradient with linear function approximation            |
+| **TD3**   | Twin Delayed DDPG with twin Q-networks, delayed policy updates, target smoothing |
+| **SAC**   | Soft Actor-Critic with maximum entropy RL and automatic temperature tuning       |
 
 ### Deep RL (Neural Networks)
-| Algorithm | Description |
-|-----------|-------------|
-| **Deep DQN** | Deep Q-Network with target network, experience replay, epsilon-greedy exploration |
-| **Deep Double DQN** | DQN with reduced overestimation: online network selects actions, target evaluates |
-| **Deep Dueling DQN** | Separate V(s) and A(s,a) streams for better value estimation |
-| **Deep DQN + PER** | DQN with Prioritized Experience Replay for efficient learning |
-| **Deep DDPG** | DDPG with 2-layer MLP actor/critic networks for continuous control |
-| **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
-| **Deep SAC** | Soft Actor-Critic with entropy regularization and automatic temperature |
-| **Deep A2C** | Advantage Actor-Critic with GAE for variance reduction |
-| **Deep PPO** | Proximal Policy Optimization with clipped surrogate, LR annealing, KL early stopping, gradient clipping |
+
+| Algorithm            | Description                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Deep DQN**         | Deep Q-Network with target network, experience replay, epsilon-greedy exploration                       |
+| **Deep Double DQN**  | DQN with reduced overestimation: online network selects actions, target evaluates                       |
+| **Deep Dueling DQN** | Separate V(s) and A(s,a) streams for better value estimation                                            |
+| **Deep DQN + PER**   | DQN with Prioritized Experience Replay for efficient learning                                           |
+| **Deep DDPG**        | DDPG with 2-layer MLP actor/critic networks for continuous control                                      |
+| **Deep TD3**         | TD3 with twin critics, delayed policy updates, target policy smoothing                                  |
+| **Deep SAC**         | Soft Actor-Critic with entropy regularization and automatic temperature                                 |
+| **Deep A2C**         | Advantage Actor-Critic with GAE for variance reduction                                                  |
+| **Deep PPO**         | Proximal Policy Optimization with clipped surrogate, LR annealing, KL early stopping, gradient clipping |
 
 ## Environments
 
 ### Native Mojo Environments
-| Environment | States | Actions | Description |
-|-------------|--------|---------|-------------|
-| **GridWorld** | 25 (5x5) | 4 | Navigate to goal, -1/step, +10 goal |
-| **FrozenLake** | 16 (4x4) | 4 | Avoid holes on slippery ice |
-| **CliffWalking** | 48 (4x12) | 4 | Avoid cliff, -100 penalty |
-| **Taxi** | 500 | 6 | Pickup/dropoff passenger |
-| **CartPole** | Continuous | 2 | Balance pole on cart (145x faster than Gymnasium), integrated SDL2 rendering |
-| **MountainCar** | Continuous | 3 | Drive car up mountain using momentum, integrated SDL2 rendering |
-| **Acrobot** | Continuous | 3 | Swing two-link pendulum above threshold, integrated SDL2 rendering |
-| **Pendulum** | Continuous | Continuous | Swing up and balance inverted pendulum, integrated SDL2 rendering |
-| **LunarLander** | Continuous (8D) | 4 (discrete) | Land spacecraft on helipad, custom 2D physics engine, flame particles, SDL2 rendering |
-| **BipedalWalker** | Continuous (24D) | Continuous (4D) | Walk on terrain, normal/hardcore modes, lidar, custom 2D physics, SDL2 rendering |
-| **CarRacing** | Continuous (12D) | Continuous (3D) / Discrete (5) | Top-down racing, procedural tracks, 4-wheel friction, SDL2 rendering |
+
+| Environment       | States           | Actions                        | Description                                                                           |
+| ----------------- | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------- |
+| **GridWorld**     | 25 (5x5)         | 4                              | Navigate to goal, -1/step, +10 goal                                                   |
+| **FrozenLake**    | 16 (4x4)         | 4                              | Avoid holes on slippery ice                                                           |
+| **CliffWalking**  | 48 (4x12)        | 4                              | Avoid cliff, -100 penalty                                                             |
+| **Taxi**          | 500              | 6                              | Pickup/dropoff passenger                                                              |
+| **CartPole**      | Continuous       | 2                              | Balance pole on cart (145x faster than Gymnasium), integrated SDL2 rendering          |
+| **MountainCar**   | Continuous       | 3                              | Drive car up mountain using momentum, integrated SDL2 rendering                       |
+| **Acrobot**       | Continuous       | 3                              | Swing two-link pendulum above threshold, integrated SDL2 rendering                    |
+| **Pendulum**      | Continuous       | Continuous                     | Swing up and balance inverted pendulum, integrated SDL2 rendering                     |
+| **LunarLander**   | Continuous (8D)  | 4 (discrete)                   | Land spacecraft on helipad, custom 2D physics engine, flame particles, SDL2 rendering |
+| **BipedalWalker** | Continuous (24D) | Continuous (4D)                | Walk on terrain, normal/hardcore modes, lidar, custom 2D physics, SDL2 rendering      |
+| **CarRacing**     | Continuous (12D) | Continuous (3D) / Discrete (5) | Top-down racing, procedural tracks, 4-wheel friction, SDL2 rendering                  |
 
 ### Gymnasium Wrappers (`envs/gymnasium/`)
+
 Wrap any Gymnasium environment with Python interop:
+
 - **Classic Control**: CartPole, MountainCar, Pendulum, Acrobot
 - **Box2D**: LunarLander, BipedalWalker, CarRacing
 - **Toy Text**: FrozenLake, Taxi, Blackjack, CliffWalking
@@ -213,7 +224,7 @@ mojo-rl/
 │   ├── ddpg.mojo              # Deep Deterministic Policy Gradient (linear)
 │   ├── td3.mojo               # Twin Delayed DDPG (linear)
 │   └── sac.mojo               # Soft Actor-Critic (linear)
-├── deep_rl/               # Deep RL infrastructure (trait-based neural networks)
+├── nn/               # Deep RL infrastructure (trait-based neural networks)
 │   ├── constants.mojo     # Global constants (dtype=float32, TILE=16, TPB=256)
 │   ├── model/             # Neural network layers (Model trait)
 │   │   ├── model.mojo     # Model trait: stateless forward/backward with LayoutTensor
@@ -330,6 +341,7 @@ fn main() raises:
 ## Extending the Framework
 
 ### Adding a New Environment
+
 ```mojo
 struct MyEnv(DiscreteEnv):
     comptime StateType = MyState
@@ -342,6 +354,7 @@ struct MyEnv(DiscreteEnv):
 ```
 
 ### Adding a New Agent
+
 ```mojo
 struct MyAgent(TabularAgent):
     fn select_action(self, state_idx: Int) -> Int: ...
@@ -393,7 +406,7 @@ fn main() raises:
 ### Deep Learning with Trainer
 
 ```mojo
-from deep_rl import (
+from nn import (
     Model, seq, Linear, ReLU, Tanh,
     Optimizer, SGD, Adam,
     LossFunction, MSELoss,
@@ -450,35 +463,36 @@ fn main() raises:
 
 ## Algorithm Parameters
 
-| Algorithm | Key Parameters |
-|-----------|---------------|
-| Q-Learning | `learning_rate`, `discount_factor`, `epsilon`, `epsilon_decay` |
-| N-step SARSA | Above + `n` (number of steps) |
-| SARSA(λ) | Above + `lambda_` (trace decay) |
-| Dyna-Q | Above + `n_planning` (planning steps per real step) |
-| Priority Sweeping | Above + `priority_threshold` |
-| Q-Learning + Replay | Above + `buffer_size`, `batch_size`, `min_buffer_size` |
-| REINFORCE | `learning_rate`, `discount_factor`, `use_baseline`, `baseline_lr` |
-| Actor-Critic | `actor_lr`, `critic_lr`, `discount_factor`, `entropy_coef` |
-| Actor-Critic(λ) | Above + `lambda_` (trace decay) |
-| A2C | Above + `n_steps` (for n-step returns) |
-| PPO | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef` |
-| DDPG | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale` |
-| TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
-| SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |
-| Deep DQN | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity` |
-| Deep Double DQN | Same as Deep DQN (enabled by default via compile-time parameter) |
-| Deep Dueling DQN | Same as Deep DQN with V(s) + A(s,a) architecture |
-| Deep DQN + PER | Same as Deep DQN + `alpha`, `beta_start`, priority sampling |
-| Deep DDPG | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size` |
-| Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
-| Deep SAC | `actor_lr`, `critic_lr`, `gamma`, `tau`, `alpha`, `auto_alpha`, `target_entropy`, `hidden_dim`, `batch_size` |
-| Deep A2C | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `entropy_coef`, `hidden_dim` |
-| Deep PPO | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim`, `target_kl`, `max_grad_norm`, `anneal_lr`, `anneal_entropy` |
+| Algorithm           | Key Parameters                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q-Learning          | `learning_rate`, `discount_factor`, `epsilon`, `epsilon_decay`                                                                                                          |
+| N-step SARSA        | Above + `n` (number of steps)                                                                                                                                           |
+| SARSA(λ)            | Above + `lambda_` (trace decay)                                                                                                                                         |
+| Dyna-Q              | Above + `n_planning` (planning steps per real step)                                                                                                                     |
+| Priority Sweeping   | Above + `priority_threshold`                                                                                                                                            |
+| Q-Learning + Replay | Above + `buffer_size`, `batch_size`, `min_buffer_size`                                                                                                                  |
+| REINFORCE           | `learning_rate`, `discount_factor`, `use_baseline`, `baseline_lr`                                                                                                       |
+| Actor-Critic        | `actor_lr`, `critic_lr`, `discount_factor`, `entropy_coef`                                                                                                              |
+| Actor-Critic(λ)     | Above + `lambda_` (trace decay)                                                                                                                                         |
+| A2C                 | Above + `n_steps` (for n-step returns)                                                                                                                                  |
+| PPO                 | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef`                                                                                     |
+| DDPG                | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale`                                                                                          |
+| TD3                 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip`                                                                                                         |
+| SAC                 | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy`                                                                              |
+| Deep DQN            | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity`                                                          |
+| Deep Double DQN     | Same as Deep DQN (enabled by default via compile-time parameter)                                                                                                        |
+| Deep Dueling DQN    | Same as Deep DQN with V(s) + A(s,a) architecture                                                                                                                        |
+| Deep DQN + PER      | Same as Deep DQN + `alpha`, `beta_start`, priority sampling                                                                                                             |
+| Deep DDPG           | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size`                                                         |
+| Deep TD3            | Above + `policy_delay`, `target_noise_std`, `target_noise_clip`                                                                                                         |
+| Deep SAC            | `actor_lr`, `critic_lr`, `gamma`, `tau`, `alpha`, `auto_alpha`, `target_entropy`, `hidden_dim`, `batch_size`                                                            |
+| Deep A2C            | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `entropy_coef`, `hidden_dim`                                                                                            |
+| Deep PPO            | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim`, `target_kl`, `max_grad_norm`, `anneal_lr`, `anneal_entropy` |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
+
 - ~~Deep RL algorithms~~ ✅ DQN, Dueling DQN, DQN+PER, DDPG, TD3, SAC, A2C, PPO all implemented
 - ~~Prioritized Experience Replay~~ ✅ Implemented with sum-tree
 - ~~GPU support for training~~ ✅ Trainer with GPU support

@@ -1,9 +1,9 @@
 """DQN Agent using the new trait-based deep learning architecture.
 
 This DQN implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building Q-networks
-- ReplayBuffer from deep_rl.replay for experience replay
+- ReplayBuffer from nn.replay for experience replay
 - Double DQN support via compile-time parameter
 
 Features:
@@ -37,13 +37,13 @@ from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, Sequential, LinearReLU
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming
-from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer
-from deep_rl.checkpoint import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, Sequential, LinearReLU
+from nn.optimizer import Adam
+from nn.initializer import Kaiming
+from nn.training import Network
+from nn.replay import ReplayBuffer
+from nn.checkpoint import (
     write_checkpoint_header,
     write_float_section,
     write_metadata_section,
@@ -56,7 +56,7 @@ from deep_rl.checkpoint import (
     split_lines,
     find_section_start,
 )
-from deep_rl.gpu import (
+from nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,

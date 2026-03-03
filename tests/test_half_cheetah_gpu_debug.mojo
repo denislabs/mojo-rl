@@ -17,7 +17,7 @@ Run with:
 """
 
 from gpu.host import DeviceContext, DeviceBuffer
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 from envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 

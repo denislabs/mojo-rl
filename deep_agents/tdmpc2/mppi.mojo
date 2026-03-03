@@ -13,7 +13,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 from math import exp, sqrt, cos, log
 from random import random_float64
 
-from deep_rl.constants import dtype
+from nn.constants import dtype
 from .world_model import WorldModel, decode_value_batch_scalar
 
 

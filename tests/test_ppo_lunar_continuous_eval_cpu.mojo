@@ -14,7 +14,7 @@ from memory import UnsafePointer
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.lunar_lander import LunarLander, LLConstants
 from render import Renderer2D
-from deep_rl import dtype
+from nn import dtype
 
 
 # =============================================================================

@@ -8,8 +8,8 @@ Designed for reinforcement learning where we need:
 - Target network operations (soft_update, copy_params)
 
 Usage:
-    from deep_rl import seq, Linear, ReLU, Adam, Kaiming
-    from deep_rl.training import Network
+    from nn import seq, Linear, ReLU, Adam, Kaiming
+    from nn.training import Network
 
     # Define Q-network: obs -> hidden -> hidden -> num_actions
     var q_model = seq(

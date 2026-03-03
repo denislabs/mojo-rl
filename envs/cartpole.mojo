@@ -41,7 +41,7 @@ from render import (
     black,
     white,
 )
-from deep_rl.gpu import random_range, xorshift32
+from nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from gpu import block_dim, block_idx, thread_idx
 from gpu.host import DeviceContext, DeviceBuffer

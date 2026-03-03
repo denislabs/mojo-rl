@@ -1,7 +1,7 @@
 """Deep PPO (Proximal Policy Optimization) Agent using the new trait-based architecture.
 
 This PPO implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Clipped surrogate objective for stable policy updates
 - GAE (Generalized Advantage Estimation) for variance reduction
@@ -41,18 +41,18 @@ from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, LinearReLU, Sequential
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Xavier
-from deep_rl.training import Network
-from deep_rl.checkpoint import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, ReLU, LinearReLU, Sequential
+from nn.optimizer import Adam
+from nn.initializer import Xavier
+from nn.training import Network
+from nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from deep_rl.gpu import (
+from nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,

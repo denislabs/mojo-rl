@@ -1,10 +1,10 @@
 """Deep TD3 Agent using the new trait-based deep learning architecture.
 
 This TD3 (Twin Delayed Deep Deterministic Policy Gradient) implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Tanh output activation for bounded actions
-- ReplayBuffer from deep_rl.replay for experience replay
+- ReplayBuffer from nn.replay for experience replay
 
 TD3 improves upon DDPG with three key innovations:
 1. Twin Q-networks: Use two critics and take min(Q1, Q2) to reduce overestimation
@@ -38,14 +38,14 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, Tanh, Sequential, LinearReLU, LinearTanh
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming, Xavier
-from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer
-from deep_rl.gpu.random import gaussian_noise
-from deep_rl.checkpoint import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, ReLU, Tanh, Sequential, LinearReLU, LinearTanh
+from nn.optimizer import Adam
+from nn.initializer import Kaiming, Xavier
+from nn.training import Network
+from nn.replay import ReplayBuffer
+from nn.gpu.random import gaussian_noise
+from nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
@@ -314,7 +314,9 @@ struct DeepTD3Agent[
         )
         for i in range(Self.ACTIONS):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[dtype](Float64(action[i]) / self.action_scale)
+            action_arr[i] = Scalar[dtype](
+                Float64(action[i]) / self.action_scale
+            )
 
         self.buffer.add(
             obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
@@ -636,9 +638,9 @@ struct DeepTD3Agent[
         if self.noise_std < self.noise_std_min:
             self.noise_std = self.noise_std_min
 
-    fn _list_to_simd[T: DType](
-        self, obs_list: List[Scalar[T]]
-    ) -> SIMD[dtype, Self.obs_dim]:
+    fn _list_to_simd[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
         """Convert List[Scalar[T]] to SIMD[dtype] for internal use."""
         var obs = SIMD[dtype, Self.obs_dim]()
         for i in range(Self.obs_dim):
@@ -702,7 +704,9 @@ struct DeepTD3Agent[
             )
             var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
-                action[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * self.action_scale)
+                action[i] = Scalar[dtype](
+                    (random_float64() * 2.0 - 1.0) * self.action_scale
+                )
                 action_list.append(Float64(action[i]))
 
             # Step environment with full action vector

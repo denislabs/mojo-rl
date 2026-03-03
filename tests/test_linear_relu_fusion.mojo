@@ -6,12 +6,12 @@ from math import sin
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, LinearReLU, seq
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier
+from nn.constants import dtype
+from nn.model import Linear, ReLU, LinearReLU, seq
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier
 
 
 # Configuration
@@ -139,7 +139,9 @@ def main():
 
     print("Training fused model on GPU...")
     var start_fused = perf_counter_ns()
-    var fused_result = fused_trainer.train_gpu[BATCH](ctx, input_data, target_data)
+    var fused_result = fused_trainer.train_gpu[BATCH](
+        ctx, input_data, target_data
+    )
     var end_fused = perf_counter_ns()
     var fused_time_ms = Float64(end_fused - start_fused) / 1_000_000.0
 

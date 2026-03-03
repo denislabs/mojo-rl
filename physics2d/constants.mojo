@@ -1,7 +1,7 @@
 """Physics engine constants and type definitions.
 
 This module defines the core constants used throughout the GPU physics engine,
-following the pattern established in deep_rl/constants.mojo.
+following the pattern established in nn/constants.mojo.
 """
 
 # =============================================================================

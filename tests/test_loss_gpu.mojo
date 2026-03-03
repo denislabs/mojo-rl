@@ -14,12 +14,12 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, Softmax, seq
-from deep_rl.loss import MSELoss, HuberLoss, CrossEntropyLoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Tanh, Softmax, seq
+from nn.loss import MSELoss, HuberLoss, CrossEntropyLoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -86,12 +86,16 @@ fn test_huber_loss_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         for j in range(OUTPUT_DIM):
             # Add some outliers (10% of data)
             if random_float64() < 0.1:
-                target_data[i * OUTPUT_DIM + j] = Scalar[dtype](random_float64() * 10)
+                target_data[i * OUTPUT_DIM + j] = Scalar[dtype](
+                    random_float64() * 10
+                )
             else:
                 var idx1 = j * 2
                 var idx2 = j * 2 + 1
@@ -106,7 +110,9 @@ fn test_huber_loss_gpu():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 
@@ -115,7 +121,11 @@ fn test_huber_loss_gpu():
             print("  Final loss: " + String(result.final_loss))
             print("  Epochs: " + String(result.epochs_trained))
             print("  Time: " + String(elapsed_ms)[:8] + " ms")
-            print("  Avg per epoch: " + String(elapsed_ms / Float64(NUM_EPOCHS))[:6] + " ms")
+            print(
+                "  Avg per epoch: "
+                + String(elapsed_ms / Float64(NUM_EPOCHS))[:6]
+                + " ms"
+            )
 
             print("\n  PASS: Huber Loss GPU training completed")
 
@@ -176,7 +186,9 @@ fn test_cross_entropy_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         # Determine class based on quadrants of first 4 inputs
         var x1 = Float64(input_data[i * INPUT_DIM + 0])
@@ -194,7 +206,9 @@ fn test_cross_entropy_gpu():
 
         # One-hot encoding
         for j in range(NUM_CLASSES):
-            target_data[i * NUM_CLASSES + j] = Scalar[dtype](1.0) if j == class_idx else Scalar[dtype](0.0)
+            target_data[i * NUM_CLASSES + j] = Scalar[dtype](
+                1.0
+            ) if j == class_idx else Scalar[dtype](0.0)
 
     print("\n  Classification task: 4 classes based on quadrants")
     print("-" * 70)
@@ -203,7 +217,9 @@ fn test_cross_entropy_gpu():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 
@@ -212,7 +228,11 @@ fn test_cross_entropy_gpu():
             print("  Final loss: " + String(result.final_loss))
             print("  Epochs: " + String(result.epochs_trained))
             print("  Time: " + String(elapsed_ms)[:8] + " ms")
-            print("  Avg per epoch: " + String(elapsed_ms / Float64(NUM_EPOCHS))[:6] + " ms")
+            print(
+                "  Avg per epoch: "
+                + String(elapsed_ms / Float64(NUM_EPOCHS))[:6]
+                + " ms"
+            )
 
             print("\n  PASS: Cross-Entropy GPU training completed")
 
@@ -248,7 +268,12 @@ fn test_dqn_style_training():
         Linear[HIDDEN2, NUM_ACTIONS](),
     )
 
-    print("  DQN Q-Network: " + String(STATE_DIM) + " -> 128 (ReLU) -> 64 (ReLU) -> " + String(NUM_ACTIONS))
+    print(
+        "  DQN Q-Network: "
+        + String(STATE_DIM)
+        + " -> 128 (ReLU) -> 64 (ReLU) -> "
+        + String(NUM_ACTIONS)
+    )
     print("  PARAM_SIZE: " + String(q_network.PARAM_SIZE))
 
     # Huber Loss (standard for DQN)
@@ -280,17 +305,23 @@ fn test_dqn_style_training():
     for i in range(BATCH_SIZE):
         # Random state (normalized like real observations)
         for j in range(STATE_DIM):
-            input_data[i * STATE_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * STATE_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         # Random TD targets (Q-values typically in [-inf, inf] but we simulate reasonable range)
         for j in range(NUM_ACTIONS):
             # Mix of small and occasional large values (like real TD errors)
             if random_float64() < 0.1:
                 # Large TD error (outlier)
-                target_data[i * NUM_ACTIONS + j] = Scalar[dtype](random_float64() * 20 - 10)
+                target_data[i * NUM_ACTIONS + j] = Scalar[dtype](
+                    random_float64() * 20 - 10
+                )
             else:
                 # Normal TD target
-                target_data[i * NUM_ACTIONS + j] = Scalar[dtype](random_float64() * 4 - 2)
+                target_data[i * NUM_ACTIONS + j] = Scalar[dtype](
+                    random_float64() * 4 - 2
+                )
 
     print("\n  Simulated replay batch with mixed TD targets")
     print("  (10% large TD errors to test Huber robustness)")
@@ -300,7 +331,9 @@ fn test_dqn_style_training():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 
@@ -309,7 +342,11 @@ fn test_dqn_style_training():
             print("  Final loss: " + String(result.final_loss))
             print("  Epochs: " + String(result.epochs_trained))
             print("  Time: " + String(elapsed_ms)[:8] + " ms")
-            print("  Avg per epoch: " + String(elapsed_ms / Float64(NUM_EPOCHS))[:6] + " ms")
+            print(
+                "  Avg per epoch: "
+                + String(elapsed_ms / Float64(NUM_EPOCHS))[:6]
+                + " ms"
+            )
 
             print("\n  PASS: DQN-style training with Huber Loss completed")
 
@@ -343,12 +380,16 @@ fn compare_loss_functions_gpu():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         for j in range(OUTPUT_DIM):
             # 15% outliers
             if random_float64() < 0.15:
-                target_data[i * OUTPUT_DIM + j] = Scalar[dtype](random_float64() * 10)
+                target_data[i * OUTPUT_DIM + j] = Scalar[dtype](
+                    random_float64() * 10
+                )
             else:
                 var idx1 = j * 2
                 var idx2 = j * 2 + 1
@@ -370,13 +411,25 @@ fn compare_loss_functions_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_mse = Trainer(
-                model_mse, Adam(lr=0.01), MSELoss(), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_mse,
+                Adam(lr=0.01),
+                MSELoss(),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_mse = perf_counter_ns()
-            var result_mse = trainer_mse.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_mse = trainer_mse.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_mse = Float64(perf_counter_ns() - start_mse) / 1e6
-            print("  MSELoss:            loss = " + String(result_mse.final_loss)[:8] + "  time = " + String(time_mse)[:6] + " ms")
+            print(
+                "  MSELoss:            loss = "
+                + String(result_mse.final_loss)[:8]
+                + "  time = "
+                + String(time_mse)[:6]
+                + " ms"
+            )
 
             # Test Huber (delta=1)
             var model_huber1 = seq(
@@ -385,13 +438,25 @@ fn compare_loss_functions_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_huber1 = Trainer(
-                model_huber1, Adam(lr=0.01), HuberLoss(delta=1.0), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_huber1,
+                Adam(lr=0.01),
+                HuberLoss(delta=1.0),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_huber1 = perf_counter_ns()
-            var result_huber1 = trainer_huber1.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_huber1 = trainer_huber1.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_huber1 = Float64(perf_counter_ns() - start_huber1) / 1e6
-            print("  HuberLoss(d=1.0):   loss = " + String(result_huber1.final_loss)[:8] + "  time = " + String(time_huber1)[:6] + " ms")
+            print(
+                "  HuberLoss(d=1.0):   loss = "
+                + String(result_huber1.final_loss)[:8]
+                + "  time = "
+                + String(time_huber1)[:6]
+                + " ms"
+            )
 
             # Test Huber (delta=0.5)
             var model_huber05 = seq(
@@ -400,13 +465,25 @@ fn compare_loss_functions_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_huber05 = Trainer(
-                model_huber05, Adam(lr=0.01), HuberLoss(delta=0.5), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_huber05,
+                Adam(lr=0.01),
+                HuberLoss(delta=0.5),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_huber05 = perf_counter_ns()
-            var result_huber05 = trainer_huber05.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_huber05 = trainer_huber05.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_huber05 = Float64(perf_counter_ns() - start_huber05) / 1e6
-            print("  HuberLoss(d=0.5):   loss = " + String(result_huber05.final_loss)[:8] + "  time = " + String(time_huber05)[:6] + " ms")
+            print(
+                "  HuberLoss(d=0.5):   loss = "
+                + String(result_huber05.final_loss)[:8]
+                + "  time = "
+                + String(time_huber05)[:6]
+                + " ms"
+            )
 
             # Test Huber (delta=2)
             var model_huber2 = seq(
@@ -415,15 +492,30 @@ fn compare_loss_functions_gpu():
                 Linear[HIDDEN_DIM, OUTPUT_DIM](),
             )
             var trainer_huber2 = Trainer(
-                model_huber2, Adam(lr=0.01), HuberLoss(delta=2.0), Kaiming(),
-                epochs=NUM_EPOCHS, print_every=0,
+                model_huber2,
+                Adam(lr=0.01),
+                HuberLoss(delta=2.0),
+                Kaiming(),
+                epochs=NUM_EPOCHS,
+                print_every=0,
             )
             var start_huber2 = perf_counter_ns()
-            var result_huber2 = trainer_huber2.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result_huber2 = trainer_huber2.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
             var time_huber2 = Float64(perf_counter_ns() - start_huber2) / 1e6
-            print("  HuberLoss(d=2.0):   loss = " + String(result_huber2.final_loss)[:8] + "  time = " + String(time_huber2)[:6] + " ms")
+            print(
+                "  HuberLoss(d=2.0):   loss = "
+                + String(result_huber2.final_loss)[:8]
+                + "  time = "
+                + String(time_huber2)[:6]
+                + " ms"
+            )
 
-            print("\n  Note: Different delta values trade off robustness vs smoothness")
+            print(
+                "\n  Note: Different delta values trade off robustness vs"
+                " smoothness"
+            )
             print("  All loss functions trained on GPU successfully!")
 
     except e:
@@ -454,7 +546,12 @@ fn test_policy_gradient_style():
         Linear[HIDDEN_DIM, NUM_ACTIONS](),
     )
 
-    print("  Policy Network: " + String(STATE_DIM) + " -> 64 (Tanh) -> " + String(NUM_ACTIONS))
+    print(
+        "  Policy Network: "
+        + String(STATE_DIM)
+        + " -> 64 (Tanh) -> "
+        + String(NUM_ACTIONS)
+    )
     print("  PARAM_SIZE: " + String(policy_net.PARAM_SIZE))
 
     # Cross-Entropy Loss
@@ -484,7 +581,9 @@ fn test_policy_gradient_style():
     for i in range(BATCH_SIZE):
         # Random state
         for j in range(STATE_DIM):
-            input_data[i * STATE_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * STATE_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         # "Expert" action based on simple policy
         var x1 = Float64(input_data[i * STATE_DIM + 0])
@@ -502,7 +601,9 @@ fn test_policy_gradient_style():
 
         # One-hot target
         for j in range(NUM_ACTIONS):
-            target_data[i * NUM_ACTIONS + j] = Scalar[dtype](1.0) if j == expert_action else Scalar[dtype](0.0)
+            target_data[i * NUM_ACTIONS + j] = Scalar[dtype](
+                1.0
+            ) if j == expert_action else Scalar[dtype](0.0)
 
     print("\n  Behavior cloning from expert demonstrations")
     print("-" * 70)
@@ -511,7 +612,9 @@ fn test_policy_gradient_style():
 
     try:
         with DeviceContext() as ctx:
-            var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+            var result = trainer.train_gpu[BATCH_SIZE](
+                ctx, input_data, target_data
+            )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
 

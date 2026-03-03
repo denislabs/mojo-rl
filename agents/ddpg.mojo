@@ -53,8 +53,13 @@ from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
-from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
-from deep_rl.gpu.random import gaussian_noise
+from core import (
+    PolynomialFeatures,
+    TrainingMetrics,
+    BoxContinuousActionEnv,
+    RenderableEnv,
+)
+from nn.gpu.random import gaussian_noise
 
 
 struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
@@ -408,7 +413,9 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         # Soft update target networks
         self._soft_update_targets()
 
-    fn _update_critic(mut self, batch: List[ContinuousTransition[DType.float64]]):
+    fn _update_critic(
+        mut self, batch: List[ContinuousTransition[DType.float64]]
+    ):
         """Update critic using TD error.
 
         Loss = (1/N) Σ (Q(s,a) - y)²
@@ -454,7 +461,9 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
                         step_size * td_error * critic_features[j]
                     )
 
-    fn _update_actor(mut self, batch: List[ContinuousTransition[DType.float64]]):
+    fn _update_actor(
+        mut self, batch: List[ContinuousTransition[DType.float64]]
+    ):
         """Update actor using deterministic policy gradient.
 
         The policy gradient for DDPG is:
@@ -782,9 +791,9 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     return result
 
 
-fn _list_to_simd4_f64[DTYPE: DType](
-    obs: List[Scalar[DTYPE]]
-) -> SIMD[DType.float64, 4]:
+fn _list_to_simd4_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
@@ -797,9 +806,11 @@ fn _list_to_simd4_f64[DTYPE: DType](
     return result
 
 
-fn _step_continuous_f64[E: BoxContinuousActionEnv](
-    mut env: E, action: Float64
-) -> Tuple[List[Scalar[E.dtype]], Scalar[E.dtype], Bool]:
+fn _step_continuous_f64[
+    E: BoxContinuousActionEnv
+](mut env: E, action: Float64) -> Tuple[
+    List[Scalar[E.dtype]], Scalar[E.dtype], Bool
+]:
     """Step the environment with a Float64 action.
 
     Using E: BoxContinuousActionEnv alone (not combined with RenderableEnv)

@@ -8,6 +8,7 @@
 ## Algorithm Overview
 
 TD-MPC2 is a **model-based RL** algorithm that simultaneously learns:
+
 - an **encoder** : observation → latent state `z`
 - a **dynamics model** : `(z, a) → z'` (next latent state prediction)
 - a **reward model** : `(z, a) → r` (distributional)
@@ -22,39 +23,39 @@ latent space over a horizon H, using the world model to evaluate candidate traje
 
 ## What Already Exists in mojo-rl ✅
 
-### Neural layers (`deep_rl/model/`)
+### Neural layers (`nn/model/`)
 
-| Component | File | TDMPC2 usage |
-|-----------|------|--------------|
-| `Linear` | `linear.mojo` | Base layer for all MLPs |
-| `LayerNorm` | `layer_norm.mojo` | Used inside `NormedLinear` |
-| `Dropout` | `dropout.mojo` | Used inside `NormedLinear` (Q-functions) |
-| `ReLU`, `Tanh`, `Sigmoid`, `Softmax` | dedicated files | Base activations |
-| `StochasticActor` | `stochastic_actor.mojo` | Foundation for the policy head |
-| `Sequential` | `sequential.mojo` | MLP composition |
+| Component                            | File                    | TDMPC2 usage                             |
+| ------------------------------------ | ----------------------- | ---------------------------------------- |
+| `Linear`                             | `linear.mojo`           | Base layer for all MLPs                  |
+| `LayerNorm`                          | `layer_norm.mojo`       | Used inside `NormedLinear`               |
+| `Dropout`                            | `dropout.mojo`          | Used inside `NormedLinear` (Q-functions) |
+| `ReLU`, `Tanh`, `Sigmoid`, `Softmax` | dedicated files         | Base activations                         |
+| `StochasticActor`                    | `stochastic_actor.mojo` | Foundation for the policy head           |
+| `Sequential`                         | `sequential.mojo`       | MLP composition                          |
 
-### Optimizers (`deep_rl/optimizer/`)
+### Optimizers (`nn/optimizer/`)
 
-| Optimizer | TDMPC2 usage |
-|-----------|--------------|
-| `Adam` | World model + policy |
-| `AdamW` | Alternative for world model |
+| Optimizer | TDMPC2 usage                |
+| --------- | --------------------------- |
+| `Adam`    | World model + policy        |
+| `AdamW`   | Alternative for world model |
 
-### Losses (`deep_rl/loss/`)
+### Losses (`nn/loss/`)
 
-| Loss | TDMPC2 usage |
-|------|--------------|
-| `MSE` | Consistency loss (dynamics prediction) |
+| Loss           | TDMPC2 usage                                     |
+| -------------- | ------------------------------------------------ |
+| `MSE`          | Consistency loss (dynamics prediction)           |
 | `CrossEntropy` | Foundation for soft cross-entropy (reward/value) |
 
 ### Agents & Infrastructure
 
-| Component | TDMPC2 usage |
-|-----------|--------------|
-| `ReplayBuffer` | Transition storage |
-| `SAC` | Structural reference (twin Q-networks, stochastic actor, soft updates) |
-| `Network` (training) | Params + model wrapper |
-| Checkpoint system | Save/load trained models |
+| Component            | TDMPC2 usage                                                           |
+| -------------------- | ---------------------------------------------------------------------- |
+| `ReplayBuffer`       | Transition storage                                                     |
+| `SAC`                | Structural reference (twin Q-networks, stochastic actor, soft updates) |
+| `Network` (training) | Params + model wrapper                                                 |
+| Checkpoint system    | Save/load trained models                                               |
 
 ---
 
@@ -62,7 +63,7 @@ latent space over a horizon H, using the world model to evaluate candidate traje
 
 ### 1. New Neural Layers
 
-#### `deep_rl/model/mish.mojo` — Mish Activation
+#### `nn/model/mish.mojo` — Mish Activation
 
 ```
 Mish(x) = x * tanh(softplus(x)) = x * tanh(log(1 + eˣ))
@@ -71,6 +72,7 @@ Mish(x) = x * tanh(softplus(x)) = x * tanh(log(1 + eˣ))
 Default activation for all `NormedLinear` blocks in TDMPC2.
 
 Gradient:
+
 ```
 f'(x) = tanh(sp) + x * σ(x) * (2 - tanh²(sp))   where sp = softplus(x)
 ```
@@ -79,7 +81,7 @@ f'(x) = tanh(sp) + x * σ(x) * (2 - tanh²(sp))   where sp = softplus(x)
 
 ---
 
-#### `deep_rl/model/simnorm.mojo` — Simplicial Normalization
+#### `nn/model/simnorm.mojo` — Simplicial Normalization
 
 ```
 SimNorm(simplex_dim)(x):
@@ -97,7 +99,7 @@ Used in the **dynamics model output** to stabilize the latent space
 
 ---
 
-#### `deep_rl/model/normed_linear.mojo` — NormedLinear Block
+#### `nn/model/normed_linear.mojo` — NormedLinear Block
 
 ```
 NormedLinear(in_dim, out_dim, dropout_rate=0., act=Mish):
@@ -113,7 +115,7 @@ Final layers use plain `Linear`, optionally followed by `SimNorm` (dynamics head
 
 ### 2. New Loss Functions
 
-#### `deep_rl/loss/two_hot.mojo` — Two-Hot Encoding
+#### `nn/loss/two_hot.mojo` — Two-Hot Encoding
 
 TDMPC2 uses distributional RL: rewards and values are represented as distributions
 over `num_bins` evenly spaced bins in `[v_min, v_max]`.
@@ -133,7 +135,7 @@ Typical values: `num_bins=101`, `v_min=-10.0`, `v_max=10.0`.
 
 ---
 
-#### `deep_rl/loss/soft_cross_entropy.mojo` — Soft Cross-Entropy
+#### `nn/loss/soft_cross_entropy.mojo` — Soft Cross-Entropy
 
 ```
 L = -Σᵢ target_i * log(softmax(logits)_i)
@@ -149,7 +151,7 @@ Used as the loss for both **reward** and **Q-value** heads (distributional).
 
 ### 3. Sequence Replay Buffer
 
-#### `deep_rl/replay/sequence_replay_buffer.mojo`
+#### `nn/replay/sequence_replay_buffer.mojo`
 
 The consistency loss requires **unrolling the world model over H steps**.
 The replay buffer must store and sample **contiguous sequences of length H+1**,
@@ -260,6 +262,7 @@ GPU-batched evaluation of `num_samples=512` trajectories is the key performance 
 #### `deep_agents/tdmpc2/tdmpc2.mojo`
 
 **Key hyperparameters:**
+
 ```
 H                 = 3        # planning horizon
 gamma             = 0.99     # discount factor
@@ -329,16 +332,19 @@ temperature       = 0.5      # MPPI softmax temperature
 ## Implementation Roadmap
 
 ### Phase 1 — New Layers (1–2 days)
-- [ ] `deep_rl/model/mish.mojo`
-- [ ] `deep_rl/model/simnorm.mojo`
-- [ ] `deep_rl/model/normed_linear.mojo`
+
+- [ ] `nn/model/mish.mojo`
+- [ ] `nn/model/simnorm.mojo`
+- [ ] `nn/model/normed_linear.mojo`
 
 ### Phase 2 — Losses & Replay (1–2 days)
-- [ ] `deep_rl/loss/soft_cross_entropy.mojo`
-- [ ] `deep_rl/loss/two_hot.mojo`
-- [ ] `deep_rl/replay/sequence_replay_buffer.mojo`
+
+- [ ] `nn/loss/soft_cross_entropy.mojo`
+- [ ] `nn/loss/two_hot.mojo`
+- [ ] `nn/replay/sequence_replay_buffer.mojo`
 
 ### Phase 3 — World Model (3–5 days)
+
 - [ ] `deep_agents/tdmpc2/world_model.mojo`
   - [ ] Encoder head
   - [ ] Dynamics head (with SimNorm output)
@@ -348,10 +354,12 @@ temperature       = 0.5      # MPPI softmax temperature
   - [ ] Q-function ensemble
 
 ### Phase 4 — Planning & Agent (3–5 days)
+
 - [ ] `deep_agents/tdmpc2/mppi.mojo`
 - [ ] `deep_agents/tdmpc2/tdmpc2.mojo`
 
 ### Phase 5 — Validation (2–3 days)
+
 - [ ] Test on `PendulumEnv` (simple baseline)
 - [ ] Benchmark on `HopperEnv`, `HalfCheetahEnv`
 - [ ] Sample efficiency comparison: SAC vs TDMPC2
@@ -361,29 +369,36 @@ temperature       = 0.5      # MPPI softmax temperature
 ## Technical Notes
 
 ### Stop-Gradient
+
 The consistency loss requires stopping gradients on the encoded `obs_t+1` target.
 In mojo-rl this means calling `encode()` in inference mode (no activation caching)
 for the target, while the predicted `z_pred` flows through the full computational graph.
 
 ### Q-Network Ensemble
+
 TDMPC2 uses 5 Q-networks and during the **policy update** randomly subsamples 2
 and takes their minimum. Implementation: an array of `Network[...]` instances with
 random index subsampling for `Q_min` computation.
 
 ### Distributional RL — Scalar Decoding
+
 Q-functions output logits over `NUM_BINS=101` bins. The scalar value is recovered as:
+
 ```
 value = Σᵢ softmax(logits)ᵢ * bins[i]
 ```
+
 where `bins` is a fixed tensor of 101 evenly spaced values in `[v_min, v_max]`.
 
 ### Two Separate Optimizers
+
 - **World model optimizer**: encoder + dynamics + reward + termination + Q-ensemble
   with `enc_lr_scale=0.3` applied to encoder params (e.g., via separate param group or
   learning rate masking)
 - **Policy optimizer**: policy head only, full `learning_rate`
 
 ### MPPI Vectorization — Key Performance Opportunity
+
 The MPPI loop evaluates `num_samples=512` candidate trajectories per timestep.
 Running these as a batched GPU kernel (all 512 in parallel through the world model)
 is the single biggest performance lever over PyTorch-based TDMPC2 in LeRobot.

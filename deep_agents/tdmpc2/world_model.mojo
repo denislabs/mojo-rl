@@ -22,18 +22,18 @@ Reference: Hansen et al., 2023 — TD-MPC2
 from math import exp, log, sqrt
 from random import random_float64
 
-from deep_rl.constants import dtype
-from deep_rl.model import (
+from nn.constants import dtype
+from nn.model import (
     Linear,
     Sequential,
     Sigmoid,
     NormedLinear,
     SimNorm,
 )
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming
-from deep_rl.training import Network
-from deep_rl.loss.two_hot import (
+from nn.optimizer import Adam
+from nn.initializer import Kaiming
+from nn.training import Network
+from nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
     decode_value_batch,

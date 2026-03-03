@@ -11,12 +11,12 @@ Run with:
 from random import seed, random_float64
 from math import exp, log, sqrt
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Softmax, seq
-from deep_rl.loss import MSELoss, HuberLoss, CrossEntropyLoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Softmax, seq
+from nn.loss import MSELoss, HuberLoss, CrossEntropyLoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -30,7 +30,9 @@ fn print_test_header(name: String):
     print("=" * 70)
 
 
-fn assert_close(actual: Float64, expected: Float64, tol: Float64, msg: String) -> Bool:
+fn assert_close(
+    actual: Float64, expected: Float64, tol: Float64, msg: String
+) -> Bool:
     """Check if two values are close within tolerance."""
     var diff = actual - expected
     if diff < 0:
@@ -77,7 +79,12 @@ fn test_huber_loss_algorithm():
         else:
             expected_loss = delta * diff - 0.5 * delta * delta
 
-        print("    output=" + String(output) + ": loss=" + String(expected_loss)[:8])
+        print(
+            "    output="
+            + String(output)
+            + ": loss="
+            + String(expected_loss)[:8]
+        )
 
     # Verify specific values
     # output=0.5: |0.5| <= 1, so L = 0.5 * 0.25 = 0.125
@@ -102,7 +109,9 @@ fn test_huber_loss_algorithm():
     print("    output=0.5: grad=" + String(grad_quad))
 
     # Linear region gradient
-    var grad_linear: Float64 = delta  # output=2.0, target=0: grad = delta * sign(2) = 1.0
+    var grad_linear: Float64 = (
+        delta  # output=2.0, target=0: grad = delta * sign(2) = 1.0
+    )
     print("    output=2.0: grad=" + String(grad_linear) + " (clipped)")
 
     if all_passed:
@@ -199,7 +208,9 @@ fn test_cross_entropy_algorithm():
 fn test_huber_vs_mse():
     print_test_header("Huber Loss vs MSE - Outlier Robustness")
 
-    var outputs = InlineArray[Float64, 5](0.0, 0.0, 0.0, 0.0, 5.0)  # One outlier
+    var outputs = InlineArray[Float64, 5](
+        0.0, 0.0, 0.0, 0.0, 5.0
+    )  # One outlier
     var targets = InlineArray[Float64, 5](0.0, 0.0, 0.0, 0.0, 0.0)
 
     # MSE Loss: L = mean((y - t)^2)
@@ -232,7 +243,11 @@ fn test_huber_vs_mse():
 
     print()
     print("  Ratio (MSE / Huber): " + String(mse_loss / huber_loss)[:6])
-    print("  Huber is " + String(mse_loss / huber_loss)[:4] + "x more robust to outliers!")
+    print(
+        "  Huber is "
+        + String(mse_loss / huber_loss)[:4]
+        + "x more robust to outliers!"
+    )
 
     if huber_loss < mse_loss:
         print("\n  PASS: Huber Loss is more robust to outliers")
@@ -377,7 +392,9 @@ fn test_cross_entropy_training():
 
     for i in range(BATCH_SIZE):
         for j in range(INPUT_DIM):
-            input_data[i * INPUT_DIM + j] = Scalar[dtype](random_float64() * 2 - 1)
+            input_data[i * INPUT_DIM + j] = Scalar[dtype](
+                random_float64() * 2 - 1
+            )
 
         # Determine class based on sum of inputs
         var sum_inputs: Float64 = 0.0
@@ -392,7 +409,9 @@ fn test_cross_entropy_training():
 
         # One-hot encoding
         for j in range(NUM_CLASSES):
-            target_data[i * NUM_CLASSES + j] = Scalar[dtype](1.0) if j == class_idx else Scalar[dtype](0.0)
+            target_data[i * NUM_CLASSES + j] = Scalar[dtype](
+                1.0
+            ) if j == class_idx else Scalar[dtype](0.0)
 
     print("\n  Classification task: 3 classes based on sum of inputs")
     print("-" * 70)
@@ -456,8 +475,12 @@ fn compare_loss_functions():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_mse = Trainer(
-        model_mse, Adam(lr=0.01), MSELoss(), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_mse,
+        Adam(lr=0.01),
+        MSELoss(),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
     var result_mse = trainer_mse.train[BATCH_SIZE](input_data, target_data)
     print("  MSELoss:           loss = " + String(result_mse.final_loss)[:8])
@@ -469,10 +492,16 @@ fn compare_loss_functions():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_huber1 = Trainer(
-        model_huber1, Adam(lr=0.01), HuberLoss(delta=1.0), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_huber1,
+        Adam(lr=0.01),
+        HuberLoss(delta=1.0),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
-    var result_huber1 = trainer_huber1.train[BATCH_SIZE](input_data, target_data)
+    var result_huber1 = trainer_huber1.train[BATCH_SIZE](
+        input_data, target_data
+    )
     print("  HuberLoss(d=1.0):  loss = " + String(result_huber1.final_loss)[:8])
 
     # Test Huber (delta=0.5)
@@ -482,11 +511,19 @@ fn compare_loss_functions():
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
     var trainer_huber05 = Trainer(
-        model_huber05, Adam(lr=0.01), HuberLoss(delta=0.5), Kaiming(),
-        epochs=NUM_EPOCHS, print_every=0,
+        model_huber05,
+        Adam(lr=0.01),
+        HuberLoss(delta=0.5),
+        Kaiming(),
+        epochs=NUM_EPOCHS,
+        print_every=0,
     )
-    var result_huber05 = trainer_huber05.train[BATCH_SIZE](input_data, target_data)
-    print("  HuberLoss(d=0.5):  loss = " + String(result_huber05.final_loss)[:8])
+    var result_huber05 = trainer_huber05.train[BATCH_SIZE](
+        input_data, target_data
+    )
+    print(
+        "  HuberLoss(d=0.5):  loss = " + String(result_huber05.final_loss)[:8]
+    )
 
     print("\n  All loss functions trained successfully!")
     print("  Note: Huber loss values are not directly comparable to MSE")

@@ -22,7 +22,7 @@ from core import (
     ContAction,
 )
 from render import Renderer2D
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 
 # GPU imports
 from gpu.host import DeviceContext, DeviceBuffer

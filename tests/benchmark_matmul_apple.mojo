@@ -15,14 +15,14 @@ from layout import Layout, LayoutTensor
 from time import perf_counter_ns
 from random import random_float64
 
-from deep_rl.gpu.matmul import tiled_matmul_kernel
-from deep_rl.gpu.matmul_apple import (
+from nn.gpu.matmul import tiled_matmul_kernel
+from nn.gpu.matmul_apple import (
     matmul_apple_kernel,
     matmul_apple_reg2x2_kernel,
     matmul_fp16_apple_kernel,
     TILE_APPLE,
 )
-from deep_rl.constants import dtype, TILE
+from nn.constants import dtype, TILE
 
 
 fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
@@ -71,11 +71,15 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     print("-" * 70)
 
     # ========== 16x16 Tiled Kernel ==========
-    var out_tensor_16 = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
-        out_16x16
+    var out_tensor_16 = LayoutTensor[
+        dtype, Layout.row_major(M, N), MutAnyOrigin
+    ](out_16x16)
+    var a_tensor = LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin](
+        a
     )
-    var a_tensor = LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin](a)
-    var b_tensor = LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin](b)
+    var b_tensor = LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin](
+        b
+    )
 
     comptime grid_16 = ((N + TILE - 1) // TILE, (M + TILE - 1) // TILE)
     comptime block_16 = (TILE, TILE)
@@ -83,7 +87,11 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
 
     for _ in range(warmup):
         ctx.enqueue_function[kernel_16, kernel_16](
-            out_tensor_16, a_tensor, b_tensor, grid_dim=grid_16, block_dim=block_16
+            out_tensor_16,
+            a_tensor,
+            b_tensor,
+            grid_dim=grid_16,
+            block_dim=block_16,
         )
         ctx.synchronize()
 
@@ -91,7 +99,11 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     for _ in range(iterations):
         var start = perf_counter_ns()
         ctx.enqueue_function[kernel_16, kernel_16](
-            out_tensor_16, a_tensor, b_tensor, grid_dim=grid_16, block_dim=block_16
+            out_tensor_16,
+            a_tensor,
+            b_tensor,
+            grid_dim=grid_16,
+            block_dim=block_16,
         )
         ctx.synchronize()
         total_ns_16 += perf_counter_ns() - start
@@ -99,9 +111,9 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     var time_16x16 = Float64(total_ns_16) / Float64(iterations) / 1_000_000.0
 
     # ========== 8x8 Apple Kernel ==========
-    var out_tensor_8 = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
-        out_8x8
-    )
+    var out_tensor_8 = LayoutTensor[
+        dtype, Layout.row_major(M, N), MutAnyOrigin
+    ](out_8x8)
     comptime grid_8 = (
         (N + TILE_APPLE - 1) // TILE_APPLE,
         (M + TILE_APPLE - 1) // TILE_APPLE,
@@ -127,9 +139,9 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     var time_8x8 = Float64(total_ns_8) / Float64(iterations) / 1_000_000.0
 
     # ========== Reg2x2 Kernel ==========
-    var out_tensor_reg = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
-        out_reg2x2
-    )
+    var out_tensor_reg = LayoutTensor[
+        dtype, Layout.row_major(M, N), MutAnyOrigin
+    ](out_reg2x2)
     comptime BLOCK_TILE = TILE_APPLE * 2
     comptime grid_reg = (
         (N + BLOCK_TILE - 1) // BLOCK_TILE,
@@ -140,7 +152,11 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
 
     for _ in range(warmup):
         ctx.enqueue_function[kernel_reg, kernel_reg](
-            out_tensor_reg, a_tensor, b_tensor, grid_dim=grid_reg, block_dim=block_reg
+            out_tensor_reg,
+            a_tensor,
+            b_tensor,
+            grid_dim=grid_reg,
+            block_dim=block_reg,
         )
         ctx.synchronize()
 
@@ -148,7 +164,11 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     for _ in range(iterations):
         var start = perf_counter_ns()
         ctx.enqueue_function[kernel_reg, kernel_reg](
-            out_tensor_reg, a_tensor, b_tensor, grid_dim=grid_reg, block_dim=block_reg
+            out_tensor_reg,
+            a_tensor,
+            b_tensor,
+            grid_dim=grid_reg,
+            block_dim=block_reg,
         )
         ctx.synchronize()
         total_ns_reg += perf_counter_ns() - start

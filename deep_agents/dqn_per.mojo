@@ -1,9 +1,9 @@
 """DQN Agent with Prioritized Experience Replay using the new trait-based architecture.
 
 This DQN+PER implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building Q-networks
-- PrioritizedReplayBuffer from deep_rl.replay for priority-weighted sampling
+- PrioritizedReplayBuffer from nn.replay for priority-weighted sampling
 
 Key differences from standard DQN:
 - Samples transitions proportionally to TD error magnitude
@@ -34,12 +34,12 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, LinearReLU, Sequential
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming
-from deep_rl.training import Network
-from deep_rl.replay import PrioritizedReplayBuffer
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, LinearReLU, Sequential
+from nn.optimizer import Adam
+from nn.initializer import Kaiming
+from nn.training import Network
+from nn.replay import PrioritizedReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
@@ -275,7 +275,6 @@ struct DQNPERAgent[
             uninitialized=True
         )
 
-        
         comptime if Self.double_dqn:
             # Double DQN: online network selects best action, target evaluates it
             var online_next_q = InlineArray[
@@ -333,9 +332,9 @@ struct DQNPERAgent[
         var q_values = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var cache = InlineArray[Scalar[dtype], Self.BATCH * Self.QNetwork.CACHE_SIZE](
-            uninitialized=True
-        )
+        var cache = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.QNetwork.CACHE_SIZE
+        ](uninitialized=True)
         self.q_network.forward_with_cache[Self.BATCH](
             batch_obs, q_values, cache
         )
@@ -407,9 +406,9 @@ struct DQNPERAgent[
         if self.epsilon < self.epsilon_min:
             self.epsilon = self.epsilon_min
 
-    fn _list_to_inline[T: DType](
-        self, obs_list: List[Scalar[T]]
-    ) -> InlineArray[Scalar[dtype], Self.OBS]:
+    fn _list_to_inline[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> InlineArray[Scalar[dtype], Self.OBS]:
         """Convert List[Scalar[T]] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
         for i in range(Self.OBS):
@@ -482,7 +481,9 @@ struct DQNPERAgent[
             var done = result[2]
 
             var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
+            self.store_transition(
+                warmup_obs, action, Float64(reward), next_obs, done
+            )
 
             warmup_obs = next_obs^
             warmup_count += 1
@@ -518,7 +519,9 @@ struct DQNPERAgent[
                 var next_obs = self._list_to_inline(next_obs_list)
 
                 # Store transition (with max priority initially)
-                self.store_transition(obs, action, Float64(reward), next_obs, done)
+                self.store_transition(
+                    obs, action, Float64(reward), next_obs, done
+                )
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:

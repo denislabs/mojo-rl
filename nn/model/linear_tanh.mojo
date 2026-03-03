@@ -1,7 +1,7 @@
 """LinearTanh layer using optimized common matmul building blocks.
 
 This is a refactored version of LinearTanh that uses the shared matmul
-kernels from deep_rl.gpu.matmul_ops for better maintainability and
+kernels from nn.gpu.matmul_ops for better maintainability and
 optimized performance on Apple Silicon.
 """
 

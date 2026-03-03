@@ -2,7 +2,7 @@
 
 from core.replay_buffer import PrioritizedReplayBuffer, PrioritizedTransition
 from core.sum_tree import SumTree
-from deep_rl.replay import PrioritizedReplayBuffer as DeepPER
+from nn.replay import PrioritizedReplayBuffer as DeepPER
 
 
 fn test_sum_tree():

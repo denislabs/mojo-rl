@@ -8,7 +8,7 @@ Usage:
     pixi run mojo run examples/checkpoint_demo.mojo
 """
 
-from deep_rl import (
+from nn import (
     seq,
     Linear,
     ReLU,
@@ -33,7 +33,12 @@ fn demo_network_checkpoint() raises:
 
     print("Original network params (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(network.params[i])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64(network.params[i]))
+        )
 
     # Save checkpoint
     network.save_checkpoint("network_checkpoint.ckpt")
@@ -43,13 +48,23 @@ fn demo_network_checkpoint() raises:
     var loaded_network = Network(model, Adam(lr=0.001), Kaiming())
     print("\nNew network params before load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(loaded_network.params[i])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64(loaded_network.params[i]))
+        )
 
     # Load checkpoint
     loaded_network.load_checkpoint("network_checkpoint.ckpt")
     print("\nNew network params after load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(loaded_network.params[i])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64(loaded_network.params[i]))
+        )
 
     # Verify
     var all_match = True
@@ -59,7 +74,11 @@ fn demo_network_checkpoint() raises:
             break
 
     if all_match:
-        print("\nVerification: All " + String(network.PARAM_SIZE) + " parameters match!")
+        print(
+            "\nVerification: All "
+            + String(network.PARAM_SIZE)
+            + " parameters match!"
+        )
     else:
         print("\nVerification FAILED: Parameters don't match!")
 
@@ -82,8 +101,12 @@ fn demo_dqn_checkpoint() raises:
     print("  gamma = " + String(agent.gamma))
     print("  epsilon = " + String(agent.epsilon))
     print("  train_step_count = " + String(agent.train_step_count))
-    print("  online_params[0] = " + String(Float64(agent.online_model.params[0])))
-    print("  target_params[0] = " + String(Float64(agent.target_model.params[0])))
+    print(
+        "  online_params[0] = " + String(Float64(agent.online_model.params[0]))
+    )
+    print(
+        "  target_params[0] = " + String(Float64(agent.target_model.params[0]))
+    )
 
     # Save checkpoint (single file)
     agent.save_checkpoint("dqn_checkpoint.ckpt")
@@ -91,14 +114,17 @@ fn demo_dqn_checkpoint() raises:
 
     # Create a new agent with different hyperparameters
     var loaded_agent = DQNAgent[4, 2, 32, 1000, 32](
-        gamma=0.95,      # Different
-        epsilon=1.0,     # Different
+        gamma=0.95,  # Different
+        epsilon=1.0,  # Different
     )
 
     print("\nNew agent state before load:")
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
-    print("  online_params[0] = " + String(Float64(loaded_agent.online_model.params[0])))
+    print(
+        "  online_params[0] = "
+        + String(Float64(loaded_agent.online_model.params[0]))
+    )
 
     # Load checkpoint
     loaded_agent.load_checkpoint("dqn_checkpoint.ckpt")
@@ -107,8 +133,14 @@ fn demo_dqn_checkpoint() raises:
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
     print("  train_step_count = " + String(loaded_agent.train_step_count))
-    print("  online_params[0] = " + String(Float64(loaded_agent.online_model.params[0])))
-    print("  target_params[0] = " + String(Float64(loaded_agent.target_model.params[0])))
+    print(
+        "  online_params[0] = "
+        + String(Float64(loaded_agent.online_model.params[0]))
+    )
+    print(
+        "  target_params[0] = "
+        + String(Float64(loaded_agent.target_model.params[0]))
+    )
 
     # Verify
     var params_match = True

@@ -1,7 +1,7 @@
 """Integrator trait for physics simulation.
 
 Integrators handle velocity and position updates for rigid bodies.
-They implement both CPU and GPU execution paths following the deep_rl pattern.
+They implement both CPU and GPU execution paths following the nn pattern.
 """
 
 from ..constants import dtype, BODY_STATE_SIZE

@@ -1,9 +1,9 @@
 """Deep Dueling DQN Agent using the new trait-based deep learning architecture.
 
 This Dueling DQN implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building network components
-- ReplayBuffer from deep_rl.replay for experience replay
+- ReplayBuffer from nn.replay for experience replay
 
 Dueling Architecture:
 - Shared backbone: obs -> h1 (ReLU) -> h2 (ReLU)
@@ -38,12 +38,12 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, LinearReLU, Sequential
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming
-from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, LinearReLU, Sequential
+from nn.optimizer import Adam
+from nn.initializer import Kaiming
+from nn.training import Network
+from nn.replay import ReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 

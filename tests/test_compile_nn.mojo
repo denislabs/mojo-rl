@@ -11,8 +11,8 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext, DeviceBuffer
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear
+from nn.constants import dtype
+from nn.model import Linear
 
 # =============================================================================
 # Constants

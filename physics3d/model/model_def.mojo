@@ -2,7 +2,7 @@
 
 Composes Bodies and Joints into a ModelDef with auto-computed dimensions.
 Uses Variadic.types + comptimefor to iterate at compile time, following
-the same pattern as Sequential[*LAYERS: Model] in deep_rl/model/sequential.mojo.
+the same pattern as Sequential[*LAYERS: Model] in nn/model/sequential.mojo.
 
 Note: Bodies and Joints are standalone variadic containers. ModelDef takes
 concrete Int parameters because Mojo cannot resolve variadic type packs

@@ -13,12 +13,12 @@ Run with:
 from random import seed, random_float64
 from math import exp, sqrt
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Sigmoid, Softmax, LayerNorm, Dropout, seq
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Sigmoid, Softmax, LayerNorm, Dropout, seq
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================
@@ -32,7 +32,9 @@ fn print_test_header(name: String):
     print("=" * 70)
 
 
-fn assert_close(actual: Float64, expected: Float64, tol: Float64, msg: String) -> Bool:
+fn assert_close(
+    actual: Float64, expected: Float64, tol: Float64, msg: String
+) -> Bool:
     """Check if two values are close within tolerance."""
     var diff = actual - expected
     if diff < 0:
@@ -78,10 +80,17 @@ fn test_sigmoid():
     for i in range(3):
         var x = test_inputs[i]
         var sigmoid_val = 1.0 / (1.0 + exp(-x))
-        if not assert_close(sigmoid_val, expected[i], 0.001, "sigmoid(" + String(x) + ")"):
+        if not assert_close(
+            sigmoid_val, expected[i], 0.001, "sigmoid(" + String(x) + ")"
+        ):
             all_passed = False
         else:
-            print("  PASS: sigmoid(" + String(x) + ") = " + String(sigmoid_val)[:6])
+            print(
+                "  PASS: sigmoid("
+                + String(x)
+                + ") = "
+                + String(sigmoid_val)[:6]
+            )
 
     if all_passed:
         print("\n  All Sigmoid tests PASSED")
@@ -163,8 +172,22 @@ fn test_layer_norm():
     print("  LayerNorm[" + String(DIM) + "]")
     print("  IN_DIM: " + String(layer_norm.IN_DIM))
     print("  OUT_DIM: " + String(layer_norm.OUT_DIM))
-    print("  PARAM_SIZE: " + String(layer_norm.PARAM_SIZE) + " (gamma: " + String(DIM) + ", beta: " + String(DIM) + ")")
-    print("  CACHE_SIZE: " + String(layer_norm.CACHE_SIZE) + " (normalized: " + String(DIM) + ", inv_std: 1, mean: 1)")
+    print(
+        "  PARAM_SIZE: "
+        + String(layer_norm.PARAM_SIZE)
+        + " (gamma: "
+        + String(DIM)
+        + ", beta: "
+        + String(DIM)
+        + ")"
+    )
+    print(
+        "  CACHE_SIZE: "
+        + String(layer_norm.CACHE_SIZE)
+        + " (normalized: "
+        + String(DIM)
+        + ", inv_std: 1, mean: 1)"
+    )
 
     # Test normalization: [1, 2, 3, 4]
     # mean = 2.5, var = 1.25, std = 1.118
@@ -195,14 +218,18 @@ fn test_layer_norm():
     var all_passed = True
 
     # Normalized values should sum to ~0
-    if not assert_close(normalized_sum, 0.0, 0.0001, "normalized sum should be ~0"):
+    if not assert_close(
+        normalized_sum, 0.0, 0.0001, "normalized sum should be ~0"
+    ):
         all_passed = False
     else:
         print("  PASS: normalized sum = " + String(normalized_sum)[:10])
 
     # Normalized variance should be ~1
     var normalized_var = normalized_sq_sum / 4.0
-    if not assert_close(normalized_var, 1.0, 0.001, "normalized variance should be ~1"):
+    if not assert_close(
+        normalized_var, 1.0, 0.001, "normalized variance should be ~1"
+    ):
         all_passed = False
     else:
         print("  PASS: normalized variance = " + String(normalized_var)[:6])
@@ -230,12 +257,20 @@ fn test_dropout():
     print("  IN_DIM: " + String(dropout_infer.IN_DIM))
     print("  OUT_DIM: " + String(dropout_infer.OUT_DIM))
     print("  PARAM_SIZE: " + String(dropout_infer.PARAM_SIZE))
-    print("  CACHE_SIZE: " + String(dropout_infer.CACHE_SIZE) + " (0 during inference)")
+    print(
+        "  CACHE_SIZE: "
+        + String(dropout_infer.CACHE_SIZE)
+        + " (0 during inference)"
+    )
 
     # Test training mode (training=True)
     var dropout_train = Dropout[DIM, P, True](seed=42)
     print("\n  Dropout[" + String(DIM) + ", p=0.5, training=True]")
-    print("  CACHE_SIZE: " + String(dropout_train.CACHE_SIZE) + " (stores mask during training)")
+    print(
+        "  CACHE_SIZE: "
+        + String(dropout_train.CACHE_SIZE)
+        + " (stores mask during training)"
+    )
 
     # Verify scale factor: output should be scaled by 1/(1-p) = 2
     var scale = 1.0 / (1.0 - P)
@@ -285,7 +320,9 @@ fn test_sequential_with_new_layers():
     print("  IN_DIM: " + String(model_layernorm.IN_DIM))
     print("  OUT_DIM: " + String(model_layernorm.OUT_DIM))
     print("  PARAM_SIZE: " + String(model_layernorm.PARAM_SIZE))
-    print("    (includes LayerNorm gamma/beta: " + String(2 * HIDDEN) + " params)")
+    print(
+        "    (includes LayerNorm gamma/beta: " + String(2 * HIDDEN) + " params)"
+    )
 
     # Build: Linear -> Softmax (classification head)
     var model_softmax = seq(

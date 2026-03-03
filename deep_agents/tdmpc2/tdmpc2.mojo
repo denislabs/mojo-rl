@@ -32,14 +32,14 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TPB
-from deep_rl.loss.two_hot import (
+from nn.constants import dtype, TPB
+from nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
     decode_value_batch,
 )
-from deep_rl.replay.sequence_replay_buffer import SequenceReplayBuffer
-from deep_rl.gpu.rl_kernels import (
+from nn.replay.sequence_replay_buffer import SequenceReplayBuffer
+from nn.gpu.rl_kernels import (
     soft_update_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,

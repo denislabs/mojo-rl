@@ -1,10 +1,10 @@
 """Deep DDPG Agent using the new trait-based deep learning architecture.
 
 This DDPG (Deep Deterministic Policy Gradient) implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Tanh output activation for bounded actions
-- ReplayBuffer from deep_rl.replay for experience replay
+- ReplayBuffer from nn.replay for experience replay
 
 Features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
@@ -30,14 +30,14 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, LinearReLU, LinearTanh, Sequential
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming, Xavier
-from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer
-from deep_rl.gpu.random import gaussian_noise
-from deep_rl.checkpoint import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, ReLU, LinearReLU, LinearTanh, Sequential
+from nn.optimizer import Adam
+from nn.initializer import Kaiming, Xavier
+from nn.training import Network
+from nn.replay import ReplayBuffer
+from nn.gpu.random import gaussian_noise
+from nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
@@ -267,7 +267,9 @@ struct DeepDDPGAgent[
         )
         for i in range(Self.ACTIONS):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[dtype](Float64(action[i]) / self.action_scale)
+            action_arr[i] = Scalar[dtype](
+                Float64(action[i]) / self.action_scale
+            )
 
         self.buffer.add(
             obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
@@ -518,9 +520,9 @@ struct DeepDDPGAgent[
         if self.noise_std < self.noise_std_min:
             self.noise_std = self.noise_std_min
 
-    fn _list_to_simd[T: DType](
-        self, obs_list: List[Scalar[T]]
-    ) -> SIMD[dtype, Self.obs_dim]:
+    fn _list_to_simd[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
         """Convert List[Scalar[T]] to SIMD for internal use."""
         var obs = SIMD[dtype, Self.obs_dim]()
         for i in range(Self.obs_dim):
@@ -594,7 +596,9 @@ struct DeepDDPGAgent[
             var done = result[2]
 
             var next_obs = self._list_to_simd(env.get_obs_list())
-            self.store_transition(warmup_obs, action, Float64(reward), next_obs, done)
+            self.store_transition(
+                warmup_obs, action, Float64(reward), next_obs, done
+            )
 
             warmup_obs = next_obs
             warmup_count += 1
@@ -632,7 +636,9 @@ struct DeepDDPGAgent[
                 var next_obs = self._list_to_simd(env.get_obs_list())
 
                 # Store transition
-                self.store_transition(obs, action, Float64(reward), next_obs, done)
+                self.store_transition(
+                    obs, action, Float64(reward), next_obs, done
+                )
 
                 # Train every N steps
                 if total_train_steps % train_every == 0:

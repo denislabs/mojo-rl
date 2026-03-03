@@ -1,7 +1,7 @@
 """Test DQN Agent on CartPole.
 
 This tests the new DQN implementation using:
-- Network wrapper from deep_rl.training
+- Network wrapper from nn.training
 - CartPoleEnv environment
 - Double DQN with experience replay
 - train() and evaluate() methods

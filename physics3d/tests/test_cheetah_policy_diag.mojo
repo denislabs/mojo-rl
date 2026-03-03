@@ -12,7 +12,7 @@ from math import sqrt, pi, abs
 from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from deep_rl.constants import dtype
+from nn.constants import dtype
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 from envs.half_cheetah.half_cheetah_def import (

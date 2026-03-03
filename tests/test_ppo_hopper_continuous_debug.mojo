@@ -4,7 +4,7 @@ from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper, HopperConfig
-from deep_rl import dtype as agent_dtype
+from nn import dtype as agent_dtype
 
 
 # Constants (must match training)

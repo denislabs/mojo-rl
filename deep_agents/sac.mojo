@@ -1,10 +1,10 @@
 """Deep SAC Agent using the new trait-based deep learning architecture.
 
 This SAC (Soft Actor-Critic) implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - StochasticActor for Gaussian policy with reparameterization trick
-- ReplayBuffer from deep_rl.replay for experience replay
+- ReplayBuffer from nn.replay for experience replay
 
 Features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
@@ -33,21 +33,21 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, LinearReLU, Sequential, StochasticActor
-from deep_rl.model.stochastic_actor import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, LinearReLU, Sequential, StochasticActor
+from nn.model.stochastic_actor import (
     rsample,
     rsample_with_cache,
     rsample_backward,
     sample_action,
     get_deterministic_action,
 )
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Kaiming
-from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer, HeapReplayBuffer, ReplayBufferTrait
-from deep_rl.gpu.random import gaussian_noise
-from deep_rl.checkpoint import (
+from nn.optimizer import Adam
+from nn.initializer import Kaiming
+from nn.training import Network
+from nn.replay import ReplayBuffer, HeapReplayBuffer, ReplayBufferTrait
+from nn.gpu.random import gaussian_noise
+from nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
@@ -312,7 +312,9 @@ struct DeepSACAgent[
             get_deterministic_action[1, Self.ACTIONS](mean, action_layout)
 
             for i in range(Self.action_dim):
-                action_result[i] = Scalar[dtype](Float64(action_tensor[i]) * self.action_scale)
+                action_result[i] = Scalar[dtype](
+                    Float64(action_tensor[i]) * self.action_scale
+                )
         else:
             # Sample with reparameterization
             var noise = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -336,7 +338,9 @@ struct DeepSACAgent[
             )
 
             for i in range(Self.action_dim):
-                action_result[i] = Scalar[dtype](Float64(action_tensor[i]) * self.action_scale)
+                action_result[i] = Scalar[dtype](
+                    Float64(action_tensor[i]) * self.action_scale
+                )
 
         return action_result^
 
@@ -377,7 +381,9 @@ struct DeepSACAgent[
         )
         for i in range(BUFFER_ACTION_DIM):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[BUFFER_DTYPE](Float64(action[i]) / self.action_scale)
+            action_arr[i] = Scalar[BUFFER_DTYPE](
+                Float64(action[i]) / self.action_scale
+            )
 
         self.buffer.add(
             obs_arr,
@@ -1008,7 +1014,9 @@ struct DeepSACAgent[
             )
             var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
-                action[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * self.action_scale)
+                action[i] = Scalar[dtype](
+                    (random_float64() * 2.0 - 1.0) * self.action_scale
+                )
                 action_list.append(Float64(action[i]))
 
             # Step environment with full action vector

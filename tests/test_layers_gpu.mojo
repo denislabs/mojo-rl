@@ -16,8 +16,8 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import (
+from nn.constants import dtype
+from nn.model import (
     Linear,
     ReLU,
     Sigmoid,
@@ -26,10 +26,10 @@ from deep_rl.model import (
     Dropout,
     seq,
 )
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier, Kaiming
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================

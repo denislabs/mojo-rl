@@ -11,11 +11,11 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, seq, Seq2
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam, SGD
-from deep_rl.initializer import Xavier
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Tanh, Sequential
+from nn.loss import MSELoss
+from nn.optimizer import Adam, SGD
+from nn.initializer import Xavier
 
 
 # =============================================================================
@@ -195,16 +195,13 @@ def test_full_model():
     print("Test 5: Full model forward/backward...")
 
     # Define model type alias for static method calls
-    comptime ModelType = Seq2[
-        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+    comptime ModelType = Sequential[
+        Linear[INPUT_DIM, HIDDEN_DIM],
+        Tanh[HIDDEN_DIM],
         Linear[HIDDEN_DIM, OUTPUT_DIM],
     ]
 
-    var model = seq(
-        Linear[INPUT_DIM, HIDDEN_DIM](),
-        Tanh[HIDDEN_DIM](),
-        Linear[HIDDEN_DIM, OUTPUT_DIM](),
-    )
+    var model = ModelType()
 
     print("  Model created:")
     print("    IN_DIM: " + String(model.IN_DIM))

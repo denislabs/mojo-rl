@@ -9,18 +9,18 @@ Run with:
 from random import seed, random_float64
 from time import perf_counter_ns
 
-from deep_rl.constants import dtype
-from deep_rl.model import (
+from nn.constants import dtype
+from nn.model import (
     Linear,
     ReLU,
     Tanh,
     StochasticActor,
-    seq,
+    Sequential,
 )
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Kaiming
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Kaiming
 
 from gpu.host import DeviceContext
 
@@ -52,35 +52,48 @@ fn test_stochastic_actor_gpu_training() raises:
     comptime BATCH = 16
     comptime EPOCHS = 200
 
-    var model = StochasticActor[IN_DIM, ACTION_DIM]()
+    comptime MODEL = StochasticActor[IN_DIM, ACTION_DIM]
 
-    print("  Model: StochasticActor[" + String(IN_DIM) + ", " + String(ACTION_DIM) + "]")
+    print(
+        "  Model: StochasticActor["
+        + String(IN_DIM)
+        + ", "
+        + String(ACTION_DIM)
+        + "]"
+    )
     print("  IN_DIM: " + String(IN_DIM))
     print("  ACTION_DIM: " + String(ACTION_DIM))
-    print("  OUT_DIM: " + String(model.OUT_DIM))
-    print("  PARAM_SIZE: " + String(model.PARAM_SIZE))
+    print("  OUT_DIM: " + String(MODEL.OUT_DIM))
+    print("  PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    var trainer = Trainer(
-        model,
-        Adam(lr=0.01),
-        MSELoss(),
-        Kaiming(),
+    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
+        optimizer=Adam(lr=0.01),
+        loss_function=MSELoss(),
+        initializer=Kaiming(),
         epochs=EPOCHS,
         print_every=50,
     )
 
     # Generate data
-    var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](uninitialized=True)
-    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](uninitialized=True)
+    var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](
+        uninitialized=True
+    )
+    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](
+        uninitialized=True
+    )
 
     for b in range(BATCH):
         for i in range(IN_DIM):
-            input_data[b * IN_DIM + i] = Scalar[dtype](random_float64(-1.0, 1.0))
+            input_data[b * IN_DIM + i] = Scalar[dtype](
+                random_float64(-1.0, 1.0)
+            )
         for j in range(ACTION_DIM):
             target_data[b * OUT_DIM + j] = Scalar[dtype](0.3)  # mean
-            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](-0.5)  # log_std
+            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
+                -0.5
+            )  # log_std
 
     print("\n  Training on GPU...")
     var ctx = DeviceContext()
@@ -101,7 +114,10 @@ fn test_stochastic_actor_gpu_training() raises:
     if result.final_loss < 0.05:
         print("\n  PASS: StochasticActor GPU training converged")
     else:
-        print("\n  WARNING: Training did not fully converge, but GPU execution worked")
+        print(
+            "\n  WARNING: Training did not fully converge, but GPU execution"
+            " worked"
+        )
 
 
 # =============================================================================
@@ -121,33 +137,36 @@ fn test_backbone_with_stochastic_actor() raises:
     comptime BATCH = 32
     comptime EPOCHS = 300
 
-    var model = seq(
-        Linear[OBS_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        Linear[HIDDEN_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        StochasticActor[HIDDEN_DIM, ACTION_DIM](),
-    )
+    comptime MODEL = Sequential[
+        Linear[OBS_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        Linear[HIDDEN_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        StochasticActor[HIDDEN_DIM, ACTION_DIM],
+    ]
 
     print("  Architecture:")
     print("    Linear[4, 32] -> ReLU[32] -> Linear[32, 32] -> ReLU[32]")
     print("    -> StochasticActor[32, 2]")
-    print("  Total PARAM_SIZE: " + String(model.PARAM_SIZE))
+    print("  Total PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    var trainer = Trainer(
-        model,
-        Adam(lr=0.005),
-        MSELoss(),
-        Kaiming(),
+    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
+        optimizer=Adam(lr=0.005),
+        loss_function=MSELoss(),
+        initializer=Kaiming(),
         epochs=EPOCHS,
         print_every=100,
     )
 
     # Generate data with pattern
-    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](uninitialized=True)
-    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](uninitialized=True)
+    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
+        uninitialized=True
+    )
+    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](
+        uninitialized=True
+    )
 
     for b in range(BATCH):
         var x0 = random_float64(-1.0, 1.0)
@@ -159,8 +178,12 @@ fn test_backbone_with_stochastic_actor() raises:
 
         # Target: mean depends on input
         for j in range(ACTION_DIM):
-            target_data[b * OUT_DIM + j] = Scalar[dtype](0.5 * (x0 + x1))  # mean
-            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](-1.0)  # log_std
+            target_data[b * OUT_DIM + j] = Scalar[dtype](
+                0.5 * (x0 + x1)
+            )  # mean
+            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
+                -1.0
+            )  # log_std
 
     print("\n  Training on GPU...")
     var ctx = DeviceContext()
@@ -201,40 +224,49 @@ fn test_larger_action_space() raises:
     comptime BATCH = 64
     comptime EPOCHS = 200
 
-    var model = seq(
-        Linear[OBS_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        Linear[HIDDEN_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        StochasticActor[HIDDEN_DIM, ACTION_DIM](),
-    )
+    comptime MODEL = Sequential[
+        Linear[OBS_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        Linear[HIDDEN_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        StochasticActor[HIDDEN_DIM, ACTION_DIM],
+    ]
 
     print("  Simulating robot control scenario")
     print("  OBS_DIM: " + String(OBS_DIM))
     print("  ACTION_DIM: " + String(ACTION_DIM))
     print("  HIDDEN_DIM: " + String(HIDDEN_DIM))
     print("  BATCH: " + String(BATCH))
-    print("  Total PARAM_SIZE: " + String(model.PARAM_SIZE))
+    print("  Total PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
 
-    var trainer = Trainer(
-        model,
-        Adam(lr=0.001),
-        MSELoss(),
-        Kaiming(),
+    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
+        optimizer=Adam(lr=0.001),
+        loss_function=MSELoss(),
+        initializer=Kaiming(),
         epochs=EPOCHS,
         print_every=50,
     )
 
     # Generate data
-    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](uninitialized=True)
-    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](uninitialized=True)
+    var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
+        uninitialized=True
+    )
+    var target_data = InlineArray[Scalar[dtype], BATCH * OUT_DIM](
+        uninitialized=True
+    )
 
     for b in range(BATCH):
         for i in range(OBS_DIM):
-            input_data[b * OBS_DIM + i] = Scalar[dtype](random_float64(-1.0, 1.0))
+            input_data[b * OBS_DIM + i] = Scalar[dtype](
+                random_float64(-1.0, 1.0)
+            )
         for j in range(ACTION_DIM):
-            target_data[b * OUT_DIM + j] = Scalar[dtype](random_float64(-0.5, 0.5))  # mean
-            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](-0.7)  # log_std
+            target_data[b * OUT_DIM + j] = Scalar[dtype](
+                random_float64(-0.5, 0.5)
+            )  # mean
+            target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
+                -0.7
+            )  # log_std
 
     print("\n  Training on GPU...")
     var ctx = DeviceContext()

@@ -21,7 +21,7 @@ Example usage:
     var probs = sm.softmax(logits)
 
 Note:
-    For Gaussian noise generation, use `deep_rl.gpu.random.gaussian_noise()`
+    For Gaussian noise generation, use `nn.gpu.random.gaussian_noise()`
     which is co-located with other random utilities.
 """
 

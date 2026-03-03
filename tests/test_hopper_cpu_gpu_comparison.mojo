@@ -8,7 +8,7 @@ This test identifies differences between CPU and GPU physics by:
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 
 from envs.hopper import Hopper
 from physics3d.gpu.constants import (

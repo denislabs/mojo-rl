@@ -17,12 +17,12 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext
 
-from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, Seq5
-from deep_rl.loss import MSELoss
-from deep_rl.optimizer import Adam
-from deep_rl.training import Trainer
-from deep_rl.initializer import Xavier
+from nn.constants import dtype
+from nn.model import Linear, ReLU, Tanh, Sequential
+from nn.loss import MSELoss
+from nn.optimizer import Adam
+from nn.training import Trainer
+from nn.initializer import Xavier
 
 
 # =============================================================================
@@ -68,7 +68,7 @@ def main():
 
     # Compose: Seq2[Seq2[Linear, Tanh], Linear]
 
-    comptime Model = Seq5[
+    comptime Model = Sequential[
         Linear[INPUT_DIM, HIDDEN_DIM],
         Tanh[HIDDEN_DIM],
         Linear[HIDDEN_DIM, HIDDEN_DIM],

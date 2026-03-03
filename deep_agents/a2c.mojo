@@ -1,7 +1,7 @@
 """Deep A2C (Advantage Actor-Critic) Agent using the new trait-based architecture.
 
 This A2C implementation uses:
-- Network wrapper from deep_rl.training for stateless model + params management
+- Network wrapper from nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Shared feature extraction with separate actor/critic heads
 - N-step returns or GAE for advantage estimation
@@ -34,12 +34,12 @@ from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, Sequential
-from deep_rl.optimizer import Adam
-from deep_rl.initializer import Xavier
-from deep_rl.training import Network
-from deep_rl.checkpoint import (
+from nn.constants import dtype, TILE, TPB
+from nn.model import Linear, ReLU, Sequential
+from nn.optimizer import Adam
+from nn.initializer import Xavier
+from nn.training import Network
+from nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
     split_lines,
@@ -321,9 +321,9 @@ struct DeepA2CAgent[
             var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
                 uninitialized=True
             )
-            var actor_cache = InlineArray[Scalar[dtype], Self.ActorNetwork.CACHE_SIZE](
-                uninitialized=True
-            )
+            var actor_cache = InlineArray[
+                Scalar[dtype], Self.ActorNetwork.CACHE_SIZE
+            ](uninitialized=True)
             self.actor.forward_with_cache[1](obs, logits, actor_cache)
 
             var probs = softmax_inline[dtype, Self.ACTIONS](logits)
@@ -370,9 +370,9 @@ struct DeepA2CAgent[
             # Critic forward with cache
             # =====================================================================
             var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-            var critic_cache = InlineArray[Scalar[dtype], Self.CriticNetwork.CACHE_SIZE](
-                uninitialized=True
-            )
+            var critic_cache = InlineArray[
+                Scalar[dtype], Self.CriticNetwork.CACHE_SIZE
+            ](uninitialized=True)
             self.critic.forward_with_cache[1](obs, value_out, critic_cache)
 
             var value = value_out[0]
@@ -408,9 +408,9 @@ struct DeepA2CAgent[
         )
         return Float64(total_loss)
 
-    fn _list_to_inline[T: DType](
-        self, obs_list: List[Scalar[T]]
-    ) -> InlineArray[Scalar[dtype], Self.OBS]:
+    fn _list_to_inline[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> InlineArray[Scalar[dtype], Self.OBS]:
         """Convert List[Scalar[T]] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=Scalar[dtype](0))
         for i in range(Self.OBS):

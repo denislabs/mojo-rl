@@ -20,7 +20,7 @@ from layout import Layout, LayoutTensor
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper
 from envs.hopper.hopper_def import HopperConstantsGPU
-from deep_rl import dtype as gpu_dtype
+from nn import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     qpos_offset,
     qvel_offset,
