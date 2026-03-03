@@ -20,14 +20,7 @@ Expected output:
 
 from physics3d.parser import parse_xml, ModelDefFromXML
 from physics3d.parser import parse_xml_full
-from physics3d.parser.xml_parser import (
-    _xml_nth_motor_gear,
-    _xml_nth_motor_dof_adr,
-    _xml_nth_joint_qpos_adr,
-    _xml_nth_joint_limited,
-    _xml_nth_joint_range_min,
-    _xml_nth_joint_range_max,
-)
+from physics3d.parser.xml_parser import parse_xml_model_data
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from testing import assert_true, TestSuite
@@ -142,32 +135,34 @@ fn test_model_def_from_xml() raises:
         return
 
     # =========================================================================
-    # Step 3: Comptime scalar helpers for GPU kernels
+    # Step 3: parse_xml_model_data — precomputed InlineArray checks
     # =========================================================================
-    print("=== Comptime GPU helper checks ===")
-    # Motor 0 = bthigh, gear=120, joint index=3 (dof_adr=3 since 3 preceding joints)
-    comptime gear0 = _xml_nth_motor_gear[half_cheetah_xml, 0]()
-    comptime dof0 = _xml_nth_motor_dof_adr[half_cheetah_xml, 0]()
+    print("=== parse_xml_model_data checks ===")
+    comptime acd = parse_xml_model_data(half_cheetah_xml)
+
+    # Motor 0 = bthigh, gear=120, dof_adr=3 (3 preceding joints: rootx,rootz,rooty)
+    comptime gear0 = acd.motor_gears[0]
+    comptime dof0 = acd.motor_dof_adr[0]
     print("motor0 gear =", gear0, " (expected 120.0)")
     print("motor0 dof_adr =", dof0, " (expected 3)")
 
-    # Motor 5 = ffoot, gear=30
-    comptime gear5 = _xml_nth_motor_gear[half_cheetah_xml, 5]()
-    comptime dof5 = _xml_nth_motor_dof_adr[half_cheetah_xml, 5]()
+    # Motor 5 = ffoot, gear=30, dof_adr=8
+    comptime gear5 = acd.motor_gears[5]
+    comptime dof5 = acd.motor_dof_adr[5]
     print("motor5 gear =", gear5, " (expected 30.0)")
     print("motor5 dof_adr =", dof5, " (expected 8)")
 
-    # Joint 0 = rootx: slide, limited=false
-    comptime rootx_limited = _xml_nth_joint_limited[half_cheetah_xml, 0]()
-    comptime rootx_qpos_adr = _xml_nth_joint_qpos_adr[half_cheetah_xml, 0]()
+    # Joint 0 = rootx: slide, limited=false, qpos_adr=0
+    comptime rootx_limited = acd.joint_is_limited[0]
+    comptime rootx_qpos_adr = acd.joint_qpos_adr[0]
     print("rootx limited =", rootx_limited, " (expected False)")
     print("rootx qpos_adr =", rootx_qpos_adr, " (expected 0)")
 
-    # Joint 3 = bthigh: hinge, limited=true, range=[-0.52, 1.05]
-    comptime bthigh_limited = _xml_nth_joint_limited[half_cheetah_xml, 3]()
-    comptime bthigh_rmin = _xml_nth_joint_range_min[half_cheetah_xml, 3]()
-    comptime bthigh_rmax = _xml_nth_joint_range_max[half_cheetah_xml, 3]()
-    comptime bthigh_qpos_adr = _xml_nth_joint_qpos_adr[half_cheetah_xml, 3]()
+    # Joint 3 = bthigh: hinge, limited=true, range=[-0.52, 1.05], qpos_adr=3
+    comptime bthigh_limited = acd.joint_is_limited[3]
+    comptime bthigh_rmin = acd.joint_range_min[3]
+    comptime bthigh_rmax = acd.joint_range_max[3]
+    comptime bthigh_qpos_adr = acd.joint_qpos_adr[3]
     print("bthigh limited =", bthigh_limited, " (expected True)")
     print("bthigh range_min =", bthigh_rmin, " (expected -0.52)")
     print("bthigh range_max =", bthigh_rmax, " (expected 1.05)")

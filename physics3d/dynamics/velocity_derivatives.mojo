@@ -373,7 +373,7 @@ fn compute_rne_vel_derivative[
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: List[Scalar[DTYPE]],
     mut qDeriv: List[Scalar[DTYPE]],
-) where DTYPE.is_floating_point():
+):
     """Compute d(qfrc_bias)/d(qvel) and subtract from qDeriv.
 
     Uses subtree-COM convention matching MuJoCo's mjd_rne_vel_dense().

@@ -60,7 +60,7 @@ fn compute_fluid_forces[
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: List[Scalar[DTYPE]],
     mut f_net: List[Scalar[DTYPE]],
-) where DTYPE.is_floating_point():
+):
     """Apply inertia-box fluid forces to f_net (MuJoCo-matching).
 
     Computes per-body viscous and pressure drag forces in the body's local frame

@@ -22,6 +22,8 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 `<worldbody` would NOT match a search for `<body `).
 """
 
+from collections import InlineArray
+
 
 # =============================================================================
 # ParsedModel — result of parsing
@@ -807,6 +809,256 @@ fn parse_xml(xml: String) -> ParsedModel:
 
 
 # =============================================================================
+# ComptimeActData — batch-precomputed XML data for GPU kernels
+# =============================================================================
+
+
+struct ComptimeActData(Copyable, Movable):
+    """Precomputed actuator/joint data for GPU kernel use.
+
+    Stores results of XML parsing in InlineArrays so that GPU kernels can
+    access them via compile-time array indexing (no String operations needed).
+
+    Usage:
+        comptime _acd = parse_xml_model_data(Self.xml)
+        # In GPU kernel:  Self._acd.motor_gears[i]  (no String ops)
+    """
+
+    var motor_gears: InlineArray[Float64, 32]
+    var motor_dof_adr: InlineArray[Int, 32]
+    var joint_is_limited: InlineArray[Bool, 32]
+    var joint_qpos_adr: InlineArray[Int, 32]
+    var joint_range_min: InlineArray[Float64, 32]
+    var joint_range_max: InlineArray[Float64, 32]
+    var inertiafromgeom: Bool
+    var settotalmass: Float64
+
+    fn __init__(out self):
+        """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False."""
+        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
+        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
+        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
+        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
+        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
+        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
+        self.inertiafromgeom = False
+        self.settotalmass = Float64(-1.0)
+
+    fn __copyinit__(out self, copy: Self):
+        # InlineArray is not ImplicitlyCopyable; copy element-by-element.
+        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
+        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
+        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
+        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
+        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
+        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
+        self.inertiafromgeom = copy.inertiafromgeom
+        self.settotalmass = copy.settotalmass
+        for i in range(32):
+            self.motor_gears[i] = copy.motor_gears[i]
+            self.motor_dof_adr[i] = copy.motor_dof_adr[i]
+            self.joint_is_limited[i] = copy.joint_is_limited[i]
+            self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
+            self.joint_range_min[i] = copy.joint_range_min[i]
+            self.joint_range_max[i] = copy.joint_range_max[i]
+
+    fn __moveinit__(out self, deinit take: Self):
+        self.motor_gears = take.motor_gears^
+        self.motor_dof_adr = take.motor_dof_adr^
+        self.joint_is_limited = take.joint_is_limited^
+        self.joint_qpos_adr = take.joint_qpos_adr^
+        self.joint_range_min = take.joint_range_min^
+        self.joint_range_max = take.joint_range_max^
+        self.inertiafromgeom = take.inertiafromgeom
+        self.settotalmass = take.settotalmass
+
+
+fn _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
+    """Return DOF address of joint with the given name in worldbody DFS order.
+
+    Scans joints in DFS order, accumulating DOF count until the target joint
+    is found. Returns -1 if the joint name is not found.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var dof_adr = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = wb.find("<joint", scan_pos)
+        if t == -1:
+            break
+        if len(wb) > t + 6:
+            var after = String(wb[t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                scan_pos = t + 6
+                continue
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(wb[t : tag_end + 1])
+        if tag.find(search_name) != -1:
+            return dof_adr
+        var jtype = _extract_attr(tag, "type")
+        if jtype == "ball":
+            dof_adr += 3
+        elif jtype == "free":
+            dof_adr += 6
+        else:  # hinge, slide, or default (hinge)
+            dof_adr += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+fn parse_xml_model_data(xml: String) -> ComptimeActData:
+    """Parse XML and return actuator/joint data as InlineArrays.
+
+    Designed to be called at struct-level comptime:
+
+        comptime _acd = parse_xml_model_data(Self.xml)
+
+    GPU kernels then access Self._acd.motor_gears[i] etc. without String ops,
+    bypassing the GPU kernel compiler's limitation with String operations.
+    """
+    var data = ComptimeActData()
+
+    var xml_clean = _strip_xml_comments(xml)
+
+    # ---- Compiler flags -------------------------------------------------------
+    var angle_deg = False
+    var compiler_t = xml_clean.find("<compiler")
+    if compiler_t != -1:
+        var compiler_end = xml_clean.find(">", compiler_t)
+        if compiler_end != -1:
+            var ctag = String(xml_clean[compiler_t : compiler_end + 1])
+            var angle_val = _extract_attr(ctag, "angle")
+            if _trim(angle_val) == "degree":
+                angle_deg = True
+            var ifg = _extract_attr(ctag, "inertiafromgeom")
+            if _trim(ifg) == "true":
+                data.inertiafromgeom = True
+            var stm = _extract_attr(ctag, "settotalmass")
+            var stm_trimmed = _trim(stm)
+            if len(stm_trimmed) > 0:
+                data.settotalmass = _parse_float(stm_trimmed)
+
+    var deg_factor = Float64(3.141592653589793 / 180.0) if angle_deg else Float64(
+        1.0
+    )
+
+    # ---- Motor data -----------------------------------------------------------
+    var act_sec = _extract_section(xml_clean, "actuator")
+    var act_pos = 0
+    var act_count = 0
+    while act_count < 32:
+        var t = act_sec.find("<motor", act_pos)
+        if t == -1:
+            break
+        if len(act_sec) > t + 6:
+            var after = String(act_sec[t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                act_pos = t + 6
+                continue
+        var tag_end = act_sec.find(">", t)
+        if tag_end != -1:
+            var tag = String(act_sec[t : tag_end + 1])
+            var g = _extract_attr(tag, "gear")
+            if len(g) > 0:
+                data.motor_gears[act_count] = _parse_float(g)
+            else:
+                data.motor_gears[act_count] = Float64(1.0)
+            var jname = _extract_attr(tag, "joint")
+            if len(jname) > 0:
+                data.motor_dof_adr[act_count] = _xml_find_joint_dof_adr(
+                    xml_clean, jname
+                )
+        act_count += 1
+        act_pos = t + 6
+
+    # ---- Default joint limited from <default> section -------------------------
+    var def_limited = False
+    var def_sec = _extract_section(xml_clean, "default")
+    if len(def_sec) > 0:
+        var jpos = def_sec.find("<joint")
+        if jpos != -1:
+            var tag_end = def_sec.find(">", jpos)
+            if tag_end != -1:
+                var tag = String(def_sec[jpos : tag_end + 1])
+                var lim = _extract_attr(tag, "limited")
+                if lim == "true" or lim == "1":
+                    def_limited = True
+
+    # ---- Joint data -----------------------------------------------------------
+    var wb = _extract_section(xml_clean, "worldbody")
+    var jnt_pos = 0
+    var jnt_count = 0
+    var qpos_adr = 0
+    while jnt_count < 32:
+        var t = wb.find("<joint", jnt_pos)
+        if t == -1:
+            break
+        if len(wb) > t + 6:
+            var after = String(wb[t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                jnt_pos = t + 6
+                continue
+        data.joint_qpos_adr[jnt_count] = qpos_adr
+        var tag_end = wb.find(">", t)
+        if tag_end != -1:
+            var tag = String(wb[t : tag_end + 1])
+            # Limited
+            var lim = _extract_attr(tag, "limited")
+            if lim == "true" or lim == "1":
+                data.joint_is_limited[jnt_count] = True
+            elif lim == "false" or lim == "0":
+                data.joint_is_limited[jnt_count] = False
+            else:
+                data.joint_is_limited[jnt_count] = def_limited
+            # Range
+            var range_str = _extract_attr(tag, "range")
+            if len(range_str) > 0:
+                var parts = List[String]()
+                _split_spaces(range_str, parts)
+                if len(parts) >= 1:
+                    data.joint_range_min[jnt_count] = (
+                        _parse_float(parts[0]) * deg_factor
+                    )
+                if len(parts) >= 2:
+                    data.joint_range_max[jnt_count] = (
+                        _parse_float(parts[1]) * deg_factor
+                    )
+            # Advance qpos_adr
+            var jtype = _extract_attr(tag, "type")
+            if jtype == "free":
+                qpos_adr += 7
+            elif jtype == "ball":
+                qpos_adr += 4
+            else:
+                qpos_adr += 1
+        jnt_count += 1
+        jnt_pos = t + 6
+
+    return data^
+
+
+# =============================================================================
 # Comptime scalar helpers for GPU kernels in ModelDefFromXML
 # =============================================================================
 
@@ -1026,9 +1278,9 @@ fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
-    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[
-        xml
-    ]() else 1.0
+    comptime deg_factor = (
+        3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
+    )
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0
@@ -1071,9 +1323,9 @@ fn _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
     Automatically converts from degrees when <compiler angle="degree"/> is set.
     Returns 0.0 if no range attribute. Comptime-safe.
     """
-    comptime deg_factor = 3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[
-        xml
-    ]() else 1.0
+    comptime deg_factor = (
+        3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
+    )
     var wb = _extract_section(xml, "worldbody")
     var scan_pos = 0
     var count = 0

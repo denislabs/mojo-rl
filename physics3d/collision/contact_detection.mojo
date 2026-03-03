@@ -116,7 +116,7 @@ fn normalize_qpos_quaternions[
     NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-) where DTYPE.is_floating_point():
+):
     """Normalize quaternions in qpos for BALL and FREE joints."""
     for j in range(model.num_joints):
         var joint = model.joints[j]

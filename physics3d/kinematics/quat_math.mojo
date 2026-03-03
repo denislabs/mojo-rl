@@ -11,7 +11,7 @@ Functions:
 - axis_angle_to_quat: Convert axis-angle to quaternion
 """
 
-from math import sqrt, sin, cos
+from math import sqrt, sin, cos, acos, atan2
 
 
 # =============================================================================
@@ -126,9 +126,7 @@ fn quat_normalize[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-]:
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Normalize a quaternion to unit length.
 
     Args:
@@ -148,7 +146,7 @@ fn quat_normalize[
 
 
 fn axis_angle_to_quat[
-    DTYPE: DType where DTYPE.is_floating_point()
+    DTYPE: DType
 ](
     ax: Scalar[DTYPE],
     ay: Scalar[DTYPE],
@@ -158,15 +156,20 @@ fn axis_angle_to_quat[
     """Convert axis-angle representation to quaternion.
 
     Args:
-        ax, ay, az: Rotation axis (should be normalized).
+        ax: Rotation x-component of axis (should be normalized).
+        ay: Rotation y-component of axis (should be normalized).
+        az: Rotation z-component of axis (should be normalized).
         angle: Rotation angle in radians.
 
     Returns:
         Quaternion [x, y, z, w] = [sin(θ/2)*axis, cos(θ/2)].
     """
-    var half_angle = angle * Scalar[DTYPE](0.5)
-    var s = Scalar[DTYPE](sin(half_angle))
-    var c = Scalar[DTYPE](cos(half_angle))
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
+    var half = angle.cast[DTYPE]() * 0.5
+    var s = Scalar[DTYPE](sin(half))
+    var c = Scalar[DTYPE](cos(half))
 
     return (ax * s, ay * s, az * s, c)
 
@@ -177,15 +180,13 @@ fn axis_angle_to_quat[
 
 
 fn quat_to_axis_angle[
-    DTYPE: DType where DTYPE.is_floating_point()
+    DTYPE: DType
 ](
     qx: Scalar[DTYPE],
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-]:
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Convert quaternion to axis-angle representation.
 
     Args:
@@ -194,25 +195,20 @@ fn quat_to_axis_angle[
     Returns:
         (axis_x, axis_y, axis_z, angle) where angle is in radians.
     """
-    from math import acos, atan2
 
     # Ensure qw is in valid range for acos
-    var w_clamped = qw
-    if w_clamped > Scalar[DTYPE](1):
-        w_clamped = Scalar[DTYPE](1)
-    elif w_clamped < Scalar[DTYPE](-1):
-        w_clamped = Scalar[DTYPE](-1)
+    var w_f64 = Float64(qw).clamp(-1.0, 1.0)
 
     # Compute angle
-    var angle = Scalar[DTYPE](2) * acos(w_clamped)
+    var angle = Scalar[DTYPE](2.0 * acos(w_f64))
 
     # Compute axis (handle near-zero angle case)
-    var sin_half = sqrt(qx * qx + qy * qy + qz * qz)
-    if sin_half < Scalar[DTYPE](1e-10):
+    var sin_half = sqrt(Float64(qx * qx + qy * qy + qz * qz))
+    if sin_half < 1e-10:
         # Near-identity rotation, axis is arbitrary
         return (Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), angle)
 
-    var inv_sin = Scalar[DTYPE](1) / sin_half
+    var inv_sin = Scalar[DTYPE](1.0 / sin_half)
     return (qx * inv_sin, qy * inv_sin, qz * inv_sin, angle)
 
 
@@ -232,9 +228,7 @@ fn quat_integrate[
     wy: Scalar[DTYPE],
     wz: Scalar[DTYPE],
     dt: Scalar[DTYPE],
-) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-]:
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Integrate quaternion with angular velocity.
 
     Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * omega * q(t)
@@ -320,7 +314,7 @@ fn gpu_quat_rotate[
 
 @always_inline
 fn gpu_axis_angle_to_quat[
-    DTYPE: DType where DTYPE.is_floating_point()
+    DTYPE: DType
 ](
     axis_x: Scalar[DTYPE],
     axis_y: Scalar[DTYPE],
@@ -328,9 +322,12 @@ fn gpu_axis_angle_to_quat[
     angle: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """Convert axis-angle to quaternion (GPU version)."""
-    var half_angle = angle * Scalar[DTYPE](0.5)
-    var s = Scalar[DTYPE](sin(half_angle))
-    var c = Scalar[DTYPE](cos(half_angle))
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
+    var half = angle.cast[DTYPE]() * 0.5
+    var s = Scalar[DTYPE](sin(half))
+    var c = Scalar[DTYPE](cos(half))
 
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
     var inv_len = Scalar[DTYPE](1.0 / sqrt(len_sq + 1e-10))

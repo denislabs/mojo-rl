@@ -200,7 +200,7 @@ fn detect_contacts_sap[
         NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-) where DTYPE.is_floating_point():
+):
     """Contact detection using AABB/SAP broadphase (CPU).
 
     Drop-in replacement for detect_contacts. Recommended for scenes with 50+
@@ -1648,7 +1648,7 @@ fn detect_contacts_auto[
         NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-) where DTYPE.is_floating_point():
+):
     """Contact detection with automatic broadphase selection (CPU).
 
     Uses detect_contacts_sap when NGEOM >= SAP_THRESHOLD (default 16),

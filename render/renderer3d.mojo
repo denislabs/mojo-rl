@@ -2893,11 +2893,11 @@ struct Renderer3D(Movable):
             while poll_event(Ptr(to=event)):
                 var event_type = event[UInt32]
 
-                if EventType(Int(event_type)) == EventType.EVENT_QUIT:
+                if EventType(event_type) == EventType.EVENT_QUIT:
                     self.should_quit = True
                     return True
 
-                elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
+                elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
                     var key_event = event[KeyboardEvent]
                     var key_val = Int(key_event.key)
                     if key_val == Int(Keycode.SDLK_ESCAPE):
@@ -2930,27 +2930,21 @@ struct Renderer3D(Movable):
                         except:
                             pass
 
-                elif (
-                    EventType(Int(event_type))
-                    == EventType.EVENT_MOUSE_BUTTON_DOWN
-                ):
+                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
                     var btn = event[MouseButtonEvent]
                     if Int(btn.button) == 1:
                         self.mouse_left_down = True
                     elif Int(btn.button) == 3:
                         self.mouse_right_down = True
 
-                elif (
-                    EventType(Int(event_type))
-                    == EventType.EVENT_MOUSE_BUTTON_UP
-                ):
+                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
                     var btn = event[MouseButtonEvent]
                     if Int(btn.button) == 1:
                         self.mouse_left_down = False
                     elif Int(btn.button) == 3:
                         self.mouse_right_down = False
 
-                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_MOTION:
+                elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
                     var motion = event[MouseMotionEvent]
                     var dx = Float64(motion.xrel)
                     var dy = Float64(motion.yrel)
@@ -2965,7 +2959,7 @@ struct Renderer3D(Movable):
                         var scale = dist * 0.002
                         self.camera.pan(-dx * scale, -dy * scale)
 
-                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_WHEEL:
+                elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
                     var wheel = event[MouseWheelEvent]
                     # Scroll up (positive y) = zoom in (move eye closer)
                     self.camera.zoom(-Float64(wheel.y) * 0.5)

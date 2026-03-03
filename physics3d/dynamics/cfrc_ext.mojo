@@ -45,7 +45,7 @@ fn compute_cfrc_ext[
     NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-) where DTYPE.is_floating_point():
+):
     """Compute cfrc_ext: contact forces per body in subtree CoM-based frame.
 
     Accumulates constraint (contact) forces into cfrc_ext[body][6]:

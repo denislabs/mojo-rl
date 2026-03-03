@@ -117,7 +117,7 @@ fn forward_kinematics[
         NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-) where DTYPE.is_floating_point():
+):
     """Compute body world positions from joint positions.
 
     Traverses the kinematic tree in topological order, computing each body's

@@ -252,7 +252,7 @@ fn _forward_dynamics[
     mut cdof_out: List[Scalar[DTYPE]],
     mut M_inv_out: List[Scalar[DTYPE]],
     mut M_out: List[Scalar[DTYPE]],
-) where DTYPE.is_floating_point():
+):
     """Compute unconstrained acceleration from current (qpos, qvel) in data.
 
     Runs the full dynamics pipeline:
@@ -535,7 +535,7 @@ fn _solve_constraints[
     mut qacc: List[Scalar[DTYPE]],
     dt: Scalar[DTYPE],
     is_last_stage: Bool,
-) where DTYPE.is_floating_point():
+):
     """Build and solve constraints, modifying qacc in place.
 
     Separate function so ConstraintData is allocated/freed in its own stack frame.
@@ -601,7 +601,7 @@ fn _integrate_pos[
     vel: List[Scalar[DTYPE]],
     dt: Scalar[DTYPE],
     mut qpos_out: List[Scalar[DTYPE]],
-) where DTYPE.is_floating_point():
+):
     """Integrate position: qpos_out = qpos_base + vel * dt.
 
     Uses quaternion exponential map for FREE and BALL joints,

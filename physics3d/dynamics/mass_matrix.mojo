@@ -456,10 +456,9 @@ fn compute_body_invweight0[
     ldl_factor[DTYPE, NV](M, L, D)
 
     # Build dof_to_body mapping
-    comptime V_SIZE = _ensure_positive[NV]()
-    var dof_body = InlineArray[Int, V_SIZE](uninitialized=True)
-    for i in range(NV):
-        dof_body[i] = 0
+    var dof_body = List[Int](capacity=NV)
+    for _ in range(NV):
+        dof_body.append(0)
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -502,9 +501,9 @@ fn compute_body_invweight0[
         # Build J rows and solve systems
         # Process all 6 rows
         for k in range(6):
-            var J_row = InlineArray[Scalar[DTYPE], V_SIZE](
-                fill=Scalar[DTYPE](0)
-            )
+            var J_row = List[Scalar[DTYPE]](capacity=NV)
+            for _ in range(NV):
+                J_row.append(Scalar[DTYPE](0))
 
             # Fill J_row[d] for each DOF that affects body i
             for d in range(NV):
@@ -644,15 +643,18 @@ fn ldl_solve[
 
     Drop-in replacement for ldl_solve.
     """
-    comptime V_SIZE = _ensure_positive[NV]()
-    var y = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var y = List[Scalar[DTYPE]](capacity=NV)
+    for _ in range(NV):
+        y.append(Scalar[DTYPE](0))
     for i in range(NV):
         var s = b[i]
         for j in range(i):
             s = s - L[i * NV + j] * y[j]
         y[i] = s
 
-    var z = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var z = List[Scalar[DTYPE]](capacity=NV)
+    for _ in range(NV):
+        z.append(Scalar[DTYPE](0))
     for i in range(NV):
         if D[i] > Scalar[DTYPE](1e-14) or D[i] < Scalar[DTYPE](-1e-14):
             z[i] = y[i] / D[i]

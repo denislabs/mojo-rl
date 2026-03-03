@@ -373,7 +373,7 @@ fn ppo_continuous_actor_grad_kernel[
     var is_clipped = clipped_obj < unclipped_obj
 
     # Compute gradients for mean and log_std
-    var batch_size_scalar: Scalar[dtype] = BATCH_SIZE
+    var batch_size_scalar = Scalar[dtype](BATCH_SIZE)
     for j in range(ACTION_DIM):
         if is_clipped:
             grad_output[b, j] = Scalar[dtype](0.0)
@@ -923,7 +923,8 @@ fn add_obs_noise_kernel[
     for d in range(OBS_DIM):
         # Create unique seed per (env, dim) for independent random streams
         var philox = PhiloxRandom(
-            seed=Int(rng_seed) + i * OBS_DIM + d, offset=0
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(OBS_DIM) + UInt64(d),
+            offset=0,
         )
         var rand_vals = philox.step_uniform()
         var u1 = rand_vals[0]

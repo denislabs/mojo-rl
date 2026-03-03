@@ -89,6 +89,8 @@ from .xml_parser import (
     _xml_nth_joint_range_max,
     _xml_compiler_inertiafromgeom,
     _xml_compiler_settotalmass,
+    ComptimeActData,
+    parse_xml_model_data,
 )
 from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
@@ -170,6 +172,11 @@ struct ModelDefFromXML[
     )
     comptime ACTION_DIM: Int = Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
+
+    # Precomputed XML actuator/joint data — evaluated at struct level by the
+    # regular Mojo interpreter (not the GPU kernel compiler), so String ops work.
+    # GPU kernels access Self._acd.motor_gears[i] etc. with no String operations.
+    comptime _acd: ComptimeActData = parse_xml_model_data(Self.xml)
 
     # =========================================================================
     # CPU: Model setup
@@ -871,8 +878,8 @@ struct ModelDefFromXML[
             comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
 
             comptime for act_i in range(Self.nact):
-                comptime gear = _xml_nth_motor_gear[Self.xml, act_i]()
-                comptime dof = _xml_nth_motor_dof_adr[Self.xml, act_i]()
+                comptime gear = Self._acd.motor_gears[act_i]
+                comptime dof = Self._acd.motor_dof_adr[act_i]
 
                 comptime if dof >= 0 and dof < Self.NV:
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
@@ -914,12 +921,12 @@ struct ModelDefFromXML[
             comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
 
             comptime for j in range(Self.njoint):
-                comptime limited = _xml_nth_joint_limited[Self.xml, j]()
+                comptime limited = Self._acd.joint_is_limited[j]
 
                 comptime if limited:
-                    comptime qp_adr = _xml_nth_joint_qpos_adr[Self.xml, j]()
-                    comptime rmin = _xml_nth_joint_range_min[Self.xml, j]()
-                    comptime rmax = _xml_nth_joint_range_max[Self.xml, j]()
+                    comptime qp_adr = Self._acd.joint_qpos_adr[j]
+                    comptime rmin = Self._acd.joint_range_min[j]
+                    comptime rmax = Self._acd.joint_range_max[j]
                     var qpos = rebind[Scalar[DTYPE]](
                         states[env, qpos_base + qp_adr]
                     )
