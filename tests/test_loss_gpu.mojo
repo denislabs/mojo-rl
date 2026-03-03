@@ -111,7 +111,7 @@ fn test_huber_loss_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -218,7 +218,7 @@ fn test_cross_entropy_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -332,7 +332,7 @@ fn test_dqn_style_training():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -420,7 +420,7 @@ fn compare_loss_functions_gpu():
             )
             var start_mse = perf_counter_ns()
             var result_mse = trainer_mse.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_mse = Float64(perf_counter_ns() - start_mse) / 1e6
             print(
@@ -447,7 +447,7 @@ fn compare_loss_functions_gpu():
             )
             var start_huber1 = perf_counter_ns()
             var result_huber1 = trainer_huber1.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_huber1 = Float64(perf_counter_ns() - start_huber1) / 1e6
             print(
@@ -474,7 +474,7 @@ fn compare_loss_functions_gpu():
             )
             var start_huber05 = perf_counter_ns()
             var result_huber05 = trainer_huber05.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_huber05 = Float64(perf_counter_ns() - start_huber05) / 1e6
             print(
@@ -501,7 +501,7 @@ fn compare_loss_functions_gpu():
             )
             var start_huber2 = perf_counter_ns()
             var result_huber2 = trainer_huber2.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_huber2 = Float64(perf_counter_ns() - start_huber2) / 1e6
             print(
@@ -613,7 +613,7 @@ fn test_policy_gradient_style():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6

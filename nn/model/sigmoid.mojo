@@ -24,11 +24,11 @@ struct Sigmoid[dim: Int](Model):
     fn __init__(out self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor for Sequential composition."""
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
 

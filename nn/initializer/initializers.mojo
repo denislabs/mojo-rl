@@ -34,7 +34,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
+    ](self) -> List[Scalar[dtype]]:
         """Initialize parameters.
 
         Parameters:
@@ -43,7 +43,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
             FAN_OUT: Number of output features (used by some initializers).
 
         Returns:
-            Initialized parameter array.
+            Initialized parameter list of length SIZE.
         """
         ...
 
@@ -68,11 +68,11 @@ struct Xavier(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
         var std = sqrt(2.0 / Float64(FAN_IN + FAN_OUT))
-        for i in range(SIZE):
-            params[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * std)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
         return params^
 
 
@@ -96,11 +96,11 @@ struct Kaiming(Copyable, ImplicitlyCopyable, Initializer, Movable):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
         var std = sqrt(2.0 / Float64(FAN_IN))
-        for i in range(SIZE):
-            params[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * std)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
         return params^
 
 
@@ -124,11 +124,11 @@ struct LeCun(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
         var std = sqrt(1.0 / Float64(FAN_IN))
-        for i in range(SIZE):
-            params[i] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * std)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype]((random_float64() * 2.0 - 1.0) * std))
         return params^
 
 
@@ -150,10 +150,10 @@ struct Zeros(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
-        for i in range(SIZE):
-            params[i] = 0
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype](0))
         return params^
 
 
@@ -171,10 +171,10 @@ struct Ones(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
-        for i in range(SIZE):
-            params[i] = 1
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype](1))
         return params^
 
 
@@ -194,10 +194,10 @@ struct Constant(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
-        for i in range(SIZE):
-            params[i] = self.value
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
+        for _ in range(SIZE):
+            params.append(self.value)
         return params^
 
 
@@ -221,11 +221,11 @@ struct Uniform(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    ](self) -> List[Scalar[dtype]]:
+        var params = List[Scalar[dtype]](capacity=SIZE)
         var range_val = self.high - self.low
-        for i in range(SIZE):
-            params[i] = Scalar[dtype](random_float64() * range_val + self.low)
+        for _ in range(SIZE):
+            params.append(Scalar[dtype](random_float64() * range_val + self.low))
         return params^
 
 
@@ -252,10 +252,10 @@ struct Normal(Initializer):
 
     fn init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
-    ](self) -> InlineArray[Scalar[dtype], SIZE]:
+    ](self) -> List[Scalar[dtype]]:
         from math import log, cos, sin
 
-        var params = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+        var params = List[Scalar[dtype]](capacity=SIZE)
         var pi = 3.14159265358979323846
 
         # Box-Muller transform generates pairs of normal random numbers
@@ -269,13 +269,13 @@ struct Normal(Initializer):
                 u1 = 1e-10
 
             var z0 = sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
-            params[i] = Scalar[dtype](z0 * self.std + self.mean)
+            params.append(Scalar[dtype](z0 * self.std + self.mean))
             i += 1
 
             # Use the second value if we have space
             if i < SIZE:
                 var z1 = sqrt(-2.0 * log(u1)) * sin(2.0 * pi * u2)
-                params[i] = Scalar[dtype](z1 * self.std + self.mean)
+                params.append(Scalar[dtype](z1 * self.std + self.mean))
                 i += 1
 
         return params^

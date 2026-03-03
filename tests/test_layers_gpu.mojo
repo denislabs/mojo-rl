@@ -112,7 +112,7 @@ fn test_sigmoid_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -217,7 +217,7 @@ fn test_softmax_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -310,7 +310,7 @@ fn test_layer_norm_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -404,7 +404,7 @@ fn test_dropout_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -501,7 +501,7 @@ fn test_combined_model_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6

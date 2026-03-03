@@ -380,7 +380,7 @@ struct DeepPPOContinuousAgent[
 
     fn select_action(
         self,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
+        obs: LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin],
         training: Bool = True,
     ) -> Tuple[
         InlineArray[Scalar[dtype], Self.ACTIONS], Scalar[dtype], Scalar[dtype]
@@ -400,7 +400,10 @@ struct DeepPPOContinuousAgent[
         var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
             uninitialized=True
         )
-        self.actor.forward[1](obs, actor_output)
+        var actor_output_tensor = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+        ](actor_output.unsafe_ptr())
+        self.actor.forward[1](obs, actor_output_tensor)
 
         # Extract means and log_stds
         var means = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
@@ -413,7 +416,10 @@ struct DeepPPOContinuousAgent[
 
         # Forward critic to get value
         var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        self.critic.forward[1](obs, value_out)
+        var value_out_tensor = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](value_out.unsafe_ptr())
+        self.critic.forward[1](obs, value_out_tensor)
         var value = value_out[0]
 
         # Compute actions (unbounded Gaussian, no tanh squashing)
@@ -640,6 +646,9 @@ struct DeepPPOContinuousAgent[
             var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
             for i in range(Self.OBS):
                 obs[i] = Scalar[dtype](obs_list[i])
+            var obs_tensor = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](obs.unsafe_ptr())
 
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
@@ -660,7 +669,9 @@ struct DeepPPOContinuousAgent[
                         continue
 
                 # stochastic=True samples from policy, False uses mean
-                var action_result = self.select_action(obs, training=stochastic)
+                var action_result = self.select_action(
+                    obs_tensor, training=stochastic
+                )
                 var actions = action_result[0].copy()
 
                 # Convert actions to List for environment

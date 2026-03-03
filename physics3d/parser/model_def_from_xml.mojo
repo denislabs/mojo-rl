@@ -275,9 +275,29 @@ struct ModelDefFromXML[
             Self.NSITE,
         ],
     ):
-        """Zero out all qpos, qvel, qacc, qfrc."""
-        for i in range(Self.NQ):
-            data.qpos[i] = Scalar[DTYPE](0)
+        """Reset qpos to initial pose, zero qvel/qacc/qfrc.
+
+        If the XML has a <custom><numeric name="init_qpos"/> section, those
+        values are applied directly.  Otherwise qpos is zeroed and the free
+        joint quaternion (if any) is set to identity (qw=1) so that FK does
+        not degenerate.
+        """
+        comptime if Self._acd.nq > 0:
+            # Apply init_qpos from XML custom section.
+            comptime for i in range(Self.NQ):
+                comptime if i < Self._acd.nq:
+                    comptime val = Self._acd.qpos0[i]
+                    data.qpos[i] = Scalar[DTYPE](val)
+                else:
+                    data.qpos[i] = Scalar[DTYPE](0)
+        else:
+            # No init_qpos — zero everything, then fix free-joint quaternion.
+            for i in range(Self.NQ):
+                data.qpos[i] = Scalar[DTYPE](0)
+            comptime if Self._acd.free_joint_qpos_adr >= 0:
+                # qpos[adr+3] is qw for a free joint (MuJoCo convention:
+                # [tx, ty, tz, qw, qx, qy, qz]).  Set qw=1 for identity.
+                data.qpos[Self._acd.free_joint_qpos_adr + 3] = Scalar[DTYPE](1)
         for i in range(Self.NV):
             data.qvel[i] = Scalar[DTYPE](0)
             data.qacc[i] = Scalar[DTYPE](0)
@@ -1024,11 +1044,22 @@ struct ModelDefFromXML[
             rand_vals[b * 4 + 2] = batch[2]
             rand_vals[b * 4 + 3] = batch[3]
 
-        for i in range(Self.NQ):
+        comptime for i in range(Self.NQ):
             var noise = Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
-            states[env, qpos_base + i] = noise
+            comptime if Self._acd.nq > 0 and i < Self._acd.nq:
+                comptime val = Self._acd.qpos0[i]
+                states[env, qpos_base + i] = Scalar[DTYPE](val) + noise
+            else:
+                comptime if (
+                    Self._acd.free_joint_qpos_adr >= 0
+                    and i == Self._acd.free_joint_qpos_adr + 3
+                ):
+                    # Free-joint qw: start from identity (1.0) + small noise.
+                    states[env, qpos_base + i] = Scalar[DTYPE](1) + noise
+                else:
+                    states[env, qpos_base + i] = noise
 
-        for i in range(Self.NV):
+        comptime for i in range(Self.NV):
             var noise = (
                 Scalar[DTYPE](rand_vals[Self.NQ + i] * 2.0 - 1.0) * noise_scale
             )

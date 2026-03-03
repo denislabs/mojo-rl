@@ -205,116 +205,123 @@ struct WorldModel[
         BATCH: Int
     ](
         self,
-        obs: InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM],
-        mut z: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
+        obs_ptr: UnsafePointer[Scalar[dtype]],
+        z_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Encode observations to latent states (no cache, stop-gradient).
 
         Args:
-            obs: Input observations [BATCH * OBS_DIM].
-            z: Output latent states [BATCH * LATENT_DIM] (written).
+            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
+            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
         """
-        self.encoder.forward[BATCH](obs, z)
+        self.encoder.forward_ptr[BATCH](obs_ptr, z_ptr)
 
     fn encode_with_cache[
         BATCH: Int
     ](
         self,
-        obs: InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM],
-        mut z: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
+        obs_ptr: UnsafePointer[Scalar[dtype]],
+        z_ptr: UnsafePointer[Scalar[dtype]],
         mut cache: List[Scalar[dtype]],
     ):
         """Encode with cache for backpropagation.
 
         Args:
-            obs: Input observations [BATCH * OBS_DIM].
-            z: Output latent states [BATCH * LATENT_DIM] (written).
+            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
+            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
             cache: Pre-allocated cache [BATCH * EncModel.CACHE_SIZE] (written).
         """
-        self.encoder.forward_with_cache_heap[BATCH](obs, z, cache)
+        self.encoder.forward_with_cache_ptr[BATCH](obs_ptr, z_ptr, cache)
 
     fn dynamics_forward[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut z_next: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        z_next_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Predict next latent state (no cache).
 
         Args:
-            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
-            z_next: Output next latent state [BATCH * LATENT_DIM] (written).
+            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
+            z_next_ptr: Pointer to output next latent state [BATCH * LATENT_DIM] (written).
         """
-        self.dynamics.forward[BATCH](z_a, z_next)
+        self.dynamics.forward_ptr[BATCH](z_a_ptr, z_next_ptr)
 
     fn dynamics_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut z_next: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        z_next_ptr: UnsafePointer[Scalar[dtype]],
         mut cache: List[Scalar[dtype]],
     ):
         """Predict next latent state with cache for backprop."""
-        self.dynamics.forward_with_cache_heap[BATCH](z_a, z_next, cache)
+        self.dynamics.forward_with_cache_ptr[BATCH](z_a_ptr, z_next_ptr, cache)
 
     fn reward_forward[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut logits: InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        logits_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Predict reward distribution logits (no cache)."""
-        self.reward_head.forward[BATCH](z_a, logits)
+        self.reward_head.forward_ptr[BATCH](z_a_ptr, logits_ptr)
 
     fn reward_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut logits: InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        logits_ptr: UnsafePointer[Scalar[dtype]],
         mut cache: List[Scalar[dtype]],
     ):
         """Predict reward distribution logits with cache."""
-        self.reward_head.forward_with_cache_heap[BATCH](z_a, logits, cache)
+        self.reward_head.forward_with_cache_ptr[BATCH](z_a_ptr, logits_ptr, cache)
 
     fn termination_forward[
         BATCH: Int
     ](
         self,
-        z: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
-        mut term_prob: InlineArray[Scalar[dtype], BATCH],
+        z_ptr: UnsafePointer[Scalar[dtype]],
+        term_prob_ptr: UnsafePointer[Scalar[dtype]],
     ):
-        """Predict termination probability (no cache)."""
-        var out = InlineArray[Scalar[dtype], BATCH * 1](fill=0)
-        self.termination.forward[BATCH](z, out)
+        """Predict termination probability (no cache).
+
+        Args:
+            z_ptr: Pointer to latent states [BATCH * LATENT_DIM].
+            term_prob_ptr: Pointer to output termination probabilities [BATCH] (written).
+        """
+        var out = List[Scalar[dtype]](capacity=BATCH)
+        for _ in range(BATCH):
+            out.append(Scalar[dtype](0))
+        self.termination.forward_ptr[BATCH](z_ptr, out.unsafe_ptr())
         for b in range(BATCH):
-            term_prob[b] = out[b]
+            term_prob_ptr[b] = out[b]
 
     fn policy_forward[
         BATCH: Int
     ](
         self,
-        z: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
-        mut mean: InlineArray[Scalar[dtype], BATCH * Self.ACTION_DIM],
-        mut log_std: InlineArray[Scalar[dtype], BATCH * Self.ACTION_DIM],
+        z_ptr: UnsafePointer[Scalar[dtype]],
+        mean_ptr: UnsafePointer[Scalar[dtype]],
+        log_std_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Predict Gaussian policy parameters (no cache).
 
         Args:
-            z: Latent states [BATCH * LATENT_DIM].
-            mean: Output action mean [BATCH * ACTION_DIM] (written).
-            log_std: Output log standard deviation [BATCH * ACTION_DIM] (written).
+            z_ptr: Pointer to latent states [BATCH * LATENT_DIM].
+            mean_ptr: Pointer to output action mean [BATCH * ACTION_DIM] (written).
+            log_std_ptr: Pointer to output log std [BATCH * ACTION_DIM] (written).
         """
-        var out = InlineArray[Scalar[dtype], BATCH * 2 * Self.ACTION_DIM](
-            fill=0
-        )
-        self.policy.forward[BATCH](z, out)
+        var out = List[Scalar[dtype]](capacity=BATCH * 2 * Self.ACTION_DIM)
+        for _ in range(BATCH * 2 * Self.ACTION_DIM):
+            out.append(Scalar[dtype](0))
+        self.policy.forward_ptr[BATCH](z_ptr, out.unsafe_ptr())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
-                mean[b * Self.ACTION_DIM + i] = out[b * 2 * Self.ACTION_DIM + i]
+                mean_ptr[b * Self.ACTION_DIM + i] = out[b * 2 * Self.ACTION_DIM + i]
                 # Clamp log_std to [-10, 2] for numerical stability
                 var ls = Float64(
                     out[b * 2 * Self.ACTION_DIM + Self.ACTION_DIM + i]
@@ -323,88 +330,94 @@ struct WorldModel[
                     ls = -10.0
                 if ls > 2.0:
                     ls = 2.0
-                log_std[b * Self.ACTION_DIM + i] = Scalar[dtype](ls)
+                log_std_ptr[b * Self.ACTION_DIM + i] = Scalar[dtype](ls)
 
     fn policy_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z: InlineArray[Scalar[dtype], BATCH * Self.LATENT_DIM],
-        mut out: InlineArray[Scalar[dtype], BATCH * 2 * Self.ACTION_DIM],
+        z_ptr: UnsafePointer[Scalar[dtype]],
+        out_ptr: UnsafePointer[Scalar[dtype]],
         mut cache: List[Scalar[dtype]],
     ):
         """Predict policy output with cache for backprop."""
-        self.policy.forward_with_cache_heap[BATCH](z, out, cache)
+        self.policy.forward_with_cache_ptr[BATCH](z_ptr, out_ptr, cache)
 
     fn q_forward[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut q_logits: InlineArray[
-            Scalar[dtype], Self.NUM_Q * BATCH * Self.NUM_BINS
-        ],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        q_logits_ptr: UnsafePointer[Scalar[dtype]],
         use_target: Bool = False,
     ):
         """Forward pass through all Q-networks.
 
         Args:
-            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
-            q_logits: Output logits for all Q-networks [NUM_Q * BATCH * NUM_BINS] (written).
+            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
+            q_logits_ptr: Pointer to output logits [NUM_Q * BATCH * NUM_BINS] (written).
             use_target: If True, use target Q-networks (default: False).
         """
-        var logits1 = InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS](fill=0)
-        var logits2 = InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS](fill=0)
-        var logits3 = InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS](fill=0)
-        var logits4 = InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS](fill=0)
-        var logits5 = InlineArray[Scalar[dtype], BATCH * Self.NUM_BINS](fill=0)
+        var logits1 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
+        var logits2 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
+        var logits3 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
+        var logits4 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
+        var logits5 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
+        for _ in range(BATCH * Self.NUM_BINS):
+            logits1.append(Scalar[dtype](0))
+            logits2.append(Scalar[dtype](0))
+            logits3.append(Scalar[dtype](0))
+            logits4.append(Scalar[dtype](0))
+            logits5.append(Scalar[dtype](0))
 
         if use_target:
-            self.q1_target.forward[BATCH](z_a, logits1)
-            self.q2_target.forward[BATCH](z_a, logits2)
-            self.q3_target.forward[BATCH](z_a, logits3)
-            self.q4_target.forward[BATCH](z_a, logits4)
-            self.q5_target.forward[BATCH](z_a, logits5)
+            self.q1_target.forward_ptr[BATCH](z_a_ptr, logits1.unsafe_ptr())
+            self.q2_target.forward_ptr[BATCH](z_a_ptr, logits2.unsafe_ptr())
+            self.q3_target.forward_ptr[BATCH](z_a_ptr, logits3.unsafe_ptr())
+            self.q4_target.forward_ptr[BATCH](z_a_ptr, logits4.unsafe_ptr())
+            self.q5_target.forward_ptr[BATCH](z_a_ptr, logits5.unsafe_ptr())
         else:
-            self.q1.forward[BATCH](z_a, logits1)
-            self.q2.forward[BATCH](z_a, logits2)
-            self.q3.forward[BATCH](z_a, logits3)
-            self.q4.forward[BATCH](z_a, logits4)
-            self.q5.forward[BATCH](z_a, logits5)
+            self.q1.forward_ptr[BATCH](z_a_ptr, logits1.unsafe_ptr())
+            self.q2.forward_ptr[BATCH](z_a_ptr, logits2.unsafe_ptr())
+            self.q3.forward_ptr[BATCH](z_a_ptr, logits3.unsafe_ptr())
+            self.q4.forward_ptr[BATCH](z_a_ptr, logits4.unsafe_ptr())
+            self.q5.forward_ptr[BATCH](z_a_ptr, logits5.unsafe_ptr())
 
         for b in range(BATCH * Self.NUM_BINS):
-            q_logits[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
-            q_logits[1 * BATCH * Self.NUM_BINS + b] = logits2[b]
-            q_logits[2 * BATCH * Self.NUM_BINS + b] = logits3[b]
-            q_logits[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
-            q_logits[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
+            q_logits_ptr[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
+            q_logits_ptr[1 * BATCH * Self.NUM_BINS + b] = logits2[b]
+            q_logits_ptr[2 * BATCH * Self.NUM_BINS + b] = logits3[b]
+            q_logits_ptr[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
+            q_logits_ptr[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
 
     fn q_min_forward[
         BATCH: Int
     ](
         self,
-        z_a: InlineArray[Scalar[dtype], BATCH * Self.ZA_DIM],
-        mut values: InlineArray[Scalar[dtype], BATCH],
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        values_ptr: UnsafePointer[Scalar[dtype]],
         use_target: Bool = False,
     ):
         """Compute min Q-value across ensemble for each sample.
 
         Args:
-            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
-            values: Output min Q-values [BATCH] (written).
+            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
+            values_ptr: Pointer to output min Q-values [BATCH] (written).
             use_target: If True, use target Q-networks.
         """
-        var all_logits = InlineArray[
-            Scalar[dtype], Self.NUM_Q * BATCH * Self.NUM_BINS
-        ](fill=0)
-        self.q_forward[BATCH](z_a, all_logits, use_target)
+        var all_logits = List[Scalar[dtype]](
+            capacity=Self.NUM_Q * BATCH * Self.NUM_BINS
+        )
+        for _ in range(Self.NUM_Q * BATCH * Self.NUM_BINS):
+            all_logits.append(Scalar[dtype](0))
+        self.q_forward[BATCH](z_a_ptr, all_logits.unsafe_ptr(), use_target)
 
         # Decode scalar values and take min across ensemble
         for b in range(BATCH):
             var min_val = Float32(1e10)
             for q_idx in range(Self.NUM_Q):
                 var base = q_idx * BATCH * Self.NUM_BINS + b * Self.NUM_BINS
-                var logits_b = InlineArray[Float32, Self.NUM_BINS](fill=0)
+                var logits_b = InlineArray[Float32, Self.NUM_BINS](uninitialized=True)
                 for i in range(Self.NUM_BINS):
                     logits_b[i] = Float32(all_logits[base + i])
                 var val = decode_value_batch_scalar[Self.NUM_BINS](
@@ -412,7 +425,7 @@ struct WorldModel[
                 )
                 if val < min_val:
                     min_val = val
-            values[b] = Scalar[dtype](min_val)
+            values_ptr[b] = Scalar[dtype](min_val)
 
     # =========================================================================
     # Soft Update for Target Networks

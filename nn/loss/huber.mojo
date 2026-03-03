@@ -39,11 +39,11 @@ struct HuberLoss(LossFunction):
         """
         self.delta = delta
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.delta = other.delta
+    fn __init__(out self, *, deinit take: Self):
+        self.delta = take.delta
 
-    fn __copyinit__(out self, other: Self):
-        self.delta = other.delta
+    fn __init__(out self, *, copy: Self):
+        self.delta = copy.delta
 
     fn forward[
         SIZE: Int

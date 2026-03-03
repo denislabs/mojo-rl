@@ -10,17 +10,15 @@ from random import seed, random_float64
 from time import perf_counter_ns
 
 from nn.constants import dtype
-from nn.model import (
-    Linear,
-    ReLU,
-    Tanh,
-    StochasticActor,
-    Sequential,
-)
-from nn.loss import MSELoss
-from nn.optimizer import Adam
-from nn.training import Trainer
-from nn.initializer import Kaiming
+from nn.model.linear import Linear
+from nn.model.relu import ReLU
+from nn.model.tanh import Tanh
+from nn.model.stochastic_actor import StochasticActor
+from nn.model.sequential import Sequential
+from nn.loss.mse import MSELoss
+from nn.optimizer.adam import Adam
+from nn.training.trainer import Trainer
+from nn.initializer.initializers import Kaiming
 
 from gpu.host import DeviceContext
 
@@ -99,7 +97,9 @@ fn test_stochastic_actor_gpu_training() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](ctx, input_data, target_data)
+    var result = trainer.train_gpu[BATCH](
+        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
+    )
     var end = perf_counter_ns()
 
     var time_ms = Float64(end - start) / 1e6
@@ -189,7 +189,9 @@ fn test_backbone_with_stochastic_actor() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](ctx, input_data, target_data)
+    var result = trainer.train_gpu[BATCH](
+        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
+    )
     var end = perf_counter_ns()
 
     var time_ms = Float64(end - start) / 1e6
@@ -272,7 +274,9 @@ fn test_larger_action_space() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](ctx, input_data, target_data)
+    var result = trainer.train_gpu[BATCH](
+        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
+    )
     var end = perf_counter_ns()
 
     var time_ms = Float64(end - start) / 1e6

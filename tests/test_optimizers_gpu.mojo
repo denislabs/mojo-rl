@@ -113,7 +113,7 @@ fn test_rmsprop_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -217,7 +217,7 @@ fn test_adamw_gpu():
     try:
         with DeviceContext() as ctx:
             var result = trainer.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
 
             var elapsed_ms = Float64(perf_counter_ns() - start) / 1e6
@@ -302,7 +302,7 @@ fn compare_optimizers_gpu():
             )
             var start_sgd = perf_counter_ns()
             var result_sgd = trainer_sgd.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_sgd = Float64(perf_counter_ns() - start_sgd) / 1e6
             print(
@@ -329,7 +329,7 @@ fn compare_optimizers_gpu():
             )
             var start_adam = perf_counter_ns()
             var result_adam = trainer_adam.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_adam = Float64(perf_counter_ns() - start_adam) / 1e6
             print(
@@ -356,7 +356,7 @@ fn compare_optimizers_gpu():
             )
             var start_rmsprop = perf_counter_ns()
             var result_rmsprop = trainer_rmsprop.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_rmsprop = Float64(perf_counter_ns() - start_rmsprop) / 1e6
             print(
@@ -383,7 +383,7 @@ fn compare_optimizers_gpu():
             )
             var start_adamw = perf_counter_ns()
             var result_adamw = trainer_adamw.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             var time_adamw = Float64(perf_counter_ns() - start_adamw) / 1e6
             print(
@@ -459,7 +459,7 @@ fn test_adamw_weight_decay_effect():
                 print_every=0,
             )
             var result_wd0 = trainer_wd0.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             print(
                 "  AdamW(wd=0.0):   loss = " + String(result_wd0.final_loss)[:8]
@@ -480,7 +480,7 @@ fn test_adamw_weight_decay_effect():
                 print_every=0,
             )
             var result_wd01 = trainer_wd01.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             print(
                 "  AdamW(wd=0.01):  loss = "
@@ -502,7 +502,7 @@ fn test_adamw_weight_decay_effect():
                 print_every=0,
             )
             var result_wd05 = trainer_wd05.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             print(
                 "  AdamW(wd=0.05):  loss = "
@@ -524,7 +524,7 @@ fn test_adamw_weight_decay_effect():
                 print_every=0,
             )
             var result_wd1 = trainer_wd1.train_gpu[BATCH_SIZE](
-                ctx, input_data, target_data
+                ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
             )
             print(
                 "  AdamW(wd=0.1):   loss = " + String(result_wd1.final_loss)[:8]

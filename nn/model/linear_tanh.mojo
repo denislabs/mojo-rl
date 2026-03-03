@@ -276,7 +276,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
 
                 barrier()
 
-                comptime                for k in range(TILE):
+                comptime for k in range(TILE):
                     acc += rebind[grad_input.element_type](
                         shared_A[local_row, k]
                     ) * rebind[grad_input.element_type](shared_B[k, local_col])
@@ -324,7 +324,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
 
                 barrier()
 
-                comptime                for k in range(TILE):
+                comptime for k in range(TILE):
                     dW_acc += rebind[dW.element_type](
                         shared_A[local_row, k]
                     ) * rebind[dW.element_type](shared_B[k, local_col])
@@ -341,7 +341,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                 if local_row == 0:
                     var total = shared_A[0, local_col]
 
-                    comptime                    for r in range(1, TILE):
+                    for r in range(1, TILE):
                         total += rebind[db.element_type](shared_A[r, local_col])
                     db[global_col] = total
 

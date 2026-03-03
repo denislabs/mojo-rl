@@ -262,14 +262,12 @@ struct Muon(Optimizer):
 
             # Allocate working buffers on stack (small matrices assumed)
             # For large matrices, consider heap allocation
-            var X = InlineArray[Scalar[dtype], COLS * ROWS](Scalar[dtype](0.0))
-            var X_new = InlineArray[Scalar[dtype], COLS * ROWS](
-                Scalar[dtype](0.0)
-            )
-            var A = InlineArray[Scalar[dtype], COLS * COLS](Scalar[dtype](0.0))
-            var B = InlineArray[Scalar[dtype], COLS * COLS](Scalar[dtype](0.0))
-            var AA = InlineArray[Scalar[dtype], COLS * COLS](Scalar[dtype](0.0))
-            var BX = InlineArray[Scalar[dtype], COLS * ROWS](Scalar[dtype](0.0))
+            var X = InlineArray[Scalar[dtype], COLS * ROWS](uninitialized=True)
+            var X_new = InlineArray[Scalar[dtype], COLS * ROWS](uninitialized=True)
+            var A = InlineArray[Scalar[dtype], COLS * COLS](uninitialized=True)
+            var B = InlineArray[Scalar[dtype], COLS * COLS](uninitialized=True)
+            var AA = InlineArray[Scalar[dtype], COLS * COLS](uninitialized=True)
+            var BX = InlineArray[Scalar[dtype], COLS * ROWS](uninitialized=True)
 
             # Initialize X = (G + beta*M).T / norm
             for i in range(ROWS):
@@ -337,14 +335,12 @@ struct Muon(Optimizer):
             var norm = Self._frobenius_norm[ROWS, COLS](grads)
             norm = norm + eps
 
-            var X = InlineArray[Scalar[dtype], ROWS * COLS](Scalar[dtype](0.0))
-            var X_new = InlineArray[Scalar[dtype], ROWS * COLS](
-                Scalar[dtype](0.0)
-            )
-            var A = InlineArray[Scalar[dtype], ROWS * ROWS](Scalar[dtype](0.0))
-            var B = InlineArray[Scalar[dtype], ROWS * ROWS](Scalar[dtype](0.0))
-            var AA = InlineArray[Scalar[dtype], ROWS * ROWS](Scalar[dtype](0.0))
-            var BX = InlineArray[Scalar[dtype], ROWS * COLS](Scalar[dtype](0.0))
+            var X = InlineArray[Scalar[dtype], ROWS * COLS](uninitialized=True)
+            var X_new = InlineArray[Scalar[dtype], ROWS * COLS](uninitialized=True)
+            var A = InlineArray[Scalar[dtype], ROWS * ROWS](uninitialized=True)
+            var B = InlineArray[Scalar[dtype], ROWS * ROWS](uninitialized=True)
+            var AA = InlineArray[Scalar[dtype], ROWS * ROWS](uninitialized=True)
+            var BX = InlineArray[Scalar[dtype], ROWS * COLS](uninitialized=True)
 
             # Initialize X = (G + beta*M) / norm
             for i in range(ROWS):

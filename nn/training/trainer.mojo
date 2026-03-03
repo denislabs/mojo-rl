@@ -101,13 +101,10 @@ struct Trainer[
         self.loss_function = loss_function
         self.initializer = initializer
 
-        # Initialize params using the initializer (heap-allocated)
-        var init_params = self.initializer.init[
+        # Initialize params using the initializer (heap-allocated, avoids large InlineArray)
+        self.params = self.initializer.init[
             Self.MODEL.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
         ]()
-        self.params = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
-        for i in range(Self.MODEL.PARAM_SIZE):
-            self.params.append(init_params[i])
 
         # Initialize grads to zero (heap-allocated)
         self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
@@ -272,8 +269,8 @@ struct Trainer[
     ](
         mut self,
         ctx: DeviceContext,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        target: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        input: UnsafePointer[Scalar[dtype]],
+        target: UnsafePointer[Scalar[dtype]],
     ) raises -> TrainResult:
         """Train the model on GPU for the configured number of epochs.
 

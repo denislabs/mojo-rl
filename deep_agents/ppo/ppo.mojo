@@ -1251,16 +1251,29 @@ struct DeepPPOAgent[
                     )
                     for _ in range(Self.ACTOR_CACHE):
                         actor_cache.append(Scalar[dtype](0))
-                    self.actor.forward_with_cache_heap[1](
-                        obs, logits, actor_cache
+                    var obs_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](obs.unsafe_ptr())
+                    var logits_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+                    ](logits.unsafe_ptr())
+                    var actor_cache_tensor = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.ACTOR_CACHE, 1),
+                        MutAnyOrigin,
+                    ](actor_cache.unsafe_ptr())
+                    self.actor.forward_with_cache[1](
+                        obs_tensor, logits_tensor, actor_cache_tensor
                     )
 
                     var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](
                         fill=0
                     )
                     self.actor.zero_grads()
-                    self.actor.backward_heap[1](
-                        d_logits, actor_grad_input, actor_cache
+                    self.actor.backward[1](
+                        d_logits_tensor,
+                        actor_grad_input_tensor,
+                        actor_cache_tensor,
                     )
                     self.actor.update()
 
@@ -1275,7 +1288,7 @@ struct DeepPPOAgent[
                     )
                     for _ in range(Self.CRITIC_CACHE):
                         critic_cache.append(Scalar[dtype](0))
-                    self.critic.forward_with_cache_heap[1](
+                    self.critic.forward_with_cache[1](
                         obs, value_out, critic_cache
                     )
 

@@ -149,28 +149,19 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        """Forward pass kernel implementation: y = x @ W + b with input caching.
+        """Tiled matmul forward: output = input @ W + b, stores input to cache.
 
-        This is the core GPU computation that can be inlined into fused kernels.
-        Uses tiled matrix multiplication with shared memory.
+        Only threads in x-block 0 write the cache (to avoid race conditions).
 
         Grid: ((OUT_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
         Block: (TILE, TILE)
-
-        Args:
-            output: Output tensor [BATCH, OUT_DIM] (written).
-            input: Input tensor [BATCH, IN_DIM].
-            W: Weight matrix [IN_DIM, OUT_DIM].
-            b: Bias vector [OUT_DIM].
-            cache: Cache buffer [BATCH, IN_DIM] for backward pass (written).
         """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row
-        var global_col = Int(block_idx.x) * TILE + local_col
+        var global_row = Int(block_idx.y) * TILE + local_row  # batch
+        var global_col = Int(block_idx.x) * TILE + local_col  # out_dim
 
-        # Shared memory for tiles
-        var x_shared = LayoutTensor[
+        var input_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
@@ -184,27 +175,21 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        # Start with bias
-        var acc: output.element_type = 0
+        var acc: b.element_type = 0
         if global_col < Self.OUT_DIM:
             acc = b[global_col]
 
-        # Cache input (each thread caches one element if in bounds)
-        # We do this during the first tile load to overlap with computation
-        # Runtime loop to avoid compile-time explosion with large IN_DIM
-        for tile_idx in range((Self.IN_DIM + TILE - 1) // TILE):
-            var x_col = tile_idx * TILE + local_col
+        comptime num_tiles = (Self.IN_DIM + TILE - 1) // TILE
 
-            # Load x tile and cache
-            if global_row < BATCH and x_col < Self.IN_DIM:
-                var x_val = input[global_row, x_col]
-                x_shared[local_row, local_col] = x_val
-                # Cache the input value
-                cache[global_row, x_col] = x_val
+        for tile_idx in range(num_tiles):
+            var in_col = tile_idx * TILE + local_col
+            if global_row < BATCH and in_col < Self.IN_DIM:
+                input_shared[local_row, local_col] = input[global_row, in_col]
+                if Int(block_idx.x) == 0:
+                    cache[global_row, in_col] = input[global_row, in_col]
             else:
-                x_shared[local_row, local_col] = 0
+                input_shared[local_row, local_col] = 0
 
-            # Load W tile
             var W_row = tile_idx * TILE + local_row
             if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
                 W_shared[local_row, local_col] = W[W_row, global_col]
@@ -213,13 +198,13 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
             barrier()
 
-            # Compute partial dot product
-            comptime            for k in range(TILE):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
+            comptime for k in range(TILE):
+                acc += rebind[Scalar[dtype]](input_shared[local_row, k]) * rebind[
+                    Scalar[dtype]
+                ](W_shared[k, local_col])
 
             barrier()
 
-        # Write result
         if global_row < BATCH and global_col < Self.OUT_DIM:
             output[global_row, global_col] = acc
 
@@ -239,17 +224,17 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ],
         b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
     ):
-        """Forward pass kernel implementation without caching (for inference).
+        """Tiled matmul forward: output = input @ W + b (no cache, for inference).
 
         Grid: ((OUT_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
         Block: (TILE, TILE)
         """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row
-        var global_col = Int(block_idx.x) * TILE + local_col
+        var global_row = Int(block_idx.y) * TILE + local_row  # batch
+        var global_col = Int(block_idx.x) * TILE + local_col  # out_dim
 
-        var x_shared = LayoutTensor[
+        var input_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
@@ -263,17 +248,18 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        var acc: output.element_type = 0
+        var acc: b.element_type = 0
         if global_col < Self.OUT_DIM:
             acc = b[global_col]
 
-        var tile_x = (Self.IN_DIM + TILE - 1) // TILE
-        for tile_idx in range(0, tile_x):
-            var x_col = tile_idx * TILE + local_col
-            if global_row < BATCH and x_col < Self.IN_DIM:
-                x_shared[local_row, local_col] = input[global_row, x_col]
+        comptime num_tiles = (Self.IN_DIM + TILE - 1) // TILE
+
+        for tile_idx in range(num_tiles):
+            var in_col = tile_idx * TILE + local_col
+            if global_row < BATCH and in_col < Self.IN_DIM:
+                input_shared[local_row, local_col] = input[global_row, in_col]
             else:
-                x_shared[local_row, local_col] = 0
+                input_shared[local_row, local_col] = 0
 
             var W_row = tile_idx * TILE + local_row
             if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
@@ -283,8 +269,10 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
             barrier()
 
-            comptime            for k in range(TILE):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
+            comptime for k in range(TILE):
+                acc += rebind[Scalar[dtype]](input_shared[local_row, k]) * rebind[
+                    Scalar[dtype]
+                ](W_shared[k, local_col])
 
             barrier()
 
@@ -306,15 +294,15 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Backward pass kernel implementation: dx = dy @ W.T.
+        """Tiled backward: grad_input = grad_output @ W.T.
 
         Grid: ((IN_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
         Block: (TILE, TILE)
         """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row  # BATCH dimension
-        var global_col = Int(block_idx.x) * TILE + local_col  # IN_DIM dimension
+        var global_row = Int(block_idx.y) * TILE + local_row  # batch
+        var global_col = Int(block_idx.x) * TILE + local_col  # in_dim
 
         var dy_shared = LayoutTensor[
             dtype,
@@ -323,37 +311,37 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        var W_T_shared = LayoutTensor[
+        var WT_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        var acc: grad_input.element_type = 0
+        var acc: Scalar[dtype] = 0
 
-        # Runtime loop to avoid compile-time explosion with large OUT_DIM
-        for tile_idx in range((Self.OUT_DIM + TILE - 1) // TILE):
-            # Load dy tile
+        comptime num_tiles = (Self.OUT_DIM + TILE - 1) // TILE
+
+        for tile_idx in range(num_tiles):
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[
-                    global_row, dy_col
-                ]
+                dy_shared[local_row, local_col] = grad_output[global_row, dy_col]
             else:
                 dy_shared[local_row, local_col] = 0
 
-            # Load W.T tile
-            var W_col = tile_idx * TILE + local_row
-            if W_col < Self.OUT_DIM and global_col < Self.IN_DIM:
-                W_T_shared[local_row, local_col] = W[global_col, W_col]
+            # W.T[tile_idx*TILE+local_row, global_col] = W[global_col, tile_idx*TILE+local_row]
+            var WT_row = tile_idx * TILE + local_row
+            if global_col < Self.IN_DIM and WT_row < Self.OUT_DIM:
+                WT_shared[local_row, local_col] = W[global_col, WT_row]
             else:
-                W_T_shared[local_row, local_col] = 0
+                WT_shared[local_row, local_col] = 0
 
             barrier()
 
-            comptime            for k in range(TILE):
-                acc += dy_shared[local_row, k] * W_T_shared[k, local_col]
+            comptime for k in range(TILE):
+                acc += rebind[Scalar[dtype]](dy_shared[local_row, k]) * rebind[
+                    Scalar[dtype]
+                ](WT_shared[k, local_col])
 
             barrier()
 
@@ -375,21 +363,17 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Backward pass kernel implementation: dW = x.T @ dy.
-
-        Uses cached input from forward pass.
+        """Tiled backward: dW = cache.T @ grad_output.
 
         Grid: ((OUT_DIM + TILE - 1) // TILE, (IN_DIM + TILE - 1) // TILE)
         Block: (TILE, TILE)
         """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row  # IN_DIM dimension
-        var global_col = (
-            Int(block_idx.x) * TILE + local_col
-        )  # OUT_DIM dimension
+        var global_row = Int(block_idx.y) * TILE + local_row  # in_dim
+        var global_col = Int(block_idx.x) * TILE + local_col  # out_dim
 
-        var x_T_shared = LayoutTensor[
+        var cacheT_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
@@ -403,31 +387,30 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        var acc: dW.element_type = 0
+        var acc: Scalar[dtype] = 0
 
-        # Runtime loop to avoid compile-time explosion with large BATCH
-        var tile_x = (BATCH + TILE - 1) // TILE
-        for tile_idx in range(tile_x):
-            # Load x.T tile
-            var batch_idx = tile_idx * TILE + local_col
-            if global_row < Self.IN_DIM and batch_idx < BATCH:
-                x_T_shared[local_row, local_col] = cache[batch_idx, global_row]
+        comptime num_tiles = (BATCH + TILE - 1) // TILE
+
+        for tile_idx in range(num_tiles):
+            # cache.T[global_row, tile_idx*TILE+local_col] = cache[tile_idx*TILE+local_col, global_row]
+            var batch_col = tile_idx * TILE + local_col
+            if batch_col < BATCH and global_row < Self.IN_DIM:
+                cacheT_shared[local_row, local_col] = cache[batch_col, global_row]
             else:
-                x_T_shared[local_row, local_col] = 0
+                cacheT_shared[local_row, local_col] = 0
 
-            # Load dy tile
-            var dy_row = tile_idx * TILE + local_row
-            if dy_row < BATCH and global_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[
-                    dy_row, global_col
-                ]
+            var batch_row = tile_idx * TILE + local_row
+            if batch_row < BATCH and global_col < Self.OUT_DIM:
+                dy_shared[local_row, local_col] = grad_output[batch_row, global_col]
             else:
                 dy_shared[local_row, local_col] = 0
 
             barrier()
 
-            comptime            for k in range(TILE):
-                acc += x_T_shared[local_row, k] * dy_shared[k, local_col]
+            comptime for k in range(TILE):
+                acc += rebind[Scalar[dtype]](cacheT_shared[local_row, k]) * rebind[
+                    Scalar[dtype]
+                ](dy_shared[k, local_col])
 
             barrier()
 
@@ -471,182 +454,6 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         if local_i == 0:
             db[col] = total[0]
 
-    @always_inline
-    @staticmethod
-    fn backward_fused_kernel_impl[
-        BATCH: Int,
-    ](
-        grad_input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-        dW: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ],
-        db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
-        grad_output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-        W: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ],
-    ):
-        """Fused backward kernel: computes dx, dW, and db in a single launch.
-
-        This eliminates 2 kernel launches by combining:
-        - dx = grad_output @ W.T
-        - dW = cache.T @ grad_output
-        - db = sum(grad_output, axis=0)
-
-        Grid partitioning (2D grid):
-        - Rows [0, dx_grid_y): blocks compute grad_input (dx)
-        - Rows [dx_grid_y, dx_grid_y + dW_grid_y): blocks compute dW
-        - db is computed by dW blocks in the first row (dW_block_y == 0)
-
-        Grid: (max(dx_grid_x, dW_grid_x), dx_grid_y + dW_grid_y)
-        Block: (TILE, TILE)
-        """
-        # Thread indices
-        var local_row = Int(thread_idx.y)
-        var local_col = Int(thread_idx.x)
-        var block_y = Int(block_idx.y)
-        var block_x = Int(block_idx.x)
-
-        # Grid dimensions for dx computation: grad_input[BATCH, IN_DIM]
-        comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
-        comptime dx_grid_y = (BATCH + TILE - 1) // TILE
-
-        # Grid dimensions for dW computation: dW[IN_DIM, OUT_DIM]
-        comptime dW_grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-        comptime dW_grid_y = (Self.IN_DIM + TILE - 1) // TILE
-
-        # Allocate shared memory (reused for both dx and dW computations)
-        var shared_A = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        var shared_B = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Determine which computation this block handles based on block_y
-        if block_y < dx_grid_y:
-            # ================================================================
-            # dx computation: grad_input = grad_output @ W.T
-            # ================================================================
-            if block_x >= dx_grid_x:
-                return  # This block is outside dx grid bounds
-
-            var global_row = block_y * TILE + local_row  # BATCH dimension
-            var global_col = block_x * TILE + local_col  # IN_DIM dimension
-
-            var acc: grad_input.element_type = 0
-
-            # Tile over OUT_DIM (the k dimension for dx = dy @ W.T)
-            for tile_idx in range((Self.OUT_DIM + TILE - 1) // TILE):
-                # Load grad_output tile into shared_A
-                var dy_col = tile_idx * TILE + local_col
-                if global_row < BATCH and dy_col < Self.OUT_DIM:
-                    shared_A[local_row, local_col] = grad_output[
-                        global_row, dy_col
-                    ]
-                else:
-                    shared_A[local_row, local_col] = 0
-
-                # Load W.T tile into shared_B (W[global_col, W_col] for transpose)
-                var W_col = tile_idx * TILE + local_row
-                if W_col < Self.OUT_DIM and global_col < Self.IN_DIM:
-                    shared_B[local_row, local_col] = W[global_col, W_col]
-                else:
-                    shared_B[local_row, local_col] = 0
-
-                barrier()
-
-                # Compute partial dot product
-                comptime                for k in range(TILE):
-                    acc += shared_A[local_row, k] * shared_B[k, local_col]
-
-                barrier()
-
-            # Write result
-            if global_row < BATCH and global_col < Self.IN_DIM:
-                grad_input[global_row, global_col] = acc
-
-        else:
-            # ================================================================
-            # dW computation: dW = cache.T @ grad_output
-            # Also computes db for the first row of dW blocks
-            # ================================================================
-            var dW_block_y = block_y - dx_grid_y
-            var dW_block_x = block_x
-
-            if dW_block_y >= dW_grid_y or dW_block_x >= dW_grid_x:
-                return  # This block is outside dW grid bounds
-
-            var global_row = dW_block_y * TILE + local_row  # IN_DIM dimension
-            var global_col = dW_block_x * TILE + local_col  # OUT_DIM dimension
-
-            var dW_acc: dW.element_type = 0
-            var db_acc: db.element_type = 0  # Used only if dW_block_y == 0
-
-            # Tile over BATCH (the k dimension for dW = cache.T @ dy)
-            var num_tiles = (BATCH + TILE - 1) // TILE
-            for tile_idx in range(num_tiles):
-                # Load cache.T tile into shared_A
-                var batch_idx = tile_idx * TILE + local_col
-                if global_row < Self.IN_DIM and batch_idx < BATCH:
-                    shared_A[local_row, local_col] = cache[
-                        batch_idx, global_row
-                    ]
-                else:
-                    shared_A[local_row, local_col] = 0
-
-                # Load grad_output tile into shared_B
-                var dy_row = tile_idx * TILE + local_row
-                if dy_row < BATCH and global_col < Self.OUT_DIM:
-                    var dy_val = grad_output[dy_row, global_col]
-                    shared_B[local_row, local_col] = dy_val
-                    # Accumulate for db (only first row of dW blocks)
-                    if dW_block_y == 0:
-                        db_acc += dy_val
-                else:
-                    shared_B[local_row, local_col] = 0
-
-                barrier()
-
-                # Compute partial dot product
-                comptime                for k in range(TILE):
-                    dW_acc += shared_A[local_row, k] * shared_B[k, local_col]
-
-                barrier()
-
-            # Write dW result
-            if global_row < Self.IN_DIM and global_col < Self.OUT_DIM:
-                dW[global_row, global_col] = dW_acc
-
-            # Compute and write db using shared memory reduction
-            # Only the first row of dW blocks (dW_block_y == 0) computes db
-            if dW_block_y == 0 and global_col < Self.OUT_DIM:
-                # Store partial sums in shared memory for reduction
-                shared_A[local_row, local_col] = db_acc
-                barrier()
-
-                # Reduce across local_row dimension (thread with local_row==0 sums)
-                if local_row == 0:
-                    var total = shared_A[0, local_col]
-
-                    comptime                    for r in range(1, TILE):
-                        total += shared_A[r, local_col]
-                    db[global_col] = total
-
     # =========================================================================
     # GPU Launchers (with DeviceContext)
     # =========================================================================
@@ -654,11 +461,6 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     # These functions handle buffer-to-tensor conversion, grid/block config,
     # and kernel launch. They call the _kernel_impl functions.
     # =========================================================================
-
-    
-
-   
-        
 
     # =========================================================================
     # GPU Workspace Methods (for Sequential compatibility)
@@ -705,13 +507,11 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
 
-        # Configure grid and block
         comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
-        # Define kernel wrapper that calls the impl
         @always_inline
-        fn kernel_wrapper(
+        fn forward_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -730,15 +530,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH](
-                output,
-                input,
-                W,
-                b,
-                cache,
-            )
+            Self.forward_kernel_impl[BATCH](output, input, W, b, cache)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[forward_wrapper, forward_wrapper](
             output,
             input,
             W,
@@ -802,12 +596,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](
-                output,
-                input,
-                W,
-                b,
-            )
+            Self.forward_kernel_impl_no_cache[BATCH](output, input, W, b)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -830,15 +619,12 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
     ) raises:
-        """Launch backward pass on GPU using fused kernel.
+        """Launch backward pass on GPU using three tiled kernels.
 
-        Computes all gradients in a SINGLE kernel launch:
-        - grad_input = grad_output @ W.T
-        - dW = cache.T @ grad_output
-        - db = sum(grad_output, axis=0)
-
-        This fused implementation eliminates 2 kernel launches compared to
-        the separate dx, dW, db kernels, reducing GPU synchronization overhead.
+        Computes all gradients in three separate tiled matmul kernels:
+        - grad_input = grad_output @ W.T  (tiled 2D)
+        - dW = cache.T @ grad_output      (tiled 2D)
+        - db = sum(grad_output, axis=0)   (block reduction)
 
         Args:
             ctx: GPU device context.
@@ -871,28 +657,14 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
         ](db_ptr)
 
-        # Grid dimensions for fused kernel:
-        # - Rows [0, dx_grid_y): dx blocks
-        # - Rows [dx_grid_y, dx_grid_y + dW_grid_y): dW blocks (also compute db)
+        # Kernel 1: dx = grad_output @ W.T  (tiled 2D)
         comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
         comptime dx_grid_y = (BATCH + TILE - 1) // TILE
-        comptime dW_grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-        comptime dW_grid_y = (Self.IN_DIM + TILE - 1) // TILE
-
-        # Combined grid: max width, sum of heights
-        comptime fused_grid_x = dx_grid_x if dx_grid_x > dW_grid_x else dW_grid_x
-        comptime fused_grid_y = dx_grid_y + dW_grid_y
 
         @always_inline
-        fn fused_backward_kernel_wrapper(
+        fn backward_dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-            ],
-            dW: LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-            ],
-            db: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
             ],
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
@@ -902,31 +674,60 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
                 ImmutAnyOrigin,
             ],
+        ):
+            Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, W)
+
+        ctx.enqueue_function[backward_dx_wrapper, backward_dx_wrapper](
+            grad_input,
+            grad_output,
+            W,
+            grid_dim=(dx_grid_x, dx_grid_y),
+            block_dim=(TILE, TILE),
+        )
+
+        # Kernel 2: dW = cache.T @ grad_output  (tiled 2D)
+        comptime dW_grid_x = (Self.OUT_DIM + TILE - 1) // TILE
+        comptime dW_grid_y = (Self.IN_DIM + TILE - 1) // TILE
+
+        @always_inline
+        fn backward_dW_wrapper(
+            dW: LayoutTensor[
+                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
+            ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
         ):
-            Self.backward_fused_kernel_impl[BATCH](
-                grad_input,
-                dW,
-                db,
-                grad_output,
-                W,
-                cache,
-            )
+            Self.backward_dW_kernel_impl[BATCH](dW, cache, grad_output)
 
-        # Single kernel launch for all backward computations
-        ctx.enqueue_function[
-            fused_backward_kernel_wrapper, fused_backward_kernel_wrapper
-        ](
-            grad_input,
+        ctx.enqueue_function[backward_dW_wrapper, backward_dW_wrapper](
             dW,
+            cache,
+            grad_output,
+            grid_dim=(dW_grid_x, dW_grid_y),
+            block_dim=(TILE, TILE),
+        )
+
+        # Kernel 3: db = sum(grad_output, axis=0)
+        @always_inline
+        fn backward_db_wrapper(
+            db: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_db_kernel_impl[BATCH](db, grad_output)
+
+        ctx.enqueue_function[backward_db_wrapper, backward_db_wrapper](
             db,
             grad_output,
-            W,
-            cache,
-            grid_dim=(fused_grid_x, fused_grid_y),
-            block_dim=(TILE, TILE),
+            grid_dim=(Self.OUT_DIM,),
+            block_dim=(TPB,),
         )
 
     @staticmethod

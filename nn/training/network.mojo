@@ -103,13 +103,10 @@ struct Network[
         self.optimizer = optimizer
         self.initializer = initializer
 
-        # Initialize params using the initializer (copy from InlineArray to List)
-        var init_params = self.initializer.init[
+        # Initialize params using the initializer (returns heap-allocated List)
+        self.params = self.initializer.init[
             Self.MODEL.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
         ]()
-        self.params = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
-        for i in range(Self.MODEL.PARAM_SIZE):
-            self.params.append(init_params[i])
 
         # Initialize grads to zero
         self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
@@ -130,28 +127,28 @@ struct Network[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference/action selection).
 
         Args:
             input: Input tensor [BATCH * IN_DIM].
             output: Output tensor [BATCH * OUT_DIM] (written).
+
         """
-        var input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input.unsafe_ptr())
-        var output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](output.unsafe_ptr())
+
         var params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.params.unsafe_ptr())
 
         Self.MODEL.forward[BATCH](
-            input_tensor,
-            output_tensor,
+            input,
+            output,
             params_tensor,
         )
 
@@ -159,9 +156,15 @@ struct Network[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass with caching (for training).
 
@@ -169,67 +172,18 @@ struct Network[
             input: Input tensor [BATCH * IN_DIM].
             output: Output tensor [BATCH * OUT_DIM] (written).
             cache: Cache tensor [BATCH * CACHE_SIZE] for backward pass (written).
+
         """
-        var input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input.unsafe_ptr())
-        var output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](output.unsafe_ptr())
+
         var params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.params.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache.unsafe_ptr())
 
         Self.MODEL.forward[BATCH](
-            input_tensor,
-            output_tensor,
+            input,
+            output,
             params_tensor,
-            cache_tensor,
-        )
-
-    # =========================================================================
-    # CPU Forward Pass (Heap-allocated cache variants)
-    # =========================================================================
-
-    fn forward_with_cache_heap[
-        BATCH: Int
-    ](
-        self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-        mut cache: List[Scalar[dtype]],
-    ):
-        """Forward pass with heap-allocated cache (for large hidden dimensions).
-
-        Use this variant when CACHE_SIZE is large to avoid stack overflow.
-        The cache List must be pre-allocated with size >= BATCH * CACHE_SIZE.
-
-        Args:
-            input: Input tensor [BATCH * IN_DIM].
-            output: Output tensor [BATCH * OUT_DIM] (written).
-            cache: Heap-allocated cache List [BATCH * CACHE_SIZE] (written).
-        """
-        var input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input.unsafe_ptr())
-        var output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](output.unsafe_ptr())
-        var params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache.unsafe_ptr())
-
-        Self.MODEL.forward[BATCH](
-            input_tensor,
-            output_tensor,
-            params_tensor,
-            cache_tensor,
+            cache,
         )
 
     # =========================================================================
@@ -245,9 +199,15 @@ struct Network[
         BATCH: Int
     ](
         mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
         """Backward pass: compute gradients w.r.t. input and accumulate param grads.
 
@@ -258,123 +218,21 @@ struct Network[
             grad_input: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
             cache: Cache from forward_with_cache [BATCH * CACHE_SIZE].
         """
-        var grad_output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](grad_output.unsafe_ptr())
-        var grad_input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_input.unsafe_ptr())
+
         var params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.params.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache.unsafe_ptr())
         var grads_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.grads.unsafe_ptr())
 
         Self.MODEL.backward[BATCH](
-            grad_output_tensor,
-            grad_input_tensor,
+            grad_output,
+            grad_input,
             params_tensor,
-            cache_tensor,
+            cache,
             grads_tensor,
         )
-
-    fn backward_heap[
-        BATCH: Int
-    ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
-        cache: List[Scalar[dtype]],
-    ):
-        """Backward pass with heap-allocated cache (for large hidden dimensions).
-
-        Use this variant when CACHE_SIZE is large to avoid stack overflow.
-        Call zero_grads() before this if you want fresh gradients.
-
-        Args:
-            grad_output: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
-            grad_input: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
-            cache: Heap-allocated cache from forward_with_cache_heap [BATCH * CACHE_SIZE].
-        """
-        var grad_output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](grad_output.unsafe_ptr())
-        var grad_input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_input.unsafe_ptr())
-        var params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache.unsafe_ptr())
-        var grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.grads.unsafe_ptr())
-
-        Self.MODEL.backward[BATCH](
-            grad_output_tensor,
-            grad_input_tensor,
-            params_tensor,
-            cache_tensor,
-            grads_tensor,
-        )
-
-    fn backward_input[
-        BATCH: Int
-    ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE],
-    ) -> InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM]:
-        """Backward pass that returns input gradients (for critic→actor chain).
-
-        Use this when you need to chain gradients from one network's output
-        to another network's input, such as in SAC/DDPG/TD3 actor updates
-        where we need dQ/da from the critic to update the actor.
-
-        Call zero_grads() before this if you want fresh gradients.
-
-        Args:
-            grad_output: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
-            cache: Cache from forward_with_cache [BATCH * CACHE_SIZE].
-
-        Returns:
-            Gradient of loss w.r.t. input [BATCH * IN_DIM].
-        """
-        var grad_input = InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM](
-            uninitialized=True
-        )
-
-        var grad_output_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
-        ](grad_output.unsafe_ptr())
-        var grad_input_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_input.unsafe_ptr())
-        var params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
-        var cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
-        ](cache.unsafe_ptr())
-        var grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ](self.grads.unsafe_ptr())
-
-        Self.MODEL.backward[BATCH](
-            grad_output_tensor,
-            grad_input_tensor,
-            params_tensor,
-            cache_tensor,
-            grads_tensor,
-        )
-
-        return grad_input^
 
     # =========================================================================
     # CPU Optimizer Step
@@ -435,10 +293,10 @@ struct Network[
     # GPU Forward/Backward with Workspace (avoids internal allocation)
     # =========================================================================
 
+    @staticmethod
     fn forward_gpu[
         BATCH: Int
     ](
-        self,
         ctx: DeviceContext,
         input_buf: DeviceBuffer[dtype],
         mut output_buf: DeviceBuffer[dtype],
@@ -465,10 +323,10 @@ struct Network[
             workspace_buf,
         )
 
+    @staticmethod
     fn forward_gpu_with_cache[
         BATCH: Int
     ](
-        self,
         ctx: DeviceContext,
         input_buf: DeviceBuffer[dtype],
         mut output_buf: DeviceBuffer[dtype],
@@ -498,10 +356,10 @@ struct Network[
             workspace_buf,
         )
 
+    @staticmethod
     fn backward_gpu[
         BATCH: Int
     ](
-        self,
         ctx: DeviceContext,
         grad_output_buf: DeviceBuffer[dtype],
         mut grad_input_buf: DeviceBuffer[dtype],

@@ -30,17 +30,17 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
     comptime PARAM_SIZE: Int = 0
-    comptime CACHE_SIZE: Int = Self.dim   # softmax outputs for backward
+    comptime CACHE_SIZE: Int = Self.dim  # softmax outputs for backward
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0
     comptime N_GROUPS: Int = Self.dim // Self.simplex_dim
 
     fn __init__(out self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
@@ -68,9 +68,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
             for g in range(Self.N_GROUPS):
                 var base = g * Self.simplex_dim
                 # Find max for numerical stability
-                var max_val = Float64(
-                    rebind[Scalar[dtype]](input[batch, base])
-                )
+                var max_val = Float64(rebind[Scalar[dtype]](input[batch, base]))
                 for k in range(1, Self.simplex_dim):
                     var v = Float64(
                         rebind[Scalar[dtype]](input[batch, base + k])
@@ -111,9 +109,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         for batch in range(BATCH):
             for g in range(Self.N_GROUPS):
                 var base = g * Self.simplex_dim
-                var max_val = Float64(
-                    rebind[Scalar[dtype]](input[batch, base])
-                )
+                var max_val = Float64(rebind[Scalar[dtype]](input[batch, base]))
                 for k in range(1, Self.simplex_dim):
                     var v = Float64(
                         rebind[Scalar[dtype]](input[batch, base + k])
@@ -179,9 +175,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
                     var y = Float64(
                         rebind[Scalar[dtype]](cache[batch, base + k])
                     )
-                    grad_input[batch, base + k] = Scalar[dtype](
-                        y * (dy - dot)
-                    )
+                    grad_input[batch, base + k] = Scalar[dtype](y * (dy - dot))
 
     # =========================================================================
     # GPU Kernel Implementations
@@ -356,8 +350,11 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
             Self.forward_kernel_impl[BATCH](output, input, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            output, input, cache,
-            grid_dim=(grid_x,), block_dim=(TPB,),
+            output,
+            input,
+            cache,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -393,8 +390,10 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
             Self.forward_kernel_impl_no_cache[BATCH](output, input)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            output, input,
-            grid_dim=(grid_x,), block_dim=(TPB,),
+            output,
+            input,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -438,6 +437,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
             Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            grad_input, grad_output, cache,
-            grid_dim=(grid_x,), block_dim=(TPB,),
+            grad_input,
+            grad_output,
+            cache,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
         )

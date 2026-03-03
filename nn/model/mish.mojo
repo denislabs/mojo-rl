@@ -29,10 +29,10 @@ struct Mish[dim: Int](Model):
     fn __init__(out self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
@@ -70,7 +70,7 @@ struct Mish[dim: Int](Model):
                 var exp_neg_sp = exp(-sp)
                 var tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
                 var y = x_val * tanh_sp
-                cache[batch, i] = Scalar[dtype](tanh_sp)       # tanh(sp)
+                cache[batch, i] = Scalar[dtype](tanh_sp)  # tanh(sp)
                 cache[batch, Self.dim + i] = Scalar[dtype](x_val)  # x
                 output[batch, i] = Scalar[dtype](y)
 
@@ -128,9 +128,7 @@ struct Mish[dim: Int](Model):
         """
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var tanh_sp = Float64(
-                    rebind[Scalar[dtype]](cache[batch, i])
-                )
+                var tanh_sp = Float64(rebind[Scalar[dtype]](cache[batch, i]))
                 var x_val = Float64(
                     rebind[Scalar[dtype]](cache[batch, Self.dim + i])
                 )
@@ -139,9 +137,7 @@ struct Mish[dim: Int](Model):
                     1.0 - tanh_sp * tanh_sp
                 )
                 var dy = rebind[Scalar[dtype]](grad_output[batch, i])
-                grad_input[batch, i] = Scalar[dtype](
-                    Float64(dy) * d_mish
-                )
+                grad_input[batch, i] = Scalar[dtype](Float64(dy) * d_mish)
 
     # =========================================================================
     # GPU Kernel Implementations
@@ -253,13 +249,9 @@ struct Mish[dim: Int](Model):
         var row = idx // Self.dim
         var col = idx % Self.dim
         var tanh_sp = rebind[Scalar[DType.float32]](cache[row, col])
-        var x_val = rebind[Scalar[DType.float32]](
-            cache[row, Self.dim + col]
-        )
+        var x_val = rebind[Scalar[DType.float32]](cache[row, Self.dim + col])
         var sigmoid_x: Scalar[DType.float32] = 1.0 / (1.0 + exp(-x_val))
-        var d_mish = tanh_sp + x_val * sigmoid_x * (
-            1.0 - tanh_sp * tanh_sp
-        )
+        var d_mish = tanh_sp + x_val * sigmoid_x * (1.0 - tanh_sp * tanh_sp)
         var dy = rebind[Scalar[DType.float32]](grad_output[row, col])
         grad_input[row, col] = rebind[grad_input.element_type](dy * d_mish)
 

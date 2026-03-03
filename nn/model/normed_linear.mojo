@@ -43,10 +43,10 @@ struct NormedLinear[in_dim: Int, out_dim: Int](Model):
     fn __init__(out self):
         pass
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         pass
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         pass
 
     @staticmethod

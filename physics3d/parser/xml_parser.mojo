@@ -832,6 +832,12 @@ struct ComptimeActData(Copyable, Movable):
     var joint_range_max: InlineArray[Float64, 32]
     var inertiafromgeom: Bool
     var settotalmass: Float64
+    # Initial qpos values from <custom><numeric name="init_qpos" data="..."/>.
+    # nq == 0 means no init_qpos was found; use qpos0 defaults instead.
+    var qpos0: InlineArray[Float64, 64]
+    var nq: Int
+    # qpos address of the first free joint (-1 if no free joint present).
+    var free_joint_qpos_adr: Int
 
     fn __init__(out self):
         """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False."""
@@ -843,6 +849,9 @@ struct ComptimeActData(Copyable, Movable):
         self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
         self.inertiafromgeom = False
         self.settotalmass = Float64(-1.0)
+        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
+        self.nq = 0
+        self.free_joint_qpos_adr = -1
 
     fn __copyinit__(out self, copy: Self):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
@@ -854,6 +863,9 @@ struct ComptimeActData(Copyable, Movable):
         self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
         self.inertiafromgeom = copy.inertiafromgeom
         self.settotalmass = copy.settotalmass
+        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
+        self.nq = copy.nq
+        self.free_joint_qpos_adr = copy.free_joint_qpos_adr
         for i in range(32):
             self.motor_gears[i] = copy.motor_gears[i]
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
@@ -861,6 +873,8 @@ struct ComptimeActData(Copyable, Movable):
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
             self.joint_range_min[i] = copy.joint_range_min[i]
             self.joint_range_max[i] = copy.joint_range_max[i]
+        for i in range(64):
+            self.qpos0[i] = copy.qpos0[i]
 
     fn __moveinit__(out self, deinit take: Self):
         self.motor_gears = take.motor_gears^
@@ -871,6 +885,9 @@ struct ComptimeActData(Copyable, Movable):
         self.joint_range_max = take.joint_range_max^
         self.inertiafromgeom = take.inertiafromgeom
         self.settotalmass = take.settotalmass
+        self.qpos0 = take.qpos0^
+        self.nq = take.nq
+        self.free_joint_qpos_adr = take.free_joint_qpos_adr
 
 
 fn _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
@@ -1044,9 +1061,11 @@ fn parse_xml_model_data(xml: String) -> ComptimeActData:
                     data.joint_range_max[jnt_count] = (
                         _parse_float(parts[1]) * deg_factor
                     )
-            # Advance qpos_adr
+            # Advance qpos_adr, track free joint
             var jtype = _extract_attr(tag, "type")
             if jtype == "free":
+                if data.free_joint_qpos_adr == -1:
+                    data.free_joint_qpos_adr = qpos_adr
                 qpos_adr += 7
             elif jtype == "ball":
                 qpos_adr += 4
@@ -1054,6 +1073,32 @@ fn parse_xml_model_data(xml: String) -> ComptimeActData:
                 qpos_adr += 1
         jnt_count += 1
         jnt_pos = t + 6
+
+    # ---- init_qpos from <custom><numeric name="init_qpos" data="..."/> -------
+    var custom_sec = _extract_section(xml_clean, "custom")
+    if len(custom_sec) > 0:
+        var num_pos = 0
+        while True:
+            var t = custom_sec.find("<numeric", num_pos)
+            if t == -1:
+                break
+            var tag_end = custom_sec.find(">", t)
+            if tag_end == -1:
+                break
+            var tag = String(custom_sec[t : tag_end + 1])
+            var nname = _extract_attr(tag, "name")
+            if _trim(nname) == "init_qpos":
+                var ndata = _extract_attr(tag, "data")
+                var parts = List[String]()
+                _split_spaces(ndata, parts)
+                var count = len(parts)
+                if count > 64:
+                    count = 64
+                for i in range(count):
+                    data.qpos0[i] = _parse_float(parts[i])
+                data.nq = count
+                break
+            num_pos = t + 7
 
     return data^
 

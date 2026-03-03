@@ -68,7 +68,8 @@ fn tdmpc2_random_actions_kernel[
 
     for j in range(ACTION_DIM):
         var philox = PhiloxRandom(
-            seed=Int(rng_seed) + i * ACTION_DIM + j, offset=0
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
         )
         var rand_vals = philox.step_uniform()
         # Map [0, 1] → [-1, 1]
@@ -124,7 +125,8 @@ fn tdmpc2_sample_actions_kernel[
 
         # Box-Muller transform for standard normal sample
         var philox = PhiloxRandom(
-            seed=Int(rng_seed) + i * ACTION_DIM + j, offset=0
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
         )
         var rand_vals = philox.step_uniform()
         var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
@@ -364,8 +366,8 @@ fn tdmpc2_consistency_loss_grad_kernel[
     if i >= BATCH_SIZE:
         return
 
-    var scale = rho_weight * Scalar[dtype](2.0) / Scalar[dtype](
-        BATCH_SIZE * LATENT_DIM
+    var scale = (
+        rho_weight * Scalar[dtype](2.0) / Scalar[dtype](BATCH_SIZE * LATENT_DIM)
     )
     for k in range(LATENT_DIM):
         var diff = z_pred[i, k] - z_target[i, k]
@@ -714,7 +716,9 @@ fn tdmpc2_q_min_reduce_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
-    running_min: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    running_min: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
     new_vals: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
 ) where dtype.is_floating_point():
     """Update running minimum: running_min[i] = min(running_min[i], new_vals[i]).
@@ -745,7 +749,9 @@ fn tdmpc2_q_min_reduce_kernel[
 fn tdmpc2_zero_kernel[
     dtype: DType,
     SIZE: Int,
-](buffer: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]) where dtype.is_floating_point():
+](
+    buffer: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]
+) where dtype.is_floating_point():
     """Zero out a flat buffer. Alias for zero_buffer_kernel for clarity.
 
     Args:

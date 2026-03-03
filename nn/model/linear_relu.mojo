@@ -204,7 +204,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
             barrier()
 
             # Compute partial dot product
-            comptime            for k in range(TILE):
+            comptime for k in range(TILE):
                 acc += x_shared[local_row, k] * W_shared[k, local_col]
 
             barrier()
@@ -275,7 +275,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
 
             barrier()
 
-            comptime            for k in range(TILE):
+            comptime for k in range(TILE):
                 acc += x_shared[local_row, k] * W_shared[k, local_col]
 
             barrier()
@@ -384,7 +384,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
 
                 barrier()
 
-                comptime                for k in range(TILE):
+                comptime for k in range(TILE):
                     acc += shared_A[local_row, k] * shared_B[k, local_col]
 
                 barrier()
@@ -435,7 +435,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
 
                 barrier()
 
-                comptime                for k in range(TILE):
+                comptime for k in range(TILE):
                     dW_acc += shared_A[local_row, k] * shared_B[k, local_col]
 
                 barrier()
@@ -452,7 +452,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
                 if local_row == 0:
                     var total = shared_A[0, local_col]
 
-                    comptime                    for r in range(1, TILE):
+                    for r in range(1, TILE):
                         total += shared_A[r, local_col]
                     db[global_col] = total
 

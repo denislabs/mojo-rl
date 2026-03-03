@@ -96,7 +96,7 @@ def main():
     var ctx = DeviceContext()
     var start_unfused = perf_counter_ns()
     var unfused_result = unfused_trainer.train_gpu[BATCH](
-        ctx, input_data, target_data
+        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
     )
     var end_unfused = perf_counter_ns()
     var unfused_time_ms = Float64(end_unfused - start_unfused) / 1_000_000.0
@@ -140,7 +140,7 @@ def main():
     print("Training fused model on GPU...")
     var start_fused = perf_counter_ns()
     var fused_result = fused_trainer.train_gpu[BATCH](
-        ctx, input_data, target_data
+        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
     )
     var end_fused = perf_counter_ns()
     var fused_time_ms = Float64(end_fused - start_fused) / 1_000_000.0
