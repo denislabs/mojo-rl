@@ -828,7 +828,6 @@ struct DeepPPOAgent[
             Linear[Self.HIDDEN, 1],
         ],
         Adam,
-        Xavier,
     ]
     var critic: Self.CriticNetwork
 

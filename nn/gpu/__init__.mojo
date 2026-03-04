@@ -43,6 +43,15 @@ This module provides common GPU operations used across deep RL algorithms.
 - store_transitions_kernel: Store transitions to GPU replay buffer
 - sample_indices_kernel: Generate random sample indices
 - gather_batch_kernel: Gather sampled transitions into batch
+
+## Continuous Control Kernels (continuous_kernels.mojo)
+- td_target_continuous_kernel: DDPG TD target r + γ*Q_t(s',a')*(1-done)
+- td_target_min_twin_kernel: TD3/SAC TD target with min(Q1,Q2) and optional entropy
+- actor_grad_from_critic_kernel: Extract ∂Q/∂a from critic input gradient
+- add_gaussian_noise_kernel: Clipped Gaussian noise for TD3 exploration
+- sac_reparameterize_kernel: SAC reparameterization trick with Jacobian log-prob
+- a2c_gae_kernel: GAE advantages + returns for A2C GPU training
+- a2c_softmax_sample_kernel: Softmax categorical sampling for parallel A2C envs
 """
 
 
@@ -93,4 +102,22 @@ from .rl_kernels import (
     store_transitions_kernel,
     sample_indices_kernel,
     gather_batch_kernel,
+    store_transitions_kernel_nd,
+    gather_batch_kernel_nd,
 )
+
+from .continuous_kernels import (
+    td_target_continuous_kernel,
+    td_target_min_twin_kernel,
+    actor_grad_from_critic_kernel,
+    add_gaussian_noise_kernel,
+    sac_reparameterize_kernel,
+    a2c_gae_kernel,
+    a2c_softmax_sample_kernel,
+    concat_obs_action_kernel,
+    scale_clip_actions_kernel,
+    ddpg_exploration_kernel,
+    td_mse_grad_kernel,
+)
+
+from .gpu_train_scratch import GPUTrainScratch

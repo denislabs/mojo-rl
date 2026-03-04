@@ -30,6 +30,7 @@ from .initializer import (
     Uniform,
     Normal,
 )
+from .utils import fill_inline, obs_to_inline, concat_obs_action
 from .checkpoint import (
     CheckpointHeader,
     write_checkpoint_header,

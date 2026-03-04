@@ -108,11 +108,11 @@ struct Trainer[
         Returns:
             GPUNetworkState with initialized weights on device.
         """
-        var state = NetworkState[Self.MODEL, Self.OPTIMIZER]()
-        state.initialize[INITIALIZER]()
-        var state = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
-        state.upload_from(state, ctx)
-        return state^
+        var cpu = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        cpu.initialize[INITIALIZER]()
+        var gpu = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
+        gpu.upload_from(cpu, ctx)
+        return gpu^
 
     # =========================================================================
     # CPU Training

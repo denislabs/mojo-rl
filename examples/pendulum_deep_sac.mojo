@@ -45,11 +45,13 @@ fn main() raises:
 
     # Create Deep SAC agent
     # obs_dim=3, action_dim=1, hidden_dim=64, buffer_capacity=50000, batch_size=64
-    var agent = DeepSACAgent[3, 1, 64, 50000, 64](
+    var agent = DeepSACAgent[
+        obs_dim=3, action_dim=1, hidden_dim=64,
+        buffer_capacity=50000, batch_size=64,
+        actor_lr=0.0003, critic_lr=0.0003,
+    ](
         gamma=0.99,
         tau=0.005,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
         action_scale=2.0,  # Pendulum torque range: [-2, 2]
         alpha=0.1,  # Initial entropy coefficient
         auto_alpha=False,  # Disable auto tuning for stability
@@ -86,8 +88,7 @@ fn main() raises:
     var eval_reward = agent.evaluate(
         env,
         num_episodes=10,
-        max_steps=200,
-        render=False,
+        max_steps_per_episode=200,
     )
     print("Evaluation average reward:", String(eval_reward)[:8])
 
@@ -95,7 +96,6 @@ fn main() raises:
     print("\n" + "=" * 60)
     print("Training Complete!")
     print("=" * 60)
-    print("Total training steps:", agent.get_train_steps())
-    print("Final alpha:", String(agent.get_alpha())[:6])
+    print("Final alpha:", String(agent.alpha)[:6])
     print("Final evaluation reward:", String(eval_reward)[:8])
     print("")

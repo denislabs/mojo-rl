@@ -3,21 +3,21 @@
 Measures training step performance to identify optimization opportunities.
 
 Run with:
-    pixi run mojo run examples/benchmark_nn.mojo
+    pixi run mojo run examples/benchmark_deep_rl.mojo
 """
 
 from time import perf_counter_ns
+from random import random_float64
 from deep_agents import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 
 fn benchmark_train_step() raises:
-    """Benchmark the train_step performance."""
+    """Benchmark the do_train_step performance."""
     print("=" * 60)
-    print("Benchmarking DeepDDPGAgent.train_step()")
+    print("Benchmarking DeepDDPGAgent.do_train_step()")
     print("=" * 60)
 
-    # Create agent with typical dimensions
     comptime obs_dim = 3
     comptime action_dim = 1
     comptime hidden_dim = 128
@@ -25,69 +25,56 @@ fn benchmark_train_step() raises:
     comptime batch_size = 64
 
     var agent = DeepDDPGAgent[
-        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        hidden_dim=hidden_dim,
+        buffer_capacity=buffer_capacity,
+        batch_size=batch_size,
+        actor_lr=0.001,
+        critic_lr=0.001,
     ](
         gamma=0.99,
         tau=0.005,
-        actor_lr=0.001,
-        critic_lr=0.001,
         noise_std=0.2,
         action_scale=2.0,
     )
 
     print("Agent config:")
-    print("  Hidden dim: " + String(hidden_dim))
-    print("  Batch size: " + String(batch_size))
-    print(
-        "  Actor params: "
-        + String(
-            agent.actor.layer1.num_parameters()
-            + agent.actor.layer2.num_parameters()
-            + agent.actor.layer3.num_parameters()
-        )
-    )
-    print(
-        "  Critic params: "
-        + String(
-            agent.critic.layer1.num_parameters()
-            + agent.critic.layer2.num_parameters()
-            + agent.critic.layer3.num_parameters()
-        )
-    )
+    print("  obs_dim: " + String(obs_dim))
+    print("  action_dim: " + String(action_dim))
+    print("  hidden_dim: " + String(hidden_dim))
+    print("  batch_size: " + String(batch_size))
 
-    # Fill buffer with random data
+    # Fill buffer using List-based API
     print("\nFilling buffer with random transitions...")
-    from random import random_float64
-
     for _ in range(2000):
-        var obs = InlineArray[Float64, obs_dim](fill=0.0)
-        var next_obs = InlineArray[Float64, obs_dim](fill=0.0)
-        var action = InlineArray[Float64, action_dim](fill=0.0)
+        var obs = List[Scalar[Float64]]()
+        var next_obs = List[Scalar[Float64]]()
+        var action = List[Scalar[Float64]]()
 
-        for j in range(obs_dim):
-            obs[j] = random_float64() * 2.0 - 1.0
-            next_obs[j] = random_float64() * 2.0 - 1.0
-        action[0] = random_float64() * 4.0 - 2.0
+        for _ in range(obs_dim):
+            obs.append(random_float64() * 2.0 - 1.0)
+            next_obs.append(random_float64() * 2.0 - 1.0)
+        action.append(random_float64() * 4.0 - 2.0)
 
         var reward = random_float64() * 2.0 - 1.0
         var done = random_float64() < 0.05
+        agent.store_list_transition(obs, action, reward, next_obs, done)
 
-        agent.store_transition(obs, action, reward, next_obs, done)
-
-    print("Buffer size: " + String(agent.buffer.len()))
+    print("Buffer ready: " + String(agent.is_ready()))
 
     # Warmup
     print("\nWarming up (10 steps)...")
     for _ in range(10):
-        _ = agent.train_step()
+        _ = agent.do_train_step()
 
-    # Benchmark train_step
+    # Benchmark do_train_step
     var num_steps = 100
     print("\nBenchmarking " + String(num_steps) + " train steps...")
 
     var start = perf_counter_ns()
     for _ in range(num_steps):
-        _ = agent.train_step()
+        _ = agent.do_train_step()
     var end = perf_counter_ns()
 
     var total_ms = Float64(end - start) / 1_000_000.0
@@ -106,7 +93,6 @@ fn benchmark_episode() raises:
     print("Benchmarking Full Episode")
     print("=" * 60)
 
-    # Create environment and agent
     var env = PendulumEnv[DType.float64]()
 
     comptime obs_dim = 3
@@ -116,26 +102,31 @@ fn benchmark_episode() raises:
     comptime batch_size = 64
 
     var agent = DeepDDPGAgent[
-        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        hidden_dim=hidden_dim,
+        buffer_capacity=buffer_capacity,
+        batch_size=batch_size,
+        actor_lr=0.001,
+        critic_lr=0.001,
     ](
+        gamma=0.99,
+        tau=0.005,
+        noise_std=0.2,
         action_scale=2.0,
     )
 
-    # Fill buffer first
+    # Pre-fill buffer using List-based API
     print("Pre-filling buffer...")
-    from random import random_float64
-
     for _ in range(1000):
-        var obs = InlineArray[Float64, obs_dim](fill=0.0)
-        var next_obs = InlineArray[Float64, obs_dim](fill=0.0)
-        var action = InlineArray[Float64, action_dim](fill=0.0)
-
-        for j in range(obs_dim):
-            obs[j] = random_float64() * 2.0 - 1.0
-            next_obs[j] = random_float64() * 2.0 - 1.0
-        action[0] = random_float64() * 4.0 - 2.0
-
-        agent.store_transition(obs, action, random_float64(), next_obs, False)
+        var obs = List[Scalar[Float64]]()
+        var next_obs = List[Scalar[Float64]]()
+        var action = List[Scalar[Float64]]()
+        for _ in range(obs_dim):
+            obs.append(random_float64() * 2.0 - 1.0)
+            next_obs.append(random_float64() * 2.0 - 1.0)
+        action.append(random_float64() * 4.0 - 2.0)
+        agent.store_list_transition(obs, action, random_float64(), next_obs, False)
 
     # Benchmark episodes
     var num_episodes = 5
@@ -152,7 +143,7 @@ fn benchmark_episode() raises:
     var total_time_ns: UInt = 0
     var total_steps = 0
 
-    for ep in range(num_episodes):
+    for _ in range(num_episodes):
         var obs_list = env.reset_obs_list()
         var done = False
         var steps = 0
@@ -160,32 +151,19 @@ fn benchmark_episode() raises:
         var ep_start = perf_counter_ns()
 
         while not done and steps < max_steps:
-            # Convert observation
-            var obs = InlineArray[Float64, obs_dim](fill=0.0)
-            for i in range(obs_dim):
-                if i < len(obs_list):
-                    obs[i] = obs_list[i]
+            var action_list = agent.select_action_list(obs_list)
 
-            # Select action
-            var action = agent.select_action(obs, add_noise=True)
-
-            # Step environment
-            var step_result = env.step_continuous(Float64(action[0]))
+            var step_result = env.step_obs(action_list)
             var reward = step_result[1]
             done = step_result[2]
 
-            # Get next observation
-            var next_obs_list = env.get_obs_list()
-            var next_obs = InlineArray[Float64, obs_dim](fill=0.0)
-            for i in range(obs_dim):
-                if i < len(next_obs_list):
-                    next_obs[i] = next_obs_list[i]
+            var next_obs_list = step_result[0]
+            agent.store_list_transition(obs_list, action_list, reward, next_obs_list, done)
 
-            # Store and train
-            agent.store_transition(obs, action, reward, next_obs, done)
-            _ = agent.train_step()
+            if agent.is_ready():
+                _ = agent.do_train_step()
 
-            obs_list = env.get_obs_list()
+            obs_list = next_obs_list
             steps += 1
 
         var ep_end = perf_counter_ns()
@@ -202,10 +180,8 @@ fn benchmark_episode() raises:
     print("  Per step (with env): " + String(per_step_ms)[:6] + " ms")
     print("  Steps/sec: " + String(steps_per_sec)[:8])
 
-    # Estimate breakdown
     print("\nNote: Each step includes:")
     print("  - Environment step (physics)")
-    print("  - Observation conversion")
     print("  - Action selection (actor forward)")
     print("  - Training step (critic + actor forward/backward)")
 

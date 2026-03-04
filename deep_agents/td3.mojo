@@ -1,10 +1,13 @@
 """Deep TD3 Agent using the new trait-based deep learning architecture.
 
 This TD3 (Twin Delayed Deep Deterministic Policy Gradient) implementation uses:
-- Network wrapper from nn.training for stateless model + params management
-- seq() composition for building actor and critic networks
+- NetworkState for heap-allocated params + grads + optimizer state
+- Network (all-static) for stateless forward/backward ops via LayoutTensor
+- Sequential composition for actor and critic networks
 - Tanh output activation for bounded actions
 - ReplayBuffer from nn.replay for experience replay
+- OffPolicyAgent trait for shared CPU training loop
+- GPUOffPolicyAgent trait for shared GPU training loop
 
 TD3 improves upon DDPG with three key innovations:
 1. Twin Q-networks: Use two critics and take min(Q1, Q2) to reduce overestimation
@@ -18,6 +21,9 @@ Features:
 - Target networks for both actor and critics with soft updates
 - Delayed actor updates (every policy_delay critic updates)
 - Target policy smoothing with clipped noise
+- lr is a compile-time parameter (Adam LR baked in at compile time)
+- Checkpoint via NetworkState.write_sections / read_sections
+- Unified CPU+GPU agent — same struct for both training modes
 
 Usage:
     from deep_agents.td3 import DeepTD3Agent
@@ -29,29 +35,323 @@ Usage:
     # CPU Training
     var metrics = agent.train(env, num_episodes=300)
 
+    # GPU Training
+    var ctx = DeviceContext()
+    var metrics = agent.train_gpu[PendulumGPUEnv](ctx, num_steps=100000)
+
 Reference: Fujimoto et al., "Addressing Function Approximation Error in
 Actor-Critic Methods" (2018)
 """
 
-from math import exp, log, sqrt
+from math import exp, sqrt
 from random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, ReLU, Tanh, Sequential, LinearReLU, LinearTanh
+from nn.model import Linear, LinearReLU, LinearTanh, Sequential
 from nn.optimizer import Adam
 from nn.initializer import Kaiming, Xavier
-from nn.training import Network
-from nn.replay import ReplayBuffer
+from nn.training import Network, NetworkState, GPUNetworkState
+from nn.utils import obs_to_inline
+from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
-from nn.checkpoint import (
-    split_lines,
-    find_section_start,
-    save_checkpoint_file,
-    read_checkpoint_file,
+from nn.gpu import (
+    concat_obs_action_kernel,
+    ddpg_exploration_kernel,
+    td_mse_grad_kernel,
+    actor_grad_from_critic_kernel,
+    td_target_min_twin_kernel,
+    add_gaussian_noise_kernel,
 )
-from core import TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
+from gpu.host import DeviceContext, DeviceBuffer
+from nn.checkpoint import (
+    write_checkpoint_header,
+    write_metadata_section,
+    parse_checkpoint_header,
+    read_checkpoint_file,
+    read_metadata_section,
+    get_metadata_value,
+    save_checkpoint_file,
+)
+from core import (
+    TrainingMetrics,
+    BoxContinuousActionEnv,
+    OffPolicyAgent,
+    GPUOffPolicyState,
+    GPUOffPolicyAgent,
+    run_offpolicy_continuous_train,
+    run_offpolicy_continuous_eval,
+    run_offpolicy_continuous_train_gpu,
+    GPUContinuousEnv,
+)
+
+
+# =============================================================================
+# TD3GPUState — GPU buffer container for TD3
+# =============================================================================
+
+
+struct TD3GPUState[
+    ActorModel: Model,
+    ActorOpt: Optimizer,
+    CriticModel: Model,
+    CriticOpt: Optimizer,
+    buffer_capacity: Int,
+    obs_dim: Int,
+    action_dim: Int,
+    batch_size: Int,
+    max_n_envs: Int,
+](GPUOffPolicyState):
+    """GPU-resident state for TD3 training.
+
+    Holds all device buffers needed for one TD3 training loop:
+      - Six GPU network states (actor + 2 critics, each online + target)
+      - GPU replay buffer
+      - Exploration RNG states + inference scratch (sized by max_n_envs)
+      - Training scratch buffers (sample output, Q caches, grad buffers)
+      - TD3-specific: target-smoothing noise buffer
+
+    Created once at the start of GPU training via DeepTD3Agent.make_gpu_state.
+    CPU weights are uploaded separately via DeepTD3Agent.upload_to_gpu.
+
+    Parameters:
+        ActorModel: Actor network model type.
+        ActorOpt: Actor optimizer type.
+        CriticModel: Critic network model type (shared between critic1 and critic2).
+        CriticOpt: Critic optimizer type.
+        buffer_capacity: GPU replay buffer capacity.
+        obs_dim: Observation space dimension.
+        action_dim: Action space dimension.
+        batch_size: Training batch size.
+        max_n_envs: Max parallel environments (sizes exploration buffers).
+    """
+
+    comptime CRITIC_IN = obs_dim + action_dim
+    comptime ACTOR_CS = ActorModel.CACHE_SIZE
+    comptime CRITIC_CS = CriticModel.CACHE_SIZE
+    comptime ActorNet = Network[ActorModel, ActorOpt]
+    comptime CriticNet = Network[CriticModel, CriticOpt]
+    comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
+    comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
+
+    # GPU network states: actor (online+target), critic1 (online+target), critic2 (online+target)
+    var actor_online: GPUNetworkState[ActorModel, ActorOpt]
+    var actor_target: GPUNetworkState[ActorModel, ActorOpt]
+    var critic1_online: GPUNetworkState[CriticModel, CriticOpt]
+    var critic1_target: GPUNetworkState[CriticModel, CriticOpt]
+    var critic2_online: GPUNetworkState[CriticModel, CriticOpt]
+    var critic2_target: GPUNetworkState[CriticModel, CriticOpt]
+
+    # GPU replay buffer
+    var buffer: GPUReplayBuffer[buffer_capacity, obs_dim, action_dim]
+
+    # Exploration buffers (sized by max_n_envs)
+    var rng_states: DeviceBuffer[DType.uint32]  # [max_n_envs * action_dim]
+    var raw_act: DeviceBuffer[dtype]            # [max_n_envs * action_dim]
+    var inf_ws: DeviceBuffer[dtype]             # [max_n_envs * ACTOR_WS]
+
+    # Training scratch — replay sample output
+    var s_obs: DeviceBuffer[dtype]        # [batch_size * obs_dim]
+    var s_act: DeviceBuffer[dtype]        # [batch_size * action_dim]
+    var s_rew: DeviceBuffer[dtype]        # [batch_size]
+    var s_nobs: DeviceBuffer[dtype]       # [batch_size * obs_dim]
+    var s_done: DeviceBuffer[dtype]       # [batch_size]
+    var s_idx: DeviceBuffer[DType.int32]  # [batch_size]
+
+    # Training scratch — target computation (TD3: twin critics)
+    var next_act: DeviceBuffer[dtype]        # [batch_size * action_dim] clean target actor output
+    var noisy_next_act: DeviceBuffer[dtype]  # [batch_size * action_dim] smoothed target actions
+    var next_ci: DeviceBuffer[dtype]         # [batch_size * CRITIC_IN]
+    var nq1: DeviceBuffer[dtype]             # [batch_size] critic1_target output
+    var nq2: DeviceBuffer[dtype]             # [batch_size] critic2_target output
+    var targets: DeviceBuffer[dtype]         # [batch_size] TD targets
+
+    # Training scratch — critic1 update
+    var ci: DeviceBuffer[dtype]          # [batch_size * CRITIC_IN]
+    var q1_out: DeviceBuffer[dtype]      # [batch_size * 1]
+    var q1_cache: DeviceBuffer[dtype]    # [batch_size * CRITIC_CS]
+    var critic1_ws: DeviceBuffer[dtype]  # workspace
+    var q1_grad: DeviceBuffer[dtype]     # [batch_size * 1]
+    var d_ci1: DeviceBuffer[dtype]       # [batch_size * CRITIC_IN]
+
+    # Training scratch — critic2 update
+    var q2_out: DeviceBuffer[dtype]      # [batch_size * 1]
+    var q2_cache: DeviceBuffer[dtype]    # [batch_size * CRITIC_CS]
+    var critic2_ws: DeviceBuffer[dtype]  # workspace
+    var q2_grad: DeviceBuffer[dtype]     # [batch_size * 1]
+    var d_ci2: DeviceBuffer[dtype]       # [batch_size * CRITIC_IN]
+
+    # Training scratch — actor update (delayed)
+    var actor_act: DeviceBuffer[dtype]      # [batch_size * action_dim]
+    var new_ci: DeviceBuffer[dtype]         # [batch_size * CRITIC_IN]
+    var new_q: DeviceBuffer[dtype]          # [batch_size * 1]
+    var new_q_cache: DeviceBuffer[dtype]    # [batch_size * CRITIC_CS]
+    var actor_cache: DeviceBuffer[dtype]    # [batch_size * ACTOR_CS]
+    var actor_ws: DeviceBuffer[dtype]       # [batch_size * ACTOR_WS]
+    var dq: DeviceBuffer[dtype]             # [batch_size * 1] constant -1/batch_size
+    var d_new_ci: DeviceBuffer[dtype]       # [batch_size * CRITIC_IN]
+    var d_act: DeviceBuffer[dtype]          # [batch_size * action_dim]
+    var d_obs: DeviceBuffer[dtype]          # [batch_size * obs_dim]
+
+    # TD3-specific: target policy smoothing RNG (separate from exploration RNG)
+    var td3_noise_rng: DeviceBuffer[DType.uint32]  # [batch_size * action_dim]
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all GPU buffers. CPU weights are uploaded separately."""
+        self.actor_online = GPUNetworkState[ActorModel, ActorOpt](ctx)
+        self.actor_target = GPUNetworkState[ActorModel, ActorOpt](ctx)
+        self.critic1_online = GPUNetworkState[CriticModel, CriticOpt](ctx)
+        self.critic1_target = GPUNetworkState[CriticModel, CriticOpt](ctx)
+        self.critic2_online = GPUNetworkState[CriticModel, CriticOpt](ctx)
+        self.critic2_target = GPUNetworkState[CriticModel, CriticOpt](ctx)
+        self.buffer = GPUReplayBuffer[buffer_capacity, obs_dim, action_dim](ctx)
+
+        # Exploration buffers
+        self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
+            max_n_envs * action_dim
+        )
+        self.raw_act = ctx.enqueue_create_buffer[dtype](
+            max_n_envs * action_dim
+        )
+        self.inf_ws = ctx.enqueue_create_buffer[dtype](
+            max_n_envs * Self.ACTOR_WS
+        )
+
+        # Replay sample output
+        self.s_obs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
+        self.s_act = ctx.enqueue_create_buffer[dtype](batch_size * action_dim)
+        self.s_rew = ctx.enqueue_create_buffer[dtype](batch_size)
+        self.s_nobs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
+        self.s_done = ctx.enqueue_create_buffer[dtype](batch_size)
+        self.s_idx = ctx.enqueue_create_buffer[DType.int32](batch_size)
+
+        # Target computation
+        self.next_act = ctx.enqueue_create_buffer[dtype](
+            batch_size * action_dim
+        )
+        self.noisy_next_act = ctx.enqueue_create_buffer[dtype](
+            batch_size * action_dim
+        )
+        self.next_ci = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_IN
+        )
+        self.nq1 = ctx.enqueue_create_buffer[dtype](batch_size)
+        self.nq2 = ctx.enqueue_create_buffer[dtype](batch_size)
+        self.targets = ctx.enqueue_create_buffer[dtype](batch_size)
+
+        # Critic1 update
+        self.ci = ctx.enqueue_create_buffer[dtype](batch_size * Self.CRITIC_IN)
+        self.q1_out = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.q1_cache = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_CS
+        )
+        self.critic1_ws = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_WS
+        )
+        self.q1_grad = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.d_ci1 = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_IN
+        )
+
+        # Critic2 update
+        self.q2_out = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.q2_cache = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_CS
+        )
+        self.critic2_ws = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_WS
+        )
+        self.q2_grad = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.d_ci2 = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_IN
+        )
+
+        # Actor update (delayed)
+        self.actor_act = ctx.enqueue_create_buffer[dtype](
+            batch_size * action_dim
+        )
+        self.new_ci = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_IN
+        )
+        self.new_q = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.new_q_cache = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_CS
+        )
+        self.actor_cache = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.ACTOR_CS
+        )
+        self.actor_ws = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.ACTOR_WS
+        )
+        self.dq = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.d_new_ci = ctx.enqueue_create_buffer[dtype](
+            batch_size * Self.CRITIC_IN
+        )
+        self.d_act = ctx.enqueue_create_buffer[dtype](
+            batch_size * action_dim
+        )
+        self.d_obs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
+
+        # Target policy smoothing RNG
+        self.td3_noise_rng = ctx.enqueue_create_buffer[DType.uint32](
+            batch_size * action_dim
+        )
+
+        # Pre-fill dq with -1/batch_size (constant policy-gradient weight)
+        ctx.synchronize()
+        var dq_host = ctx.enqueue_create_host_buffer[dtype](batch_size)
+        for i in range(batch_size):
+            dq_host[i] = Scalar[dtype](-1.0 / Float64(batch_size))
+        ctx.enqueue_copy(self.dq, dq_host)
+
+        # Initialize persistent exploration RNG states (xorshift32)
+        ctx.synchronize()
+        var rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
+            max_n_envs * action_dim
+        )
+        var rng_s: UInt32 = 12345
+        for i in range(max_n_envs * action_dim):
+            rng_s = rng_s ^ (rng_s << 13)
+            rng_s = rng_s ^ (rng_s >> 17)
+            rng_s = rng_s ^ (rng_s << 5)
+            rng_host[i] = rng_s
+        ctx.enqueue_copy(self.rng_states, rng_host)
+
+        # Initialize target-smoothing RNG states (separate seed)
+        ctx.synchronize()
+        var noise_rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
+            batch_size * action_dim
+        )
+        var noise_s: UInt32 = 54321
+        for i in range(batch_size * action_dim):
+            noise_s = noise_s ^ (noise_s << 13)
+            noise_s = noise_s ^ (noise_s >> 17)
+            noise_s = noise_s ^ (noise_s << 5)
+            noise_rng_host[i] = noise_s
+        ctx.enqueue_copy(self.td3_noise_rng, noise_rng_host)
+
+    # -------------------------------------------------------------------------
+    # GPUOffPolicyState required methods
+    # -------------------------------------------------------------------------
+
+    fn gpu_store[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Store N_ENVS transitions into the GPU replay buffer."""
+        self.buffer.store[N_ENVS](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+        )
+
+    fn gpu_buffer_is_ready(self) -> Bool:
+        """Return True if the GPU replay buffer has at least batch_size samples."""
+        return self.buffer.is_ready[batch_size]()
 
 
 # =============================================================================
@@ -65,8 +365,11 @@ struct DeepTD3Agent[
     hidden_dim: Int = 256,
     buffer_capacity: Int = 100000,
     batch_size: Int = 64,
-]:
-    """Deep Twin Delayed DDPG agent using the new trait-based architecture.
+    actor_lr: Float64 = 0.001,
+    critic_lr: Float64 = 0.001,
+    max_n_envs: Int = 64,
+](OffPolicyAgent & GPUOffPolicyAgent):
+    """Deep Twin Delayed DDPG agent — unified CPU + GPU.
 
     TD3 improves upon DDPG by addressing function approximation error through
     three key techniques: twin Q-networks, delayed policy updates, and target
@@ -78,6 +381,7 @@ struct DeepTD3Agent[
     - Target networks for both actor and critics with soft updates
     - Delayed actor updates (every policy_delay critic updates)
     - Target policy smoothing (clipped Gaussian noise on target actions)
+    - GPU training via GPUOffPolicyAgent trait + TD3GPUState
 
     Parameters:
         obs_dim: Dimension of observation space.
@@ -85,9 +389,12 @@ struct DeepTD3Agent[
         hidden_dim: Hidden layer size (default: 256).
         buffer_capacity: Replay buffer capacity (default: 100000).
         batch_size: Training batch size (default: 64).
+        actor_lr: Actor Adam learning rate — compile-time (default: 0.001).
+        critic_lr: Critic Adam learning rate — compile-time (default: 0.001).
+        max_n_envs: Max parallel environments for GPU training (default: 64).
     """
 
-    # Convenience aliases
+    # Convenience compile-time aliases
     comptime OBS = Self.obs_dim
     comptime ACTIONS = Self.action_dim
     comptime HIDDEN = Self.hidden_dim
@@ -96,81 +403,79 @@ struct DeepTD3Agent[
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action (Tanh)
-    # Deterministic policy with tanh-bounded output
-    comptime ACTOR_NETWORK = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            LinearTanh[Self.HIDDEN, Self.ACTIONS],
-        ],
-        Adam,
-        Xavier,  # Xavier is good for tanh activation
+    # Actor: obs → hidden (ReLU) → hidden (ReLU) → action (Tanh)
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.ACTIONS],
     ]
-    var actor: Self.ACTOR_NETWORK
-    var actor_target: Self.ACTOR_NETWORK
+    comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
-    # Critic 1: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    comptime CRITIC1_NETWORK = Network[
-        Sequential[
-            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, 1],
-        ],
-        Adam,
-        Kaiming,  # Kaiming is good for ReLU
+    # Critic: (obs ‖ action) → hidden (ReLU) → hidden (ReLU) → Q-value
+    # Both critics share the same model architecture
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
     ]
-    var critic1: Self.CRITIC1_NETWORK
-    var critic1_target: Self.CRITIC1_NETWORK
+    comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
 
-    # Critic 2 (twin): (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    comptime CRITIC2_NETWORK = Network[
-        Sequential[
-            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, 1],
-        ],
-        Adam,
-        Kaiming,
+    # GPUOffPolicyAgent required compile-time constants
+    comptime OBS_DIM: Int = Self.OBS
+    comptime ACTION_DIM: Int = Self.ACTIONS
+    comptime BUFFER_CAPACITY: Int = Self.buffer_capacity
+    comptime MAX_N_ENVS: Int = Self.max_n_envs
+    comptime GPUStateType = TD3GPUState[
+        Self.ActorModel,
+        Adam[Self.actor_lr],
+        Self.CriticModel,
+        Adam[Self.critic_lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.action_dim,
+        Self.batch_size,
+        Self.max_n_envs,
     ]
-    var critic2: Self.CRITIC2_NETWORK
-    var critic2_target: Self.CRITIC2_NETWORK
 
-    # Replay buffer
+    # Network states (heap-allocated params + grads + optimizer state)
+    var actor_online: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
+    var actor_target: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
+    var critic1_online: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic1_target: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic2_online: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic2_target: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+
+    # Replay buffer (action_dim-dimensional continuous actions)
     var buffer: ReplayBuffer[
         Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
     ]
 
     # Hyperparameters
-    var gamma: Float64  # Discount factor
-    var tau: Float64  # Soft update rate
-    var actor_lr: Float64  # Actor learning rate
-    var critic_lr: Float64  # Critic learning rate
-    var action_scale: Float64  # Action scaling factor
-    var noise_std: Float64  # Exploration noise standard deviation
-    var noise_std_min: Float64  # Minimum noise after decay
-    var noise_decay: Float64  # Noise decay rate per episode
+    var gamma: Float64
+    var tau: Float64
+    var action_scale: Float64
+    var noise_std: Float64
+    var noise_std_min: Float64
+    var noise_decay: Float64
 
     # TD3-specific hyperparameters
-    var policy_delay: Int  # Update actor every policy_delay critic updates
-    var target_noise_std: Float64  # Noise added to target actions
-    var target_noise_clip: Float64  # Clip range for target noise
+    var policy_delay: Int
+    var target_noise_std: Float64
+    var target_noise_clip: Float64
 
     # Training state
     var total_steps: Int
     var train_step_count: Int
-    var update_count: Int  # Track number of updates for delayed policy
+    var update_count: Int
 
     # Auto-checkpoint settings
-    var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
-    var checkpoint_path: String  # Path for auto-checkpointing
+    var checkpoint_every: Int
+    var checkpoint_path: String
 
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
-        actor_lr: Float64 = 0.001,
-        critic_lr: Float64 = 0.001,
         action_scale: Float64 = 1.0,
         noise_std: Float64 = 0.1,
         noise_std_min: Float64 = 0.01,
@@ -186,8 +491,6 @@ struct DeepTD3Agent[
         Args:
             gamma: Discount factor (default: 0.99).
             tau: Soft update coefficient (default: 0.005).
-            actor_lr: Actor learning rate (default: 0.001).
-            critic_lr: Critic learning rate (default: 0.001).
             action_scale: Action scaling factor (default: 1.0).
             noise_std: Initial exploration noise std (default: 0.1).
             noise_std_min: Minimum exploration noise std (default: 0.01).
@@ -198,130 +501,183 @@ struct DeepTD3Agent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-
-        self.actor = Self.ACTOR_NETWORK(Adam(lr=actor_lr), Xavier())
-        self.actor_target = Self.ACTOR_NETWORK(Adam(lr=actor_lr), Xavier())
-        self.critic1 = Self.CRITIC1_NETWORK(Adam(lr=critic_lr), Kaiming())
-        self.critic1_target = Self.CRITIC1_NETWORK(
-            Adam(lr=critic_lr), Kaiming()
+        self.actor_online = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
+        self.actor_online.initialize[Xavier]()
+        self.actor_target = NetworkState[Self.ActorModel, Adam[Self.actor_lr]](
+            copy=self.actor_online
         )
-        self.critic2 = Self.CRITIC2_NETWORK(Adam(lr=critic_lr), Kaiming())
-        self.critic2_target = Self.CRITIC2_NETWORK(
-            Adam(lr=critic_lr), Kaiming()
-        )
-        # Initialize target networks with same weights as online networks
-        self.actor_target.copy_params_from(self.actor)
-        self.critic1_target.copy_params_from(self.critic1)
-        self.critic2_target.copy_params_from(self.critic2)
 
-        # Initialize replay buffer
+        self.critic1_online = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ]()
+        self.critic1_online.initialize[Kaiming]()
+        self.critic1_target = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](copy=self.critic1_online)
+
+        self.critic2_online = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ]()
+        self.critic2_online.initialize[Kaiming]()
+        self.critic2_target = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](copy=self.critic2_online)
+
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()
 
-        # Store hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
         self.action_scale = action_scale
         self.noise_std = noise_std
         self.noise_std_min = noise_std_min
         self.noise_decay = noise_decay
-
-        # TD3-specific hyperparameters
         self.policy_delay = policy_delay
         self.target_noise_std = target_noise_std
         self.target_noise_clip = target_noise_clip
-
-        # Training state
         self.total_steps = 0
         self.train_step_count = 0
         self.update_count = 0
-
-        # Auto-checkpoint settings
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
-    fn select_action(
-        self,
-        obs: SIMD[dtype, Self.obs_dim],
-        add_noise: Bool = True,
-    ) -> InlineArray[Scalar[dtype], Self.action_dim]:
-        """Select action using the deterministic policy with optional exploration noise.
+    # =========================================================================
+    # OffPolicyAgent trait — required methods (CPU training)
+    # =========================================================================
+
+    fn select_action_list(
+        mut self, obs: List[Scalar[Float64]]
+    ) -> List[Scalar[Float64]]:
+        """Select action with Gaussian exploration noise (training).
 
         Args:
-            obs: Current observation.
-            add_noise: If True, add Gaussian exploration noise.
+            obs: Observation as List[Float64].
 
         Returns:
-            Action array, scaled by action_scale.
+            Action list of length action_dim, clipped to [-action_scale, action_scale].
         """
-        # Convert obs to input array
-        var obs_input = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-        for i in range(Self.OBS):
-            obs_input[i] = obs[i]
-
-        # Forward pass through actor (batch_size=1)
-        var actor_output = InlineArray[Scalar[dtype], Self.ACTIONS](
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
-        self.actor.forward[1](obs_input, actor_output)
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](act_arr.unsafe_ptr())
 
-        # Extract action and optionally add noise
-        var action_result = InlineArray[Scalar[dtype], Self.action_dim](
-            uninitialized=True
-        )
+        var p = self.actor_online.params_view()
+        Self.ActorNet.forward[1](obs_t, act_t, p)
+
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
         for i in range(Self.action_dim):
-            # Actor output is already tanh-bounded to [-1, 1], scale by action_scale
-            var a = Float64(actor_output[i]) * self.action_scale
-
-            if add_noise:
-                a += self.noise_std * self.action_scale * gaussian_noise()
-
-            # Clip to action bounds
+            var a = Float64(act_arr[i]) * self.action_scale
+            a += self.noise_std * self.action_scale * gaussian_noise()
             if a > self.action_scale:
                 a = self.action_scale
             elif a < -self.action_scale:
                 a = -self.action_scale
+            result.append(Float64(a))
+        return result^
 
-            action_result[i] = Scalar[dtype](a)
-
-        return action_result^
-
-    fn store_transition(
+    fn store_list_transition(
         mut self,
-        obs: SIMD[dtype, Self.obs_dim],
-        action: InlineArray[Scalar[dtype], Self.action_dim],
+        obs: List[Scalar[Float64]],
+        action: List[Scalar[Float64]],
         reward: Float64,
-        next_obs: SIMD[dtype, Self.obs_dim],
+        next_obs: List[Scalar[Float64]],
         done: Bool,
-    ):
-        """Store transition in replay buffer.
+    ) -> None:
+        """Store transition in the replay buffer.
 
-        Note: Actions are stored unscaled (divided by action_scale) for consistency.
+        Actions are stored unscaled (divided by action_scale) for consistency.
         """
-        var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-        var next_obs_arr = InlineArray[Scalar[dtype], Self.OBS](
-            uninitialized=True
-        )
-        for i in range(Self.OBS):
-            obs_arr[i] = obs[i]
-            next_obs_arr[i] = next_obs[i]
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var next_arr = obs_to_inline[Self.OBS, DType.float64](next_obs)
 
-        var action_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
         for i in range(Self.ACTIONS):
-            # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[dtype](
-                Float64(action[i]) / self.action_scale
-            )
+            act_arr[i] = Scalar[dtype](Float64(action[i]) / self.action_scale)
 
-        self.buffer.add(
-            obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
-        )
+        self.buffer.add(obs_arr, act_arr, Scalar[dtype](reward), next_arr, done)
         self.total_steps += 1
+
+    fn is_ready(self) -> Bool:
+        """Return True if buffer has enough samples to begin training."""
+        return self.buffer.is_ready[Self.BATCH]()
+
+    fn do_train_step(mut self) -> Float64:
+        """Perform one TD3 gradient update step.
+
+        Returns:
+            Average critic loss value.
+        """
+        return self.train_step()
+
+    fn decay_explore(mut self) -> None:
+        """Decay exploration noise (call once per episode)."""
+        self.noise_std *= self.noise_decay
+        if self.noise_std < self.noise_std_min:
+            self.noise_std = self.noise_std_min
+
+    fn get_explore_rate(self) -> Float64:
+        """Return current exploration noise std."""
+        return self.noise_std
+
+    fn random_action_list(self) -> List[Scalar[Float64]]:
+        """Return a uniformly random action in [-action_scale, action_scale]."""
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
+        for _ in range(Self.action_dim):
+            var a = (random_float64() * 2.0 - 1.0) * self.action_scale
+            result.append(a)
+        return result^
+
+    fn select_greedy_action_list(
+        self, obs: List[Scalar[Float64]]
+    ) -> List[Scalar[Float64]]:
+        """Select action using deterministic policy (no exploration noise).
+
+        Used for evaluation. Same as select_action_list but without Gaussian
+        noise — pure actor forward pass.
+
+        Args:
+            obs: Observation as List[Float64].
+
+        Returns:
+            Deterministic action list of length action_dim,
+            clipped to [-action_scale, action_scale].
+        """
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](act_arr.unsafe_ptr())
+
+        var p = self.actor_online.params_view()
+        Self.ActorNet.forward[1](obs_t, act_t, p)
+
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
+        for i in range(Self.action_dim):
+            var a = Float64(act_arr[i]) * self.action_scale
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            result.append(Float64(a))
+        return result^
+
+    # =========================================================================
+    # Core TD3 CPU Training Step
+    # =========================================================================
 
     fn train_step(mut self) -> Float64:
         """Perform one TD3 training step.
@@ -333,330 +689,384 @@ struct DeepTD3Agent[
            - Soft update all target networks
 
         Returns:
-            Average critic loss value.
+            Average critic loss, or 0.0 if buffer not ready.
         """
-        # Check if buffer has enough samples
         if not self.buffer.is_ready[Self.BATCH]():
             return 0.0
 
         self.update_count += 1
 
-        # =====================================================================
-        # Phase 1: Sample batch from buffer
-        # =====================================================================
+        # =================================================================
+        # Phase 1: Sample batch
+        # =================================================================
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        var batch_actions = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
-        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_act = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var batch_next_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+        var batch_rew = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
-        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_next = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var batch_done = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
 
         self.buffer.sample[Self.BATCH](
-            batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
+            batch_obs, batch_act, batch_rew, batch_next, batch_done
         )
 
-        # =====================================================================
-        # Phase 2: Compute TD targets with target policy smoothing
-        # y = r + gamma * min(Q1_target, Q2_target)(s', mu_target(s') + noise) * (1 - done)
-        # =====================================================================
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_next.unsafe_ptr())
 
-        # Get next actions from target actor
-        var next_actions = InlineArray[
+        # =================================================================
+        # Phase 2: Compute TD targets with target policy smoothing
+        # y = r + γ * min(Q1_t, Q2_t)(s', µ_t(s') + clip_noise) * (1 − done)
+        # =================================================================
+
+        # next_actions = actor_target(next_obs)
+        var next_act_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
-        self.actor_target.forward[Self.BATCH](batch_next_obs, next_actions)
+        var next_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_act_arr.unsafe_ptr())
+        var p_actor_target = self.actor_target.params_view()
+        Self.ActorNet.forward[Self.BATCH](
+            next_obs_t, next_act_t, p_actor_target
+        )
 
-        # TD3 Innovation #3: Add clipped noise to target actions (target policy smoothing)
+        # TD3 Innovation #3: target policy smoothing with clipped noise
         for b in range(Self.BATCH):
             for i in range(Self.ACTIONS):
                 var idx = b * Self.ACTIONS + i
-
-                # Generate clipped noise
                 var noise = gaussian_noise() * self.target_noise_std
                 if noise > self.target_noise_clip:
                     noise = self.target_noise_clip
                 elif noise < -self.target_noise_clip:
                     noise = -self.target_noise_clip
+                var noisy_a = Float64(next_act_arr[idx]) + noise
+                if noisy_a > 1.0:
+                    noisy_a = 1.0
+                elif noisy_a < -1.0:
+                    noisy_a = -1.0
+                next_act_arr[idx] = Scalar[dtype](noisy_a)
 
-                # Add noise and clip to [-1, 1] (unscaled action range)
-                var noisy_action = Float64(next_actions[idx]) + noise
-                if noisy_action > 1.0:
-                    noisy_action = 1.0
-                elif noisy_action < -1.0:
-                    noisy_action = -1.0
-
-                next_actions[idx] = Scalar[dtype](noisy_action)
-
-        # Build critic input for next state: (next_obs, noisy_next_action)
-        var next_critic_input = InlineArray[
+        # Build next critic input = concat(next_obs, smoothed_next_actions)
+        var next_ci_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_IN
         ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                next_critic_input[b * Self.CRITIC_IN + i] = batch_next_obs[
+                next_ci_arr[b * Self.CRITIC_IN + i] = batch_next[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                next_critic_input[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = next_actions[b * Self.ACTIONS + i]
-
-        # Forward target critics to get Q-values for next state
-        var next_q1_values = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
-        )
-        var next_q2_values = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
-        )
-        self.critic1_target.forward[Self.BATCH](
-            next_critic_input, next_q1_values
-        )
-        self.critic2_target.forward[Self.BATCH](
-            next_critic_input, next_q2_values
-        )
-
-        # TD3 Innovation #1: Compute TD targets using min(Q1, Q2)
-        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        for b in range(Self.BATCH):
-            var q1_val = Float64(next_q1_values[b])
-            var q2_val = Float64(next_q2_values[b])
-
-            # Guard against NaN
-            if q1_val != q1_val:
-                q1_val = 0.0
-            if q2_val != q2_val:
-                q2_val = 0.0
-
-            # Take minimum of Q1 and Q2
-            var min_q = q1_val
-            if q2_val < min_q:
-                min_q = q2_val
-
-            var done_mask = 1.0 - Float64(batch_dones[b])
-            var target = (
-                Float64(batch_rewards[b]) + self.gamma * min_q * done_mask
-            )
-
-            # Clamp for numerical stability
-            if target != target:
-                target = 0.0
-            elif target > 1000.0:
-                target = 1000.0
-            elif target < -1000.0:
-                target = -1000.0
-
-            targets[b] = Scalar[dtype](target)
-
-        # =====================================================================
-        # Phase 3: Update Both Critics
-        # =====================================================================
-
-        # Build critic input for current state: (obs, action)
-        var critic_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                critic_input[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                critic_input[b * Self.CRITIC_IN + Self.OBS + i] = batch_actions[
+                next_ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = next_act_arr[
                     b * Self.ACTIONS + i
                 ]
 
-        # --- Update Critic 1 ---
-        var q1_values = InlineArray[Scalar[dtype], Self.BATCH](
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](next_ci_arr.unsafe_ptr())
+
+        # Forward both target critics
+        var nq1_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
             uninitialized=True
         )
-        var critic1_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC1_NETWORK.CACHE_SIZE
+        var nq1_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](nq1_arr.unsafe_ptr())
+        var nq2_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var nq2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](nq2_arr.unsafe_ptr())
+
+        var p_c1t = self.critic1_target.params_view()
+        var p_c2t = self.critic2_target.params_view()
+        Self.CriticNet.forward[Self.BATCH](next_ci_t, nq1_t, p_c1t)
+        Self.CriticNet.forward[Self.BATCH](next_ci_t, nq2_t, p_c2t)
+
+        # TD3 Innovation #1: take min(Q1, Q2) for TD targets
+        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        for b in range(Self.BATCH):
+            var q1 = Float64(nq1_arr[b])
+            var q2 = Float64(nq2_arr[b])
+            if q1 != q1:
+                q1 = 0.0
+            if q2 != q2:
+                q2 = 0.0
+            var min_q = q1 if q1 < q2 else q2
+            var done_mask = 1.0 - Float64(batch_done[b])
+            var tgt = Float64(batch_rew[b]) + self.gamma * min_q * done_mask
+            if tgt != tgt:
+                tgt = 0.0
+            elif tgt > 1000.0:
+                tgt = 1000.0
+            elif tgt < -1000.0:
+                tgt = -1000.0
+            targets[b] = Scalar[dtype](tgt)
+
+        # =================================================================
+        # Phase 3: Update Both Critics with the same targets
+        # =================================================================
+
+        # Build critic input = concat(obs, batch_actions)
+        var ci_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
+            uninitialized=True
+        )
+        for b in range(Self.BATCH):
+            for i in range(Self.OBS):
+                ci_arr[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+            for i in range(Self.ACTIONS):
+                ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
+                    b * Self.ACTIONS + i
+                ]
+
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](ci_arr.unsafe_ptr())
+
+        # --- Update Critic 1 ---
+        var q1_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var q1_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q1_arr.unsafe_ptr())
+        var c1_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
         ](uninitialized=True)
-        self.critic1.forward_with_cache[Self.BATCH](
-            critic_input, q1_values, critic1_cache
+        var c1_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](c1_cache_arr.unsafe_ptr())
+
+        var p_c1 = self.critic1_online.params_view()
+        Self.CriticNet.forward_with_cache[Self.BATCH](
+            ci_t, q1_t, p_c1, c1_cache_t
         )
 
-        var q1_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var q1_grad_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
         var critic1_loss: Float64 = 0.0
-
         for b in range(Self.BATCH):
-            var td_error = q1_values[b] - targets[b]
-            critic1_loss += Float64(td_error * td_error)
-            q1_grad[b] = (
-                Scalar[dtype](2.0) * td_error / Scalar[dtype](Self.BATCH)
+            var td_err = q1_arr[b] - targets[b]
+            critic1_loss += Float64(td_err * td_err)
+            q1_grad_arr[b] = (
+                Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
             )
-
         critic1_loss /= Float64(Self.BATCH)
 
-        var critic1_grad_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-
-        self.critic1.zero_grads()
-        self.critic1.backward[Self.BATCH](
-            q1_grad, critic1_grad_input, critic1_cache
-        )
-        self.critic1.update()
-
-        # --- Update Critic 2 ---
-        var q2_values = InlineArray[Scalar[dtype], Self.BATCH](
+        var q1_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q1_grad_arr.unsafe_ptr())
+        var d_c1_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
             uninitialized=True
         )
-        var critic2_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC1_NETWORK.CACHE_SIZE
+        var d_c1_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](d_c1_arr.unsafe_ptr())
+
+        var g_c1 = self.critic1_online.grads_view()
+        self.critic1_online.zero_grads()
+        Self.CriticNet.backward[Self.BATCH](
+            q1_grad_t, d_c1_t, p_c1, c1_cache_t, g_c1
+        )
+        self.critic1_online.optimizer_step()
+
+        # --- Update Critic 2 ---
+        var q2_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var q2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q2_arr.unsafe_ptr())
+        var c2_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
         ](uninitialized=True)
-        self.critic2.forward_with_cache[Self.BATCH](
-            critic_input, q2_values, critic2_cache
+        var c2_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](c2_cache_arr.unsafe_ptr())
+
+        var p_c2 = self.critic2_online.params_view()
+        Self.CriticNet.forward_with_cache[Self.BATCH](
+            ci_t, q2_t, p_c2, c2_cache_t
         )
 
-        var q2_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var q2_grad_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
         var critic2_loss: Float64 = 0.0
-
         for b in range(Self.BATCH):
-            var td_error = q2_values[b] - targets[b]
-            critic2_loss += Float64(td_error * td_error)
-            q2_grad[b] = (
-                Scalar[dtype](2.0) * td_error / Scalar[dtype](Self.BATCH)
+            var td_err = q2_arr[b] - targets[b]
+            critic2_loss += Float64(td_err * td_err)
+            q2_grad_arr[b] = (
+                Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
             )
-
         critic2_loss /= Float64(Self.BATCH)
 
-        var critic2_grad_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-
-        self.critic2.zero_grads()
-        self.critic2.backward[Self.BATCH](
-            q2_grad, critic2_grad_input, critic2_cache
+        var q2_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q2_grad_arr.unsafe_ptr())
+        var d_c2_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
+            uninitialized=True
         )
-        self.critic2.update()
+        var d_c2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](d_c2_arr.unsafe_ptr())
+
+        var g_c2 = self.critic2_online.grads_view()
+        self.critic2_online.zero_grads()
+        Self.CriticNet.backward[Self.BATCH](
+            q2_grad_t, d_c2_t, p_c2, c2_cache_t, g_c2
+        )
+        self.critic2_online.optimizer_step()
 
         var avg_critic_loss = (critic1_loss + critic2_loss) / 2.0
 
-        # =====================================================================
+        # =================================================================
         # Phase 4: Delayed Actor Update (TD3 Innovation #2)
-        # Only update actor and targets every policy_delay updates
-        # =====================================================================
-
+        # Only update actor and all targets every policy_delay critic steps
+        # =================================================================
         if self.update_count % self.policy_delay == 0:
-            # Forward actor with cache to get current policy actions
-            var actor_actions = InlineArray[
+            # actor_actions = actor_online(obs) with cache
+            var actor_act_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
-            var actor_cache = InlineArray[
-                Scalar[dtype], Self.BATCH * Self.ACTOR_NETWORK.CACHE_SIZE
+            var actor_act_t = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+            ](actor_act_arr.unsafe_ptr())
+            var actor_cache_arr = InlineArray[
+                Scalar[dtype], Self.BATCH * Self.ActorModel.CACHE_SIZE
             ](uninitialized=True)
-            self.actor.forward_with_cache[Self.BATCH](
-                batch_obs, actor_actions, actor_cache
+            var actor_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.BATCH, Self.ActorModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](actor_cache_arr.unsafe_ptr())
+
+            var p_actor = self.actor_online.params_view()
+            Self.ActorNet.forward_with_cache[Self.BATCH](
+                obs_t, actor_act_t, p_actor, actor_cache_t
             )
 
-            # Build critic input with actor's current actions
-            var new_critic_input = InlineArray[
+            # Build actor critic input = concat(obs, actor_actions)
+            var new_ci_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.CRITIC_IN
             ](uninitialized=True)
             for b in range(Self.BATCH):
                 for i in range(Self.OBS):
-                    new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[
+                    new_ci_arr[b * Self.CRITIC_IN + i] = batch_obs[
                         b * Self.OBS + i
                     ]
                 for i in range(Self.ACTIONS):
-                    new_critic_input[
+                    new_ci_arr[
                         b * Self.CRITIC_IN + Self.OBS + i
-                    ] = actor_actions[b * Self.ACTIONS + i]
+                    ] = actor_act_arr[b * Self.ACTIONS + i]
 
-            # Forward critic1 with cache (TD3 uses Q1 for actor gradient)
-            var new_q_values = InlineArray[Scalar[dtype], Self.BATCH](
+            var new_ci_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.BATCH, Self.CRITIC_IN),
+                MutAnyOrigin,
+            ](new_ci_arr.unsafe_ptr())
+            var new_q_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
                 uninitialized=True
             )
-            var new_critic_cache = InlineArray[
-                Scalar[dtype], Self.BATCH * Self.CRITIC1_NETWORK.CACHE_SIZE
+            var new_q_t = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+            ](new_q_arr.unsafe_ptr())
+            var new_c1_cache_arr = InlineArray[
+                Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
             ](uninitialized=True)
-            self.critic1.forward_with_cache[Self.BATCH](
-                new_critic_input, new_q_values, new_critic_cache
+            var new_c1_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](new_c1_cache_arr.unsafe_ptr())
+
+            # TD3 uses Q1 for the actor gradient
+            Self.CriticNet.forward_with_cache[Self.BATCH](
+                new_ci_t, new_q_t, p_c1, new_c1_cache_t
             )
 
-            # Actor gradient: maximize Q -> dQ/daction = -1/batch_size (gradient ascent)
-            var dq_actor = InlineArray[Scalar[dtype], Self.BATCH](
+            # Gradient ascent: -1/BATCH
+            var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
                 uninitialized=True
             )
             for b in range(Self.BATCH):
-                dq_actor[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
+                dq_arr[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
 
-            # Backward through critic to get dQ/daction
-            var d_critic_input = InlineArray[
+            var dq_t = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+            ](dq_arr.unsafe_ptr())
+            var d_new_ci_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.CRITIC_IN
             ](uninitialized=True)
+            var d_new_ci_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.BATCH, Self.CRITIC_IN),
+                MutAnyOrigin,
+            ](d_new_ci_arr.unsafe_ptr())
 
-            self.critic1.zero_grads()
-            self.critic1.backward[Self.BATCH](
-                dq_actor, d_critic_input, new_critic_cache
+            # Backward through critic1 to get dQ/d(actions) — do NOT update critic
+            self.critic1_online.zero_grads()
+            Self.CriticNet.backward[Self.BATCH](
+                dq_t, d_new_ci_t, p_c1, new_c1_cache_t, g_c1
             )
-            # Don't update critic here - we only want action gradients
+            # Intentionally NOT calling critic1_online.optimizer_step() here
 
-            # Extract action gradients from d_critic_input
-            var d_actions = InlineArray[
+            # Extract action gradients
+            var d_act_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
             for b in range(Self.BATCH):
                 for i in range(Self.ACTIONS):
-                    d_actions[b * Self.ACTIONS + i] = d_critic_input[
+                    d_act_arr[b * Self.ACTIONS + i] = d_new_ci_arr[
                         b * Self.CRITIC_IN + Self.OBS + i
                     ]
 
-            # Backward through actor with action gradients
-            var actor_grad_input = InlineArray[
-                Scalar[dtype], Self.BATCH * Self.OBS
-            ](uninitialized=True)
-
-            self.actor.zero_grads()
-            self.actor.backward[Self.BATCH](
-                d_actions, actor_grad_input, actor_cache
+            var d_act_t = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+            ](d_act_arr.unsafe_ptr())
+            var d_obs_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+                uninitialized=True
             )
-            self.actor.update()
+            var d_obs_t = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+            ](d_obs_arr.unsafe_ptr())
+
+            var g_actor = self.actor_online.grads_view()
+            self.actor_online.zero_grads()
+            Self.ActorNet.backward[Self.BATCH](
+                d_act_t, d_obs_t, p_actor, actor_cache_t, g_actor
+            )
+            self.actor_online.optimizer_step()
 
             # Soft update all target networks
-            self.actor_target.soft_update_from(self.actor, self.tau)
-            self.critic1_target.soft_update_from(self.critic1, self.tau)
-            self.critic2_target.soft_update_from(self.critic2, self.tau)
+            self.actor_target.soft_update_from(self.actor_online, self.tau)
+            self.critic1_target.soft_update_from(self.critic1_online, self.tau)
+            self.critic2_target.soft_update_from(self.critic2_online, self.tau)
 
         self.train_step_count += 1
-
         return avg_critic_loss
 
-    fn decay_noise(mut self):
-        """Decay exploration noise (call once per episode)."""
-        self.noise_std *= self.noise_decay
-        if self.noise_std < self.noise_std_min:
-            self.noise_std = self.noise_std_min
-
-    fn _list_to_simd[
-        T: DType
-    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
-        """Convert List[Scalar[T]] to SIMD[dtype] for internal use."""
-        var obs = SIMD[dtype, Self.obs_dim]()
-        for i in range(Self.obs_dim):
-            if i < len(obs_list):
-                obs[i] = Scalar[dtype](obs_list[i])
-            else:
-                obs[i] = Scalar[dtype](0.0)
-        return obs
-
-    fn get_noise_std(self) -> Float64:
-        """Get current exploration noise standard deviation."""
-        return self.noise_std
-
-    fn get_train_steps(self) -> Int:
-        """Get total training steps performed."""
-        return self.train_step_count
+    # =========================================================================
+    # High-level CPU training loop (delegates to shared off-policy runner)
+    # =========================================================================
 
     fn train[
         E: BoxContinuousActionEnv
@@ -673,298 +1083,714 @@ struct DeepTD3Agent[
     ) -> TrainingMetrics:
         """Train the TD3 agent on a continuous action environment.
 
+        Delegates to run_offpolicy_continuous_train which handles warmup,
+        episode loop, decay, and metric logging.
+
         Args:
-            env: The environment to train on (must implement BoxContinuousActionEnv).
-            num_episodes: Number of episodes to train.
-            max_steps_per_episode: Maximum steps per episode.
-            warmup_steps: Number of random steps to fill replay buffer.
-            train_every: Train every N steps.
-            verbose: Whether to print progress.
-            print_every: Print progress every N episodes if verbose.
-            environment_name: Name of environment for metrics labeling.
+            env: Environment implementing BoxContinuousActionEnv.
+            num_episodes: Number of training episodes.
+            max_steps_per_episode: Maximum steps per episode (default: 200).
+            warmup_steps: Random steps to pre-fill replay buffer (default: 1000).
+            train_every: Train every N steps (default: 1).
+            verbose: Print progress (default: False).
+            print_every: Print every N episodes if verbose (default: 10).
+            environment_name: Name for metrics labeling.
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        var metrics = TrainingMetrics(
-            algorithm_name="Deep TD3",
+        return run_offpolicy_continuous_train(
+            self,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            verbose=verbose,
+            print_every=print_every,
             environment_name=environment_name,
+            algorithm_name="Deep TD3",
         )
 
-        # =====================================================================
-        # Warmup: fill replay buffer with random actions
-        # =====================================================================
-        var warmup_obs = self._list_to_simd(env.reset_obs_list())
-        var warmup_count = 0
-
-        while warmup_count < warmup_steps:
-            # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Scalar[dtype], Self.action_dim](
-                uninitialized=True
-            )
-            var action_list = List[Float64](capacity=Self.action_dim)
-            for i in range(Self.action_dim):
-                action[i] = Scalar[dtype](
-                    (random_float64() * 2.0 - 1.0) * self.action_scale
-                )
-                action_list.append(Float64(action[i]))
-
-            # Step environment with full action vector
-            var result = env.step_continuous_vec(action_list^)
-            var reward = result[1]
-            var done = result[2]
-
-            var next_obs = self._list_to_simd(result[0])
-            self.store_transition(warmup_obs, action, reward, next_obs, done)
-
-            warmup_obs = next_obs
-            warmup_count += 1
-
-            if done:
-                warmup_obs = self._list_to_simd(env.reset_obs_list())
-
-        if verbose:
-            print("Warmup complete:", warmup_count, "transitions collected")
-
-        # =====================================================================
-        # Training loop
-        # =====================================================================
-        var total_train_steps = 0
-
-        for episode in range(num_episodes):
-            var obs = self._list_to_simd(env.reset_obs_list())
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps_per_episode):
-                # Select action with exploration noise
-                var action = self.select_action(obs, add_noise=True)
-
-                # Convert action to List for step_continuous_vec
-                var action_list = List[Float64](capacity=Self.action_dim)
-                for i in range(Self.action_dim):
-                    action_list.append(Float64(action[i]))
-
-                # Step environment with full action vector
-                var result = env.step_continuous_vec(action_list^)
-                var reward = result[1]
-                var done = result[2]
-
-                var next_obs = self._list_to_simd(result[0])
-
-                # Store transition
-                self.store_transition(obs, action, reward, next_obs, done)
-
-                # Train every N steps
-                if total_train_steps % train_every == 0:
-                    _ = self.train_step()
-
-                episode_reward += reward
-                obs = next_obs
-                total_train_steps += 1
-                episode_steps += 1
-
-                if done:
-                    break
-
-            # Decay exploration noise
-            self.decay_noise()
-
-            # Log metrics
-            metrics.log_episode(
-                episode, episode_reward, episode_steps, self.noise_std
-            )
-
-            # Print progress
-            if verbose and (episode + 1) % print_every == 0:
-                var avg_reward = metrics.mean_reward_last_n(print_every)
-                print(
-                    "Episode",
-                    episode + 1,
-                    "| Avg reward:",
-                    String(avg_reward)[:7],
-                    "| Noise:",
-                    String(self.noise_std)[:5],
-                    "| Steps:",
-                    total_train_steps,
-                )
-
-            # Auto-checkpoint
-            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
-                if (episode + 1) % self.checkpoint_every == 0:
-                    try:
-                        self.save_checkpoint(self.checkpoint_path)
-                        if verbose:
-                            print("Checkpoint saved at episode", episode + 1)
-                    except:
-                        print(
-                            "Warning: Failed to save checkpoint at episode",
-                            episode + 1,
-                        )
-
-        return metrics^
+    # =========================================================================
+    # Evaluation (deterministic policy, no noise)
+    # =========================================================================
 
     fn evaluate[
-        E: BoxContinuousActionEnv & RenderableEnv
+        E: BoxContinuousActionEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 200,
         verbose: Bool = False,
-        render: Bool = False,
-        frame_delay_ms: Int = 16,
-    ) raises -> Float64:
-        """Evaluate the agent using deterministic policy (no noise).
+    ) -> Float64:
+        """Evaluate the agent using the deterministic policy (no noise).
+
+        Delegates to run_offpolicy_continuous_eval (uses select_greedy_action_list).
 
         Args:
-            env: The environment to evaluate on.
-            num_episodes: Number of evaluation episodes.
-            max_steps: Maximum steps per episode.
-            verbose: Whether to print per-episode results.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
+            env: Environment to evaluate on.
+            num_episodes: Number of evaluation episodes (default: 10).
+            max_steps: Maximum steps per episode (default: 200).
+            verbose: Print per-episode results (default: False).
 
         Returns:
-            Average reward over evaluation episodes.
+            Average reward across evaluation episodes.
         """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        for episode in range(num_episodes):
-            if quit_requested:
-                break
-
-            var obs = self._list_to_simd(env.reset_obs_list())
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps):
-                # Deterministic action (no noise)
-                var action = self.select_action(obs, add_noise=False)
-
-                # Convert action to List for step_continuous_vec
-                var action_list = List[Float64](capacity=Self.action_dim)
-                for i in range(Self.action_dim):
-                    action_list.append(Float64(action[i]))
-
-                # Step environment with full action vector
-                var result = env.step_continuous_vec(action_list^)
-                var reward = result[1]
-                var done = result[2]
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                episode_reward += reward
-                obs = self._list_to_simd(result[0])
-                episode_steps += 1
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
-                )
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
+        return run_offpolicy_continuous_eval(
+            self,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps,
+            verbose=verbose,
+            algorithm_name="Deep TD3",
+        ).mean_reward()
 
     # =========================================================================
-    # Checkpoint Save/Load
+    # GPUOffPolicyAgent trait — required methods
+    # =========================================================================
+
+    fn make_gpu_state(
+        self, ctx: DeviceContext
+    ) raises -> Self.GPUStateType:
+        """Allocate all GPU buffers for TD3 training.
+
+        Does NOT upload CPU weights — call upload_to_gpu after this.
+        """
+        return Self.GPUStateType(ctx)
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Upload CPU network states and replay buffer to GPU."""
+        gpu_state.actor_online.upload_from(self.actor_online, ctx)
+        gpu_state.actor_target.upload_from(self.actor_target, ctx)
+        gpu_state.critic1_online.upload_from(self.critic1_online, ctx)
+        gpu_state.critic1_target.upload_from(self.critic1_target, ctx)
+        gpu_state.critic2_online.upload_from(self.critic2_online, ctx)
+        gpu_state.critic2_target.upload_from(self.critic2_target, ctx)
+        gpu_state.buffer.upload_from(self.buffer, ctx)
+
+    fn download_from_gpu(
+        mut self,
+        gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.actor_online.download_to(self.actor_online, ctx)
+        gpu_state.actor_target.download_to(self.actor_target, ctx)
+        gpu_state.critic1_online.download_to(self.critic1_online, ctx)
+        gpu_state.critic1_target.download_to(self.critic1_target, ctx)
+        gpu_state.critic2_online.download_to(self.critic2_online, ctx)
+        gpu_state.critic2_target.download_to(self.critic2_target, ctx)
+
+    fn select_actions_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Forward actor on GPU for N_ENVS environments + add exploration noise."""
+        comptime BLOCKS = (N_ENVS * Self.ACTIONS + TPB - 1) // TPB
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var raw_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.raw_act.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rng_t = LayoutTensor[
+            DType.uint32,
+            Layout.row_major(N_ENVS, Self.ACTIONS),
+            MutAnyOrigin,
+        ](gpu_state.rng_states.unsafe_ptr())
+
+        var p = gpu_state.actor_online.params_view()
+        Self.ActorNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+
+        var noise_std_s = Scalar[dtype](self.noise_std)
+        var scale_s = Scalar[dtype](self.action_scale)
+
+        @always_inline
+        fn exploration_wrapper(
+            out_t: LayoutTensor[
+                dtype,
+                Layout.row_major(N_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
+            ],
+            raw_in: LayoutTensor[
+                dtype,
+                Layout.row_major(N_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
+            ],
+            rng_in: LayoutTensor[
+                DType.uint32,
+                Layout.row_major(N_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
+            ],
+            ns: Scalar[dtype],
+            sc: Scalar[dtype],
+        ):
+            ddpg_exploration_kernel[dtype, N_ENVS, Self.ACTIONS](
+                out_t, raw_in, rng_in, ns, sc
+            )
+
+        ctx.enqueue_function[exploration_wrapper, exploration_wrapper](
+            act_t,
+            raw_t,
+            rng_t,
+            noise_std_s,
+            scale_s,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    fn do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """One TD3 training step on GPU.
+
+        Always updates both critics.
+        Every policy_delay steps: also updates actor.
+        Uses self for hyperparams (gamma, tau, policy_delay, etc.)
+        and gpu_state for all device buffers.
+        """
+        comptime BATCH = Self.BATCH
+        comptime OBS = Self.OBS
+        comptime ACTIONS = Self.ACTIONS
+        comptime CRITIC_IN = Self.CRITIC_IN
+        comptime CRITIC_CS = Self.CriticModel.CACHE_SIZE
+        comptime ACTOR_CS = Self.ActorModel.CACHE_SIZE
+        comptime TPB256 = 256
+        comptime ELEM_BLOCKS = (BATCH * CRITIC_IN + TPB256 - 1) // TPB256
+        comptime BATCH_BLOCKS = (BATCH + TPB256 - 1) // TPB256
+        comptime ACT_BLOCKS = (BATCH * ACTIONS + TPB256 - 1) // TPB256
+
+        self.update_count += 1
+
+        # ----- Phase 1: Sample batch -----
+        gpu_state.buffer.sample[BATCH](
+            ctx,
+            rng_seed=UInt32(self.update_count),
+            sampled_obs=gpu_state.s_obs,
+            sampled_actions=gpu_state.s_act,
+            sampled_rewards=gpu_state.s_rew,
+            sampled_next_obs=gpu_state.s_nobs,
+            sampled_dones=gpu_state.s_done,
+            indices=gpu_state.s_idx,
+        )
+
+        # LayoutTensor views on sampled data
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu_state.s_obs.unsafe_ptr())
+        var nobs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu_state.s_nobs.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.s_act.unsafe_ptr())
+        var rew_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.s_rew.unsafe_ptr()
+        )
+        var done_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.s_done.unsafe_ptr()
+        )
+
+        # LayoutTensor views on target/twin scratch
+        var next_act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.next_act.unsafe_ptr())
+        var noisy_next_act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.noisy_next_act.unsafe_ptr())
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.next_ci.unsafe_ptr())
+        var nq1_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.nq1.unsafe_ptr()
+        )
+        var nq2_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.nq2.unsafe_ptr()
+        )
+        var nq1_2d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.nq1.unsafe_ptr())
+        var nq2_2d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.nq2.unsafe_ptr())
+        var targets_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.targets.unsafe_ptr())
+
+        var p_actor_t = gpu_state.actor_target.params_view()
+        var p_c1t = gpu_state.critic1_target.params_view()
+        var p_c2t = gpu_state.critic2_target.params_view()
+        var p_actor = gpu_state.actor_online.params_view()
+        var p_c1 = gpu_state.critic1_online.params_view()
+        var p_c2 = gpu_state.critic2_online.params_view()
+
+        # ----- Phase 2: Actor target → next_act -----
+        Self.ActorNet.forward_gpu[BATCH](
+            ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws
+        )
+
+        # ----- Phase 3: Target policy smoothing (TD3 Innovation #3) -----
+        var tns_s = Scalar[dtype](self.target_noise_std)
+        var tnc_s = Scalar[dtype](self.target_noise_clip)
+        var act_min_s = Scalar[dtype](-self.action_scale)
+        var act_max_s = Scalar[dtype](self.action_scale)
+        var noise_rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.td3_noise_rng.unsafe_ptr())
+
+        @always_inline
+        fn smooth_noise(
+            noisy: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            clean: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            ns: Scalar[dtype],
+            nc: Scalar[dtype],
+            amin: Scalar[dtype],
+            amax: Scalar[dtype],
+        ):
+            add_gaussian_noise_kernel[dtype, BATCH, ACTIONS](
+                noisy, clean, rng, ns, nc, amin, amax
+            )
+
+        ctx.enqueue_function[smooth_noise, smooth_noise](
+            noisy_next_act_t,
+            next_act_t,
+            noise_rng_t,
+            tns_s,
+            tnc_s,
+            act_min_s,
+            act_max_s,
+            grid_dim=(ACT_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 4: Concat(next_obs, noisy_next_act) → next_ci -----
+        @always_inline
+        fn concat_next(
+            d: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+        ):
+            concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+        ctx.enqueue_function[concat_next, concat_next](
+            next_ci_t,
+            nobs_t,
+            noisy_next_act_t,
+            grid_dim=(ELEM_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 5: Both critics target forward -----
+        Self.CriticNet.forward_gpu[BATCH](
+            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws
+        )
+        Self.CriticNet.forward_gpu[BATCH](
+            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws
+        )
+
+        # ----- Phase 6: TD targets (TD3 Innovation #1: min(Q1, Q2)) -----
+        var gamma_s = Scalar[dtype](self.gamma)
+        var zero_s = Scalar[dtype](0.0)
+        var log_probs_dummy = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.targets.unsafe_ptr())
+
+        @always_inline
+        fn td3_targets(
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            r: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            q2: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            d: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            g: Scalar[dtype],
+            a: Scalar[dtype],
+        ):
+            td_target_min_twin_kernel[dtype, BATCH, False](
+                tgt, r, q1, q2, d, lp, g, a
+            )
+
+        ctx.enqueue_function[td3_targets, td3_targets](
+            targets_t,
+            rew_t,
+            nq1_t,
+            nq2_t,
+            done_t,
+            log_probs_dummy,
+            gamma_s,
+            zero_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 7: Concat(obs, actions) → ci -----
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.ci.unsafe_ptr())
+
+        @always_inline
+        fn concat_ci(
+            d: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+        ):
+            concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+        ctx.enqueue_function[concat_ci, concat_ci](
+            ci_t,
+            obs_t,
+            act_t,
+            grid_dim=(ELEM_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 8: Critic1 forward + MSE grad + backward + optim -----
+        var q1_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q1_out.unsafe_ptr())
+        var q1_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+        ](gpu_state.q1_cache.unsafe_ptr())
+        var q1_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q1_grad.unsafe_ptr())
+        var d_ci1_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.d_ci1.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu_with_cache[BATCH](
+            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws
+        )
+
+        @always_inline
+        fn mse_grad1(
+            qg: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            td_mse_grad_kernel[dtype, BATCH](qg, q, tgt)
+
+        ctx.enqueue_function[mse_grad1, mse_grad1](
+            q1_grad_t,
+            q1_t,
+            targets_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        var g_c1 = gpu_state.critic1_online.grads_view()
+        gpu_state.critic1_online.zero_grads(ctx)
+        Self.CriticNet.backward_gpu[BATCH](
+            ctx, q1_grad_t, d_ci1_t, p_c1, q1_cache_t, g_c1, gpu_state.critic1_ws
+        )
+        gpu_state.critic1_online.optimizer_step(ctx)
+
+        # ----- Phase 9: Critic2 forward + MSE grad + backward + optim -----
+        var q2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q2_out.unsafe_ptr())
+        var q2_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+        ](gpu_state.q2_cache.unsafe_ptr())
+        var q2_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q2_grad.unsafe_ptr())
+        var d_ci2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.d_ci2.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu_with_cache[BATCH](
+            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws
+        )
+
+        @always_inline
+        fn mse_grad2(
+            qg: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            td_mse_grad_kernel[dtype, BATCH](qg, q, tgt)
+
+        ctx.enqueue_function[mse_grad2, mse_grad2](
+            q2_grad_t,
+            q2_t,
+            targets_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        var g_c2 = gpu_state.critic2_online.grads_view()
+        gpu_state.critic2_online.zero_grads(ctx)
+        Self.CriticNet.backward_gpu[BATCH](
+            ctx, q2_grad_t, d_ci2_t, p_c2, q2_cache_t, g_c2, gpu_state.critic2_ws
+        )
+        gpu_state.critic2_online.optimizer_step(ctx)
+
+        # ----- Phase 10+: Delayed actor update (TD3 Innovation #2) -----
+        if self.update_count % self.policy_delay == 0:
+            var actor_act_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ](gpu_state.actor_act.unsafe_ptr())
+            var new_ci_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ](gpu_state.new_ci.unsafe_ptr())
+            var new_q_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            ](gpu_state.new_q.unsafe_ptr())
+            var new_q_cache_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+            ](gpu_state.new_q_cache.unsafe_ptr())
+            var actor_cache_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTOR_CS), MutAnyOrigin
+            ](gpu_state.actor_cache.unsafe_ptr())
+            var dq_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            ](gpu_state.dq.unsafe_ptr())
+            var d_new_ci_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ](gpu_state.d_new_ci.unsafe_ptr())
+            var d_act_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ](gpu_state.d_act.unsafe_ptr())
+            var d_obs_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+            ](gpu_state.d_obs.unsafe_ptr())
+
+            # Actor forward with cache
+            Self.ActorNet.forward_gpu_with_cache[BATCH](
+                ctx, obs_t, actor_act_t, p_actor, actor_cache_t, gpu_state.actor_ws
+            )
+
+            # Concat(obs, actor_actions) → new_ci
+            @always_inline
+            fn concat_new_ci(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+                ],
+                o: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+                ],
+                a: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+                ],
+            ):
+                concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+            ctx.enqueue_function[concat_new_ci, concat_new_ci](
+                new_ci_t,
+                obs_t,
+                actor_act_t,
+                grid_dim=(ELEM_BLOCKS,),
+                block_dim=(TPB256,),
+            )
+
+            # Critic1 forward for policy gradient (use critic1 per TD3 paper)
+            Self.CriticNet.forward_gpu_with_cache[BATCH](
+                ctx, new_ci_t, new_q_t, p_c1, new_q_cache_t, gpu_state.critic1_ws
+            )
+
+            # Critic1 backward for action gradients (no optimizer step)
+            var g_c1_pg = gpu_state.critic1_online.grads_view()
+            gpu_state.critic1_online.zero_grads(ctx)
+            Self.CriticNet.backward_gpu[BATCH](
+                ctx,
+                dq_t,
+                d_new_ci_t,
+                p_c1,
+                new_q_cache_t,
+                g_c1_pg,
+                gpu_state.critic1_ws,
+            )
+
+            # Extract action gradients from critic input gradient
+            @always_inline
+            fn extract_act_grad(
+                da: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+                ],
+                dnc: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+                ],
+            ):
+                actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](
+                    da, dnc
+                )
+
+            ctx.enqueue_function[extract_act_grad, extract_act_grad](
+                d_act_t,
+                d_new_ci_t,
+                grid_dim=(ACT_BLOCKS,),
+                block_dim=(TPB256,),
+            )
+
+            # Actor backward + optimizer step
+            var g_actor = gpu_state.actor_online.grads_view()
+            gpu_state.actor_online.zero_grads(ctx)
+            Self.ActorNet.backward_gpu[BATCH](
+                ctx,
+                d_act_t,
+                d_obs_t,
+                p_actor,
+                actor_cache_t,
+                g_actor,
+                gpu_state.actor_ws,
+            )
+            gpu_state.actor_online.optimizer_step(ctx)
+
+    fn soft_update_targets_gpu(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Soft-update target networks on GPU (only when actor was updated).
+
+        TD3 delays target updates to match actor updates: only every
+        policy_delay critic steps. This method checks update_count to decide.
+        """
+        if self.update_count % self.policy_delay == 0:
+            gpu_state.actor_target.soft_update_from_gpu(
+                gpu_state.actor_online, self.tau, ctx
+            )
+            gpu_state.critic1_target.soft_update_from_gpu(
+                gpu_state.critic1_online, self.tau, ctx
+            )
+            gpu_state.critic2_target.soft_update_from_gpu(
+                gpu_state.critic2_online, self.tau, ctx
+            )
+
+    # =========================================================================
+    # GPU training — delegates to shared run_offpolicy_continuous_train_gpu
+    # =========================================================================
+
+    fn train_gpu[
+        E: GPUContinuousEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        train_every: Int = 1,
+        sync_every: Int = 50,
+        verbose: Bool = False,
+        print_every: Int = 50,
+        environment_name: String = "Environment",
+    ) raises -> TrainingMetrics:
+        """Train on GPU using the shared off-policy GPU loop.
+
+        GPU state (networks, replay buffer, scratch buffers) is created
+        locally for the duration of training and freed when the method returns.
+        After this call self.actor_online / critic1_online / critic2_online and
+        their targets hold the trained GPU weights (synced by download_from_gpu).
+
+        Parameters:
+            E: GPU environment type implementing GPUContinuousEnv.
+
+        Args:
+            ctx: GPU device context.
+            num_steps: Total environment steps.
+            warmup_steps: Random steps before training starts (default: 1000).
+            train_every: Train step every N env steps (default: 1).
+            sync_every: Download GPU→CPU every N steps (default: 50).
+            verbose: Print progress (default: False).
+            print_every: Print every N steps if verbose (default: 50).
+            environment_name: Name for metrics labeling.
+
+        Returns:
+            TrainingMetrics with step-level statistics.
+        """
+        return run_offpolicy_continuous_train_gpu[E, Self](
+            self,
+            ctx,
+            num_steps,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            sync_every=sync_every,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name="Deep TD3 GPU",
+        )
+
+    # =========================================================================
+    # Checkpoint Save / Load
     # =========================================================================
 
     fn save_checkpoint(self, filepath: String) raises:
         """Save agent state to a checkpoint file.
 
-        Saves actor, actor_target, critic1, critic1_target, critic2, critic2_target
-        networks and hyperparameters.
+        Saves all six NetworkState objects plus runtime hyperparameters.
+        The replay buffer is NOT saved.
 
         Args:
-            filepath: Path to save the checkpoint file.
+            filepath: Destination path (e.g. "td3_agent.ckpt").
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic1.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+        comptime ACTOR_PARAM_SIZE = Self.ActorNet.PARAM_SIZE
+        comptime CRITIC_PARAM_SIZE = Self.CriticNet.PARAM_SIZE
+        comptime ACTOR_STATE_SIZE = ACTOR_PARAM_SIZE * Adam[
+            Self.actor_lr
+        ].STATE_PER_PARAM
+        comptime CRITIC_STATE_SIZE = CRITIC_PARAM_SIZE * Adam[
+            Self.critic_lr
+        ].STATE_PER_PARAM
 
-        var content = String("# mojo-rl checkpoint v1\n")
-        content += "# type: td3_agent\n"
-        content += "# actor_param_size: " + String(actor_param_size) + "\n"
-        content += "# critic_param_size: " + String(critic_param_size) + "\n"
+        var content = write_checkpoint_header(
+            "td3_agent",
+            ACTOR_PARAM_SIZE + 2 * CRITIC_PARAM_SIZE,
+            ACTOR_STATE_SIZE + 2 * CRITIC_STATE_SIZE,
+        )
+        content += self.actor_online.write_sections("actor_online_")
+        content += self.actor_target.write_sections("actor_target_")
+        content += self.critic1_online.write_sections("critic1_online_")
+        content += self.critic1_target.write_sections("critic1_target_")
+        content += self.critic2_online.write_sections("critic2_online_")
+        content += self.critic2_target.write_sections("critic2_target_")
 
-        # Actor params
-        content += "actor_params:\n"
-        for i in range(actor_param_size):
-            content += String(Float64(self.actor.params[i])) + "\n"
-
-        content += "actor_optimizer_state:\n"
-        for i in range(actor_state_size):
-            content += String(Float64(self.actor.optimizer_state[i])) + "\n"
-
-        content += "actor_target_params:\n"
-        for i in range(actor_param_size):
-            content += String(Float64(self.actor_target.params[i])) + "\n"
-
-        # Critic1 params
-        content += "critic1_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic1.params[i])) + "\n"
-
-        content += "critic1_optimizer_state:\n"
-        for i in range(critic_state_size):
-            content += String(Float64(self.critic1.optimizer_state[i])) + "\n"
-
-        content += "critic1_target_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic1_target.params[i])) + "\n"
-
-        # Critic2 params
-        content += "critic2_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic2.params[i])) + "\n"
-
-        content += "critic2_optimizer_state:\n"
-        for i in range(critic_state_size):
-            content += String(Float64(self.critic2.optimizer_state[i])) + "\n"
-
-        content += "critic2_target_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic2_target.params[i])) + "\n"
-
-        # Metadata
-        content += "metadata:\n"
-        content += "gamma=" + String(self.gamma) + "\n"
-        content += "tau=" + String(self.tau) + "\n"
-        content += "actor_lr=" + String(self.actor_lr) + "\n"
-        content += "critic_lr=" + String(self.critic_lr) + "\n"
-        content += "action_scale=" + String(self.action_scale) + "\n"
-        content += "noise_std=" + String(self.noise_std) + "\n"
-        content += "noise_std_min=" + String(self.noise_std_min) + "\n"
-        content += "noise_decay=" + String(self.noise_decay) + "\n"
-        content += "policy_delay=" + String(self.policy_delay) + "\n"
-        content += "target_noise_std=" + String(self.target_noise_std) + "\n"
-        content += "target_noise_clip=" + String(self.target_noise_clip) + "\n"
-        content += "total_steps=" + String(self.total_steps) + "\n"
-        content += "train_step_count=" + String(self.train_step_count) + "\n"
-        content += "update_count=" + String(self.update_count) + "\n"
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("actor_lr=" + String(Self.actor_lr))
+        metadata.append("critic_lr=" + String(Self.critic_lr))
+        metadata.append("action_scale=" + String(self.action_scale))
+        metadata.append("noise_std=" + String(self.noise_std))
+        metadata.append("noise_std_min=" + String(self.noise_std_min))
+        metadata.append("noise_decay=" + String(self.noise_decay))
+        metadata.append("policy_delay=" + String(self.policy_delay))
+        metadata.append("target_noise_std=" + String(self.target_noise_std))
+        metadata.append("target_noise_clip=" + String(self.target_noise_clip))
+        metadata.append("total_steps=" + String(self.total_steps))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        metadata.append("update_count=" + String(self.update_count))
+        content += write_metadata_section(metadata)
 
         save_checkpoint_file(filepath, content)
 
@@ -974,112 +1800,61 @@ struct DeepTD3Agent[
         Args:
             filepath: Path to the checkpoint file.
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic1.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
-
         var content = read_checkpoint_file(filepath)
-        var lines = split_lines(content)
 
-        # Load actor params
-        var actor_params_start = find_section_start(lines, "actor_params:")
-        for i in range(actor_param_size):
-            self.actor.params[i] = Scalar[dtype](
-                atof(lines[actor_params_start + i])
-            )
+        self.actor_online.read_sections(content, "actor_online_")
+        self.actor_target.read_sections(content, "actor_target_")
+        self.critic1_online.read_sections(content, "critic1_online_")
+        self.critic1_target.read_sections(content, "critic1_target_")
+        self.critic2_online.read_sections(content, "critic2_online_")
+        self.critic2_target.read_sections(content, "critic2_target_")
 
-        var actor_state_start = find_section_start(
-            lines, "actor_optimizer_state:"
-        )
-        for i in range(actor_state_size):
-            self.actor.optimizer_state[i] = Scalar[dtype](
-                atof(lines[actor_state_start + i])
-            )
+        var metadata = read_metadata_section(content)
 
-        var actor_target_start = find_section_start(
-            lines, "actor_target_params:"
-        )
-        for i in range(actor_param_size):
-            self.actor_target.params[i] = Scalar[dtype](
-                atof(lines[actor_target_start + i])
-            )
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
 
-        # Load critic1 params
-        var critic1_params_start = find_section_start(lines, "critic1_params:")
-        for i in range(critic_param_size):
-            self.critic1.params[i] = Scalar[dtype](
-                atof(lines[critic1_params_start + i])
-            )
+        var tau_str = get_metadata_value(metadata, "tau")
+        if len(tau_str) > 0:
+            self.tau = atof(tau_str)
 
-        var critic1_state_start = find_section_start(
-            lines, "critic1_optimizer_state:"
-        )
-        for i in range(critic_state_size):
-            self.critic1.optimizer_state[i] = Scalar[dtype](
-                atof(lines[critic1_state_start + i])
-            )
+        var action_scale_str = get_metadata_value(metadata, "action_scale")
+        if len(action_scale_str) > 0:
+            self.action_scale = atof(action_scale_str)
 
-        var critic1_target_start = find_section_start(
-            lines, "critic1_target_params:"
-        )
-        for i in range(critic_param_size):
-            self.critic1_target.params[i] = Scalar[dtype](
-                atof(lines[critic1_target_start + i])
-            )
+        var noise_std_str = get_metadata_value(metadata, "noise_std")
+        if len(noise_std_str) > 0:
+            self.noise_std = atof(noise_std_str)
 
-        # Load critic2 params
-        var critic2_params_start = find_section_start(lines, "critic2_params:")
-        for i in range(critic_param_size):
-            self.critic2.params[i] = Scalar[dtype](
-                atof(lines[critic2_params_start + i])
-            )
+        var noise_std_min_str = get_metadata_value(metadata, "noise_std_min")
+        if len(noise_std_min_str) > 0:
+            self.noise_std_min = atof(noise_std_min_str)
 
-        var critic2_state_start = find_section_start(
-            lines, "critic2_optimizer_state:"
-        )
-        for i in range(critic_state_size):
-            self.critic2.optimizer_state[i] = Scalar[dtype](
-                atof(lines[critic2_state_start + i])
-            )
+        var noise_decay_str = get_metadata_value(metadata, "noise_decay")
+        if len(noise_decay_str) > 0:
+            self.noise_decay = atof(noise_decay_str)
 
-        var critic2_target_start = find_section_start(
-            lines, "critic2_target_params:"
-        )
-        for i in range(critic_param_size):
-            self.critic2_target.params[i] = Scalar[dtype](
-                atof(lines[critic2_target_start + i])
-            )
+        var policy_delay_str = get_metadata_value(metadata, "policy_delay")
+        if len(policy_delay_str) > 0:
+            self.policy_delay = Int(atol(policy_delay_str))
 
-        # Load metadata
-        var metadata_start = find_section_start(lines, "metadata:")
-        for i in range(metadata_start, len(lines)):
-            var line = lines[i]
-            if line.startswith("gamma="):
-                self.gamma = atof(String(line[6:]))
-            elif line.startswith("tau="):
-                self.tau = atof(String(line[4:]))
-            elif line.startswith("actor_lr="):
-                self.actor_lr = atof(String(line[9:]))
-            elif line.startswith("critic_lr="):
-                self.critic_lr = atof(String(line[10:]))
-            elif line.startswith("action_scale="):
-                self.action_scale = atof(String(line[13:]))
-            elif line.startswith("noise_std="):
-                self.noise_std = atof(String(line[10:]))
-            elif line.startswith("noise_std_min="):
-                self.noise_std_min = atof(String(line[14:]))
-            elif line.startswith("noise_decay="):
-                self.noise_decay = atof(String(line[12:]))
-            elif line.startswith("policy_delay="):
-                self.policy_delay = Int(atol(String(line[13:])))
-            elif line.startswith("target_noise_std="):
-                self.target_noise_std = atof(String(line[17:]))
-            elif line.startswith("target_noise_clip="):
-                self.target_noise_clip = atof(String(line[18:]))
-            elif line.startswith("total_steps="):
-                self.total_steps = Int(atol(String(line[12:])))
-            elif line.startswith("train_step_count="):
-                self.train_step_count = Int(atol(String(line[17:])))
-            elif line.startswith("update_count="):
-                self.update_count = Int(atol(String(line[13:])))
+        var tns_str = get_metadata_value(metadata, "target_noise_std")
+        if len(tns_str) > 0:
+            self.target_noise_std = atof(tns_str)
+
+        var tnc_str = get_metadata_value(metadata, "target_noise_clip")
+        if len(tnc_str) > 0:
+            self.target_noise_clip = atof(tnc_str)
+
+        var total_steps_str = get_metadata_value(metadata, "total_steps")
+        if len(total_steps_str) > 0:
+            self.total_steps = Int(atol(total_steps_str))
+
+        var train_step_str = get_metadata_value(metadata, "train_step_count")
+        if len(train_step_str) > 0:
+            self.train_step_count = Int(atol(train_step_str))
+
+        var update_count_str = get_metadata_value(metadata, "update_count")
+        if len(update_count_str) > 0:
+            self.update_count = Int(atol(update_count_str))

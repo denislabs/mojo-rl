@@ -8,7 +8,7 @@ Run with:
 
 from random import seed, random_float64
 from time import perf_counter_ns
-
+from layout import Layout, LayoutTensor
 from nn.constants import dtype
 from nn.model.linear import Linear
 from nn.model.relu import ReLU
@@ -66,13 +66,7 @@ fn test_stochastic_actor_gpu_training() raises:
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
-        optimizer=Adam(lr=0.01),
-        loss_function=MSELoss(),
-        initializer=Kaiming(),
-        epochs=EPOCHS,
-        print_every=50,
-    )
+    comptime TRAINER = Trainer[MODEL, Adam, MSELoss]
 
     # Generate data
     var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](
@@ -92,14 +86,19 @@ fn test_stochastic_actor_gpu_training() raises:
             target_data[b * OUT_DIM + ACTION_DIM + j] = Scalar[dtype](
                 -0.5
             )  # log_std
+    var input_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var target_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ](target_data.unsafe_ptr())
 
     print("\n  Training on GPU...")
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](
-        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
-    )
+    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var result = TRAINER.train_gpu[BATCH](state, ctx, input_t, target_t)
     var end = perf_counter_ns()
 
     var time_ms = Float64(end - start) / 1e6
@@ -152,13 +151,7 @@ fn test_backbone_with_stochastic_actor() raises:
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
-        optimizer=Adam(lr=0.005),
-        loss_function=MSELoss(),
-        initializer=Kaiming(),
-        epochs=EPOCHS,
-        print_every=100,
-    )
+    comptime TRAINER = Trainer[MODEL, Adam[LR=0.005], MSELoss]
 
     # Generate data with pattern
     var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
@@ -185,12 +178,25 @@ fn test_backbone_with_stochastic_actor() raises:
                 -1.0
             )  # log_std
 
+    var input_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var target_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ](target_data.unsafe_ptr())
+
     print("\n  Training on GPU...")
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](
-        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
+    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var result = TRAINER.train_gpu[BATCH](
+        state,
+        ctx,
+        input_t,
+        target_t,
+        epochs=EPOCHS,
+        print_every=100,
     )
     var end = perf_counter_ns()
 
@@ -241,13 +247,7 @@ fn test_larger_action_space() raises:
     print("  BATCH: " + String(BATCH))
     print("  Total PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
 
-    var trainer = Trainer[MODEL, Adam, MSELoss, Kaiming](
-        optimizer=Adam(lr=0.001),
-        loss_function=MSELoss(),
-        initializer=Kaiming(),
-        epochs=EPOCHS,
-        print_every=50,
-    )
+    comptime TRAINER = Trainer[MODEL, Adam, MSELoss]
 
     # Generate data
     var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
@@ -270,12 +270,23 @@ fn test_larger_action_space() raises:
                 -0.7
             )  # log_std
 
+    var input_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var target_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ](target_data.unsafe_ptr())
+
     print("\n  Training on GPU...")
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var result = trainer.train_gpu[BATCH](
-        ctx, input_data.unsafe_ptr(), target_data.unsafe_ptr()
+    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var result = TRAINER.train_gpu[BATCH](
+        state,
+        ctx,
+        input_t,
+        target_t,
     )
     var end = perf_counter_ns()
 

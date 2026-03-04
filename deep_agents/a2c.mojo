@@ -1,10 +1,10 @@
 """Deep A2C (Advantage Actor-Critic) Agent using the new trait-based architecture.
 
 This A2C implementation uses:
-- Network wrapper from nn.training for stateless model + params management
-- seq() composition for building actor and critic networks
-- Shared feature extraction with separate actor/critic heads
-- N-step returns or GAE for advantage estimation
+- NetworkState for heap-allocated params + grads + optimizer state
+- Network (all-static) for stateless forward/backward ops via LayoutTensor
+- Sequential composition for actor and critic networks
+- GAE for advantage estimation
 
 Key features:
 - Works with any BoxDiscreteActionEnv (continuous obs, discrete actions)
@@ -26,6 +26,9 @@ Usage:
 
     var metrics = agent.train(env, num_episodes=1000)
 
+Note: actor_lr and critic_lr are compile-time parameters (they parameterize the
+Adam optimizer type). gamma, gae_lambda, entropy_coef, etc. remain runtime fields.
+
 Reference: Mnih et al., "Asynchronous Methods for Deep Reinforcement Learning" (2016)
 """
 
@@ -38,12 +41,14 @@ from nn.constants import dtype, TILE, TPB
 from nn.model import Linear, ReLU, Sequential
 from nn.optimizer import Adam
 from nn.initializer import Xavier
-from nn.training import Network
+from nn.training import Network, NetworkState
 from nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
-    split_lines,
-    find_section_start,
+    write_checkpoint_header,
+    write_metadata_section,
+    read_metadata_section,
+    get_metadata_value,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 from core.utils.gae import compute_gae_inline
@@ -65,18 +70,21 @@ struct DeepA2CAgent[
     num_actions: Int,
     hidden_dim: Int = 128,
     rollout_len: Int = 128,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.001,
 ]:
-    """Deep Advantage Actor-Critic Agent using new trait-based architecture.
+    """Deep Advantage Actor-Critic Agent using the new stateless architecture.
 
-    Uses separate actor and critic networks with shared architecture but separate
-    parameters. The actor outputs softmax probabilities over discrete actions,
-    while the critic outputs a single value estimate.
+    Uses separate actor and critic NetworkStates with heap-allocated params.
+    Network (all-static) provides forward/backward ops via LayoutTensor views.
 
     Parameters:
         obs_dim: Dimension of observation space.
         num_actions: Number of discrete actions.
         hidden_dim: Hidden layer size (default: 128).
         rollout_len: Number of steps per rollout before update (default: 128).
+        actor_lr: Actor Adam learning rate — compile-time (default: 0.0003).
+        critic_lr: Critic Adam learning rate — compile-time (default: 0.001).
     """
 
     # Convenience aliases
@@ -85,39 +93,31 @@ struct DeepA2CAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime ROLLOUT = Self.rollout_len
 
-    # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
-    comptime ActorNetwork = Network[
-        Sequential[
-            Linear[Self.OBS, Self.HIDDEN],
-            ReLU[Self.HIDDEN],
-            Linear[Self.HIDDEN, Self.HIDDEN],
-            ReLU[Self.HIDDEN],
-            Linear[Self.HIDDEN, Self.ACTIONS],
-        ],
-        Adam,
-        Xavier,
+    # Stateless model descriptions (no stored weights)
+    comptime ActorModel = Sequential[
+        Linear[Self.OBS, Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACTIONS],
     ]
-    var actor: Self.ActorNetwork
+    comptime ActorNetwork = Network[Self.ActorModel, Adam[Self.actor_lr]]
+    comptime CriticModel = Sequential[
+        Linear[Self.OBS, Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime CriticNetwork = Network[Self.CriticModel, Adam[Self.critic_lr]]
 
-    # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
-    comptime CriticNetwork = Network[
-        Sequential[
-            Linear[Self.OBS, Self.HIDDEN],
-            ReLU[Self.HIDDEN],
-            Linear[Self.HIDDEN, Self.HIDDEN],
-            ReLU[Self.HIDDEN],
-            Linear[Self.HIDDEN, 1],
-        ],
-        Adam,
-        Xavier,
-    ]
-    var critic: Self.CriticNetwork
+    # Network states: heap-allocated params + grads + optimizer state
+    var actor: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
+    var critic: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
 
     # Hyperparameters
     var gamma: Float64
     var gae_lambda: Float64
-    var actor_lr: Float64
-    var critic_lr: Float64
     var entropy_coef: Float64
     var value_loss_coef: Float64
     var max_grad_norm: Float64
@@ -142,8 +142,6 @@ struct DeepA2CAgent[
         out self,
         gamma: Float64 = 0.99,
         gae_lambda: Float64 = 0.95,
-        actor_lr: Float64 = 0.0003,
-        critic_lr: Float64 = 0.001,
         entropy_coef: Float64 = 0.01,
         value_loss_coef: Float64 = 0.5,
         max_grad_norm: Float64 = 0.5,
@@ -155,28 +153,26 @@ struct DeepA2CAgent[
         Args:
             gamma: Discount factor (default: 0.99).
             gae_lambda: GAE lambda parameter (default: 0.95).
-            actor_lr: Actor learning rate (default: 0.0003).
-            critic_lr: Critic learning rate (default: 0.001).
             entropy_coef: Entropy bonus coefficient (default: 0.01).
             value_loss_coef: Value loss coefficient (default: 0.5).
             max_grad_norm: Max gradient norm for clipping (default: 0.5).
             checkpoint_every: Save checkpoint every N episodes (0 = disabled).
-            checkpoint_path: Path to save checkpoints.
+            checkpoint_path: Base path for checkpoints (saves .actor/.critic/.meta).
         """
-        # Initialize networks
-        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
-        self.critic = Self.CriticNetwork(Adam(lr=critic_lr), Xavier())
+        # Initialize network states with Xavier initialization
+        self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
+        self.actor.initialize[Xavier]()
+        self.critic = NetworkState[Self.CriticModel, Adam[Self.critic_lr]]()
+        self.critic.initialize[Xavier]()
 
         # Store hyperparameters
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
 
-        # Initialize buffers
+        # Initialize rollout buffers
         self.buffer_obs = InlineArray[Scalar[dtype], Self.ROLLOUT * Self.OBS](
             fill=0
         )
@@ -208,28 +204,47 @@ struct DeepA2CAgent[
         Returns:
             Tuple of (action, log_prob, value).
         """
-        # Forward actor to get logits
+        # Create LayoutTensor view over obs (no copy — shared pointer)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs.unsafe_ptr())
+
+        # Actor forward (no cache — inference only)
+        var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](logits_data.unsafe_ptr())
+        var actor_params = self.actor.params_view()
+        Self.ActorNetwork.forward[1](obs_t, logits_t, actor_params)
+
+        # Copy logits to InlineArray for softmax
         var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
-        self.actor.forward[1](obs, logits)
+        for i in range(Self.ACTIONS):
+            logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
 
         # Compute softmax probabilities
         var probs = softmax_inline[dtype, Self.ACTIONS](logits)
 
-        # Forward critic to get value
-        var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        self.critic.forward[1](obs, value_out)
-        var value = value_out[0]
+        # Critic forward
+        var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](
+            value_data.unsafe_ptr()
+        )
+        var critic_params = self.critic.params_view()
+        Self.CriticNetwork.forward[1](obs_t, value_t, critic_params)
+        var value = rebind[Scalar[dtype]](value_t[0, 0])
 
-        # Sample or select greedy action
+        # Sample or greedy action
         var action: Int
         if training:
             action = sample_from_probs_inline[dtype, Self.ACTIONS](probs)
         else:
             action = argmax_probs_inline[dtype, Self.ACTIONS](probs)
 
-        # Compute log probability
         var log_prob = log(probs[action] + Scalar[dtype](1e-8))
 
         return (action, log_prob, value)
@@ -244,7 +259,6 @@ struct DeepA2CAgent[
         done: Bool,
     ):
         """Store transition in rollout buffer."""
-        # Store observation
         for i in range(Self.OBS):
             self.buffer_obs[self.buffer_idx * Self.OBS + i] = obs[i]
 
@@ -271,10 +285,17 @@ struct DeepA2CAgent[
         if self.buffer_idx == 0:
             return 0.0
 
-        # Get bootstrap value
-        var next_value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        self.critic.forward[1](next_obs, next_value_out)
-        var next_value = next_value_out[0]
+        # Bootstrap value for next_obs
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](next_obs.unsafe_ptr())
+        var next_value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var next_value_t = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](next_value_data.unsafe_ptr())
+        var critic_params = self.critic.params_view()
+        Self.CriticNetwork.forward[1](next_obs_t, next_value_t, critic_params)
+        var next_value = rebind[Scalar[dtype]](next_value_t[0, 0])
 
         # Compute GAE advantages and returns
         var advantages = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
@@ -305,26 +326,47 @@ struct DeepA2CAgent[
         var total_entropy = Scalar[dtype](0.0)
 
         for t in range(self.buffer_idx):
-            # Get observation for this timestep
+            # Reconstruct obs for this timestep
             var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
             for i in range(Self.OBS):
                 obs[i] = self.buffer_obs[t * Self.OBS + i]
 
             var action = self.buffer_actions[t]
-            var old_log_prob = self.buffer_log_probs[t]
             var advantage = advantages[t]
             var return_t = returns[t]
 
-            # =====================================================================
+            # Create obs LayoutTensor view (shared pointer into obs)
+            var obs_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](obs.unsafe_ptr())
+
+            # =================================================================
             # Actor forward with cache
-            # =====================================================================
-            var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+            # =================================================================
+            var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
                 uninitialized=True
             )
+            var logits_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](logits_data.unsafe_ptr())
             var actor_cache = InlineArray[
                 Scalar[dtype], Self.ActorNetwork.CACHE_SIZE
             ](uninitialized=True)
-            self.actor.forward_with_cache[1](obs, logits, actor_cache)
+            var actor_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(1, Self.ActorNetwork.CACHE_SIZE),
+                MutAnyOrigin,
+            ](actor_cache.unsafe_ptr())
+            var actor_params = self.actor.params_view()
+            Self.ActorNetwork.forward_with_cache[1](
+                obs_t, logits_t, actor_params, actor_cache_t
+            )
+
+            var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            for i in range(Self.ACTIONS):
+                logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
 
             var probs = softmax_inline[dtype, Self.ACTIONS](logits)
             var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
@@ -341,7 +383,6 @@ struct DeepA2CAgent[
             total_entropy += entropy
 
             # Actor gradient: d(-log_prob * advantage - entropy_coef * entropy) / d(logits)
-            # For softmax + log: d(log_prob_a) / d(logit_j) = δ_aj - π_j
             var d_logits = InlineArray[Scalar[dtype], Self.ACTIONS](fill=0)
             for a in range(Self.ACTIONS):
                 var d_log_prob: Scalar[dtype]
@@ -350,7 +391,6 @@ struct DeepA2CAgent[
                 else:
                     d_log_prob = -probs[a]
 
-                # Entropy gradient (simplified)
                 var d_entropy = -probs[a] * (
                     Scalar[dtype](1.0) + log(probs[a] + Scalar[dtype](1e-8))
                 )
@@ -360,22 +400,45 @@ struct DeepA2CAgent[
                     - Scalar[dtype](self.entropy_coef) * d_entropy
                 )
 
-            # Backward through actor
-            var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            # Actor backward + optimizer step
+            var d_logits_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](d_logits.unsafe_ptr())
+            var actor_grad_in = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            var actor_grad_in_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](actor_grad_in.unsafe_ptr())
             self.actor.zero_grads()
-            self.actor.backward[1](d_logits, actor_grad_input, actor_cache)
-            self.actor.update()
+            var actor_grads = self.actor.grads_view()
+            Self.ActorNetwork.backward[1](
+                d_logits_t,
+                actor_grad_in_t,
+                actor_params,
+                actor_cache_t,
+                actor_grads,
+            )
+            self.actor.optimizer_step()
 
-            # =====================================================================
+            # =================================================================
             # Critic forward with cache
-            # =====================================================================
-            var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
+            # =================================================================
+            var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+            var value_t = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](value_data.unsafe_ptr())
             var critic_cache = InlineArray[
                 Scalar[dtype], Self.CriticNetwork.CACHE_SIZE
             ](uninitialized=True)
-            self.critic.forward_with_cache[1](obs, value_out, critic_cache)
-
-            var value = value_out[0]
+            var critic_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(1, Self.CriticNetwork.CACHE_SIZE),
+                MutAnyOrigin,
+            ](critic_cache.unsafe_ptr())
+            var new_critic_params = self.critic.params_view()
+            Self.CriticNetwork.forward_with_cache[1](
+                obs_t, value_t, new_critic_params, critic_cache_t
+            )
+            var value = rebind[Scalar[dtype]](value_t[0, 0])
 
             # Value loss: (return - value)^2
             var value_loss = (return_t - value) * (return_t - value)
@@ -388,12 +451,23 @@ struct DeepA2CAgent[
                 * Scalar[dtype](self.value_loss_coef)
                 * (value - return_t)
             )
-
-            # Backward through critic
-            var critic_grad_input = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            var d_value_t = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](d_value.unsafe_ptr())
+            var critic_grad_in = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            var critic_grad_in_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](critic_grad_in.unsafe_ptr())
             self.critic.zero_grads()
-            self.critic.backward[1](d_value, critic_grad_input, critic_cache)
-            self.critic.update()
+            var critic_grads = self.critic.grads_view()
+            Self.CriticNetwork.backward[1](
+                d_value_t,
+                critic_grad_in_t,
+                new_critic_params,
+                critic_cache_t,
+                critic_grads,
+            )
+            self.critic.optimizer_step()
 
         # Clear buffer
         self.buffer_idx = 0
@@ -455,7 +529,7 @@ struct DeepA2CAgent[
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps_per_episode):
+            for _ in range(max_steps_per_episode):
                 # Select action
                 var action_result = self.select_action(obs, training=True)
                 var action = action_result[0]
@@ -520,136 +594,71 @@ struct DeepA2CAgent[
         return metrics^
 
     fn save_checkpoint(self, path: String) raises:
-        """Save agent state to a checkpoint file.
+        """Save agent state to a single checkpoint file.
+
+        File layout:
+            # mojo-rl checkpoint v1
+            # type: deep_a2c_agent
+            actor_params:       (float values)
+            actor_optimizer_state:
+            critic_params:
+            critic_optimizer_state:
+            metadata:           (key=value pairs)
 
         Args:
-            path: Path to save checkpoint file.
+            path: Path for the checkpoint file.
         """
-        # Build checkpoint content
-        var content = String("# mojo-rl checkpoint v1\n")
-        content += "# type: deep_a2c_agent\n"
-        content += "# obs_dim: " + String(Self.OBS) + "\n"
-        content += "# num_actions: " + String(Self.ACTIONS) + "\n"
-        content += "# hidden_dim: " + String(Self.HIDDEN) + "\n"
-        content += "# rollout_len: " + String(Self.ROLLOUT) + "\n\n"
+        var content = write_checkpoint_header("deep_a2c_agent", 0, 0)
+        content += self.actor.write_sections("actor_")
+        content += self.critic.write_sections("critic_")
 
-        # Actor params
-        content += "actor_params:\n"
-        for i in range(self.actor.PARAM_SIZE):
-            content += String(self.actor.params[i]) + "\n"
-
-        # Actor optimizer state
-        content += "\nactor_optimizer_state:\n"
-        for i in range(self.actor.PARAM_SIZE * Adam.STATE_PER_PARAM):
-            content += String(self.actor.optimizer_state[i]) + "\n"
-
-        # Critic params
-        content += "\ncritic_params:\n"
-        for i in range(self.critic.PARAM_SIZE):
-            content += String(self.critic.params[i]) + "\n"
-
-        # Critic optimizer state
-        content += "\ncritic_optimizer_state:\n"
-        for i in range(self.critic.PARAM_SIZE * Adam.STATE_PER_PARAM):
-            content += String(self.critic.optimizer_state[i]) + "\n"
-
-        # Hyperparameters
-        content += "\nmetadata:\n"
-        content += "gamma=" + String(self.gamma) + "\n"
-        content += "gae_lambda=" + String(self.gae_lambda) + "\n"
-        content += "actor_lr=" + String(self.actor_lr) + "\n"
-        content += "critic_lr=" + String(self.critic_lr) + "\n"
-        content += "entropy_coef=" + String(self.entropy_coef) + "\n"
-        content += "value_loss_coef=" + String(self.value_loss_coef) + "\n"
-        content += "max_grad_norm=" + String(self.max_grad_norm) + "\n"
-        content += "train_step_count=" + String(self.train_step_count) + "\n"
-
+        var metadata = List[String]()
+        metadata.append("actor_step_num=" + String(self.actor.step_num))
+        metadata.append("critic_step_num=" + String(self.critic.step_num))
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("gae_lambda=" + String(self.gae_lambda))
+        metadata.append("entropy_coef=" + String(self.entropy_coef))
+        metadata.append("value_loss_coef=" + String(self.value_loss_coef))
+        metadata.append("max_grad_norm=" + String(self.max_grad_norm))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
         save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises:
-        """Load agent state from a checkpoint file.
+        """Load agent state from a single checkpoint file.
 
         Args:
-            path: Path to checkpoint file.
+            path: Path used when saving.
         """
         var content = read_checkpoint_file(path)
-        var lines = split_lines(content)
+        self.actor.read_sections(content, "actor_")
+        self.critic.read_sections(content, "critic_")
 
-        # Find section starts
-        var actor_params_start = find_section_start(lines, "actor_params:")
-        var actor_opt_start = find_section_start(
-            lines, "actor_optimizer_state:"
-        )
-        var critic_params_start = find_section_start(lines, "critic_params:")
-        var critic_opt_start = find_section_start(
-            lines, "critic_optimizer_state:"
-        )
-        var metadata_start = find_section_start(lines, "metadata:")
-
-        # Load actor params
-        var line_idx = actor_params_start
-        for i in range(self.actor.PARAM_SIZE):
-            if line_idx < len(lines) and lines[line_idx] != "":
-                self.actor.params[i] = Scalar[dtype](
-                    Float64(atof(lines[line_idx]))
-                )
-                line_idx += 1
-
-        # Load actor optimizer state
-        line_idx = actor_opt_start
-        for i in range(self.actor.PARAM_SIZE * Adam.STATE_PER_PARAM):
-            if line_idx < len(lines) and lines[line_idx] != "":
-                self.actor.optimizer_state[i] = Scalar[dtype](
-                    Float64(atof(lines[line_idx]))
-                )
-                line_idx += 1
-
-        # Load critic params
-        line_idx = critic_params_start
-        for i in range(self.critic.PARAM_SIZE):
-            if line_idx < len(lines) and lines[line_idx] != "":
-                self.critic.params[i] = Scalar[dtype](
-                    Float64(atof(lines[line_idx]))
-                )
-                line_idx += 1
-
-        # Load critic optimizer state
-        line_idx = critic_opt_start
-        for i in range(self.critic.PARAM_SIZE * Adam.STATE_PER_PARAM):
-            if line_idx < len(lines) and lines[line_idx] != "":
-                self.critic.optimizer_state[i] = Scalar[dtype](
-                    Float64(atof(lines[line_idx]))
-                )
-                line_idx += 1
-
-        # Load metadata
-        line_idx = metadata_start
-        while line_idx < len(lines) and lines[line_idx] != "":
-            var line = lines[line_idx]
-            var eq_pos = line.find("=")
-
-            if eq_pos > 0:
-                var key = line[:eq_pos]
-                var value = line[eq_pos + 1 :]
-
-                if key == "gamma":
-                    self.gamma = Float64(atof(value))
-                elif key == "gae_lambda":
-                    self.gae_lambda = Float64(atof(value))
-                elif key == "actor_lr":
-                    self.actor_lr = Float64(atof(value))
-                elif key == "critic_lr":
-                    self.critic_lr = Float64(atof(value))
-                elif key == "entropy_coef":
-                    self.entropy_coef = Float64(atof(value))
-                elif key == "value_loss_coef":
-                    self.value_loss_coef = Float64(atof(value))
-                elif key == "max_grad_norm":
-                    self.max_grad_norm = Float64(atof(value))
-                elif key == "train_step_count":
-                    self.train_step_count = Int(atof(value))
-
-            line_idx += 1
+        var metadata = read_metadata_section(content)
+        var v = get_metadata_value(metadata, "actor_step_num")
+        if len(v) > 0:
+            self.actor.step_num = Int(atof(v))
+        v = get_metadata_value(metadata, "critic_step_num")
+        if len(v) > 0:
+            self.critic.step_num = Int(atof(v))
+        v = get_metadata_value(metadata, "gamma")
+        if len(v) > 0:
+            self.gamma = Float64(atof(v))
+        v = get_metadata_value(metadata, "gae_lambda")
+        if len(v) > 0:
+            self.gae_lambda = Float64(atof(v))
+        v = get_metadata_value(metadata, "entropy_coef")
+        if len(v) > 0:
+            self.entropy_coef = Float64(atof(v))
+        v = get_metadata_value(metadata, "value_loss_coef")
+        if len(v) > 0:
+            self.value_loss_coef = Float64(atof(v))
+        v = get_metadata_value(metadata, "max_grad_norm")
+        if len(v) > 0:
+            self.max_grad_norm = Float64(atof(v))
+        v = get_metadata_value(metadata, "train_step_count")
+        if len(v) > 0:
+            self.train_step_count = Int(atof(v))
 
     fn evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
@@ -690,7 +699,7 @@ struct DeepA2CAgent[
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps):
+            for _ in range(max_steps):
                 # Greedy action
                 var action_result = self.select_action(obs, training=False)
                 var action = action_result[0]

@@ -58,6 +58,7 @@ struct Adam[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
         """Adam update step.
 
@@ -66,6 +67,7 @@ struct Adam[
             grads: Gradients.
             state: Optimizer state layout `(PARAM_SIZE, 2)`: m at col 0, v at col 1.
             step_num: Current step (1-based), used for bias correction.
+            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
         var bias_correction1 = Scalar[dtype](1.0 - (Self.BETA1**step_num))
         var bias_correction2 = Scalar[dtype](1.0 - (Self.BETA2**step_num))
@@ -73,7 +75,7 @@ struct Adam[
         var one_minus_beta2 = Scalar[dtype](1.0 - Self.BETA2)
         var beta1 = Scalar[dtype](Self.BETA1)
         var beta2 = Scalar[dtype](Self.BETA2)
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
 
         for i in range(PARAM_SIZE):
@@ -158,6 +160,7 @@ struct Adam[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch Adam optimization step on GPU.
 
@@ -167,10 +170,11 @@ struct Adam[
             grads: Gradients [PARAM_SIZE].
             state: State [PARAM_SIZE, 2] (m and v moments).
             step_num: Current step (1-based), used for bias correction.
+            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
         var bias_correction1 = Scalar[dtype](1.0 - (Self.BETA1**step_num))
         var bias_correction2 = Scalar[dtype](1.0 - (Self.BETA2**step_num))
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var beta1 = Scalar[dtype](Self.BETA1)
         var beta2 = Scalar[dtype](Self.BETA2)
         var eps = Scalar[dtype](Self.EPS)

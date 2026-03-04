@@ -43,9 +43,10 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
-        """SGD update: param -= lr * grad. State and step_num are unused."""
-        var lr = Scalar[dtype](Self.LR)
+        """SGD update: param -= lr * lr_scale * grad. State and step_num are unused."""
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         for i in range(PARAM_SIZE):
             params[i] -= lr * grads[i]
 
@@ -89,10 +90,11 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch SGD optimization step on GPU. State and step_num are unused.
         """
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
 
         @always_inline
         fn kernel_wrapper(

@@ -67,10 +67,12 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     var grads: List[Scalar[dtype]]
     var optimizer_state: List[Scalar[dtype]]
     var step_num: Int
+    var lr_scale: Float64
 
     fn __init__(out self):
         """Allocate and zero-initialize all state lists."""
         self.step_num = 0
+        self.lr_scale = 1.0
 
         self.params = List[Scalar[dtype]](capacity=Self.PARAM_SIZE)
         for _ in range(Self.PARAM_SIZE):
@@ -86,12 +88,14 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     fn __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
+        self.lr_scale = copy.lr_scale
         self.params = copy.params.copy()
         self.grads = copy.grads.copy()
         self.optimizer_state = copy.optimizer_state.copy()
 
-    fn __init__(out self, *, take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
+        self.lr_scale = take.lr_scale
         self.params = take.params^
         self.grads = take.grads^
         self.optimizer_state = take.optimizer_state^
@@ -158,17 +162,28 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         for i in range(Self.PARAM_SIZE):
             self.grads[i] = 0
 
+    fn set_lr_scale(mut self, scale: Float64):
+        """Set the LR multiplier applied at each optimizer step.
+
+        Use for LR annealing (e.g. PPO linear decay):
+            state.set_lr_scale(1.0 - progress)  # progress in [0, 1]
+
+        Args:
+            scale: Multiplier applied to the compile-time base LR (default 1.0).
+        """
+        self.lr_scale = scale
+
     fn optimizer_step(mut self):
         """One optimizer step + increment step_num.
 
+        Applies self.lr_scale to the base LR (set via set_lr_scale()).
         Creates lvalue views internally (params and state are mut in step()).
-        Callers with pre-created views can call OPTIMIZER.step directly.
         """
         self.step_num += 1
         var p = self.params_view()
         var s = self.state_view()
         Self.OPTIMIZER.step[Self.PARAM_SIZE](
-            p, self.grads_view(), s, self.step_num
+            p, self.grads_view(), s, self.step_num, self.lr_scale
         )
 
     # =========================================================================
@@ -199,7 +214,59 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             self.params[i] = tau_s * source.params[i] + one_m * self.params[i]
 
     # =========================================================================
-    # Checkpoint Save / Load
+    # Section-based helpers (for multi-network single-file checkpoints)
+    # =========================================================================
+
+    fn write_sections(self, prefix: String) -> String:
+        """Serialize params and optimizer_state as prefixed sections.
+
+        Used by agents to build a single checkpoint file containing multiple
+        networks. Example prefix "actor_" produces sections:
+            actor_params:
+            0.123
+            ...
+            actor_optimizer_state:
+            0.0
+            ...
+
+        Args:
+            prefix: Section name prefix (e.g. "actor_", "critic_").
+
+        Returns:
+            String with two sections ready to append to a checkpoint file.
+        """
+        var content = write_float_section_list(
+            prefix + "params:", self.params
+        )
+        content += write_float_section_list(
+            prefix + "optimizer_state:", self.optimizer_state
+        )
+        return content
+
+    fn read_sections(mut self, content: String, prefix: String) raises:
+        """Load params and optimizer_state from prefixed sections.
+
+        Counterpart of write_sections — reads "{prefix}params:" and
+        "{prefix}optimizer_state:" from a combined checkpoint file.
+
+        Args:
+            content: Full checkpoint file content.
+            prefix: Section name prefix used when writing (e.g. "actor_").
+        """
+        var loaded_params = read_float_section_list(
+            content, prefix + "params:", Self.PARAM_SIZE
+        )
+        for i in range(Self.PARAM_SIZE):
+            self.params[i] = loaded_params[i]
+
+        var loaded_state = read_float_section_list(
+            content, prefix + "optimizer_state:", Self.STATE_SIZE
+        )
+        for i in range(Self.STATE_SIZE):
+            self.optimizer_state[i] = loaded_state[i]
+
+    # =========================================================================
+    # Checkpoint Save / Load (single-network file)
     # =========================================================================
 
     fn save_checkpoint(self, filepath: String) raises:
@@ -211,10 +278,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         var content = write_checkpoint_header(
             "network_state", Self.PARAM_SIZE, Self.STATE_SIZE
         )
-        content += write_float_section_list("params:", self.params)
-        content += write_float_section_list(
-            "optimizer_state:", self.optimizer_state
-        )
+        content += self.write_sections("")
         var metadata = List[String]()
         metadata.append("step_num=" + String(self.step_num))
         content += write_metadata_section(metadata)
@@ -238,17 +302,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
                 + ")"
             )
 
-        var loaded_params = read_float_section_list(
-            content, "params:", Self.PARAM_SIZE
-        )
-        for i in range(Self.PARAM_SIZE):
-            self.params[i] = loaded_params[i]
-
-        var loaded_state = read_float_section_list(
-            content, "optimizer_state:", Self.STATE_SIZE
-        )
-        for i in range(Self.STATE_SIZE):
-            self.optimizer_state[i] = loaded_state[i]
+        self.read_sections(content, "")
 
         var metadata = read_metadata_section(content)
         var step_str = get_metadata_value(metadata, "step_num")

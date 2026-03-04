@@ -51,11 +51,10 @@ def main():
 
     var env = CartPoleEnv[DType.float64]()
     var agent = DQNAgent[
-        OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE
+        OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE, lr=0.001
     ](
         gamma=0.99,
         tau=0.005,
-        lr=0.001,
         epsilon=1.0,
         epsilon_min=0.01,
         epsilon_decay=0.995,
@@ -120,14 +119,16 @@ def main():
     # =========================================================================
 
     print("Evaluating greedy policy (10 episodes)...")
-    var eval_avg = agent.evaluate_greedy(
-        env, num_episodes=10, max_steps=MAX_STEPS
+    var eval_avg = agent.evaluate(
+        env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=True
     )
     print("Evaluation average: " + String(eval_avg)[:7])
 
     print()
     print("Evaluating with current epsilon (10 episodes)...")
-    var eval_eps_avg = agent.evaluate(env, num_episodes=10, max_steps=MAX_STEPS)
+    var eval_eps_avg = agent.evaluate(
+        env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=False
+    )
     print(
         "Evaluation average (epsilon="
         + String(agent.get_epsilon())[:5]

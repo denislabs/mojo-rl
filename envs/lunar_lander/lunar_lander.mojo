@@ -837,7 +837,7 @@ struct LunarLander[
         # Spawn 2-4 particles per frame when engine is on
         self.rng_counter += 1
         var rng = PhiloxRandom(
-            seed=Int(self.rng_seed) + 5000, offset=self.rng_counter
+            seed=UInt64(self.rng_seed) + 5000, offset=UInt64(self.rng_counter)
         )
 
         var num_particles = 2 + Int(rng.step_uniform()[0] * 3.0)
@@ -893,7 +893,7 @@ struct LunarLander[
         # Spawn 1-2 particles per frame when engine is on
         self.rng_counter += 1
         var rng = PhiloxRandom(
-            seed=Int(self.rng_seed) + 6000, offset=self.rng_counter
+            seed=UInt64(self.rng_seed) + 6000, offset=UInt64(self.rng_counter)
         )
 
         var num_particles = 1 + Int(rng.step_uniform()[0] * 2.0)
@@ -1873,8 +1873,8 @@ struct LunarLander[
         states[env, LLConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
         var x_spacing: states.element_type = Scalar[dtype](
-            LLConstants.W_UNITS / (LLConstants.TERRAIN_CHUNKS - 1)
-        )
+            LLConstants.W_UNITS
+        ) / Scalar[dtype](LLConstants.TERRAIN_CHUNKS - 1)
 
         # Step 1: Generate raw heights (matching CPU: random * H_UNITS/2)
         # Use a local array to store raw heights before smoothing
@@ -2306,7 +2306,9 @@ struct LunarLander[
 
         # 8. Apply engine forces based on action
 
-        var rng = PhiloxRandom(seed=env + 12345, offset=step_count)
+        var rng = PhiloxRandom(
+            seed=UInt64(env) + 12345, offset=UInt64(step_count)
+        )
         var rand_vals = rng.step_uniform()
 
         var dispersion_x = (
@@ -3085,7 +3087,9 @@ struct LunarLander[
             return
 
         # 8. Apply engine forces
-        var rng = PhiloxRandom(seed=env + 12345, offset=step_count)
+        var rng = PhiloxRandom(
+            seed=UInt64(env) + 12345, offset=UInt64(step_count)
+        )
         var rand_vals = rng.step_uniform()
 
         var dispersion_x = (

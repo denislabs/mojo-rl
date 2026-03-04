@@ -7,11 +7,11 @@ struct LunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action_idx: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.action_idx = existing.action_idx
+    fn __init__(out self, *, copy: Self):
+        self.action_idx = copy.action_idx
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.action_idx = existing.action_idx
+    fn __moveinit__(out self, *, deinit take: Self):
+        self.action_idx = take.action_idx
 
     @staticmethod
     fn nop() -> Self:

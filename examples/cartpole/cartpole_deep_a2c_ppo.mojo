@@ -63,11 +63,11 @@ fn main() raises:
         num_actions=2,
         hidden_dim=64,
         rollout_len=128,
+        actor_lr=0.0003,
+        critic_lr=0.001,
     ](
         gamma=0.99,
         gae_lambda=0.95,
-        actor_lr=0.0003,
-        critic_lr=0.001,
         entropy_coef=0.01,
         value_loss_coef=0.5,
     )

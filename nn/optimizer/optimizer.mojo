@@ -39,6 +39,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
         """Perform one optimization step.
 
@@ -47,6 +48,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             grads: Flattened gradients.
             state: Optimizer state (e.g., moments). Layout: (PARAM_SIZE, STATE_PER_PARAM).
             step_num: Global step counter (1-based). Used for bias correction in Adam/AdamW.
+            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
         ...
 
@@ -69,6 +71,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         """Perform one optimization step on GPU.
 
@@ -78,5 +81,6 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             grads: Gradients [PARAM_SIZE].
             state: Optimizer state [PARAM_SIZE, STATE_PER_PARAM].
             step_num: Global step counter (1-based).
+            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
         ...

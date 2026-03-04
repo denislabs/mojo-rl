@@ -19,3 +19,4 @@ from .replay_buffer import (
     ReplayBufferTrait,
 )
 from .sequence_replay_buffer import SequenceReplayBuffer
+from .gpu_replay_buffer import GPUReplayBuffer

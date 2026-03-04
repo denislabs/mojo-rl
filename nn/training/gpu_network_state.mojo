@@ -27,8 +27,9 @@ Usage:
 
 from ..model import Model
 from ..optimizer import Optimizer
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .network_state import NetworkState
+from ..gpu import soft_update_kernel
 
 from layout import Layout, LayoutTensor
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -60,6 +61,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     ]  # pinned host mirror — fast DMA for params
     var state_host: HostBuffer[dtype]  # pinned host mirror — fast DMA for state
     var step_num: Int
+    var lr_scale: Float64
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all device and pinned host buffers.
@@ -68,6 +70,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             ctx: GPU device context (determines which device owns the buffers).
         """
         self.step_num = 0
+        self.lr_scale = 1.0
         self.params_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
         self.grads_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
         self.state_buf = ctx.enqueue_create_buffer[dtype](Self.STATE_SIZE)
@@ -82,14 +85,16 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     fn __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
+        self.lr_scale = copy.lr_scale
         self.params_buf = copy.params_buf.copy()
         self.grads_buf = copy.grads_buf.copy()
         self.state_buf = copy.state_buf.copy()
         self.params_host = copy.params_host.copy()
         self.state_host = copy.state_host.copy()
 
-    fn __init__(out self, *, take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
+        self.lr_scale = take.lr_scale
         self.params_buf = take.params_buf^
         self.grads_buf = take.grads_buf^
         self.state_buf = take.state_buf^
@@ -138,9 +143,18 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """Zero the gradients buffer on device (async)."""
         ctx.enqueue_memset(self.grads_buf, 0)
 
+    fn set_lr_scale(mut self, scale: Float64):
+        """Set the LR multiplier applied at each optimizer step.
+
+        Args:
+            scale: Multiplier applied to the compile-time base LR (default 1.0).
+        """
+        self.lr_scale = scale
+
     fn optimizer_step(mut self, ctx: DeviceContext) raises:
         """One GPU optimizer step + increment step_num.
 
+        Applies self.lr_scale to the base LR (set via set_lr_scale()).
         Creates lvalue views (params, state are mut in step_gpu).
 
         Args:
@@ -150,7 +164,48 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         var p = self.params_view()
         var s = self.state_view()
         Self.OPTIMIZER.step_gpu[Self.PARAM_SIZE](
-            ctx, p, self.grads_view(), s, self.step_num
+            ctx, p, self.grads_view(), s, self.step_num, self.lr_scale
+        )
+
+    fn soft_update_from_gpu(
+        self,
+        source: Self,
+        tau: Float64,
+        ctx: DeviceContext,
+    ) raises:
+        """Soft update on GPU: self.params = tau * source.params + (1 - tau) * self.params.
+
+        Runs entirely on device — no CPU synchronization required.
+
+        Args:
+            source: Source (online) network state on GPU.
+            tau: Blending factor (typically 0.001 – 0.01).
+            ctx: GPU device context.
+        """
+        comptime PARAM_SIZE = Self.PARAM_SIZE
+        comptime PARAM_BLOCKS = (PARAM_SIZE + TPB - 1) // TPB
+        var target_t = self.params_view()
+        var source_t = source.params_view()
+        var tau_s = Scalar[dtype](tau)
+
+        @always_inline
+        fn soft_update_wrapper(
+            tgt: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+            ],
+            src: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+            ],
+            t: Scalar[dtype],
+        ):
+            soft_update_kernel[dtype, PARAM_SIZE](tgt, src, t)
+
+        ctx.enqueue_function[soft_update_wrapper, soft_update_wrapper](
+            target_t,
+            source_t,
+            tau_s,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
         )
 
     # =========================================================================

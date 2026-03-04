@@ -472,8 +472,22 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr)
+            var out_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](output)
+            var in_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
             Self.model_types[0].forward_gpu[BATCH](
-                ctx, output, input, p_v, c_v, workspace
+                ctx, out_rb, in_rb, p_v, c_v, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -505,8 +519,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr)
+                    var in_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](input)
                     Self.model_types[i].forward_gpu[BATCH](
-                        ctx, inter_out, input, li_p, li_c, li_ws
+                        ctx, inter_out, in_rb, li_p, li_c, li_ws
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -514,8 +535,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var out_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](output)
                     Self.model_types[i].forward_gpu[BATCH](
-                        ctx, output, inter_in, li_p, li_c, li_ws
+                        ctx, out_rb, inter_in, li_p, li_c, li_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -558,8 +586,22 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var out_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](output)
+            var in_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
             Self.model_types[0].forward_gpu_no_cache[BATCH](
-                ctx, output, input, p_v, workspace
+                ctx, out_rb, in_rb, p_v, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -586,8 +628,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr)
+                    var in_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](input)
                     Self.model_types[i].forward_gpu_no_cache[BATCH](
-                        ctx, inter_out, input, li_p, li_ws
+                        ctx, inter_out, in_rb, li_p, li_ws
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -595,8 +644,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var out_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](output)
                     Self.model_types[i].forward_gpu_no_cache[BATCH](
-                        ctx, output, inter_in, li_p, li_ws
+                        ctx, out_rb, inter_in, li_p, li_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -658,8 +714,22 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](grads.ptr)
+            var gi_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_input)
+            var go_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_output)
             Self.model_types[0].backward_gpu[BATCH](
-                ctx, grad_input, grad_output, p_v, c_v, g_v, workspace
+                ctx, gi_rb, go_rb, p_v, c_v, g_v, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -700,8 +770,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var go_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_output)
                     Self.model_types[i].backward_gpu[BATCH](
-                        ctx, gi, grad_output, li_p, li_c, li_g, li_ws
+                        ctx, gi, go_rb, li_p, li_c, li_g, li_ws
                     )
                 elif i == 0:
                     # First layer: grad_inter[0] -> grad_input
@@ -710,8 +787,15 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr)
+                    var gi_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_input)
                     Self.model_types[i].backward_gpu[BATCH](
-                        ctx, grad_input, go, li_p, li_c, li_g, li_ws
+                        ctx, gi_rb, go, li_p, li_c, li_g, li_ws
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]

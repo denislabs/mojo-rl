@@ -28,11 +28,11 @@ fn main() raises:
         hidden_dim=128,
         buffer_capacity=50000,
         batch_size=64,
+        actor_lr=0.0003,
+        critic_lr=0.0003,
     ](
         gamma=0.99,
         tau=0.005,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
         action_scale=2.0,  # Pendulum actions in [-2, 2]
         alpha=0.2,  # Entropy coefficient
         auto_alpha=True,  # Automatically tune alpha

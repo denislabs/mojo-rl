@@ -39,11 +39,11 @@ fn main() raises:
         hidden_dim=128,
         buffer_capacity=50000,
         batch_size=64,
+        actor_lr=0.001,
+        critic_lr=0.001,
     ](
         gamma=0.99,
         tau=0.005,
-        actor_lr=0.001,
-        critic_lr=0.001,
         noise_std=0.2,
         noise_decay=0.995,
         action_scale=2.0,  # Pendulum actions in [-2, 2]

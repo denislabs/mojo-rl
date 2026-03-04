@@ -396,3 +396,149 @@ fn gather_batch_kernel[
     batch_actions[i] = buf_actions[buf_idx]
     batch_rewards[i] = buf_rewards[buf_idx]
     batch_dones[i] = buf_dones[buf_idx]
+
+
+# =============================================================================
+# ND (multi-dimensional action) Replay Buffer Kernels
+# These variants support ACTION_DIM > 1 for continuous control (DDPG/TD3/SAC).
+# =============================================================================
+
+
+@always_inline
+fn store_transitions_kernel_nd[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    CAPACITY: Int,
+](
+    states: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    next_states: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_actions: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, ACTION_DIM), MutAnyOrigin
+    ],
+    buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    buf_next_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_dones: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    write_idx: Scalar[DType.int32],
+):
+    """Store a batch of transitions with multi-dimensional actions.
+
+    Extends store_transitions_kernel to support ACTION_DIM > 1 for
+    continuous control algorithms (DDPG, TD3, SAC).
+
+    Args:
+        states: Current states [BATCH_SIZE, OBS_DIM].
+        actions: Actions taken [BATCH_SIZE, ACTION_DIM].
+        rewards: Rewards received [BATCH_SIZE].
+        next_states: Next states [BATCH_SIZE, OBS_DIM].
+        dones: Done flags [BATCH_SIZE].
+        buf_states: Replay buffer states storage [CAPACITY, OBS_DIM].
+        buf_actions: Replay buffer actions storage [CAPACITY, ACTION_DIM].
+        buf_rewards: Replay buffer rewards storage [CAPACITY].
+        buf_next_states: Replay buffer next states storage [CAPACITY, OBS_DIM].
+        buf_dones: Replay buffer dones storage [CAPACITY].
+        write_idx: Current write position in circular buffer.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var buf_idx = (Int(write_idx) + i) % CAPACITY
+
+    for d in range(OBS_DIM):
+        buf_states[buf_idx, d] = states[i, d]
+        buf_next_states[buf_idx, d] = next_states[i, d]
+
+    for a in range(ACTION_DIM):
+        buf_actions[buf_idx, a] = actions[i, a]
+
+    buf_rewards[buf_idx] = rewards[i]
+    buf_dones[buf_idx] = dones[i]
+
+
+@always_inline
+fn gather_batch_kernel_nd[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    CAPACITY: Int,
+](
+    batch_states: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    batch_actions: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    batch_next_states: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_actions: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, ACTION_DIM), MutAnyOrigin
+    ],
+    buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    buf_next_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_dones: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+):
+    """Gather sampled transitions with multi-dimensional actions.
+
+    Extends gather_batch_kernel to support ACTION_DIM > 1 for
+    continuous control algorithms (DDPG, TD3, SAC).
+
+    Args:
+        batch_states: Output batch states [SAMPLE_SIZE, OBS_DIM].
+        batch_actions: Output batch actions [SAMPLE_SIZE, ACTION_DIM].
+        batch_rewards: Output batch rewards [SAMPLE_SIZE].
+        batch_next_states: Output batch next states [SAMPLE_SIZE, OBS_DIM].
+        batch_dones: Output batch dones [SAMPLE_SIZE].
+        buf_states: Replay buffer states storage [CAPACITY, OBS_DIM].
+        buf_actions: Replay buffer actions storage [CAPACITY, ACTION_DIM].
+        buf_rewards: Replay buffer rewards storage [CAPACITY].
+        buf_next_states: Replay buffer next states storage [CAPACITY, OBS_DIM].
+        buf_dones: Replay buffer dones storage [CAPACITY].
+        indices: Sampled indices [SAMPLE_SIZE].
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SAMPLE_SIZE:
+        return
+
+    var buf_idx = Int(indices[i])
+
+    for d in range(OBS_DIM):
+        batch_states[i, d] = buf_states[buf_idx, d]
+        batch_next_states[i, d] = buf_next_states[buf_idx, d]
+
+    for a in range(ACTION_DIM):
+        batch_actions[i, a] = buf_actions[buf_idx, a]
+
+    batch_rewards[i] = buf_rewards[buf_idx]
+    batch_dones[i] = buf_dones[buf_idx]

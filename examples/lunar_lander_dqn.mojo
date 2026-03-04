@@ -19,7 +19,7 @@ LunarLander is solved when average reward > 200 over 100 episodes.
 
 from random import seed
 
-from envs.lunar_lander import LunarLanderEnv
+from envs.lunar_lander import LunarLander
 from deep_agents import DQNAgent
 
 
@@ -33,7 +33,7 @@ fn main() raises:
     seed(42)
 
     # Create environment
-    var env = LunarLanderEnv(continuous=False, enable_wind=False)
+    var env = LunarLander(continuous=False, enable_wind=False)
 
     # Create DQN agent with tuned hyperparameters
     # LunarLander: 8D observations, 4 discrete actions
@@ -51,10 +51,10 @@ fn main() raises:
         hidden_dim=128,
         buffer_capacity=20000,
         batch_size=64,
+        lr=0.0005,  # Stable learning rate (5e-4), compile-time
     ](
         gamma=0.99,  # Standard discount
         tau=0.005,  # Standard target update
-        lr=0.0005,  # Stable learning rate (5e-4)
         epsilon=1.0,  # Start with full exploration
         epsilon_min=0.01,  # Low minimum
         epsilon_decay=0.997,  # Slow decay for exploration

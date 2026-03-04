@@ -1,9 +1,10 @@
 """Deep Dueling DQN Agent using the new trait-based deep learning architecture.
 
 This Dueling DQN implementation uses:
-- Network wrapper from nn.training for stateless model + params management
-- seq() composition for building network components
+- NetworkState for heap-allocated params + grads + optimizer state
+- Network (all-static) for stateless forward/backward ops via LayoutTensor
 - ReplayBuffer from nn.replay for experience replay
+- compile-time lr (Adam LR baked in at compile time)
 
 Dueling Architecture:
 - Shared backbone: obs -> h1 (ReLU) -> h2 (ReLU)
@@ -42,8 +43,9 @@ from nn.constants import dtype, TILE, TPB
 from nn.model import Linear, LinearReLU, Sequential
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
-from nn.training import Network
+from nn.training import Network, NetworkState
 from nn.replay import ReplayBuffer
+from nn.utils import fill_inline
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
@@ -60,8 +62,9 @@ struct DuelingDQNAgent[
     buffer_capacity: Int = 100000,
     batch_size: Int = 64,
     double_dqn: Bool = True,
+    lr: Float64 = 0.0005,
 ]:
-    """Deep Dueling DQN Agent using the new trait-based architecture.
+    """Deep Dueling DQN Agent using NetworkState architecture.
 
     Dueling DQN separates the Q-network into two streams:
     - Value stream V(s): Estimates how good is this state
@@ -77,6 +80,7 @@ struct DuelingDQNAgent[
         buffer_capacity: Replay buffer capacity.
         batch_size: Training batch size.
         double_dqn: If True, use Double DQN target computation.
+        lr: Adam learning rate — compile-time (default: 0.0005).
     """
 
     # Convenience aliases
@@ -87,44 +91,37 @@ struct DuelingDQNAgent[
     comptime BATCH = Self.batch_size
 
     # =========================================================================
-    # Network type aliases
+    # Model type aliases
     # =========================================================================
 
     # Shared backbone: obs -> hidden (ReLU) -> hidden (ReLU)
-    comptime BackboneNetwork = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        ],
-        Adam,
-        Kaiming,
+    comptime BackboneModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
     ]
-    var backbone: Self.BackboneNetwork
-    var backbone_target: Self.BackboneNetwork
+    comptime BackboneNet = Network[Self.BackboneModel, Adam[Self.lr]]
 
     # Value head: hidden -> stream_hidden (ReLU) -> 1
-    comptime ValueNetwork = Network[
-        Sequential[
-            LinearReLU[Self.HIDDEN, Self.STREAM_H],
-            Linear[Self.STREAM_H, 1],
-        ],
-        Adam,
-        Kaiming,
+    comptime ValueModel = Sequential[
+        LinearReLU[Self.HIDDEN, Self.STREAM_H],
+        Linear[Self.STREAM_H, 1],
     ]
-    var value_head: Self.ValueNetwork
-    var value_head_target: Self.ValueNetwork
+    comptime ValueNet = Network[Self.ValueModel, Adam[Self.lr]]
 
     # Advantage head: hidden -> stream_hidden (ReLU) -> num_actions
-    comptime AdvantageNetwork = Network[
-        Sequential[
-            LinearReLU[Self.HIDDEN, Self.STREAM_H],
-            Linear[Self.STREAM_H, Self.ACTIONS],
-        ],
-        Adam,
-        Kaiming,
+    comptime AdvModel = Sequential[
+        LinearReLU[Self.HIDDEN, Self.STREAM_H],
+        Linear[Self.STREAM_H, Self.ACTIONS],
     ]
-    var advantage_head: Self.AdvantageNetwork
-    var advantage_head_target: Self.AdvantageNetwork
+    comptime AdvNet = Network[Self.AdvModel, Adam[Self.lr]]
+
+    # Network states
+    var backbone_online:  NetworkState[Self.BackboneModel, Adam[Self.lr]]
+    var backbone_target:  NetworkState[Self.BackboneModel, Adam[Self.lr]]
+    var value_online:     NetworkState[Self.ValueModel,    Adam[Self.lr]]
+    var value_target:     NetworkState[Self.ValueModel,    Adam[Self.lr]]
+    var adv_online:       NetworkState[Self.AdvModel,      Adam[Self.lr]]
+    var adv_target:       NetworkState[Self.AdvModel,      Adam[Self.lr]]
 
     # Replay buffer (action_dim=1 for discrete actions stored as scalar)
     var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
@@ -132,7 +129,6 @@ struct DuelingDQNAgent[
     # Hyperparameters
     var gamma: Float64
     var tau: Float64
-    var lr: Float64
     var epsilon: Float64
     var epsilon_min: Float64
     var epsilon_decay: Float64
@@ -141,141 +137,176 @@ struct DuelingDQNAgent[
     var total_steps: Int
     var train_step_count: Int
 
+    # Auto-checkpoint settings
+    var checkpoint_every: Int
+    var checkpoint_path: String
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
-        lr: Float64 = 0.0005,
         epsilon: Float64 = 1.0,
         epsilon_min: Float64 = 0.01,
         epsilon_decay: Float64 = 0.995,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize Deep Dueling DQN agent.
 
         Args:
             gamma: Discount factor (default: 0.99).
             tau: Soft update coefficient (default: 0.005).
-            lr: Learning rate (default: 0.0005).
             epsilon: Initial exploration rate (default: 1.0).
             epsilon_min: Minimum exploration rate (default: 0.01).
             epsilon_decay: Epsilon decay per episode (default: 0.995).
+            checkpoint_every: Save checkpoint every N episodes (0 to disable).
+            checkpoint_path: Path for auto-checkpointing.
         """
         # Initialize online networks
-        self.backbone = Self.BackboneNetwork(Adam(lr=lr), Kaiming())
-        self.value_head = Self.ValueNetwork(Adam(lr=lr), Kaiming())
-        self.advantage_head = Self.AdvantageNetwork(Adam(lr=lr), Kaiming())
+        self.backbone_online = NetworkState[Self.BackboneModel, Adam[Self.lr]]()
+        self.backbone_online.initialize[Kaiming]()
+        self.value_online = NetworkState[Self.ValueModel, Adam[Self.lr]]()
+        self.value_online.initialize[Kaiming]()
+        self.adv_online = NetworkState[Self.AdvModel, Adam[Self.lr]]()
+        self.adv_online.initialize[Kaiming]()
 
-        # Initialize target networks
-        self.backbone_target = Self.BackboneNetwork(Adam(lr=lr), Kaiming())
-        self.value_head_target = Self.ValueNetwork(Adam(lr=lr), Kaiming())
-        self.advantage_head_target = Self.AdvantageNetwork(
-            Adam(lr=lr), Kaiming()
+        # Initialize target networks as copies of online
+        self.backbone_target = NetworkState[Self.BackboneModel, Adam[Self.lr]](
+            copy=self.backbone_online
+        )
+        self.value_target = NetworkState[Self.ValueModel, Adam[Self.lr]](
+            copy=self.value_online
+        )
+        self.adv_target = NetworkState[Self.AdvModel, Adam[Self.lr]](
+            copy=self.adv_online
         )
 
-        # Copy weights to target networks
-        self.backbone_target.copy_params_from(self.backbone)
-        self.value_head_target.copy_params_from(self.value_head)
-        self.advantage_head_target.copy_params_from(self.advantage_head)
-
-        # Initialize replay buffer
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
         ]()
 
-        # Store hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.lr = lr
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # Training state
         self.total_steps = 0
         self.train_step_count = 0
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
-    fn _dueling_forward[
-        BATCH: Int
+    # =========================================================================
+    # Dueling Forward Helpers
+    # =========================================================================
+
+    fn _dueling_forward_inline[
+        BATCH_N: Int
     ](
         self,
-        obs: InlineArray[Scalar[dtype], BATCH * Self.OBS],
-        mut q_values: InlineArray[Scalar[dtype], BATCH * Self.ACTIONS],
+        obs: InlineArray[Scalar[dtype], BATCH_N * Self.OBS],
+        mut q_values: InlineArray[Scalar[dtype], BATCH_N * Self.ACTIONS],
         use_target: Bool = False,
     ):
-        """Forward pass through dueling network (online or target).
+        """Forward pass through dueling network: Q(s,a) = V(s) + (A(s,a) - mean(A)).
 
-        Computes: Q(s,a) = V(s) + (A(s,a) - mean(A))
+        Args:
+            obs: Observations [BATCH_N * OBS].
+            q_values: Output Q-values [BATCH_N * ACTIONS] (written in-place).
+            use_target: If True, use target networks; else use online networks.
         """
-        # Forward through backbone
-        var h2 = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH_N, Self.OBS), MutAnyOrigin
+        ](obs.unsafe_ptr())
+
+        # Backbone forward
+        var h2_arr = InlineArray[Scalar[dtype], BATCH_N * Self.HIDDEN](
             uninitialized=True
         )
-        if use_target:
-            self.backbone_target.forward[BATCH](obs, h2)
-        else:
-            self.backbone.forward[BATCH](obs, h2)
+        var h2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH_N, Self.HIDDEN), MutAnyOrigin
+        ](h2_arr.unsafe_ptr())
 
-        # Forward through value head
-        var value = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
         if use_target:
-            self.value_head_target.forward[BATCH](h2, value)
+            var pb = self.backbone_target.params_view()
+            Self.BackboneNet.forward[BATCH_N](obs_t, h2_t, pb)
         else:
-            self.value_head.forward[BATCH](h2, value)
+            var pb = self.backbone_online.params_view()
+            Self.BackboneNet.forward[BATCH_N](obs_t, h2_t, pb)
 
-        # Forward through advantage head
-        var advantage = InlineArray[Scalar[dtype], BATCH * Self.ACTIONS](
+        # Value head forward
+        var v_arr = InlineArray[Scalar[dtype], BATCH_N](uninitialized=True)
+        var v_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH_N, 1), MutAnyOrigin
+        ](v_arr.unsafe_ptr())
+
+        if use_target:
+            var pv = self.value_target.params_view()
+            Self.ValueNet.forward[BATCH_N](h2_t, v_t, pv)
+        else:
+            var pv = self.value_online.params_view()
+            Self.ValueNet.forward[BATCH_N](h2_t, v_t, pv)
+
+        # Advantage head forward
+        var adv_arr = InlineArray[Scalar[dtype], BATCH_N * Self.ACTIONS](
             uninitialized=True
         )
+        var adv_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH_N, Self.ACTIONS), MutAnyOrigin
+        ](adv_arr.unsafe_ptr())
+
         if use_target:
-            self.advantage_head_target.forward[BATCH](h2, advantage)
+            var pa = self.adv_target.params_view()
+            Self.AdvNet.forward[BATCH_N](h2_t, adv_t, pa)
         else:
-            self.advantage_head.forward[BATCH](h2, advantage)
+            var pa = self.adv_online.params_view()
+            Self.AdvNet.forward[BATCH_N](h2_t, adv_t, pa)
 
         # Combine: Q(s,a) = V(s) + (A(s,a) - mean(A))
-        for b in range(BATCH):
-            # Compute mean advantage
+        for b in range(BATCH_N):
             var mean_adv: Scalar[dtype] = 0.0
             for a in range(Self.ACTIONS):
-                mean_adv += advantage[b * Self.ACTIONS + a]
+                mean_adv += adv_arr[b * Self.ACTIONS + a]
             mean_adv /= Scalar[dtype](Self.ACTIONS)
 
-            # Compute Q-values
-            var v_s = value[b]
+            var v_s = v_arr[b]
             for a in range(Self.ACTIONS):
-                var adv_idx = b * Self.ACTIONS + a
-                q_values[adv_idx] = v_s + (advantage[adv_idx] - mean_adv)
+                var idx = b * Self.ACTIONS + a
+                q_values[idx] = v_s + (adv_arr[idx] - mean_adv)
+
+    # =========================================================================
+    # Action Selection
+    # =========================================================================
 
     fn select_action(
         self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
-        training: Bool = True,
+        greedy: Bool = False,
     ) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
             obs: Current observation.
-            training: If True, use epsilon-greedy; else use greedy.
+            greedy: If True, always select argmax (ignore epsilon).
 
         Returns:
             Selected action index.
         """
-        # Epsilon-greedy exploration
-        if training and random_float64() < self.epsilon:
+        if not greedy and random_float64() < self.epsilon:
             return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
-        # Greedy action: argmax Q(s, a)
-        var q_values = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
-        )
-        self._dueling_forward[1](obs, q_values, use_target=False)
+        var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var obs_batch = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        for i in range(Self.OBS):
+            obs_batch[i] = obs[i]
+        self._dueling_forward_inline[1](obs_batch, q_arr, use_target=False)
 
         var best_action = 0
-        var best_q = q_values[0]
+        var best_q = q_arr[0]
         for a in range(1, Self.ACTIONS):
-            if q_values[a] > best_q:
-                best_q = q_values[a]
+            if q_arr[a] > best_q:
+                best_q = q_arr[a]
                 best_action = a
-
         return best_action
 
     fn store_transition(
@@ -287,27 +318,28 @@ struct DuelingDQNAgent[
         done: Bool,
     ):
         """Store a transition in the replay buffer."""
-        var action_arr = InlineArray[Scalar[dtype], 1](fill=0)
-        action_arr[0] = Scalar[dtype](action)
+        var action_arr = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](action))
         self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
         self.total_steps += 1
+
+    # =========================================================================
+    # CPU Training Step
+    # =========================================================================
 
     fn train_step(mut self) -> Float64:
         """Perform one training step.
 
         Returns:
-            TD loss value.
+            TD loss value (0 if buffer not ready).
         """
         if not self.buffer.is_ready[Self.BATCH]():
             return 0.0
 
-        # =====================================================================
-        # Phase 1: Sample batch from buffer
-        # =====================================================================
+        # --- Phase 1: Sample batch ---
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        var batch_actions_arr = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_act1 = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
         var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
@@ -320,40 +352,32 @@ struct DuelingDQNAgent[
             uninitialized=True
         )
 
+        var batch_act_flat = InlineArray[
+            Scalar[dtype], Self.BATCH * 1
+        ](uninitialized=True)
         self.buffer.sample[Self.BATCH](
-            batch_obs,
-            batch_actions_arr,
-            batch_rewards,
-            batch_next_obs,
-            batch_dones,
+            batch_obs, batch_act_flat, batch_rewards, batch_next_obs, batch_dones
         )
+        for i in range(Self.BATCH):
+            batch_act1[i] = batch_act_flat[i]
 
-        # =====================================================================
-        # Phase 2: Compute TD targets
-        # =====================================================================
-
-        var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
-        )
+        # --- Phase 2: Compute TD targets ---
+        var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
 
         comptime if Self.double_dqn:
-            # Double DQN: online network selects best action, target evaluates it
             var online_next_q = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
             var target_next_q = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
-
-            self._dueling_forward[Self.BATCH](
+            self._dueling_forward_inline[Self.BATCH](
                 batch_next_obs, online_next_q, use_target=False
             )
-            self._dueling_forward[Self.BATCH](
+            self._dueling_forward_inline[Self.BATCH](
                 batch_next_obs, target_next_q, use_target=True
             )
-
             for b in range(Self.BATCH):
-                # Online selects best action
                 var best_action = 0
                 var best_online_q = online_next_q[b * Self.ACTIONS]
                 for a in range(1, Self.ACTIONS):
@@ -361,27 +385,22 @@ struct DuelingDQNAgent[
                     if q > best_online_q:
                         best_online_q = q
                         best_action = a
-
-                # Target evaluates that action
                 max_next_q[b] = target_next_q[b * Self.ACTIONS + best_action]
         else:
-            # Standard DQN: max_a Q_target(s', a)
             var next_q = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
                 uninitialized=True
             )
-            self._dueling_forward[Self.BATCH](
+            self._dueling_forward_inline[Self.BATCH](
                 batch_next_obs, next_q, use_target=True
             )
-
             for b in range(Self.BATCH):
-                var max_q = next_q[b * Self.ACTIONS]
+                var best_q = next_q[b * Self.ACTIONS]
                 for a in range(1, Self.ACTIONS):
                     var q = next_q[b * Self.ACTIONS + a]
-                    if q > max_q:
-                        max_q = q
-                max_next_q[b] = max_q
+                    if q > best_q:
+                        best_q = q
+                max_next_q[b] = best_q
 
-        # Compute TD targets: y = r + gamma * max_next_q * (1 - done)
         var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         for b in range(Self.BATCH):
             var done_mask = Scalar[dtype](1.0) - batch_dones[b]
@@ -390,143 +409,168 @@ struct DuelingDQNAgent[
                 + Scalar[dtype](self.gamma) * max_next_q[b] * done_mask
             )
 
-        # =====================================================================
-        # Phase 3: Forward with cache for backward pass
-        # =====================================================================
+        # --- Phase 3: Forward with cache (online) ---
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_obs.unsafe_ptr())
 
-        # Backbone forward with cache
-        var h2 = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
+        # Backbone
+        var h2_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
             uninitialized=True
         )
-        var backbone_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.BackboneNetwork.CACHE_SIZE
+        var h2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
+        ](h2_arr.unsafe_ptr())
+        var backbone_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.BackboneModel.CACHE_SIZE
         ](uninitialized=True)
-        self.backbone.forward_with_cache[Self.BATCH](
-            batch_obs, h2, backbone_cache
-        )
+        var backbone_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.BackboneModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](backbone_cache_arr.unsafe_ptr())
+        var pb = self.backbone_online.params_view()
+        Self.BackboneNet.forward_with_cache[Self.BATCH](obs_t, h2_t, pb, backbone_cache_t)
 
-        # Value head forward with cache
-        var value = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var value_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ValueNetwork.CACHE_SIZE
+        # Value head
+        var v_arr = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var v_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](v_arr.unsafe_ptr())
+        var value_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ValueModel.CACHE_SIZE
         ](uninitialized=True)
-        self.value_head.forward_with_cache[Self.BATCH](h2, value, value_cache)
+        var value_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.ValueModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](value_cache_arr.unsafe_ptr())
+        var pv = self.value_online.params_view()
+        Self.ValueNet.forward_with_cache[Self.BATCH](h2_t, v_t, pv, value_cache_t)
 
-        # Advantage head forward with cache
-        var advantage = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+        # Advantage head
+        var adv_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var adv_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.AdvantageNetwork.CACHE_SIZE
+        var adv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](adv_arr.unsafe_ptr())
+        var adv_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.AdvModel.CACHE_SIZE
         ](uninitialized=True)
-        self.advantage_head.forward_with_cache[Self.BATCH](
-            h2, advantage, adv_cache
-        )
+        var adv_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.AdvModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](adv_cache_arr.unsafe_ptr())
+        var pa = self.adv_online.params_view()
+        Self.AdvNet.forward_with_cache[Self.BATCH](h2_t, adv_t, pa, adv_cache_t)
 
-        # Compute Q-values: Q(s,a) = V(s) + (A(s,a) - mean(A))
-        var q_values = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+        # Compute Q-values from V + A
+        var q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
         for b in range(Self.BATCH):
             var mean_adv: Scalar[dtype] = 0.0
             for a in range(Self.ACTIONS):
-                mean_adv += advantage[b * Self.ACTIONS + a]
+                mean_adv += adv_arr[b * Self.ACTIONS + a]
             mean_adv /= Scalar[dtype](Self.ACTIONS)
-
-            var v_s = value[b]
+            var v_s = v_arr[b]
             for a in range(Self.ACTIONS):
                 var idx = b * Self.ACTIONS + a
-                q_values[idx] = v_s + (advantage[idx] - mean_adv)
+                q_arr[idx] = v_s + (adv_arr[idx] - mean_adv)
 
-        # =====================================================================
-        # Phase 4: Compute loss and gradients
-        # =====================================================================
-
+        # --- Phase 4: Compute loss and gradients ---
         var loss: Float64 = 0.0
-        var dq = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](fill=0)
+        var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            fill=Scalar[dtype](0.0)
+        )
 
         for b in range(Self.BATCH):
-            var action_idx = Int(batch_actions_arr[b])
+            var action_idx = Int(batch_act1[b])
             var q_idx = b * Self.ACTIONS + action_idx
-            var td_error = q_values[q_idx] - targets[b]
+            var td_error = q_arr[q_idx] - targets[b]
             loss += Float64(td_error * td_error)
-            # Only backprop through the taken action
-            dq[q_idx] = (
+            dq_arr[q_idx] = (
                 Scalar[dtype](2.0) * td_error / Scalar[dtype](Self.BATCH)
             )
-
         loss /= Float64(Self.BATCH)
 
-        # =====================================================================
-        # Phase 5: Backward through dueling network
-        # =====================================================================
-
-        # Compute dV and dA from dQ
-        # Q(s,a) = V(s) + A(s,a) - mean(A)
-        # dQ/dV = 1 for all actions that were taken
-        # dQ/dA_i = 1 - 1/num_actions (if action i was taken) or -1/num_actions (otherwise)
-
-        var dv = InlineArray[Scalar[dtype], Self.BATCH](fill=0)
-        var da = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](fill=0)
-
+        # --- Phase 5: Backward through dueling network ---
+        # dV = sum(dQ), dA_i = dQ_i - (1/n)*sum(dQ_j)
+        var dv_arr = InlineArray[Scalar[dtype], Self.BATCH](
+            fill=Scalar[dtype](0.0)
+        )
+        var da_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            fill=Scalar[dtype](0.0)
+        )
         var one_over_n = Scalar[dtype](1.0) / Scalar[dtype](Self.ACTIONS)
 
         for b in range(Self.BATCH):
-            # dV = sum of all dQ for this sample (V contributes to all Q values equally)
             var sum_dq: Scalar[dtype] = 0.0
             for a in range(Self.ACTIONS):
-                sum_dq += dq[b * Self.ACTIONS + a]
-            dv[b] = sum_dq
-
-            # dA_i = dQ_i - (1/n) * sum(dQ_j)
-            # Because Q_i = V + A_i - (1/n)*sum(A_j)
-            # So dQ_i/dA_j = delta_ij - 1/n
+                sum_dq += dq_arr[b * Self.ACTIONS + a]
+            dv_arr[b] = sum_dq
             for a in range(Self.ACTIONS):
                 var idx = b * Self.ACTIONS + a
-                da[idx] = dq[idx] - one_over_n * sum_dq
+                da_arr[idx] = dq_arr[idx] - one_over_n * sum_dq
 
-        # Backward through value head
-        var dh2_from_v = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
+        # Backward value head: dh2_from_v
+        var dv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](dv_arr.unsafe_ptr())
+        var dh2_from_v_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
             uninitialized=True
         )
-        self.value_head.zero_grads()
-        self.value_head.backward[Self.BATCH](dv, dh2_from_v, value_cache)
+        var dh2_from_v_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
+        ](dh2_from_v_arr.unsafe_ptr())
+        var gv = self.value_online.grads_view()
+        self.value_online.zero_grads()
+        Self.ValueNet.backward[Self.BATCH](dv_t, dh2_from_v_t, pv, value_cache_t, gv)
+        self.value_online.optimizer_step()
 
-        # Backward through advantage head
-        var dh2_from_a = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
+        # Backward advantage head: dh2_from_a
+        var da_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](da_arr.unsafe_ptr())
+        var dh2_from_a_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
             uninitialized=True
         )
-        self.advantage_head.zero_grads()
-        self.advantage_head.backward[Self.BATCH](da, dh2_from_a, adv_cache)
+        var dh2_from_a_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
+        ](dh2_from_a_arr.unsafe_ptr())
+        var ga = self.adv_online.grads_view()
+        self.adv_online.zero_grads()
+        Self.AdvNet.backward[Self.BATCH](da_t, dh2_from_a_t, pa, adv_cache_t, ga)
+        self.adv_online.optimizer_step()
 
-        # Combine gradients from both streams
-        var dh2 = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
+        # Combine gradients from both streams for backbone backward
+        var dh2_combined_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
             uninitialized=True
         )
+        var dh2_combined_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
+        ](dh2_combined_arr.unsafe_ptr())
         for i in range(Self.BATCH * Self.HIDDEN):
-            dh2[i] = dh2_from_v[i] + dh2_from_a[i]
+            dh2_combined_arr[i] = dh2_from_v_arr[i] + dh2_from_a_arr[i]
 
-        # Backward through backbone
-        var dobs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+        # Backward backbone
+        var dobs_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        self.backbone.zero_grads()
-        self.backbone.backward[Self.BATCH](dh2, dobs, backbone_cache)
+        var dobs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](dobs_arr.unsafe_ptr())
+        var gb = self.backbone_online.grads_view()
+        self.backbone_online.zero_grads()
+        Self.BackboneNet.backward[Self.BATCH](dh2_combined_t, dobs_t, pb, backbone_cache_t, gb)
+        self.backbone_online.optimizer_step()
 
-        # Update all networks
-        self.backbone.update()
-        self.value_head.update()
-        self.advantage_head.update()
-
-        # =====================================================================
-        # Phase 6: Soft update target networks
-        # =====================================================================
-
-        self.backbone_target.soft_update_from(self.backbone, self.tau)
-        self.value_head_target.soft_update_from(self.value_head, self.tau)
-        self.advantage_head_target.soft_update_from(
-            self.advantage_head, self.tau
-        )
+        # --- Phase 6: Soft update target networks ---
+        self.backbone_target.soft_update_from(self.backbone_online, self.tau)
+        self.value_target.soft_update_from(self.value_online, self.tau)
+        self.adv_target.soft_update_from(self.adv_online, self.tau)
 
         self.train_step_count += 1
 
@@ -534,19 +578,7 @@ struct DuelingDQNAgent[
 
     fn decay_epsilon(mut self):
         """Decay exploration rate (call once per episode)."""
-        self.epsilon *= self.epsilon_decay
-        if self.epsilon < self.epsilon_min:
-            self.epsilon = self.epsilon_min
-
-    fn _list_to_inline[
-        T: DType
-    ](self, obs_list: List[Scalar[T]]) -> InlineArray[Scalar[dtype], Self.OBS]:
-        """Convert List[Scalar[T]] to InlineArray."""
-        var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
-        for i in range(Self.OBS):
-            if i < len(obs_list):
-                obs[i] = Scalar[dtype](obs_list[i])
-        return obs^
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     fn get_epsilon(self) -> Float64:
         """Get current exploration rate."""
@@ -555,6 +587,10 @@ struct DuelingDQNAgent[
     fn get_train_steps(self) -> Int:
         """Get total training steps performed."""
         return self.train_step_count
+
+    # =========================================================================
+    # High-level CPU Training and Evaluation
+    # =========================================================================
 
     fn train[
         E: BoxDiscreteActionEnv
@@ -589,101 +625,78 @@ struct DuelingDQNAgent[
             environment_name=environment_name,
         )
 
-        # =====================================================================
-        # Warmup: fill replay buffer with random actions
-        # =====================================================================
-        var warmup_obs_list = env.reset_obs_list()
-        var warmup_obs = self._list_to_inline(warmup_obs_list)
+        # Warmup
+        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        fill_inline(env.reset_obs_list(), warmup_obs)
         var warmup_count = 0
-
         while warmup_count < warmup_steps:
-            # Random action
-            var action = (
-                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
-            )
-
-            # Step environment
+            var action = Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
             var result = env.step_obs(action)
-            var next_obs_list = result[0].copy()
-            var reward = result[1]
-            var done = result[2]
-
-            var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(
-                warmup_obs, action, Float64(reward), next_obs, done
-            )
-
-            warmup_obs = next_obs^
+            fill_inline(result[0], warmup_next)
+            self.store_transition(warmup_obs, action, Float64(result[1]), warmup_next, result[2])
+            fill_inline(result[0], warmup_obs)
             warmup_count += 1
+            if result[2]:
+                fill_inline(env.reset_obs_list(), warmup_obs)
 
-            if done:
-                warmup_obs_list = env.reset_obs_list()
-                warmup_obs = self._list_to_inline(warmup_obs_list)
-
-        if verbose:
-            print("Warmup complete:", warmup_count, "transitions collected")
-
-        # =====================================================================
         # Training loop
-        # =====================================================================
         var total_train_steps = 0
+        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var next_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
 
         for episode in range(num_episodes):
-            var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
+            fill_inline(env.reset_obs_list(), obs)
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps_per_episode):
-                # Select action with epsilon-greedy
-                var action = self.select_action(obs, training=True)
-
-                # Step environment
+            for _ in range(max_steps_per_episode):
+                var action = self.select_action(obs)
                 var result = env.step_obs(action)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
+                fill_inline(result[0], next_obs)
+                var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_obs = self._list_to_inline(next_obs_list)
+                self.store_transition(obs, action, reward, next_obs, done)
 
-                # Store transition
-                self.store_transition(
-                    obs, action, Float64(reward), next_obs, done
-                )
-
-                # Train every N steps
                 if total_train_steps % train_every == 0:
                     _ = self.train_step()
 
-                episode_reward += Float64(reward)
-                obs = next_obs^
+                episode_reward += reward
+                fill_inline(result[0], obs)
                 total_train_steps += 1
                 episode_steps += 1
 
                 if done:
                     break
 
-            # Decay exploration rate
             self.decay_epsilon()
-
-            # Log metrics
             metrics.log_episode(
-                episode, episode_reward, episode_steps, self.epsilon
+                episode,
+                Scalar[DType.float64](episode_reward),
+                episode_steps,
+                self.epsilon,
             )
 
-            # Print progress
             if verbose and (episode + 1) % print_every == 0:
                 var avg_reward = metrics.mean_reward_last_n(print_every)
                 print(
-                    "Episode",
-                    episode + 1,
-                    "| Avg reward:",
-                    String(avg_reward)[:7],
-                    "| Epsilon:",
-                    String(self.epsilon)[:5],
-                    "| Steps:",
-                    total_train_steps,
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Epsilon: "
+                    + String(self.epsilon)[:5]
+                    + " | Steps: "
+                    + String(total_train_steps)
                 )
+
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (episode + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                    except:
+                        pass
 
         return metrics^
 
@@ -697,16 +710,18 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         render: Bool = False,
         frame_delay_ms: Int = 16,
+        greedy: Bool = True,
     ) raises -> Float64:
-        """Evaluate the agent using greedy policy (no exploration).
+        """Evaluate the agent using greedy policy.
 
         Args:
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
+            render: Whether to render the environment.
+            frame_delay_ms: Delay between frames in milliseconds.
+            greedy: Use pure greedy policy (default: True).
 
         Returns:
             Average reward over evaluation episodes.
@@ -717,24 +732,22 @@ struct DuelingDQNAgent[
         if render:
             _ = env.init_renderer()
 
+        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+
         for episode in range(num_episodes):
             if quit_requested:
                 break
 
-            var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
+            fill_inline(env.reset_obs_list(), obs)
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps):
-                # Greedy action (no exploration)
-                var action = self.select_action(obs, training=False)
-
-                # Step environment
+            for _ in range(max_steps):
+                var action = self.select_action(obs, greedy=greedy)
                 var result = env.step_obs(action)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
-                var done = result[2]
+                fill_inline(result[0], obs)
+                episode_reward += Float64(result[1])
+                episode_steps += 1
 
                 if render:
                     env.render_frame()
@@ -743,26 +756,78 @@ struct DuelingDQNAgent[
                         quit_requested = True
                         break
 
-                episode_reward += Float64(reward)
-                obs = self._list_to_inline(next_obs_list)
-                episode_steps += 1
-
-                if done:
+                if result[2]:
                     break
 
             total_reward += episode_reward
 
             if verbose:
                 print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
+                    "Eval Episode "
+                    + String(episode + 1)
+                    + " | Reward: "
+                    + String(episode_reward)[:10]
+                    + " | Steps: "
+                    + String(episode_steps)
                 )
 
         if render:
             env.close_renderer()
 
         return total_reward / Float64(num_episodes)
+
+    # =========================================================================
+    # Checkpoint Save / Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save agent state to a checkpoint file.
+
+        Args:
+            filepath: Destination path for the checkpoint file.
+        """
+        from nn.checkpoint import (
+            write_checkpoint_header,
+            write_metadata_section,
+            save_checkpoint_file,
+        )
+        var param_size = (
+            Self.BackboneModel.PARAM_SIZE
+            + Self.ValueModel.PARAM_SIZE
+            + Self.AdvModel.PARAM_SIZE
+        )
+        var content = write_checkpoint_header("dueling_dqn", param_size, param_size)
+        content += self.backbone_online.write_sections("backbone_online_")
+        content += self.backbone_target.write_sections("backbone_target_")
+        content += self.value_online.write_sections("value_online_")
+        content += self.value_target.write_sections("value_target_")
+        content += self.adv_online.write_sections("adv_online_")
+        content += self.adv_target.write_sections("adv_target_")
+        var metadata = List[String]()
+        metadata.append("epsilon=" + String(self.epsilon))
+        metadata.append("total_steps=" + String(self.total_steps))
+        content += write_metadata_section(metadata)
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load agent state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+        """
+        from nn.checkpoint import (
+            read_checkpoint_file,
+            read_metadata_section,
+            get_metadata_value,
+        )
+        var content = read_checkpoint_file(filepath)
+        self.backbone_online.read_sections(content, "backbone_online_")
+        self.backbone_target.read_sections(content, "backbone_target_")
+        self.value_online.read_sections(content, "value_online_")
+        self.value_target.read_sections(content, "value_target_")
+        self.adv_online.read_sections(content, "adv_online_")
+        self.adv_target.read_sections(content, "adv_target_")
+        var metadata = read_metadata_section(content)
+        var eps_str = get_metadata_value(metadata, "epsilon")
+        if len(eps_str) > 0:
+            self.epsilon = Float64(atof(eps_str))

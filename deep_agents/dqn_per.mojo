@@ -1,9 +1,10 @@
 """DQN Agent with Prioritized Experience Replay using the new trait-based architecture.
 
 This DQN+PER implementation uses:
-- Network wrapper from nn.training for stateless model + params management
-- seq() composition for building Q-networks
+- NetworkState for heap-allocated params + grads + optimizer state
+- Network (all-static) for stateless forward/backward ops via LayoutTensor
 - PrioritizedReplayBuffer from nn.replay for priority-weighted sampling
+- compile-time lr (Adam LR baked in at compile time)
 
 Key differences from standard DQN:
 - Samples transitions proportionally to TD error magnitude
@@ -16,6 +17,9 @@ Features:
 - Target network with soft updates
 - Double DQN support via compile-time parameter
 - Beta annealing for importance sampling correction
+
+No GPU path: PrioritizedReplayBuffer uses a sum-tree that requires
+serial CPU access for priority updates, making GPU training impractical.
 
 Usage:
     from deep_agents.dqn_per import DQNPERAgent
@@ -38,8 +42,9 @@ from nn.constants import dtype, TILE, TPB
 from nn.model import Linear, LinearReLU, Sequential
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
-from nn.training import Network
+from nn.training import Network, NetworkState
 from nn.replay import PrioritizedReplayBuffer
+from nn.utils import fill_inline
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
@@ -55,8 +60,9 @@ struct DQNPERAgent[
     buffer_capacity: Int = 20000,
     batch_size: Int = 64,
     double_dqn: Bool = True,
+    lr: Float64 = 0.0005,
 ]:
-    """DQN Agent with Prioritized Experience Replay using new trait-based architecture.
+    """DQN Agent with Prioritized Experience Replay using NetworkState architecture.
 
     PER samples transitions proportionally to their TD error magnitude, which
     helps the agent learn more efficiently from important experiences.
@@ -66,14 +72,16 @@ struct DQNPERAgent[
     - Importance sampling weights correct for non-uniform sampling bias
     - Beta annealing from beta_start to 1.0 over training
     - Double DQN support (compile-time flag)
+    - lr is compile-time (baked into Adam optimizer type)
 
     Parameters:
         obs_dim: Dimension of observation space.
         num_actions: Number of discrete actions.
         hidden_dim: Hidden layer size (default: 128).
-        buffer_capacity: Replay buffer capacity (default: 100000).
+        buffer_capacity: Replay buffer capacity (default: 20000).
         batch_size: Training batch size (default: 64).
         double_dqn: If True, use Double DQN (default: True).
+        lr: Adam learning rate — compile-time (default: 0.0005).
     """
 
     # Convenience aliases
@@ -83,17 +91,16 @@ struct DQNPERAgent[
     comptime BATCH = Self.batch_size
 
     # Q-network: obs -> hidden (ReLU) -> hidden (ReLU) -> num_actions
-    comptime QNetwork = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, Self.ACTIONS],
-        ],
-        Adam,
-        Kaiming,
+    comptime Q_Model = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACTIONS],
     ]
-    var q_network: Self.QNetwork
-    var target_network: Self.QNetwork
+    comptime Q_Network = Network[Self.Q_Model, Adam[Self.lr]]
+
+    # Network states (heap-allocated params + grads + optimizer state)
+    var q_network: NetworkState[Self.Q_Model, Adam[Self.lr]]
+    var target_network: NetworkState[Self.Q_Model, Adam[Self.lr]]
 
     # Prioritized Replay Buffer (action_dim=1 for discrete actions stored as scalar)
     var buffer: PrioritizedReplayBuffer[
@@ -103,105 +110,112 @@ struct DQNPERAgent[
     # Standard DQN hyperparameters
     var gamma: Float64
     var tau: Float64
-    var lr: Float64
     var epsilon: Float64
     var epsilon_min: Float64
     var epsilon_decay: Float64
 
     # PER hyperparameters
-    var beta: Float64  # Current IS exponent (annealed to 1.0)
-    var beta_start: Float64  # Initial beta value
-    var beta_frames: Int  # Frames to anneal beta over
+    var beta: Float64       # Current IS exponent (annealed to 1.0)
+    var beta_start: Float64 # Initial beta value
+    var beta_frames: Int    # Steps to anneal beta over
 
     # Training state
     var total_steps: Int
     var train_step_count: Int
 
+    # Auto-checkpoint settings
+    var checkpoint_every: Int
+    var checkpoint_path: String
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
-        lr: Float64 = 0.0005,
         epsilon: Float64 = 1.0,
         epsilon_min: Float64 = 0.01,
         epsilon_decay: Float64 = 0.995,
         alpha: Float64 = 0.6,
         beta_start: Float64 = 0.4,
         beta_frames: Int = 100000,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize DQN+PER agent.
 
         Args:
             gamma: Discount factor (default: 0.99).
             tau: Soft update coefficient (default: 0.005).
-            lr: Learning rate (default: 0.0005).
             epsilon: Initial exploration rate (default: 1.0).
             epsilon_min: Minimum exploration rate (default: 0.01).
             epsilon_decay: Epsilon decay per episode (default: 0.995).
             alpha: Priority exponent (0=uniform, 1=full prioritization) (default: 0.6).
             beta_start: Initial IS correction exponent (default: 0.4).
-            beta_frames: Frames to anneal beta from beta_start to 1.0 (default: 100000).
+            beta_frames: Steps to anneal beta from beta_start to 1.0 (default: 100000).
+            checkpoint_every: Save checkpoint every N episodes (0 to disable).
+            checkpoint_path: Path for auto-checkpointing.
         """
-        # Initialize networks
-        self.q_network = Self.QNetwork(Adam(lr=lr), Kaiming())
-        self.target_network = Self.QNetwork(Adam(lr=lr), Kaiming())
+        self.q_network = NetworkState[Self.Q_Model, Adam[Self.lr]]()
+        self.q_network.initialize[Kaiming]()
+        self.target_network = NetworkState[Self.Q_Model, Adam[Self.lr]](
+            copy=self.q_network
+        )
 
-        # Copy weights to target network
-        self.target_network.copy_params_from(self.q_network)
-
-        # Initialize prioritized replay buffer
         self.buffer = PrioritizedReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
         ](alpha=Scalar[dtype](alpha), beta=Scalar[dtype](beta_start))
 
-        # Store hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.lr = lr
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # PER hyperparameters
         self.beta = beta_start
         self.beta_start = beta_start
         self.beta_frames = beta_frames
 
-        # Training state
         self.total_steps = 0
         self.train_step_count = 0
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
+
+    # =========================================================================
+    # Action Selection
+    # =========================================================================
 
     fn select_action(
         self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
-        training: Bool = True,
+        greedy: Bool = False,
     ) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
             obs: Current observation.
-            training: If True, use epsilon-greedy; else use greedy.
+            greedy: If True, always select argmax (ignore epsilon).
 
         Returns:
             Selected action index.
         """
-        # Epsilon-greedy exploration
-        if training and random_float64() < self.epsilon:
+        if not greedy and random_float64() < self.epsilon:
             return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
-        # Greedy action: argmax Q(s, a)
-        var q_values = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
-        )
-        self.q_network.forward[1](obs, q_values)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs.unsafe_ptr())
+        var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var q_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](q_arr.unsafe_ptr())
+        var p = self.q_network.params_view()
+        Self.Q_Network.forward[1](obs_t, q_t, p)
 
         var best_action = 0
-        var best_q = q_values[0]
+        var best_q = q_arr[0]
         for a in range(1, Self.ACTIONS):
-            if q_values[a] > best_q:
-                best_q = q_values[a]
+            if q_arr[a] > best_q:
+                best_q = q_arr[a]
                 best_action = a
-
         return best_action
 
     fn store_transition(
@@ -213,8 +227,7 @@ struct DQNPERAgent[
         done: Bool,
     ):
         """Store transition in prioritized replay buffer with max priority."""
-        var action_arr = InlineArray[Scalar[dtype], 1](fill=0)
-        action_arr[0] = Scalar[dtype](action)
+        var action_arr = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](action))
         self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
         self.total_steps += 1
 
@@ -225,22 +238,24 @@ struct DQNPERAgent[
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
         self.buffer.set_beta(Scalar[dtype](self.beta))
 
+    # =========================================================================
+    # CPU Training Step
+    # =========================================================================
+
     fn train_step(mut self) -> Float64:
         """Perform one training step with PER.
 
         Returns:
-            TD loss value.
+            TD loss value (0 if buffer not ready).
         """
         if not self.buffer.is_ready[Self.BATCH]():
             return 0.0
 
-        # =====================================================================
-        # Phase 1: Sample batch with importance sampling weights
-        # =====================================================================
+        # --- Phase 1: Sample batch with importance sampling weights ---
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        var batch_actions_arr = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_act1 = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
         var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
@@ -259,7 +274,7 @@ struct DQNPERAgent[
 
         self.buffer.sample[Self.BATCH](
             batch_obs,
-            batch_actions_arr,
+            batch_act1,
             batch_rewards,
             batch_next_obs,
             batch_dones,
@@ -267,56 +282,57 @@ struct DQNPERAgent[
             batch_indices,
         )
 
-        # =====================================================================
-        # Phase 2: Compute TD targets
-        # =====================================================================
+        # LayoutTensor views over sampled data
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_next_obs.unsafe_ptr())
 
+        # --- Phase 2: Compute TD targets ---
+        var p_target = self.target_network.params_view()
+        var next_q_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var next_q_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_q_arr.unsafe_ptr())
+        Self.Q_Network.forward[Self.BATCH](next_obs_t, next_q_t, p_target)
+
+        var p_online = self.q_network.params_view()
         var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
 
         comptime if Self.double_dqn:
-            # Double DQN: online network selects best action, target evaluates it
-            var online_next_q = InlineArray[
+            var online_next_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
-            var target_next_q = InlineArray[
-                Scalar[dtype], Self.BATCH * Self.ACTIONS
-            ](uninitialized=True)
-
-            self.q_network.forward[Self.BATCH](batch_next_obs, online_next_q)
-            self.target_network.forward[Self.BATCH](
-                batch_next_obs, target_next_q
-            )
-
+            var online_next_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.BATCH, Self.ACTIONS),
+                MutAnyOrigin,
+            ](online_next_arr.unsafe_ptr())
+            Self.Q_Network.forward[Self.BATCH](next_obs_t, online_next_t, p_online)
             for b in range(Self.BATCH):
-                # Online selects best action
                 var best_action = 0
-                var best_online_q = online_next_q[b * Self.ACTIONS]
+                var best_online_q = online_next_arr[b * Self.ACTIONS]
                 for a in range(1, Self.ACTIONS):
-                    var q = online_next_q[b * Self.ACTIONS + a]
+                    var q = online_next_arr[b * Self.ACTIONS + a]
                     if q > best_online_q:
                         best_online_q = q
                         best_action = a
-
-                # Target evaluates that action
-                max_next_q[b] = target_next_q[b * Self.ACTIONS + best_action]
+                max_next_q[b] = next_q_arr[b * Self.ACTIONS + best_action]
         else:
-            # Standard DQN: max_a Q_target(s', a)
-            var next_q = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-                uninitialized=True
-            )
-            self.target_network.forward[Self.BATCH](batch_next_obs, next_q)
-
             for b in range(Self.BATCH):
-                var max_q = next_q[b * Self.ACTIONS]
+                var best_q = next_q_arr[b * Self.ACTIONS]
                 for a in range(1, Self.ACTIONS):
-                    var q = next_q[b * Self.ACTIONS + a]
-                    if q > max_q:
-                        max_q = q
-                max_next_q[b] = max_q
+                    var q = next_q_arr[b * Self.ACTIONS + a]
+                    if q > best_q:
+                        best_q = q
+                max_next_q[b] = best_q
 
-        # Compute TD targets: y = r + gamma * max_next_q * (1 - done)
         var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         for b in range(Self.BATCH):
             var done_mask = Scalar[dtype](1.0) - batch_dones[b]
@@ -325,96 +341,73 @@ struct DQNPERAgent[
                 + Scalar[dtype](self.gamma) * max_next_q[b] * done_mask
             )
 
-        # =====================================================================
-        # Phase 3: Forward with cache
-        # =====================================================================
-
-        var q_values = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+        # --- Phase 3: Forward with cache ---
+        var q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.QNetwork.CACHE_SIZE
+        var q_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](q_arr.unsafe_ptr())
+        var cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.Q_Model.CACHE_SIZE
         ](uninitialized=True)
-        self.q_network.forward_with_cache[Self.BATCH](
-            batch_obs, q_values, cache
-        )
+        var cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.Q_Model.CACHE_SIZE),
+            MutAnyOrigin,
+        ](cache_arr.unsafe_ptr())
+        Self.Q_Network.forward_with_cache[Self.BATCH](obs_t, q_t, p_online, cache_t)
 
-        # =====================================================================
-        # Phase 4: Compute weighted loss and gradients
-        # TD errors are used for priority updates
-        # IS weights correct for non-uniform sampling bias
-        # =====================================================================
-
+        # --- Phase 4: Compute weighted loss and gradients ---
         var loss: Float64 = 0.0
-        var dq = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](fill=0)
-        var td_errors = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
+        var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            fill=Scalar[dtype](0.0)
         )
+        var td_errors = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
 
         for b in range(Self.BATCH):
-            var action = Int(batch_actions_arr[b])
+            var action = Int(batch_act1[b])
             var q_idx = b * Self.ACTIONS + action
-            var td_error = q_values[q_idx] - targets[b]
-
-            # Store TD error for priority update (absolute value)
+            var td_error = q_arr[q_idx] - targets[b]
             td_errors[b] = td_error
 
-            # Weighted MSE loss (IS weight corrects for non-uniform sampling)
             var weight = batch_weights[b]
             var weighted_error = weight * td_error
             loss += Float64(weighted_error * weighted_error)
 
-            # Gradient: d(weighted_loss)/d(q) = 2 * weight * (q - target) / batch_size
-            # With IS weighting applied
-            dq[q_idx] = (
+            dq_arr[q_idx] = (
                 Scalar[dtype](2.0) * weighted_error / Scalar[dtype](Self.BATCH)
             )
-
         loss /= Float64(Self.BATCH)
 
-        # =====================================================================
-        # Phase 5: Backward pass and update
-        # =====================================================================
-
-        var grad_input = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+        # --- Phase 5: Backward pass and optimizer step ---
+        var dq_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](dq_arr.unsafe_ptr())
+        var grad_in_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](grad_in_arr.unsafe_ptr())
+        var g = self.q_network.grads_view()
 
         self.q_network.zero_grads()
-        self.q_network.backward[Self.BATCH](dq, grad_input, cache)
-        self.q_network.update()
+        Self.Q_Network.backward[Self.BATCH](dq_t, grad_in_t, p_online, cache_t, g)
+        self.q_network.optimizer_step()
 
-        # =====================================================================
-        # Phase 6: Update priorities based on TD errors
-        # =====================================================================
-
+        # --- Phase 6: Update priorities ---
         self.buffer.update_priorities[Self.BATCH](batch_indices, td_errors)
 
-        # =====================================================================
-        # Phase 7: Soft update target network
-        # =====================================================================
-
+        # --- Phase 7: Soft update target ---
         self.target_network.soft_update_from(self.q_network, self.tau)
-
         self.train_step_count += 1
 
         return loss
 
     fn decay_epsilon(mut self):
         """Decay exploration rate (call once per episode)."""
-        self.epsilon *= self.epsilon_decay
-        if self.epsilon < self.epsilon_min:
-            self.epsilon = self.epsilon_min
-
-    fn _list_to_inline[
-        T: DType
-    ](self, obs_list: List[Scalar[T]]) -> InlineArray[Scalar[dtype], Self.OBS]:
-        """Convert List[Scalar[T]] to InlineArray."""
-        var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
-        for i in range(Self.OBS):
-            if i < len(obs_list):
-                obs[i] = Scalar[dtype](obs_list[i])
-        return obs^
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     fn get_epsilon(self) -> Float64:
         """Get current exploration rate."""
@@ -427,6 +420,10 @@ struct DQNPERAgent[
     fn get_train_steps(self) -> Int:
         """Get total training steps performed."""
         return self.train_step_count
+
+    # =========================================================================
+    # High-level CPU Training and Evaluation
+    # =========================================================================
 
     fn train[
         E: BoxDiscreteActionEnv
@@ -461,103 +458,80 @@ struct DQNPERAgent[
             environment_name=environment_name,
         )
 
-        # =====================================================================
-        # Warmup: fill replay buffer with random actions
-        # =====================================================================
-        var warmup_obs_list = env.reset_obs_list()
-        var warmup_obs = self._list_to_inline(warmup_obs_list)
+        # Warmup
+        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        fill_inline(env.reset_obs_list(), warmup_obs)
         var warmup_count = 0
-
         while warmup_count < warmup_steps:
-            # Random action
-            var action = (
-                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
-            )
-
-            # Step environment
+            var action = Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
             var result = env.step_obs(action)
-            var next_obs_list = result[0].copy()
-            var reward = result[1]
-            var done = result[2]
-
-            var next_obs = self._list_to_inline(next_obs_list)
-            self.store_transition(
-                warmup_obs, action, Float64(reward), next_obs, done
-            )
-
-            warmup_obs = next_obs^
+            fill_inline(result[0], warmup_next)
+            self.store_transition(warmup_obs, action, Float64(result[1]), warmup_next, result[2])
+            fill_inline(result[0], warmup_obs)
             warmup_count += 1
+            if result[2]:
+                fill_inline(env.reset_obs_list(), warmup_obs)
 
-            if done:
-                warmup_obs_list = env.reset_obs_list()
-                warmup_obs = self._list_to_inline(warmup_obs_list)
-
-        if verbose:
-            print("Warmup complete:", warmup_count, "transitions collected")
-
-        # =====================================================================
         # Training loop
-        # =====================================================================
         var total_train_steps = 0
+        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var next_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
 
         for episode in range(num_episodes):
-            var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
+            fill_inline(env.reset_obs_list(), obs)
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps_per_episode):
-                # Select action with epsilon-greedy
-                var action = self.select_action(obs, training=True)
-
-                # Step environment
+            for _ in range(max_steps_per_episode):
+                var action = self.select_action(obs)
                 var result = env.step_obs(action)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
+                fill_inline(result[0], next_obs)
+                var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_obs = self._list_to_inline(next_obs_list)
+                self.store_transition(obs, action, reward, next_obs, done)
 
-                # Store transition (with max priority initially)
-                self.store_transition(
-                    obs, action, Float64(reward), next_obs, done
-                )
-
-                # Train every N steps
                 if total_train_steps % train_every == 0:
                     _ = self.train_step()
 
-                episode_reward += Float64(reward)
-                obs = next_obs^
+                episode_reward += reward
+                fill_inline(result[0], obs)
                 total_train_steps += 1
                 episode_steps += 1
 
                 if done:
                     break
 
-            # Decay exploration rate
             self.decay_epsilon()
-
-            # Log metrics
             metrics.log_episode(
-                episode, episode_reward, episode_steps, self.epsilon
+                episode,
+                Scalar[DType.float64](episode_reward),
+                episode_steps,
+                self.epsilon,
             )
 
-            # Print progress
             if verbose and (episode + 1) % print_every == 0:
                 var avg_reward = metrics.mean_reward_last_n(print_every)
                 print(
-                    "Episode",
-                    episode + 1,
-                    "| Avg reward:",
-                    String(avg_reward)[:7],
-                    "| Epsilon:",
-                    String(self.epsilon)[:5],
-                    "| Beta:",
-                    String(self.beta)[:5],
-                    "| Steps:",
-                    total_train_steps,
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Epsilon: "
+                    + String(self.epsilon)[:5]
+                    + " | Beta: "
+                    + String(self.beta)[:5]
+                    + " | Steps: "
+                    + String(total_train_steps)
                 )
+
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (episode + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                    except:
+                        pass
 
         return metrics^
 
@@ -571,16 +545,18 @@ struct DQNPERAgent[
         verbose: Bool = False,
         render: Bool = False,
         frame_delay_ms: Int = 16,
+        greedy: Bool = True,
     ) raises -> Float64:
-        """Evaluate the agent using greedy policy (no exploration).
+        """Evaluate the agent using greedy policy.
 
         Args:
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
+            render: Whether to render the environment.
+            frame_delay_ms: Delay between frames in milliseconds.
+            greedy: Use pure greedy policy (default: True).
 
         Returns:
             Average reward over evaluation episodes.
@@ -591,24 +567,22 @@ struct DQNPERAgent[
         if render:
             _ = env.init_renderer()
 
+        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+
         for episode in range(num_episodes):
             if quit_requested:
                 break
 
-            var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
+            fill_inline(env.reset_obs_list(), obs)
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps):
-                # Greedy action (no exploration)
-                var action = self.select_action(obs, training=False)
-
-                # Step environment
+            for _ in range(max_steps):
+                var action = self.select_action(obs, greedy=greedy)
                 var result = env.step_obs(action)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
-                var done = result[2]
+                fill_inline(result[0], obs)
+                episode_reward += Float64(result[1])
+                episode_steps += 1
 
                 if render:
                     env.render_frame()
@@ -617,26 +591,74 @@ struct DQNPERAgent[
                         quit_requested = True
                         break
 
-                episode_reward += Float64(reward)
-                obs = self._list_to_inline(next_obs_list)
-                episode_steps += 1
-
-                if done:
+                if result[2]:
                     break
 
             total_reward += episode_reward
 
             if verbose:
                 print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
+                    "Eval Episode "
+                    + String(episode + 1)
+                    + " | Reward: "
+                    + String(episode_reward)[:10]
+                    + " | Steps: "
+                    + String(episode_steps)
                 )
 
         if render:
             env.close_renderer()
 
         return total_reward / Float64(num_episodes)
+
+    # =========================================================================
+    # Checkpoint Save / Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save agent state to a checkpoint file.
+
+        Args:
+            filepath: Destination path for the checkpoint file.
+        """
+        from nn.checkpoint import (
+            write_checkpoint_header,
+            write_metadata_section,
+            save_checkpoint_file,
+        )
+        var content = write_checkpoint_header(
+            "dqn_per",
+            Self.Q_Model.PARAM_SIZE,
+            Self.Q_Model.PARAM_SIZE,
+        )
+        content += self.q_network.write_sections("online_")
+        content += self.target_network.write_sections("target_")
+        var metadata = List[String]()
+        metadata.append("epsilon=" + String(self.epsilon))
+        metadata.append("beta=" + String(self.beta))
+        metadata.append("total_steps=" + String(self.total_steps))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load agent state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+        """
+        from nn.checkpoint import (
+            read_checkpoint_file,
+            read_metadata_section,
+            get_metadata_value,
+        )
+        var content = read_checkpoint_file(filepath)
+        self.q_network.read_sections(content, "online_")
+        self.target_network.read_sections(content, "target_")
+        var metadata = read_metadata_section(content)
+        var eps_str = get_metadata_value(metadata, "epsilon")
+        if len(eps_str) > 0:
+            self.epsilon = Float64(atof(eps_str))
+        var beta_str = get_metadata_value(metadata, "beta")
+        if len(beta_str) > 0:
+            self.beta = Float64(atof(beta_str))

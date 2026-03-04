@@ -203,10 +203,10 @@ struct Renderer2D(Movable):
         try:
             while poll_event(Ptr(to=event)):
                 var event_type = event[UInt32]
-                if EventType(Int(event_type)) == EventType.EVENT_QUIT:
+                if EventType(event_type) == EventType.EVENT_QUIT:
                     self.should_quit = True
                     return False
-                elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
+                elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
                     var key_event = event[KeyboardEvent]
                     var key_val = Int(key_event.key)
                     if key_val == Int(Keycode.SDLK_ESCAPE):

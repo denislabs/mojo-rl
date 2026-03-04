@@ -1,0 +1,551 @@
+"""GPU-accelerated off-policy training infrastructure.
+
+Provides two traits and shared GPU training loop functions:
+
+  GPUOffPolicyState  — algorithm-specific GPU buffer container
+                       (networks, replay buffer, scratch buffers).
+                       Implements gpu_store[N_ENVS] and gpu_buffer_is_ready.
+
+  GPUOffPolicyAgent  — unified CPU+GPU agent trait.
+                       Has comptime GPUStateType: GPUOffPolicyState.
+                       Implements make_gpu_state, upload_to_gpu,
+                       download_from_gpu, select_actions_gpu,
+                       do_gpu_train_step, soft_update_targets_gpu.
+
+Design principles:
+  - The shared loop owns: env state/obs/action/reward/done buffers + step tracking.
+  - GPUOffPolicyState owns: GPU replay buffer + GPU network states + scratch buffers.
+  - GPUOffPolicyAgent (the CPU struct) owns: CPU network states + hyperparameters.
+  - Methods take (mut self, ctx, mut gpu_state) so agent hyperparams stay on the
+    CPU struct and GPU buffers live in the state — mirroring the Env/State pattern.
+  - comptime MAX_N_ENVS on the agent fixes buffer sizes at compile time.
+
+Usage:
+    # 1. Define a GPU state container
+    struct MyGPUState[...](GPUOffPolicyState):
+        var actor_online: GPUNetworkState[...]
+        var buffer: GPUReplayBuffer[...]
+        var scratch: DeviceBuffer[dtype]
+        ...
+        fn gpu_store[N](mut self, ctx, prev_obs, act, rew, obs, done): ...
+        fn gpu_buffer_is_ready(self) -> Bool: ...
+
+    # 2. Make your agent implement GPUOffPolicyAgent
+    struct MyAgent[..., max_n_envs: Int = 64](OffPolicyAgent & GPUOffPolicyAgent):
+        comptime MAX_N_ENVS: Int = max_n_envs
+        comptime GPUStateType = MyGPUState[...]
+        ...
+        fn make_gpu_state(self, ctx) raises -> MyGPUState[...]: ...
+        fn upload_to_gpu(self, mut gpu_state: MyGPUState[...], ctx) raises: ...
+        fn download_from_gpu(mut self, gpu_state: MyGPUState[...], ctx) raises: ...
+        fn select_actions_gpu[N](mut self, ctx, mut gpu_state, obs, act) raises: ...
+        fn do_gpu_train_step(mut self, ctx, mut gpu_state) raises: ...
+        fn soft_update_targets_gpu(mut self, ctx, mut gpu_state) raises: ...
+
+    # 3. Train
+    var metrics = run_offpolicy_continuous_train_gpu[MyEnv, MyAgent](
+        agent, ctx, num_steps=100000, warmup_steps=2000,
+    )
+"""
+
+from gpu.host import DeviceContext, DeviceBuffer
+from .metrics import TrainingMetrics
+from .env_traits import GPUDiscreteEnv, GPUContinuousEnv
+from nn.constants import dtype
+
+
+# =============================================================================
+# GPUOffPolicyState Trait
+# =============================================================================
+
+
+trait GPUOffPolicyState:
+    """GPU-side buffer container for off-policy agents.
+
+    Holds all GPU-resident state: network DeviceBuffers (online + target),
+    GPU replay buffer, and algorithm-specific scratch buffers.
+
+    The shared training loop calls gpu_store and gpu_buffer_is_ready directly
+    on the state object, so these must be implemented by each algorithm.
+    The algorithm-specific logic (train step, action selection) lives on the
+    GPUOffPolicyAgent and receives the state as a parameter.
+    """
+
+    fn gpu_store[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Push N_ENVS transitions into the GPU replay buffer.
+
+        Args:
+            ctx: GPU device context.
+            prev_obs_buf: Previous observations [N_ENVS * OBS_DIM].
+            actions_buf: Actions taken [N_ENVS * ACTION_DIM].
+            rewards_buf: Rewards received [N_ENVS].
+            obs_buf: Next observations [N_ENVS * OBS_DIM].
+            dones_buf: Done flags [N_ENVS] (1.0 = done).
+        """
+        ...
+
+    fn gpu_buffer_is_ready(self) -> Bool:
+        """Return True if the GPU replay buffer has enough samples to train."""
+        ...
+
+
+# =============================================================================
+# GPUOffPolicyAgent Trait
+# =============================================================================
+
+
+trait GPUOffPolicyAgent:
+    """Off-policy agent with GPU-accelerated training.
+
+    The agent (CPU struct) owns hyperparameters and CPU network states.
+    GPU buffers (networks, replay, scratch) live in GPUStateType.
+    The shared training loop creates the GPU state once via make_gpu_state,
+    then passes it to every GPU method call.
+
+    Compile-time constants:
+        OBS_DIM:          Observation space dimension.
+        ACTION_DIM:       Action space dimension.
+        BUFFER_CAPACITY:  GPU replay buffer capacity.
+        MAX_N_ENVS:       Max parallel environments (sizes GPU exploration buffers).
+        GPUStateType:     Concrete type implementing GPUOffPolicyState.
+    """
+
+    comptime OBS_DIM: Int
+    """Observation space dimension (must match GPUContinuousEnv.OBS_DIM)."""
+
+    comptime ACTION_DIM: Int
+    """Action space dimension (must match GPUContinuousEnv.ACTION_DIM)."""
+
+    comptime BUFFER_CAPACITY: Int
+    """GPU replay buffer capacity."""
+
+    comptime MAX_N_ENVS: Int
+    """Max parallel environments — sizes exploration buffers in GPUStateType."""
+
+    comptime GPUStateType: GPUOffPolicyState
+    """Concrete GPU state type holding all device buffers for this algorithm."""
+
+    fn make_gpu_state(
+        self, ctx: DeviceContext
+    ) raises -> Self.GPUStateType:
+        """Allocate all GPU buffers for this agent (networks, replay, scratch).
+
+        Called once at the start of GPU training. Does NOT upload CPU weights —
+        call upload_to_gpu separately after make_gpu_state.
+
+        Args:
+            ctx: GPU device context.
+
+        Returns:
+            Freshly allocated GPU state container.
+        """
+        ...
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Upload CPU network weights and replay buffer to GPU.
+
+        Args:
+            gpu_state: GPU state to populate (mutated in-place).
+            ctx: GPU device context.
+        """
+        ...
+
+    fn download_from_gpu(
+        mut self,
+        gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Download trained GPU weights back to CPU network states.
+
+        Args:
+            gpu_state: GPU state to read from.
+            ctx: GPU device context.
+        """
+        ...
+
+    fn select_actions_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Forward pass on GPU for all N_ENVS environments in parallel.
+
+        For deterministic agents (DDPG/TD3): add exploration noise on GPU
+        using persistent RNG state stored in gpu_state.
+        For stochastic agents (SAC): reparameterize.
+
+        Args:
+            ctx: GPU device context.
+            gpu_state: GPU state with actor network + exploration RNG buffers.
+            obs_buf: Observations buffer [N_ENVS * OBS_DIM].
+            actions_buf: Output actions buffer [N_ENVS * ACTION_DIM].
+        """
+        ...
+
+    fn do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Sample from GPU replay buffer and perform one full gradient update.
+
+        Typical phases: sample → target Q → critic update → actor update.
+        Uses self for hyperparams (gamma, tau, etc.) and gpu_state for buffers.
+
+        Args:
+            ctx: GPU device context.
+            gpu_state: GPU state with replay buffer, networks, scratch buffers.
+        """
+        ...
+
+    fn soft_update_targets_gpu(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Soft-update all target networks on GPU: θ_t ← τ*θ + (1-τ)*θ_t.
+
+        Args:
+            ctx: GPU device context.
+            gpu_state: GPU state with online and target network buffers.
+        """
+        ...
+
+
+# =============================================================================
+# Shared GPU Training Loop — Continuous Actions
+# =============================================================================
+
+
+fn run_offpolicy_continuous_train_gpu[
+    E: GPUContinuousEnv,
+    A: GPUOffPolicyAgent,
+](
+    mut agent: A,
+    ctx: DeviceContext,
+    num_steps: Int,
+    warmup_steps: Int = 1000,
+    train_every: Int = 1,
+    sync_every: Int = 50,
+    verbose: Bool = False,
+    print_every: Int = 50,
+    environment_name: String = "Environment",
+    algorithm_name: String = "GPUOffPolicy",
+) raises -> TrainingMetrics:
+    """Shared GPU training loop for continuous-action off-policy agents.
+
+    Responsibility split:
+      Loop:      allocates env buffers, drives E.step_kernel_gpu / reset kernels,
+                 calls gpu_state.gpu_store, checks gpu_state.gpu_buffer_is_ready.
+      Agent:     implements action selection, training step, soft updates.
+      GPU state: holds all device buffers (networks, replay, scratch).
+
+    The number of parallel environments is fixed at compile time as A.MAX_N_ENVS,
+    so env buffer sizes are fully known without runtime heap allocation.
+
+    Parameters:
+        E: GPU environment type implementing GPUContinuousEnv.
+        A: Agent type implementing GPUOffPolicyAgent.
+
+    Args:
+        agent: Off-policy agent with GPU support (updated in-place).
+        ctx: GPU device context.
+        num_steps: Total number of environment steps.
+        warmup_steps: Steps using random/noisy actions before training (default: 1000).
+        train_every: Perform one train step every N env steps (default: 1).
+        sync_every: GPU→CPU parameter sync interval in steps (default: 50).
+        verbose: Print progress (default: False).
+        print_every: Print every N steps if verbose (default: 50).
+        environment_name: Name for metrics labeling.
+        algorithm_name: Name for metrics labeling.
+
+    Returns:
+        TrainingMetrics with step-level statistics.
+    """
+    comptime n_envs = A.MAX_N_ENVS
+
+    var metrics = TrainingMetrics(
+        algorithm_name=algorithm_name,
+        environment_name=environment_name,
+    )
+
+    # ------------------------------------------------------------------
+    # Create GPU state and upload CPU weights
+    # ------------------------------------------------------------------
+    var gpu_state = agent.make_gpu_state(ctx)
+    agent.upload_to_gpu(gpu_state, ctx)
+
+    # ------------------------------------------------------------------
+    # Allocate environment buffers (loop-owned, comptime sizes)
+    # ------------------------------------------------------------------
+    var states_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs * E.STATE_SIZE
+    )
+    var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+    var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+    var actions_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs * E.ACTION_DIM
+    )
+    var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+    # Workspace buffer (shared model state for physics envs)
+    var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
+    if ws_size == 0:
+        ws_size = 1
+    var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+
+    if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+        E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+    # ------------------------------------------------------------------
+    # Initial reset
+    # ------------------------------------------------------------------
+    E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
+    E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
+        ctx,
+        states_buf,
+        actions_buf,
+        rewards_buf,
+        dones_buf,
+        obs_buf,
+        rng_seed=0,
+        workspace_ptr=workspace_buf.unsafe_ptr(),
+    )
+
+    var total_steps = 0
+    var step_seed: UInt32 = 42
+
+    for _ in range(num_steps):
+        # ------------------------------------------------------------------
+        # Save current obs as prev_obs (before environment step)
+        # ------------------------------------------------------------------
+        ctx.enqueue_copy(prev_obs_buf, obs_buf)
+
+        # ------------------------------------------------------------------
+        # Select actions via agent's GPU policy (reads obs_buf)
+        # ------------------------------------------------------------------
+        agent.select_actions_gpu[n_envs](
+            ctx, gpu_state, obs_buf, actions_buf
+        )
+
+        # ------------------------------------------------------------------
+        # Step environment (obs_buf now holds next observations)
+        # ------------------------------------------------------------------
+        E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
+            ctx,
+            states_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+            rng_seed=UInt64(step_seed),
+            workspace_ptr=workspace_buf.unsafe_ptr(),
+        )
+
+        # ------------------------------------------------------------------
+        # Store transitions: (prev_obs, action, reward, next_obs, done)
+        # ------------------------------------------------------------------
+        gpu_state.gpu_store[n_envs](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+        )
+
+        # ------------------------------------------------------------------
+        # Reset done environments
+        # ------------------------------------------------------------------
+        E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1)
+        )
+
+        # ------------------------------------------------------------------
+        # Training step
+        # ------------------------------------------------------------------
+        if (
+            total_steps >= warmup_steps
+            and total_steps % train_every == 0
+            and gpu_state.gpu_buffer_is_ready()
+        ):
+            agent.do_gpu_train_step(ctx, gpu_state)
+            agent.soft_update_targets_gpu(ctx, gpu_state)
+
+        # ------------------------------------------------------------------
+        # Periodic GPU→CPU sync (for evaluate() and checkpointing)
+        # ------------------------------------------------------------------
+        if total_steps % sync_every == 0:
+            agent.download_from_gpu(gpu_state, ctx)
+
+        total_steps += 1
+        step_seed += 1
+
+        if verbose and total_steps % print_every == 0:
+            print(
+                algorithm_name
+                + " | Step "
+                + String(total_steps)
+                + " / "
+                + String(num_steps)
+            )
+
+    # Final sync to ensure CPU params are up to date after training
+    ctx.synchronize()
+    agent.download_from_gpu(gpu_state, ctx)
+
+    return metrics^
+
+
+# =============================================================================
+# Shared GPU Training Loop — Discrete Actions
+# =============================================================================
+
+
+fn run_offpolicy_discrete_train_gpu[
+    E: GPUDiscreteEnv,
+    A: GPUOffPolicyAgent,
+](
+    mut agent: A,
+    ctx: DeviceContext,
+    num_steps: Int,
+    warmup_steps: Int = 1000,
+    train_every: Int = 1,
+    sync_every: Int = 100,
+    verbose: Bool = False,
+    print_every: Int = 100,
+    environment_name: String = "Environment",
+    algorithm_name: String = "GPUOffPolicy",
+) raises -> TrainingMetrics:
+    """Shared GPU training loop for discrete-action off-policy agents (DQN etc.).
+
+    Same pattern as run_offpolicy_continuous_train_gpu but for
+    GPUDiscreteEnv + discrete actions (actions stored as Float32 indices).
+
+    Parameters:
+        E: GPU environment type implementing GPUDiscreteEnv.
+        A: Agent type implementing GPUOffPolicyAgent.
+
+    Args:
+        agent: Off-policy agent with GPU support (updated in-place).
+        ctx: GPU device context.
+        num_steps: Total number of environment steps.
+        warmup_steps: Steps using random actions before training (default: 1000).
+        train_every: Perform one train step every N env steps (default: 1).
+        sync_every: GPU→CPU parameter sync interval in steps (default: 100).
+        verbose: Print progress (default: False).
+        print_every: Print every N steps if verbose (default: 100).
+        environment_name: Name for metrics labeling.
+        algorithm_name: Name for metrics labeling.
+
+    Returns:
+        TrainingMetrics with step-level statistics.
+    """
+    comptime n_envs = A.MAX_N_ENVS
+
+    var metrics = TrainingMetrics(
+        algorithm_name=algorithm_name,
+        environment_name=environment_name,
+    )
+
+    # Create GPU state and upload CPU weights
+    var gpu_state = agent.make_gpu_state(ctx)
+    agent.upload_to_gpu(gpu_state, ctx)
+
+    # Allocate environment buffers
+    var states_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs * E.STATE_SIZE
+    )
+    var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+    var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+    # For discrete envs, actions are Float32 indices (shape: [n_envs])
+    var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+    var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
+    if ws_size == 0:
+        ws_size = 1
+    var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+
+    if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+        E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+    E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
+    E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+        ctx,
+        states_buf,
+        actions_buf,
+        rewards_buf,
+        dones_buf,
+        obs_buf,
+        rng_seed=0,
+        workspace_ptr=workspace_buf.unsafe_ptr(),
+    )
+
+    var total_steps = 0
+    var step_seed: UInt32 = 42
+
+    for _ in range(num_steps):
+        ctx.enqueue_copy(prev_obs_buf, obs_buf)
+
+        agent.select_actions_gpu[n_envs](
+            ctx, gpu_state, obs_buf, actions_buf
+        )
+
+        E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+            ctx,
+            states_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+            rng_seed=UInt64(step_seed),
+            workspace_ptr=workspace_buf.unsafe_ptr(),
+        )
+
+        gpu_state.gpu_store[n_envs](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+        )
+
+        E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1)
+        )
+
+        if (
+            total_steps >= warmup_steps
+            and total_steps % train_every == 0
+            and gpu_state.gpu_buffer_is_ready()
+        ):
+            agent.do_gpu_train_step(ctx, gpu_state)
+            agent.soft_update_targets_gpu(ctx, gpu_state)
+
+        if total_steps % sync_every == 0:
+            agent.download_from_gpu(gpu_state, ctx)
+
+        total_steps += 1
+        step_seed += 1
+
+        if verbose and total_steps % print_every == 0:
+            print(
+                algorithm_name
+                + " | Step "
+                + String(total_steps)
+                + " / "
+                + String(num_steps)
+            )
+
+    ctx.synchronize()
+    agent.download_from_gpu(gpu_state, ctx)
+
+    return metrics^

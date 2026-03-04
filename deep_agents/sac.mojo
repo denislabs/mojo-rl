@@ -1,18 +1,21 @@
 """Deep SAC Agent using the new trait-based deep learning architecture.
 
 This SAC (Soft Actor-Critic) implementation uses:
-- Network wrapper from nn.training for stateless model + params management
-- seq() composition for building actor and critic networks
-- StochasticActor for Gaussian policy with reparameterization trick
+- NetworkState for heap-allocated params + grads + optimizer state
+- Network (all-static) for stateless forward/backward ops via LayoutTensor
+- Sequential composition with StochasticActor output layer
 - ReplayBuffer from nn.replay for experience replay
+- OffPolicyAgent trait for shared training loop
 
 Features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
-- Stochastic Gaussian policy for better exploration
+- Stochastic Gaussian policy for better exploration (reparameterization trick)
 - Twin Q-networks to reduce overestimation bias
 - Automatic entropy temperature (alpha) tuning
 - Maximum entropy RL objective: maximize reward + alpha * entropy
 - Target networks with soft updates (critics only, no target actor)
+- lr is a compile-time parameter (Adam LR baked in at compile time)
+- Checkpoint via NetworkState.write_sections / read_sections
 
 Usage:
     from deep_agents.sac import DeepSACAgent
@@ -44,16 +47,26 @@ from nn.model.stochastic_actor import (
 )
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
-from nn.training import Network
-from nn.replay import ReplayBuffer, HeapReplayBuffer, ReplayBufferTrait
+from nn.training import Network, NetworkState
+from nn.utils import obs_to_inline
+from nn.replay import ReplayBuffer
 from nn.gpu.random import gaussian_noise
 from nn.checkpoint import (
-    split_lines,
-    find_section_start,
-    save_checkpoint_file,
+    write_checkpoint_header,
+    write_metadata_section,
+    parse_checkpoint_header,
     read_checkpoint_file,
+    read_metadata_section,
+    get_metadata_value,
+    save_checkpoint_file,
 )
-from core import TrainingMetrics, BoxContinuousActionEnv, RenderableEnv
+from core import (
+    TrainingMetrics,
+    BoxContinuousActionEnv,
+    OffPolicyAgent,
+    run_offpolicy_continuous_train,
+    run_offpolicy_continuous_eval,
+)
 
 
 # =============================================================================
@@ -67,10 +80,9 @@ struct DeepSACAgent[
     hidden_dim: Int = 256,
     buffer_capacity: Int = 100000,
     batch_size: Int = 64,
-    replay_buffer: ReplayBufferTrait = ReplayBuffer[
-        buffer_capacity, obs_dim, action_dim, dtype
-    ],
-]:
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.0003,
+](OffPolicyAgent):
     """Deep Soft Actor-Critic agent using the new trait-based architecture.
 
     SAC is an off-policy actor-critic algorithm based on the maximum entropy
@@ -83,6 +95,7 @@ struct DeepSACAgent[
     - No target actor (uses current policy for next-state actions)
     - Automatic entropy coefficient (alpha) tuning
     - Soft target updates for critic networks only
+    - lr is compile-time (Adam LR baked in at compile time)
 
     Parameters:
         obs_dim: Dimension of observation space.
@@ -90,92 +103,80 @@ struct DeepSACAgent[
         hidden_dim: Hidden layer size (default: 256).
         buffer_capacity: Replay buffer capacity (default: 100000).
         batch_size: Training batch size (default: 64).
-        replay_buffer: Replay buffer type implementing ReplayBufferTrait
-            (default: ReplayBuffer). Use HeapReplayBuffer for large obs spaces.
-
-    Note:
-        For large observation spaces (24D+), use DeepSACAgentHeap which uses
-        heap-allocated buffers to avoid stack overflow.
+        actor_lr: Actor Adam learning rate — compile-time (default: 0.0003).
+        critic_lr: Critic Adam learning rate — compile-time (default: 0.0003).
     """
 
-    # Convenience aliases
+    # Convenience compile-time aliases
     comptime OBS = Self.obs_dim
     comptime ACTIONS = Self.action_dim
     comptime HIDDEN = Self.hidden_dim
     comptime BATCH = Self.batch_size
 
-    # Actor input/output dimensions
-    # Actor: obs -> hidden -> hidden -> StochasticActor output (mean + log_std)
-    comptime ACTOR_OUT = Self.ACTIONS * 2  # mean + log_std
+    # StochasticActor outputs mean + log_std
+    comptime ACTOR_OUT = Self.ACTIONS * 2
 
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> StochasticActor
-    comptime ActorNetwork = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            StochasticActor[Self.HIDDEN, Self.ACTIONS],
-        ],
-        Adam,
-        Kaiming,
+    # Actor: obs → hidden (ReLU) → hidden (ReLU) → StochasticActor (mean + log_std)
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        StochasticActor[Self.HIDDEN, Self.ACTIONS],
     ]
-    var actor: Self.ActorNetwork
+    comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
-    # Critic networks: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    comptime CriticNetwork = Network[
-        Sequential[
-            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, 1],
-        ],
-        Adam,
-        Kaiming,
+    # Critic: (obs ‖ action) → hidden (ReLU) → hidden (ReLU) → Q-value
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
     ]
-    var critic1: Self.CriticNetwork
-    var critic2: Self.CriticNetwork
+    comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
 
-    # Target critics (no target actor in SAC)
-    var critic1_target: Self.CriticNetwork
-    var critic2_target: Self.CriticNetwork
+    # Network states (heap-allocated)
+    # Note: SAC has NO target actor — only target critics
+    var actor: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
+    var critic1_online: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic1_target: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic2_online: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic2_target: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
 
-    # Replay buffer (stack-allocated, use DeepSACAgentHeap for large obs spaces)
-    var buffer: Self.replay_buffer
+    # Replay buffer
+    var buffer: ReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
+    ]
 
     # Hyperparameters
-    var gamma: Float64  # Discount factor
-    var tau: Float64  # Soft update rate
-    var actor_lr: Float64  # Actor learning rate
-    var critic_lr: Float64  # Critic learning rate
-    var action_scale: Float64  # Action scaling factor
+    var gamma: Float64
+    var tau: Float64
+    var action_scale: Float64
 
     # Entropy tuning
-    var alpha: Float64  # Entropy coefficient
-    var log_alpha: Float64  # Log of alpha (for gradient stability)
-    var target_entropy: Float64  # Target entropy
-    var alpha_lr: Float64  # Alpha learning rate
-    var auto_alpha: Bool  # Whether to automatically tune alpha
+    var alpha: Float64
+    var log_alpha: Float64
+    var target_entropy: Float64
+    var alpha_lr: Float64
+    var auto_alpha: Bool
 
     # Training state
     var total_steps: Int
     var train_step_count: Int
 
     # Auto-checkpoint settings
-    var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
-    var checkpoint_path: String  # Path for auto-checkpointing
+    var checkpoint_every: Int
+    var checkpoint_path: String
 
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
-        actor_lr: Float64 = 0.0003,
-        critic_lr: Float64 = 0.0003,
         action_scale: Float64 = 1.0,
         alpha: Float64 = 0.2,
         auto_alpha: Bool = True,
         alpha_lr: Float64 = 0.0003,
-        target_entropy: Float64 = -1.0,  # Typically -dim(action_space)
+        target_entropy: Float64 = -1.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -184,84 +185,83 @@ struct DeepSACAgent[
         Args:
             gamma: Discount factor (default: 0.99).
             tau: Soft update rate for target networks (default: 0.005).
-            actor_lr: Actor learning rate (default: 0.0003).
-            critic_lr: Critic learning rate (default: 0.0003).
             action_scale: Action scaling factor (default: 1.0).
             alpha: Initial entropy coefficient (default: 0.2).
-            auto_alpha: Whether to automatically tune alpha (default: True).
+            auto_alpha: Automatically tune alpha (default: True).
             alpha_lr: Alpha learning rate (default: 0.0003).
-            target_entropy: Target entropy, typically -dim(action_space) (default: -1.0).
+            target_entropy: Target entropy, typically -action_dim (default: -1.0).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Initialize networks
-        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Kaiming())
+        self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
+        self.actor.initialize[Kaiming]()
 
-        self.critic1 = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
-        self.critic2 = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
-        self.critic1_target = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
-        self.critic2_target = Self.CriticNetwork(Adam(lr=critic_lr), Kaiming())
+        self.critic1_online = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ]()
+        self.critic1_online.initialize[Kaiming]()
+        self.critic1_target = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](copy=self.critic1_online)
 
-        # Initialize target networks with same weights as online networks
-        self.critic1_target.copy_params_from(self.critic1)
-        self.critic2_target.copy_params_from(self.critic2)
+        self.critic2_online = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ]()
+        self.critic2_online.initialize[Kaiming]()
+        self.critic2_target = NetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](copy=self.critic2_online)
 
-        # Initialize replay buffer
-        self.buffer = Self.replay_buffer()
+        self.buffer = ReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
+        ]()
 
-        # Store hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
         self.action_scale = action_scale
-
-        # Entropy tuning
         self.alpha = alpha
         self.log_alpha = log(alpha)
         self.target_entropy = target_entropy
         self.alpha_lr = alpha_lr
         self.auto_alpha = auto_alpha
-
-        # Training state
         self.total_steps = 0
         self.train_step_count = 0
-
-        # Auto-checkpoint settings
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
-    fn __del__(deinit self):
-        _ = self.buffer^
+    # =========================================================================
+    # OffPolicyAgent trait — required methods
+    # =========================================================================
 
-    fn select_action(
-        self,
-        obs: SIMD[dtype, Self.obs_dim],
-        deterministic: Bool = False,
-    ) -> InlineArray[Scalar[dtype], Self.action_dim]:
-        """Select action using the stochastic policy.
+    fn select_action_list(
+        mut self, obs: List[Scalar[Float64]]
+    ) -> List[Scalar[Float64]]:
+        """Select action using the stochastic policy (with reparameterization).
+
+        SAC uses the inherently stochastic policy for exploration — no external
+        noise is needed.
 
         Args:
-            obs: Current observation.
-            deterministic: If True, use mean action (for evaluation).
+            obs: Observation as List[Float64].
 
         Returns:
-            Action array.
+            Action list of length action_dim, scaled by action_scale.
         """
-        # Convert obs to input array
-        var obs_input = InlineArray[Scalar[dtype], Self.obs_dim](
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var out_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
             uninitialized=True
         )
-        for i in range(Self.obs_dim):
-            obs_input[i] = obs[i]
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+        ](out_arr.unsafe_ptr())
 
-        # Forward pass through actor (batch_size=1)
-        var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
-            uninitialized=True
-        )
-        self.actor.forward[1](obs_input, actor_output)
+        var p = self.actor.params_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p)
 
-        # Extract mean and log_std (first ACTIONS elements are mean, next ACTIONS are log_std)
+        # Clamp mean and log_std
         var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
@@ -269,704 +269,763 @@ struct DeepSACAgent[
             uninitialized=True
         )
         for i in range(Self.ACTIONS):
-            var mean_val = Float64(actor_output[i])
-            var log_std_val = Float64(actor_output[Self.ACTIONS + i])
+            var m = Float64(out_arr[i])
+            var ls = Float64(out_arr[Self.ACTIONS + i])
+            if m != m:
+                m = 0.0
+            elif m > 10.0:
+                m = 10.0
+            elif m < -10.0:
+                m = -10.0
+            if ls != ls:
+                ls = -1.0
+            elif ls > 2.0:
+                ls = 2.0
+            elif ls < -5.0:
+                ls = -5.0
+            mean_arr[i] = Scalar[dtype](m)
+            log_std_arr[i] = Scalar[dtype](ls)
 
-            # Clamp for numerical stability
-            if mean_val != mean_val:  # NaN
-                mean_val = 0.0
-            elif mean_val > 10.0:
-                mean_val = 10.0
-            elif mean_val < -10.0:
-                mean_val = -10.0
-
-            if log_std_val != log_std_val:  # NaN
-                log_std_val = -1.0
-            elif log_std_val > 2.0:
-                log_std_val = 2.0
-            elif log_std_val < -5.0:
-                log_std_val = -5.0
-
-            mean_arr[i] = Scalar[dtype](mean_val)
-            log_std_arr[i] = Scalar[dtype](log_std_val)
-
-        var mean = LayoutTensor[
+        var mean_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](mean_arr.unsafe_ptr())
-        var log_std = LayoutTensor[
+        var log_std_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](log_std_arr.unsafe_ptr())
 
-        var action_result = InlineArray[Scalar[dtype], Self.action_dim](
+        # Sample with reparameterization
+        var noise_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
+        for i in range(Self.ACTIONS):
+            noise_arr[i] = Scalar[dtype](gaussian_noise())
+        var noise_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](noise_arr.unsafe_ptr())
 
-        if deterministic:
-            # Use mean action (no randomness)
-            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](
-                uninitialized=True
-            )
-            var action_layout = LayoutTensor[
-                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-            ](action_tensor.unsafe_ptr())
-            get_deterministic_action[1, Self.ACTIONS](mean, action_layout)
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](act_arr.unsafe_ptr())
+        var lp_arr = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var lp_t = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](lp_arr.unsafe_ptr())
 
-            for i in range(Self.action_dim):
-                action_result[i] = Scalar[dtype](
-                    Float64(action_tensor[i]) * self.action_scale
-                )
-        else:
-            # Sample with reparameterization
-            var noise = InlineArray[Scalar[dtype], Self.ACTIONS](
-                uninitialized=True
-            )
-            for i in range(Self.ACTIONS):
-                noise[i] = Scalar[dtype](gaussian_noise())
+        sample_action[1, Self.ACTIONS](mean_t, log_std_t, noise_t, act_t)
 
-            var noise_tensor = LayoutTensor[
-                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-            ](noise.unsafe_ptr())
-            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](
-                uninitialized=True
-            )
-            var action_layout = LayoutTensor[
-                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-            ](action_tensor.unsafe_ptr())
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
+        for i in range(Self.action_dim):
+            result.append(Float64(act_arr[i]) * self.action_scale)
+        return result^
 
-            sample_action[1, Self.ACTIONS](
-                mean, log_std, noise_tensor, action_layout
-            )
-
-            for i in range(Self.action_dim):
-                action_result[i] = Scalar[dtype](
-                    Float64(action_tensor[i]) * self.action_scale
-                )
-
-        return action_result^
-
-    fn store_transition(
+    fn store_list_transition(
         mut self,
-        obs: SIMD[dtype, Self.obs_dim],
-        action: InlineArray[Scalar[dtype], Self.action_dim],
+        obs: List[Scalar[Float64]],
+        action: List[Scalar[Float64]],
         reward: Float64,
-        next_obs: SIMD[dtype, Self.obs_dim],
+        next_obs: List[Scalar[Float64]],
         done: Bool,
-    ):
-        """Store transition in replay buffer.
+    ) -> None:
+        """Store transition in the replay buffer.
 
-        Args:
-            obs: Current observation.
-            action: Action taken.
-            reward: Reward received.
-            next_obs: Next observation.
-            done: Whether episode ended.
+        Actions are stored unscaled (divided by action_scale).
         """
-        # Use replay buffer's types for compatibility with the trait
-        comptime BUFFER_DTYPE = Self.replay_buffer.DTYPE
-        comptime BUFFER_OBS_DIM = Self.replay_buffer.OBS_DIM
-        comptime BUFFER_ACTION_DIM = Self.replay_buffer.ACTION_DIM
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var next_arr = obs_to_inline[Self.OBS, DType.float64](next_obs)
 
-        var obs_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_OBS_DIM](
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
-        var next_obs_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_OBS_DIM](
-            uninitialized=True
-        )
-        for i in range(BUFFER_OBS_DIM):
-            obs_arr[i] = Scalar[BUFFER_DTYPE](obs[i])
-            next_obs_arr[i] = Scalar[BUFFER_DTYPE](next_obs[i])
-
-        var action_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_ACTION_DIM](
-            uninitialized=True
-        )
-        for i in range(BUFFER_ACTION_DIM):
-            # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[BUFFER_DTYPE](
+        for i in range(Self.ACTIONS):
+            act_arr[i] = Scalar[dtype](
                 Float64(action[i]) / self.action_scale
             )
 
         self.buffer.add(
-            obs_arr,
-            action_arr,
-            Scalar[BUFFER_DTYPE](reward),
-            next_obs_arr,
-            done,
+            obs_arr, act_arr, Scalar[dtype](reward), next_arr, done
         )
         self.total_steps += 1
+
+    fn is_ready(self) -> Bool:
+        """Return True if buffer has enough samples."""
+        return self.buffer.is_ready[Self.BATCH]()
+
+    fn do_train_step(mut self) -> Float64:
+        """Perform one SAC gradient update step.
+
+        Returns:
+            Average critic loss value.
+        """
+        return self.train_step()
+
+    fn decay_explore(mut self) -> None:
+        """SAC uses stochastic policy for exploration — no noise to decay.
+
+        Alpha auto-tuning is handled inside train_step.
+        """
+        pass
+
+    fn get_explore_rate(self) -> Float64:
+        """Return current entropy coefficient alpha as exploration measure."""
+        return self.alpha
+
+    fn random_action_list(self) -> List[Scalar[Float64]]:
+        """Return a uniformly random action in [-action_scale, action_scale]."""
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
+        for _ in range(Self.action_dim):
+            var a = (random_float64() * 2.0 - 1.0) * self.action_scale
+            result.append(a)
+        return result^
+
+    fn select_greedy_action_list(
+        self, obs: List[Scalar[Float64]]
+    ) -> List[Scalar[Float64]]:
+        """Select action using deterministic mean policy (no reparameterization noise).
+
+        Used for evaluation. Applies tanh(mean) as the deterministic action
+        instead of sampling from the Gaussian distribution.
+
+        Args:
+            obs: Observation as List[Float64].
+
+        Returns:
+            Deterministic action list of length action_dim,
+            clipped to [-action_scale, action_scale].
+        """
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var out_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+            uninitialized=True
+        )
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+        ](out_arr.unsafe_ptr())
+
+        var p = self.actor.params_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p)
+
+        # Extract mean (first ACTIONS elements of actor output)
+        var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var mean_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](mean_arr.unsafe_ptr())
+        for i in range(Self.ACTIONS):
+            mean_arr[i] = out_arr[i]
+
+        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](act_arr.unsafe_ptr())
+        get_deterministic_action[1, Self.ACTIONS](mean_t, act_t)
+
+        var result = List[Scalar[Float64]](capacity=Self.action_dim)
+        for i in range(Self.action_dim):
+            var a = Float64(act_arr[i]) * self.action_scale
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            result.append(Float64(a))
+        return result^
+
+    # =========================================================================
+    # Core SAC Training Step
+    # =========================================================================
 
     fn train_step(mut self) -> Float64:
         """Perform one SAC training step.
 
-        Updates critics, actor, and optionally alpha.
+        Updates:
+        1. Both critics using TD error with min(Q1, Q2) + entropy targets
+        2. Actor using policy gradient (maximize Q - alpha * log_pi)
+        3. Alpha (if auto_alpha=True)
+        4. Soft update target critics
 
         Returns:
-            Critic loss value (average of Q1 and Q2 losses).
+            Average critic loss, or 0.0 if buffer not ready.
         """
-        # Check if buffer has enough samples
-        if not self.buffer.is_ready[Self.batch_size]():
+        if not self.buffer.is_ready[Self.BATCH]():
             return 0.0
 
-        # Use replay buffer's types for compatibility with the trait
-        comptime BUFFER_DTYPE = Self.replay_buffer.DTYPE
-        comptime BUFFER_OBS_DIM = Self.replay_buffer.OBS_DIM
-        comptime BUFFER_ACTION_DIM = Self.replay_buffer.ACTION_DIM
-
-        # =====================================================================
-        # Sample batch from buffer
-        # =====================================================================
-        var batch_obs_buf = InlineArray[
-            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_OBS_DIM
+        # =================================================================
+        # Phase 1: Sample batch
+        # =================================================================
+        var batch_obs = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.OBS
         ](uninitialized=True)
-        var batch_actions_buf = InlineArray[
-            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_ACTION_DIM
-        ](uninitialized=True)
-        var batch_rewards_buf = InlineArray[
-            Scalar[BUFFER_DTYPE], Self.batch_size
-        ](uninitialized=True)
-        var batch_next_obs_buf = InlineArray[
-            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_OBS_DIM
-        ](uninitialized=True)
-        var batch_dones_buf = InlineArray[
-            Scalar[BUFFER_DTYPE], Self.batch_size
-        ](uninitialized=True)
-
-        self.buffer.sample[Self.batch_size](
-            batch_obs_buf,
-            batch_actions_buf,
-            batch_rewards_buf,
-            batch_next_obs_buf,
-            batch_dones_buf,
-        )
-
-        # Convert to the dtype used by neural networks
-        var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
-            uninitialized=True
-        )
-        var batch_actions = InlineArray[
+        var batch_act = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
-        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_rew = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
-        var batch_next_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
-            uninitialized=True
-        )
-        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](
+        var batch_next = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.OBS
+        ](uninitialized=True)
+        var batch_done = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
 
-        for i in range(Self.BATCH * Self.OBS):
-            batch_obs[i] = Scalar[dtype](batch_obs_buf[i])
-            batch_next_obs[i] = Scalar[dtype](batch_next_obs_buf[i])
-        for i in range(Self.BATCH * Self.ACTIONS):
-            batch_actions[i] = Scalar[dtype](batch_actions_buf[i])
-        for i in range(Self.BATCH):
-            batch_rewards[i] = Scalar[dtype](batch_rewards_buf[i])
-            batch_dones[i] = Scalar[dtype](batch_dones_buf[i])
+        self.buffer.sample[Self.BATCH](
+            batch_obs, batch_act, batch_rew, batch_next, batch_done
+        )
 
-        # =====================================================================
-        # Phase 1: Compute TD targets (with entropy bonus)
-        # =====================================================================
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](batch_next.unsafe_ptr())
 
-        # Forward actor on next_obs to get next actions and log_probs
-        var next_actor_output = InlineArray[
+        # =================================================================
+        # Phase 2: Compute TD targets
+        # y = r + γ * (min(Q1_t, Q2_t)(s', a') - α * log_π(a'|s')) * (1 - done)
+        # where a' ~ π(·|s') (current actor, reparameterization)
+        # =================================================================
+
+        # Forward actor on next_obs to get next mean + log_std
+        var next_out_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
         ](uninitialized=True)
-        self.actor.forward[Self.BATCH](batch_next_obs, next_actor_output)
+        var next_out_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTOR_OUT), MutAnyOrigin
+        ](next_out_arr.unsafe_ptr())
+        var p_actor = self.actor.params_view()
+        Self.ActorNet.forward[Self.BATCH](next_obs_t, next_out_t, p_actor)
 
-        # Extract mean and log_std for next states (with clamping for stability)
-        var next_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-        var next_log_std = InlineArray[
+        # Extract and clamp mean + log_std for next states
+        var next_mean_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var next_ls_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
-                var mean_val = Float64(
-                    next_actor_output[b * Self.ACTOR_OUT + a]
+                var m = Float64(next_out_arr[b * Self.ACTOR_OUT + a])
+                var ls = Float64(
+                    next_out_arr[b * Self.ACTOR_OUT + Self.ACTIONS + a]
                 )
-                var log_std_val = Float64(
-                    next_actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a]
-                )
+                if m != m:
+                    m = 0.0
+                elif m > 10.0:
+                    m = 10.0
+                elif m < -10.0:
+                    m = -10.0
+                if ls != ls:
+                    ls = -1.0
+                elif ls > 2.0:
+                    ls = 2.0
+                elif ls < -5.0:
+                    ls = -5.0
+                next_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
+                next_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 
-                # Clamp values for numerical stability
-                if mean_val != mean_val:  # NaN check
-                    mean_val = 0.0
-                elif mean_val > 10.0:
-                    mean_val = 10.0
-                elif mean_val < -10.0:
-                    mean_val = -10.0
-
-                if log_std_val != log_std_val:  # NaN check
-                    log_std_val = -1.0
-                elif log_std_val > 2.0:
-                    log_std_val = 2.0
-                elif log_std_val < -5.0:
-                    log_std_val = -5.0
-
-                next_mean[b * Self.ACTIONS + a] = Scalar[dtype](mean_val)
-                next_log_std[b * Self.ACTIONS + a] = Scalar[dtype](log_std_val)
-
-        # Sample next actions with log_prob using reparameterization
-        var next_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-        for i in range(Self.BATCH * Self.ACTIONS):
-            next_noise[i] = Scalar[dtype](gaussian_noise())
-
-        var next_sampled_actions = InlineArray[
+        # Sample next actions + log_probs
+        var next_noise_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
-        var next_log_probs = InlineArray[Scalar[dtype], Self.BATCH](
+        for i in range(Self.BATCH * Self.ACTIONS):
+            next_noise_arr[i] = Scalar[dtype](gaussian_noise())
+
+        var next_act_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var next_lp_arr = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
 
-        # Create layout tensors for rsample
-        var next_mean_tensor = LayoutTensor[
+        var next_mean_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_mean.unsafe_ptr())
-        var next_log_std_tensor = LayoutTensor[
+        ](next_mean_arr.unsafe_ptr())
+        var next_ls_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_log_std.unsafe_ptr())
-        var next_noise_tensor = LayoutTensor[
+        ](next_ls_arr.unsafe_ptr())
+        var next_noise_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_noise.unsafe_ptr())
-        var next_action_tensor = LayoutTensor[
+        ](next_noise_arr.unsafe_ptr())
+        var next_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_sampled_actions.unsafe_ptr())
-        var next_log_prob_tensor = LayoutTensor[
+        ](next_act_arr.unsafe_ptr())
+        var next_lp_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](next_log_probs.unsafe_ptr())
+        ](next_lp_arr.unsafe_ptr())
 
         rsample[Self.BATCH, Self.ACTIONS](
-            next_mean_tensor,
-            next_log_std_tensor,
-            next_noise_tensor,
-            next_action_tensor,
-            next_log_prob_tensor,
+            next_mean_t, next_ls_t, next_noise_t, next_act_t, next_lp_t
         )
 
-        # Guard against NaN/inf in log_probs
+        # Guard NaN/inf in log_probs
         for b in range(Self.BATCH):
-            var lp = Float64(next_log_probs[b])
-            if (
-                lp != lp or lp > 100.0 or lp < -100.0
-            ):  # NaN check or extreme values
-                next_log_probs[b] = Scalar[dtype](
-                    -1.0
-                )  # Default reasonable value
+            var lp = Float64(next_lp_arr[b])
+            if lp != lp or lp > 100.0 or lp < -100.0:
+                next_lp_arr[b] = Scalar[dtype](-1.0)
 
-        # Build critic input for next state: (next_obs, next_action)
-        var next_critic_input = InlineArray[
+        # Build next critic input = concat(next_obs, next_actions)
+        var next_ci_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_IN
         ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                next_critic_input[b * Self.CRITIC_IN + i] = batch_next_obs[
+                next_ci_arr[b * Self.CRITIC_IN + i] = batch_next[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                next_critic_input[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = next_sampled_actions[b * Self.ACTIONS + i]
-
-        # Forward target critics
-        var next_q1 = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var next_q2 = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        self.critic1_target.forward[Self.BATCH](next_critic_input, next_q1)
-        self.critic2_target.forward[Self.BATCH](next_critic_input, next_q2)
-
-        # Compute TD targets: r + gamma * (min(Q1, Q2) - alpha * log_prob) * (1 - done)
-        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        for b in range(Self.BATCH):
-            var q1_val = Float64(next_q1[b])
-            var q2_val = Float64(next_q2[b])
-
-            # Guard against NaN in Q-values
-            if q1_val != q1_val:
-                q1_val = 0.0
-            if q2_val != q2_val:
-                q2_val = 0.0
-
-            var min_q = q1_val if q1_val < q2_val else q2_val
-            var log_prob_val = Float64(next_log_probs[b])
-            var entropy_bonus = self.alpha * log_prob_val
-            var done_mask = 1.0 - Float64(batch_dones[b])
-            var target = (
-                Float64(batch_rewards[b])
-                + self.gamma * (min_q - entropy_bonus) * done_mask
-            )
-
-            # Guard against extreme target values
-            if target != target:  # NaN
-                target = 0.0
-            elif target > 1000.0:
-                target = 1000.0
-            elif target < -1000.0:
-                target = -1000.0
-
-            targets[b] = Scalar[dtype](target)
-
-        # =====================================================================
-        # Phase 2: Update Critics
-        # =====================================================================
-
-        # Build critic input for current state: (obs, action)
-        var critic_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                critic_input[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                critic_input[b * Self.CRITIC_IN + Self.OBS + i] = batch_actions[
+                next_ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = next_act_arr[
                     b * Self.ACTIONS + i
                 ]
 
-        # Forward critics with cache
-        var q1_values = InlineArray[Scalar[dtype], Self.BATCH](
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](next_ci_arr.unsafe_ptr())
+
+        # Forward both target critics
+        var nq1_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
             uninitialized=True
         )
-        var q2_values = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
-        )
-        var critic1_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
-        ](uninitialized=True)
-        var critic2_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
-        ](uninitialized=True)
-
-        self.critic1.forward_with_cache[Self.BATCH](
-            critic_input, q1_values, critic1_cache
-        )
-        self.critic2.forward_with_cache[Self.BATCH](
-            critic_input, q2_values, critic2_cache
-        )
-
-        # Compute critic loss gradients (MSE)
-        var q1_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var q2_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var total_critic_loss: Float64 = 0.0
-
-        for b in range(Self.BATCH):
-            var td_error1 = q1_values[b] - targets[b]
-            var td_error2 = q2_values[b] - targets[b]
-
-            total_critic_loss += Float64(
-                td_error1 * td_error1 + td_error2 * td_error2
-            )
-
-            # Gradient: d/dQ (Q - target)^2 = 2 * (Q - target) / batch_size
-            q1_grad[b] = (
-                Scalar[dtype](2.0) * td_error1 / Scalar[dtype](Self.BATCH)
-            )
-            q2_grad[b] = (
-                Scalar[dtype](2.0) * td_error2 / Scalar[dtype](Self.BATCH)
-            )
-
-        total_critic_loss /= Float64(
-            2 * Self.BATCH
-        )  # Average over both critics
-
-        # Backward pass for critics
-        var critic1_grad_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-        var critic2_grad_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-
-        self.critic1.zero_grads()
-        self.critic1.backward[Self.BATCH](
-            q1_grad, critic1_grad_input, critic1_cache
-        )
-        self.critic1.update()
-
-        self.critic2.zero_grads()
-        self.critic2.backward[Self.BATCH](
-            q2_grad, critic2_grad_input, critic2_cache
-        )
-        self.critic2.update()
-
-        # =====================================================================
-        # Phase 3: Update Actor (with proper backpropagation through critic)
-        # =====================================================================
-        #
-        # SAC Actor Loss: J_π = E[α * log_π(a|s) - Q(s, a)]
-        # We want to minimize this (maximize Q and entropy).
-        #
-        # Proper gradient computation requires:
-        # 1. Forward actor → mean, log_std
-        # 2. rsample (reparameterization) → action, log_prob
-        # 3. Forward critic with (obs, action) → Q
-        # 4. Backward through critic → dQ/da (grad w.r.t. action)
-        # 5. rsample_backward → grad_mean, grad_log_std
-        # 6. Backward through actor network
-        # =====================================================================
-
-        # Step 1: Forward actor with cache to get mean and log_std
-        var actor_output = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
-        ](uninitialized=True)
-        var actor_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ActorNetwork.CACHE_SIZE
-        ](uninitialized=True)
-        self.actor.forward_with_cache[Self.BATCH](
-            batch_obs, actor_output, actor_cache
-        )
-
-        # Extract mean and log_std (with clamping for stability)
-        var curr_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-        var curr_log_std = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
-        for b in range(Self.BATCH):
-            for a in range(Self.ACTIONS):
-                var mean_val = Float64(actor_output[b * Self.ACTOR_OUT + a])
-                var log_std_val = Float64(
-                    actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a]
-                )
-
-                # Clamp values for numerical stability
-                if mean_val != mean_val:  # NaN check
-                    mean_val = 0.0
-                elif mean_val > 10.0:
-                    mean_val = 10.0
-                elif mean_val < -10.0:
-                    mean_val = -10.0
-
-                if log_std_val != log_std_val:  # NaN check
-                    log_std_val = -1.0
-                elif log_std_val > 2.0:
-                    log_std_val = 2.0
-                elif log_std_val < -5.0:
-                    log_std_val = -5.0
-
-                curr_mean[b * Self.ACTIONS + a] = Scalar[dtype](mean_val)
-                curr_log_std[b * Self.ACTIONS + a] = Scalar[dtype](log_std_val)
-
-        # Step 2: Sample actions with rsample_with_cache (caches z for backward)
-        var curr_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-        for i in range(Self.BATCH * Self.ACTIONS):
-            curr_noise[i] = Scalar[dtype](gaussian_noise())
-
-        var curr_sampled_actions = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
-        var curr_log_probs = InlineArray[Scalar[dtype], Self.BATCH](
-            uninitialized=True
-        )
-        var z_cache = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-
-        var curr_mean_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](curr_mean.unsafe_ptr())
-        var curr_log_std_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](curr_log_std.unsafe_ptr())
-        var curr_noise_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](curr_noise.unsafe_ptr())
-        var curr_action_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](curr_sampled_actions.unsafe_ptr())
-        var curr_log_prob_tensor = LayoutTensor[
+        var nq1_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](curr_log_probs.unsafe_ptr())
-        var z_cache_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](z_cache.unsafe_ptr())
-
-        rsample_with_cache[Self.BATCH, Self.ACTIONS](
-            curr_mean_tensor,
-            curr_log_std_tensor,
-            curr_noise_tensor,
-            curr_action_tensor,
-            curr_log_prob_tensor,
-            z_cache_tensor,
+        ](nq1_arr.unsafe_ptr())
+        var nq2_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
         )
+        var nq2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](nq2_arr.unsafe_ptr())
 
-        # Guard against NaN/inf in log_probs
+        var p_c1t = self.critic1_target.params_view()
+        var p_c2t = self.critic2_target.params_view()
+        Self.CriticNet.forward[Self.BATCH](next_ci_t, nq1_t, p_c1t)
+        Self.CriticNet.forward[Self.BATCH](next_ci_t, nq2_t, p_c2t)
+
+        # TD targets: r + γ * (min(Q1,Q2) - α * log_π) * (1 - done)
+        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         for b in range(Self.BATCH):
-            var lp = Float64(curr_log_probs[b])
-            if lp != lp or lp > 100.0 or lp < -100.0:
-                curr_log_probs[b] = Scalar[dtype](-1.0)
+            var q1 = Float64(nq1_arr[b])
+            var q2 = Float64(nq2_arr[b])
+            if q1 != q1:
+                q1 = 0.0
+            if q2 != q2:
+                q2 = 0.0
+            var min_q = q1 if q1 < q2 else q2
+            var lp = Float64(next_lp_arr[b])
+            var done_mask = 1.0 - Float64(batch_done[b])
+            var tgt = Float64(batch_rew[b]) + self.gamma * (
+                min_q - self.alpha * lp
+            ) * done_mask
+            if tgt != tgt:
+                tgt = 0.0
+            elif tgt > 1000.0:
+                tgt = 1000.0
+            elif tgt < -1000.0:
+                tgt = -1000.0
+            targets[b] = Scalar[dtype](tgt)
 
-        # Step 3: Build critic input with new actions: (obs, new_action)
-        var new_critic_input = InlineArray[
+        # =================================================================
+        # Phase 3: Update Both Critics
+        # =================================================================
+
+        # Build critic input = concat(obs, batch_actions)
+        var ci_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_IN
         ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
+                ci_arr[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
             for i in range(Self.ACTIONS):
-                new_critic_input[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = curr_sampled_actions[b * Self.ACTIONS + i]
+                ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
+                    b * Self.ACTIONS + i
+                ]
 
-        # Step 4: Forward critic1 WITH CACHE for backward pass
-        var q1_new = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var actor_critic_cache = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CriticNetwork.CACHE_SIZE
-        ](uninitialized=True)
-        self.critic1.forward_with_cache[Self.BATCH](
-            new_critic_input, q1_new, actor_critic_cache
-        )
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](ci_arr.unsafe_ptr())
 
-        # Step 5: Backward through critic to get dQ/da
-        # Actor loss: J = E[-Q(s,a) + α * log_π(a|s)]
-        # So grad_Q = -1 (we want to maximize Q)
-        var grad_q = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        for b in range(Self.BATCH):
-            grad_q[b] = Scalar[dtype](
-                -1.0 / Float64(Self.BATCH)
-            )  # Average over batch
-
-        # Backward through critic1 to get gradient w.r.t. its input (obs, action)
-        var grad_critic_input = self.critic1.backward_input[Self.BATCH](
-            grad_q, actor_critic_cache
-        )
-
-        # Extract grad_action from grad_critic_input (last ACTIONS elements per sample)
-        # critic_input layout: [obs (OBS) | action (ACTIONS)]
-        var grad_action = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+        # --- Critic 1 ---
+        var q1_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
             uninitialized=True
         )
+        var q1_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q1_arr.unsafe_ptr())
+        var c1_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
+        ](uninitialized=True)
+        var c1_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](c1_cache_arr.unsafe_ptr())
+
+        var p_c1 = self.critic1_online.params_view()
+        Self.CriticNet.forward_with_cache[Self.BATCH](
+            ci_t, q1_t, p_c1, c1_cache_t
+        )
+
+        var q1_grad_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var critic1_loss: Float64 = 0.0
+        for b in range(Self.BATCH):
+            var td_err = q1_arr[b] - targets[b]
+            critic1_loss += Float64(td_err * td_err)
+            q1_grad_arr[b] = (
+                Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
+            )
+        critic1_loss /= Float64(Self.BATCH)
+
+        var q1_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q1_grad_arr.unsafe_ptr())
+        var d_c1_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
+        var d_c1_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](d_c1_arr.unsafe_ptr())
+
+        var g_c1 = self.critic1_online.grads_view()
+        self.critic1_online.zero_grads()
+        Self.CriticNet.backward[Self.BATCH](
+            q1_grad_t, d_c1_t, p_c1, c1_cache_t, g_c1
+        )
+        self.critic1_online.optimizer_step()
+
+        # --- Critic 2 ---
+        var q2_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var q2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q2_arr.unsafe_ptr())
+        var c2_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
+        ](uninitialized=True)
+        var c2_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](c2_cache_arr.unsafe_ptr())
+
+        var p_c2 = self.critic2_online.params_view()
+        Self.CriticNet.forward_with_cache[Self.BATCH](
+            ci_t, q2_t, p_c2, c2_cache_t
+        )
+
+        var q2_grad_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var critic2_loss: Float64 = 0.0
+        for b in range(Self.BATCH):
+            var td_err = q2_arr[b] - targets[b]
+            critic2_loss += Float64(td_err * td_err)
+            q2_grad_arr[b] = (
+                Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
+            )
+        critic2_loss /= Float64(Self.BATCH)
+
+        var q2_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q2_grad_arr.unsafe_ptr())
+        var d_c2_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
+        var d_c2_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](d_c2_arr.unsafe_ptr())
+
+        var g_c2 = self.critic2_online.grads_view()
+        self.critic2_online.zero_grads()
+        Self.CriticNet.backward[Self.BATCH](
+            q2_grad_t, d_c2_t, p_c2, c2_cache_t, g_c2
+        )
+        self.critic2_online.optimizer_step()
+
+        var avg_critic_loss = (critic1_loss + critic2_loss) / 2.0
+
+        # =================================================================
+        # Phase 4: Update Actor
+        # J_π = E[α * log_π(a|s) - Q(s, a)]  →  minimize (gradient descent)
+        # =================================================================
+
+        # Step 1: Forward actor with cache → mean + log_std
+        var actor_out_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
+        ](uninitialized=True)
+        var actor_out_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTOR_OUT), MutAnyOrigin
+        ](actor_out_arr.unsafe_ptr())
+        var actor_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ActorModel.CACHE_SIZE
+        ](uninitialized=True)
+        var actor_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.ActorModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](actor_cache_arr.unsafe_ptr())
+
+        Self.ActorNet.forward_with_cache[Self.BATCH](
+            obs_t, actor_out_t, p_actor, actor_cache_t
+        )
+
+        # Extract and clamp mean + log_std
+        var curr_mean_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var curr_ls_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
-                grad_action[b * Self.ACTIONS + a] = grad_critic_input[
-                    b * Self.CRITIC_IN + Self.OBS + a
-                ]
+                var m = Float64(actor_out_arr[b * Self.ACTOR_OUT + a])
+                var ls = Float64(
+                    actor_out_arr[b * Self.ACTOR_OUT + Self.ACTIONS + a]
+                )
+                if m != m:
+                    m = 0.0
+                elif m > 10.0:
+                    m = 10.0
+                elif m < -10.0:
+                    m = -10.0
+                if ls != ls:
+                    ls = -1.0
+                elif ls > 2.0:
+                    ls = 2.0
+                elif ls < -5.0:
+                    ls = -5.0
+                curr_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
+                curr_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 
-        # Step 6: Compute grad_log_prob for entropy term
-        # Entropy contribution: α * log_π(a|s)
-        # We want to minimize this, so grad_log_prob = α / BATCH
-        var grad_log_prob = InlineArray[Scalar[dtype], Self.BATCH](
+        # Step 2: rsample_with_cache → sampled_actions, log_probs, z_cache
+        var curr_noise_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        for i in range(Self.BATCH * Self.ACTIONS):
+            curr_noise_arr[i] = Scalar[dtype](gaussian_noise())
+
+        var curr_act_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var curr_lp_arr = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
-        for b in range(Self.BATCH):
-            grad_log_prob[b] = Scalar[dtype](self.alpha / Float64(Self.BATCH))
-
-        # Step 7: Backward through reparameterization trick
-        var grad_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
-        var grad_log_std = InlineArray[
+        var z_cache_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
 
-        var grad_action_tensor = LayoutTensor[
+        var curr_mean_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](grad_action.unsafe_ptr())
-        var grad_log_prob_tensor = LayoutTensor[
+        ](curr_mean_arr.unsafe_ptr())
+        var curr_ls_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_ls_arr.unsafe_ptr())
+        var curr_noise_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_noise_arr.unsafe_ptr())
+        var curr_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_act_arr.unsafe_ptr())
+        var curr_lp_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](grad_log_prob.unsafe_ptr())
-        var grad_mean_tensor = LayoutTensor[
+        ](curr_lp_arr.unsafe_ptr())
+        var z_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](grad_mean.unsafe_ptr())
-        var grad_log_std_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](grad_log_std.unsafe_ptr())
+        ](z_cache_arr.unsafe_ptr())
 
-        rsample_backward[Self.BATCH, Self.ACTIONS](
-            grad_action_tensor,
-            grad_log_prob_tensor,
-            curr_action_tensor,
-            curr_log_std_tensor,
-            curr_noise_tensor,
-            grad_mean_tensor,
-            grad_log_std_tensor,
+        rsample_with_cache[Self.BATCH, Self.ACTIONS](
+            curr_mean_t,
+            curr_ls_t,
+            curr_noise_t,
+            curr_act_t,
+            curr_lp_t,
+            z_cache_t,
         )
 
-        # Step 8: Build actor gradient from grad_mean and grad_log_std
-        # Actor output layout: [mean (ACTIONS) | log_std (ACTIONS)]
-        var actor_grad = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
-        ](uninitialized=True)
+        # Guard NaN/inf in log_probs
+        for b in range(Self.BATCH):
+            var lp = Float64(curr_lp_arr[b])
+            if lp != lp or lp > 100.0 or lp < -100.0:
+                curr_lp_arr[b] = Scalar[dtype](-1.0)
 
+        # Step 3: Build critic input with sampled actions = concat(obs, curr_act)
+        var new_ci_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
+        for b in range(Self.BATCH):
+            for i in range(Self.OBS):
+                new_ci_arr[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+            for i in range(Self.ACTIONS):
+                new_ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = curr_act_arr[
+                    b * Self.ACTIONS + i
+                ]
+
+        var new_ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](new_ci_arr.unsafe_ptr())
+
+        # Step 4: Forward critic1 with cache (need for actor backward)
+        var new_q_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var new_q_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](new_q_arr.unsafe_ptr())
+        var new_c1_cache_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
+        ](uninitialized=True)
+        var new_c1_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](new_c1_cache_arr.unsafe_ptr())
+
+        Self.CriticNet.forward_with_cache[Self.BATCH](
+            new_ci_t, new_q_t, p_c1, new_c1_cache_t
+        )
+
+        # Step 5: Backward through critic1 to get dQ/da (-1/BATCH per sample)
+        var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        for b in range(Self.BATCH):
+            dq_arr[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
+
+        var dq_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](dq_arr.unsafe_ptr())
+        var d_new_ci_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
+        var d_new_ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](d_new_ci_arr.unsafe_ptr())
+
+        # Backward through critic to get action gradient — don't update critic
+        self.critic1_online.zero_grads()
+        Self.CriticNet.backward[Self.BATCH](
+            dq_t, d_new_ci_t, p_c1, new_c1_cache_t, g_c1
+        )
+        # Intentionally NOT calling critic1_online.optimizer_step() here
+
+        # Extract action gradients from d_new_ci (last ACTIONS columns per row)
+        var grad_act_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
-                # Mean gradient
-                actor_grad[b * Self.ACTOR_OUT + a] = grad_mean[
-                    b * Self.ACTIONS + a
+                grad_act_arr[b * Self.ACTIONS + a] = d_new_ci_arr[
+                    b * Self.CRITIC_IN + Self.OBS + a
                 ]
-                # Log_std gradient
-                actor_grad[
-                    b * Self.ACTOR_OUT + Self.ACTIONS + a
-                ] = grad_log_std[b * Self.ACTIONS + a]
 
-        # Step 9: Backward pass through actor network
-        var actor_grad_input = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.OBS
+        # Step 6: Entropy gradient: α/BATCH per sample (we're minimizing α*log_π)
+        var grad_lp_arr = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        for b in range(Self.BATCH):
+            grad_lp_arr[b] = Scalar[dtype](self.alpha / Float64(Self.BATCH))
+
+        # Step 7: Backward through reparameterization → grad_mean, grad_log_std
+        var grad_mean_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var grad_ls_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
 
-        self.actor.zero_grads()
-        self.actor.backward[Self.BATCH](
-            actor_grad, actor_grad_input, actor_cache
+        var grad_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_act_arr.unsafe_ptr())
+        var grad_lp_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](grad_lp_arr.unsafe_ptr())
+        var grad_mean_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_mean_arr.unsafe_ptr())
+        var grad_ls_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_ls_arr.unsafe_ptr())
+
+        rsample_backward[Self.BATCH, Self.ACTIONS](
+            grad_act_t,
+            grad_lp_t,
+            curr_act_t,
+            curr_ls_t,
+            curr_noise_t,
+            grad_mean_t,
+            grad_ls_t,
         )
-        self.actor.update()
 
-        # =====================================================================
-        # Phase 4: Update Alpha (if auto_alpha)
-        # =====================================================================
+        # Step 8: Build actor_grad = concat(grad_mean, grad_log_std)
+        # Actor output layout: [mean (ACTIONS) | log_std (ACTIONS)]
+        var actor_grad_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
+        ](uninitialized=True)
+        for b in range(Self.BATCH):
+            for a in range(Self.ACTIONS):
+                actor_grad_arr[b * Self.ACTOR_OUT + a] = grad_mean_arr[
+                    b * Self.ACTIONS + a
+                ]
+                actor_grad_arr[b * Self.ACTOR_OUT + Self.ACTIONS + a] = (
+                    grad_ls_arr[b * Self.ACTIONS + a]
+                )
 
+        # Step 9: Backward through actor network
+        var actor_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTOR_OUT), MutAnyOrigin
+        ](actor_grad_arr.unsafe_ptr())
+        var d_obs_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.OBS
+        ](uninitialized=True)
+        var d_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](d_obs_arr.unsafe_ptr())
+
+        var g_actor = self.actor.grads_view()
+        self.actor.zero_grads()
+        Self.ActorNet.backward[Self.BATCH](
+            actor_grad_t, d_obs_t, p_actor, actor_cache_t, g_actor
+        )
+        self.actor.optimizer_step()
+
+        # =================================================================
+        # Phase 5: Update Alpha (if auto_alpha)
+        # =================================================================
         if self.auto_alpha:
-            # Alpha loss: J(α) = E[α * (log_π + target_entropy)]
-            # Gradient: dJ/dα = E[log_π + target_entropy]
-            # We minimize, so: log_alpha -= lr * gradient
-            # If log_π + target_entropy < 0: gradient < 0, log_alpha increases (more exploration)
-            # If log_π + target_entropy > 0: gradient > 0, log_alpha decreases (less exploration)
+            # J(α) = E[α * (log_π + target_entropy)]
+            # Gradient descent on log_α: log_α -= α_lr * mean(log_π + target_entropy)
             var alpha_grad: Float64 = 0.0
             for b in range(Self.BATCH):
-                alpha_grad += Float64(curr_log_probs[b]) + self.target_entropy
+                alpha_grad += Float64(curr_lp_arr[b]) + self.target_entropy
             alpha_grad /= Float64(Self.BATCH)
 
-            # Update log_alpha (gradient descent to minimize loss)
             self.log_alpha -= self.alpha_lr * alpha_grad
-
-            # Clamp log_alpha to reasonable range [-5, 2] for stability
             if self.log_alpha < -5.0:
                 self.log_alpha = -5.0
             elif self.log_alpha > 2.0:
                 self.log_alpha = 2.0
-
-            # Update alpha
             self.alpha = exp(self.log_alpha)
 
-        # =====================================================================
-        # Phase 5: Soft Update Target Networks
-        # =====================================================================
-
-        self.critic1_target.soft_update_from(self.critic1, self.tau)
-        self.critic2_target.soft_update_from(self.critic2, self.tau)
+        # =================================================================
+        # Phase 6: Soft Update Target Critics
+        # =================================================================
+        self.critic1_target.soft_update_from(self.critic1_online, self.tau)
+        self.critic2_target.soft_update_from(self.critic2_online, self.tau)
 
         self.train_step_count += 1
+        return avg_critic_loss
 
-        return total_critic_loss
-
-    fn _list_to_simd[
-        T: DType
-    ](self, obs_list: List[Scalar[T]]) -> SIMD[dtype, Self.obs_dim]:
-        """Convert List[Float64] to SIMD for internal use."""
-        var obs = SIMD[dtype, Self.obs_dim]()
-        for i in range(Self.obs_dim):
-            if i < len(obs_list):
-                obs[i] = Scalar[dtype](obs_list[i])
-            else:
-                obs[i] = Scalar[dtype](0.0)
-        return obs
+    # =========================================================================
+    # High-level CPU training loop (delegates to shared off-policy runner)
+    # =========================================================================
 
     fn train[
         E: BoxContinuousActionEnv
@@ -983,300 +1042,114 @@ struct DeepSACAgent[
     ) -> TrainingMetrics:
         """Train the SAC agent on a continuous action environment.
 
+        Delegates to run_offpolicy_continuous_train which handles warmup,
+        episode loop, and metric logging.
+
         Args:
-            env: The environment to train on (must implement BoxContinuousActionEnv).
-            num_episodes: Number of episodes to train.
+            env: Environment implementing BoxContinuousActionEnv.
+            num_episodes: Number of training episodes.
             max_steps_per_episode: Maximum steps per episode (default: 200).
-            warmup_steps: Number of random steps to fill replay buffer (default: 1000).
+            warmup_steps: Random steps to pre-fill replay buffer (default: 1000).
             train_every: Train every N steps (default: 1).
-            verbose: Whether to print progress (default: False).
-            print_every: Print progress every N episodes if verbose (default: 10).
-            environment_name: Name of environment for metrics labeling.
+            verbose: Print progress (default: False).
+            print_every: Print every N episodes if verbose (default: 10).
+            environment_name: Name for metrics labeling.
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        var metrics = TrainingMetrics(
-            algorithm_name="Deep SAC",
+        return run_offpolicy_continuous_train(
+            self,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            verbose=verbose,
+            print_every=print_every,
             environment_name=environment_name,
+            algorithm_name="Deep SAC",
         )
 
-        # =====================================================================
-        # Warmup: fill replay buffer with random actions
-        # =====================================================================
-        var warmup_obs = self._list_to_simd(env.reset_obs_list())
-        var warmup_count = 0
-
-        while warmup_count < warmup_steps:
-            # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Scalar[dtype], Self.action_dim](
-                uninitialized=True
-            )
-            var action_list = List[Float64](capacity=Self.action_dim)
-            for i in range(Self.action_dim):
-                action[i] = Scalar[dtype](
-                    (random_float64() * 2.0 - 1.0) * self.action_scale
-                )
-                action_list.append(Float64(action[i]))
-
-            # Step environment with full action vector
-            var result = env.step_continuous_vec(action_list^)
-            # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
-            var reward = result[1]
-            var done = result[2]
-
-            var next_obs = self._list_to_simd(env.get_obs_list())
-            self.store_transition(warmup_obs, action, reward, next_obs, done)
-
-            warmup_obs = next_obs
-            warmup_count += 1
-
-            if done:
-                warmup_obs = self._list_to_simd(env.reset_obs_list())
-
-        if verbose:
-            print("Warmup complete:", warmup_count, "transitions collected")
-
-        # =====================================================================
-        # Training loop
-        # =====================================================================
-        var total_train_steps = 0
-
-        for episode in range(num_episodes):
-            var obs = self._list_to_simd(env.reset_obs_list())
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps_per_episode):
-                # Select action using stochastic policy
-                var action = self.select_action(obs, deterministic=False)
-
-                # Convert action to List for step_continuous_vec
-                var action_list = List[Float64](capacity=Self.action_dim)
-                for i in range(Self.action_dim):
-                    action_list.append(Float64(action[i]))
-
-                # Step environment with full action vector
-                var result = env.step_continuous_vec(action_list^)
-                # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
-                var reward = result[1]
-                var done = result[2]
-
-                var next_obs = self._list_to_simd(env.get_obs_list())
-
-                # Store transition
-                self.store_transition(obs, action, reward, next_obs, done)
-
-                # Train every N steps
-                if total_train_steps % train_every == 0:
-                    _ = self.train_step()
-
-                episode_reward += reward
-                obs = next_obs
-                total_train_steps += 1
-                episode_steps += 1
-
-                if done:
-                    break
-
-            # Log metrics
-            metrics.log_episode(
-                episode, episode_reward, episode_steps, self.alpha
-            )
-
-            # Print progress
-            if verbose and (episode + 1) % print_every == 0:
-                var avg_reward = metrics.mean_reward_last_n(print_every)
-                print(
-                    "Episode",
-                    episode + 1,
-                    "| Avg reward:",
-                    String(avg_reward)[:7],
-                    "| Alpha:",
-                    String(self.alpha)[:5],
-                    "| Steps:",
-                    total_train_steps,
-                )
-
-            # Auto-checkpoint
-            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
-                if (episode + 1) % self.checkpoint_every == 0:
-                    try:
-                        self.save_checkpoint(self.checkpoint_path)
-                        if verbose:
-                            print("Checkpoint saved at episode", episode + 1)
-                    except:
-                        print(
-                            "Warning: Failed to save checkpoint at episode",
-                            episode + 1,
-                        )
-
-        return metrics^
+    # =========================================================================
+    # Evaluation (deterministic policy: use mean action)
+    # =========================================================================
 
     fn evaluate[
-        E: BoxContinuousActionEnv & RenderableEnv
+        E: BoxContinuousActionEnv
     ](
         self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 200,
         verbose: Bool = False,
-        render: Bool = False,
-        frame_delay_ms: Int = 16,
-    ) raises -> Float64:
-        """Evaluate the agent using deterministic policy.
+    ) -> Float64:
+        """Evaluate the agent using the deterministic mean action (no sampling).
+
+        Delegates to run_offpolicy_continuous_eval (uses select_greedy_action_list).
 
         Args:
-            env: The environment to evaluate on.
+            env: Environment to evaluate on.
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps: Maximum steps per episode (default: 200).
-            verbose: Whether to print per-episode results.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
+            verbose: Print per-episode results (default: False).
 
         Returns:
-            Average reward over evaluation episodes.
+            Average reward across evaluation episodes.
         """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        for episode in range(num_episodes):
-            if quit_requested:
-                break
-
-            var obs = self._list_to_simd(env.reset_obs_list())
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps):
-                # Deterministic action
-                var action = self.select_action(obs, deterministic=True)
-
-                # Convert action to List for step_continuous_vec
-                var action_list = List[Float64](capacity=Self.action_dim)
-                for i in range(Self.action_dim):
-                    action_list.append(Float64(action[i]))
-
-                # Step environment with full action vector
-                var result = env.step_continuous_vec(action_list^)
-                # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
-                var reward = result[1]
-                var done = result[2]
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                episode_reward += reward
-                obs = self._list_to_simd(env.get_obs_list())
-                episode_steps += 1
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
-                )
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
-
-    fn get_alpha(self) -> Float64:
-        """Get current entropy coefficient."""
-        return self.alpha
-
-    fn get_train_steps(self) -> Int:
-        """Get total training steps performed."""
-        return self.train_step_count
+        return run_offpolicy_continuous_eval(
+            self,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps,
+            verbose=verbose,
+            algorithm_name="Deep SAC",
+        ).mean_reward()
 
     # =========================================================================
-    # Checkpoint Save/Load
+    # Checkpoint Save / Load
     # =========================================================================
 
     fn save_checkpoint(self, filepath: String) raises:
         """Save agent state to a checkpoint file.
 
-        Saves actor, critic1, critic1_target, critic2, critic2_target networks
-        and hyperparameters including entropy coefficient.
+        Saves actor, critic1_online, critic1_target, critic2_online,
+        critic2_target params and optimizer states, plus hyperparameters.
+        The replay buffer is NOT saved.
 
         Args:
-            filepath: Path to save the checkpoint file.
+            filepath: Destination path (e.g. "sac_agent.ckpt").
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic1.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+        comptime ACTOR_PARAM_SIZE = Self.ActorNet.PARAM_SIZE
+        comptime CRITIC_PARAM_SIZE = Self.CriticNet.PARAM_SIZE
+        comptime ACTOR_STATE_SIZE = ACTOR_PARAM_SIZE * Adam[Self.actor_lr].STATE_PER_PARAM
+        comptime CRITIC_STATE_SIZE = CRITIC_PARAM_SIZE * Adam[Self.critic_lr].STATE_PER_PARAM
 
-        var content = String("# mojo-rl checkpoint v1\n")
-        content += "# type: sac_agent\n"
-        content += "# actor_param_size: " + String(actor_param_size) + "\n"
-        content += "# critic_param_size: " + String(critic_param_size) + "\n"
+        var content = write_checkpoint_header(
+            "sac_agent",
+            ACTOR_PARAM_SIZE + 2 * CRITIC_PARAM_SIZE,
+            ACTOR_STATE_SIZE + 2 * CRITIC_STATE_SIZE,
+        )
+        content += self.actor.write_sections("actor_")
+        content += self.critic1_online.write_sections("critic1_online_")
+        content += self.critic1_target.write_sections("critic1_target_")
+        content += self.critic2_online.write_sections("critic2_online_")
+        content += self.critic2_target.write_sections("critic2_target_")
 
-        # Actor params (no target actor in SAC)
-        content += "actor_params:\n"
-        for i in range(actor_param_size):
-            content += String(Float64(self.actor.params[i])) + "\n"
-
-        content += "actor_optimizer_state:\n"
-        for i in range(actor_state_size):
-            content += String(Float64(self.actor.optimizer_state[i])) + "\n"
-
-        # Critic1 params
-        content += "critic1_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic1.params[i])) + "\n"
-
-        content += "critic1_optimizer_state:\n"
-        for i in range(critic_state_size):
-            content += String(Float64(self.critic1.optimizer_state[i])) + "\n"
-
-        content += "critic1_target_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic1_target.params[i])) + "\n"
-
-        # Critic2 params
-        content += "critic2_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic2.params[i])) + "\n"
-
-        content += "critic2_optimizer_state:\n"
-        for i in range(critic_state_size):
-            content += String(Float64(self.critic2.optimizer_state[i])) + "\n"
-
-        content += "critic2_target_params:\n"
-        for i in range(critic_param_size):
-            content += String(Float64(self.critic2_target.params[i])) + "\n"
-
-        # Metadata including entropy params
-        content += "metadata:\n"
-        content += "gamma=" + String(self.gamma) + "\n"
-        content += "tau=" + String(self.tau) + "\n"
-        content += "actor_lr=" + String(self.actor_lr) + "\n"
-        content += "critic_lr=" + String(self.critic_lr) + "\n"
-        content += "action_scale=" + String(self.action_scale) + "\n"
-        content += "alpha=" + String(self.alpha) + "\n"
-        content += "log_alpha=" + String(self.log_alpha) + "\n"
-        content += "target_entropy=" + String(self.target_entropy) + "\n"
-        content += "alpha_lr=" + String(self.alpha_lr) + "\n"
-        content += "auto_alpha=" + String(self.auto_alpha) + "\n"
-        content += "total_steps=" + String(self.total_steps) + "\n"
-        content += "train_step_count=" + String(self.train_step_count) + "\n"
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("actor_lr=" + String(Self.actor_lr))
+        metadata.append("critic_lr=" + String(Self.critic_lr))
+        metadata.append("action_scale=" + String(self.action_scale))
+        metadata.append("alpha=" + String(self.alpha))
+        metadata.append("log_alpha=" + String(self.log_alpha))
+        metadata.append("target_entropy=" + String(self.target_entropy))
+        metadata.append("alpha_lr=" + String(self.alpha_lr))
+        metadata.append("auto_alpha=" + String(Int(self.auto_alpha)))
+        metadata.append("total_steps=" + String(self.total_steps))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
 
         save_checkpoint_file(filepath, content)
 
@@ -1286,100 +1159,52 @@ struct DeepSACAgent[
         Args:
             filepath: Path to the checkpoint file.
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic1.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
-
         var content = read_checkpoint_file(filepath)
-        var lines = split_lines(content)
 
-        # Load actor params
-        var actor_params_start = find_section_start(lines, "actor_params:")
-        for i in range(actor_param_size):
-            self.actor.params[i] = Scalar[dtype](
-                atof(lines[actor_params_start + i])
-            )
+        self.actor.read_sections(content, "actor_")
+        self.critic1_online.read_sections(content, "critic1_online_")
+        self.critic1_target.read_sections(content, "critic1_target_")
+        self.critic2_online.read_sections(content, "critic2_online_")
+        self.critic2_target.read_sections(content, "critic2_target_")
 
-        var actor_state_start = find_section_start(
-            lines, "actor_optimizer_state:"
-        )
-        for i in range(actor_state_size):
-            self.actor.optimizer_state[i] = Scalar[dtype](
-                atof(lines[actor_state_start + i])
-            )
+        var metadata = read_metadata_section(content)
 
-        # Load critic1 params
-        var critic1_params_start = find_section_start(lines, "critic1_params:")
-        for i in range(critic_param_size):
-            self.critic1.params[i] = Scalar[dtype](
-                atof(lines[critic1_params_start + i])
-            )
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
 
-        var critic1_state_start = find_section_start(
-            lines, "critic1_optimizer_state:"
-        )
-        for i in range(critic_state_size):
-            self.critic1.optimizer_state[i] = Scalar[dtype](
-                atof(lines[critic1_state_start + i])
-            )
+        var tau_str = get_metadata_value(metadata, "tau")
+        if len(tau_str) > 0:
+            self.tau = atof(tau_str)
 
-        var critic1_target_start = find_section_start(
-            lines, "critic1_target_params:"
-        )
-        for i in range(critic_param_size):
-            self.critic1_target.params[i] = Scalar[dtype](
-                atof(lines[critic1_target_start + i])
-            )
+        var action_scale_str = get_metadata_value(metadata, "action_scale")
+        if len(action_scale_str) > 0:
+            self.action_scale = atof(action_scale_str)
 
-        # Load critic2 params
-        var critic2_params_start = find_section_start(lines, "critic2_params:")
-        for i in range(critic_param_size):
-            self.critic2.params[i] = Scalar[dtype](
-                atof(lines[critic2_params_start + i])
-            )
+        var alpha_str = get_metadata_value(metadata, "alpha")
+        if len(alpha_str) > 0:
+            self.alpha = atof(alpha_str)
 
-        var critic2_state_start = find_section_start(
-            lines, "critic2_optimizer_state:"
-        )
-        for i in range(critic_state_size):
-            self.critic2.optimizer_state[i] = Scalar[dtype](
-                atof(lines[critic2_state_start + i])
-            )
+        var log_alpha_str = get_metadata_value(metadata, "log_alpha")
+        if len(log_alpha_str) > 0:
+            self.log_alpha = atof(log_alpha_str)
 
-        var critic2_target_start = find_section_start(
-            lines, "critic2_target_params:"
-        )
-        for i in range(critic_param_size):
-            self.critic2_target.params[i] = Scalar[dtype](
-                atof(lines[critic2_target_start + i])
-            )
+        var te_str = get_metadata_value(metadata, "target_entropy")
+        if len(te_str) > 0:
+            self.target_entropy = atof(te_str)
 
-        # Load metadata
-        var metadata_start = find_section_start(lines, "metadata:")
-        for i in range(metadata_start, len(lines)):
-            var line = lines[i]
-            if line.startswith("gamma="):
-                self.gamma = atof(String(line[6:]))
-            elif line.startswith("tau="):
-                self.tau = atof(String(line[4:]))
-            elif line.startswith("actor_lr="):
-                self.actor_lr = atof(String(line[9:]))
-            elif line.startswith("critic_lr="):
-                self.critic_lr = atof(String(line[10:]))
-            elif line.startswith("action_scale="):
-                self.action_scale = atof(String(line[13:]))
-            elif line.startswith("alpha="):
-                self.alpha = atof(String(line[6:]))
-            elif line.startswith("log_alpha="):
-                self.log_alpha = atof(String(line[10:]))
-            elif line.startswith("target_entropy="):
-                self.target_entropy = atof(String(line[15:]))
-            elif line.startswith("alpha_lr="):
-                self.alpha_lr = atof(String(line[9:]))
-            elif line.startswith("auto_alpha="):
-                self.auto_alpha = String(line[11:]) == "True"
-            elif line.startswith("total_steps="):
-                self.total_steps = Int(atol(String(line[12:])))
-            elif line.startswith("train_step_count="):
-                self.train_step_count = Int(atol(String(line[17:])))
+        var alpha_lr_str = get_metadata_value(metadata, "alpha_lr")
+        if len(alpha_lr_str) > 0:
+            self.alpha_lr = atof(alpha_lr_str)
+
+        var auto_alpha_str = get_metadata_value(metadata, "auto_alpha")
+        if len(auto_alpha_str) > 0:
+            self.auto_alpha = Int(atol(auto_alpha_str)) != 0
+
+        var total_steps_str = get_metadata_value(metadata, "total_steps")
+        if len(total_steps_str) > 0:
+            self.total_steps = Int(atol(total_steps_str))
+
+        var train_step_str = get_metadata_value(metadata, "train_step_count")
+        if len(train_step_str) > 0:
+            self.train_step_count = Int(atol(train_step_str))
