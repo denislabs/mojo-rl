@@ -27,19 +27,19 @@ struct Transition(Copyable, ImplicitlyCopyable, Movable):
         self.next_state = next_state
         self.done = done
 
-    fn __copyinit__(out self, existing: Self):
-        self.state = existing.state
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state
-        self.done = existing.done
+    fn __init__(out self, *, copy: Self):
+        self.state = copy.state
+        self.action = copy.action
+        self.reward = copy.reward
+        self.next_state = copy.next_state
+        self.done = copy.done
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.state = existing.state
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state
-        self.done = existing.done
+    fn __init__(out self, *, deinit take: Self):
+        self.state = take.state
+        self.action = take.action
+        self.reward = take.reward
+        self.next_state = take.next_state
+        self.done = take.done
 
 
 struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
@@ -103,25 +103,25 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
             )
         return new_buffer^
 
-    fn __copyinit__(out self, existing: Self):
-        self.states = existing.states.copy()
-        self.actions = existing.actions.copy()
-        self.rewards = existing.rewards.copy()
-        self.next_states = existing.next_states.copy()
-        self.dones = existing.dones.copy()
-        self.capacity = existing.capacity
-        self.size = existing.size
-        self.position = existing.position
+    fn __init__(out self, *, copy: Self):
+        self.states = copy.states.copy()
+        self.actions = copy.actions.copy()
+        self.rewards = copy.rewards.copy()
+        self.next_states = copy.next_states.copy()
+        self.dones = copy.dones.copy()
+        self.capacity = copy.capacity
+        self.size = copy.size
+        self.position = copy.position
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.states = existing.states^
-        self.actions = existing.actions^
-        self.rewards = existing.rewards^
-        self.next_states = existing.next_states^
-        self.dones = existing.dones^
-        self.capacity = existing.capacity
-        self.size = existing.size
-        self.position = existing.position
+    fn __init__(out self, *, deinit take: Self):
+        self.states = take.states^
+        self.actions = take.actions^
+        self.rewards = take.rewards^
+        self.next_states = take.next_states^
+        self.dones = take.dones^
+        self.capacity = take.capacity
+        self.size = take.size
+        self.position = take.position
 
     fn push(
         mut self,
@@ -234,21 +234,21 @@ struct PrioritizedTransition(Copyable, ImplicitlyCopyable, Movable):
         self.done = done
         self.weight = weight
 
-    fn __copyinit__(out self, existing: Self):
-        self.state = existing.state
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state
-        self.done = existing.done
-        self.weight = existing.weight
+    fn __init__(out self, *, copy: Self):
+        self.state = copy.state
+        self.action = copy.action
+        self.reward = copy.reward
+        self.next_state = copy.next_state
+        self.done = copy.done
+        self.weight = copy.weight
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.state = existing.state
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state
-        self.done = existing.done
-        self.weight = existing.weight
+    fn __init__(out self, *, deinit take: Self):
+        self.state = take.state
+        self.action = take.action
+        self.reward = take.reward
+        self.next_state = take.next_state
+        self.done = take.done
+        self.weight = take.weight
 
 
 struct PrioritizedReplayBuffer(Movable):
@@ -346,21 +346,21 @@ struct PrioritizedReplayBuffer(Movable):
             self.next_states.append(0)
             self.dones.append(False)
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.states = existing.states^
-        self.actions = existing.actions^
-        self.rewards = existing.rewards^
-        self.next_states = existing.next_states^
-        self.dones = existing.dones^
-        self.tree = existing.tree^
-        self.capacity = existing.capacity
-        self.size = existing.size
-        self.position = existing.position
-        self.alpha = existing.alpha
-        self.beta = existing.beta
-        self.epsilon = existing.epsilon
-        self.max_priority = existing.max_priority
+        self.states = take.states^
+        self.actions = take.actions^
+        self.rewards = take.rewards^
+        self.next_states = take.next_states^
+        self.dones = take.dones^
+        self.tree = take.tree^
+        self.capacity = take.capacity
+        self.size = take.size
+        self.position = take.position
+        self.alpha = take.alpha
+        self.beta = take.beta
+        self.epsilon = take.epsilon
+        self.max_priority = take.max_priority
 
     fn _compute_priority(self, td_error: Float64) -> Float64:
         """Compute priority from TD error: (|δ| + ε)^α."""
@@ -411,7 +411,9 @@ struct PrioritizedReplayBuffer(Movable):
         if raw_priority > self.max_priority:
             self.max_priority = raw_priority
 
-    fn update_priorities(mut self, indices: List[Int], td_errors: List[Float64]):
+    fn update_priorities(
+        mut self, indices: List[Int], td_errors: List[Float64]
+    ):
         """Batch update priorities for multiple transitions.
 
         Args:
@@ -466,7 +468,9 @@ struct PrioritizedReplayBuffer(Movable):
             # Compute importance sampling weight
             var priority = self.tree.get(idx)
             var prob = priority / total_priority
-            var weight = ((Float64(self.size) * prob) ** (-use_beta)) / max_weight
+            var weight = (
+                (Float64(self.size) * prob) ** (-use_beta)
+            ) / max_weight
 
             batch.append(
                 PrioritizedTransition(

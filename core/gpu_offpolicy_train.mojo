@@ -164,7 +164,7 @@ trait GPUOffPolicyAgent:
 
     fn download_from_gpu(
         mut self,
-        gpu_state: Self.GPUStateType,
+        mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
         """Download trained GPU weights back to CPU network states.

@@ -41,11 +41,17 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, LinearReLU, LinearTanh, Sequential
-from nn.optimizer import Adam
+from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
+from nn.optimizer import Optimizer, Adam
 from nn.initializer import Kaiming, Xavier
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.utils import fill_inline, obs_to_inline
+from nn.training import Network, NetworkState, GPUNetworkState, NetworkPair, GPUNetworkPair
+from nn.utils import fill_inline, obs_to_inline, concat_obs_action_batch
+from deep_agents.offpolicy_helpers import (
+    deterministic_select_action,
+    greedy_continuous_action,
+    store_continuous_transition,
+    random_continuous_action,
+)
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
 from nn.gpu import (
@@ -100,177 +106,173 @@ struct DDPGGPUState[
     Holds all device buffers needed for one DDPG training loop:
       - Four GPU network states (actor + critic, online + target)
       - GPU replay buffer
-      - Exploration RNG states + inference scratch (sized by max_n_envs)
+      - Exploration RNG states + inference scratch (sized by Self.max_n_envs)
       - Training scratch buffers (sample output, Q caches, grad buffers)
 
     Created once at the start of GPU training via DeepDDPGAgent.make_gpu_state.
     CPU weights are uploaded separately via DeepDDPGAgent.upload_to_gpu.
 
     Parameters:
-        ActorModel: Actor network model type.
-        ActorOpt: Actor optimizer type.
-        CriticModel: Critic network model type.
-        CriticOpt: Critic optimizer type.
-        buffer_capacity: GPU replay buffer capacity.
-        obs_dim: Observation space dimension.
-        action_dim: Action space dimension.
-        batch_size: Training batch size.
-        max_n_envs: Max parallel environments (sizes exploration buffers).
+        Self.ActorModel: Actor network model type.
+        Self.ActorOpt: Actor optimizer type.
+        Self.CriticModel: Critic network model type.
+        Self.CriticOpt: Critic optimizer type.
+        Self.buffer_capacity: GPU replay buffer capacity.
+        Self.obs_dim: Observation space dimension.
+        Self.action_dim: Action space dimension.
+        Self.batch_size: Training batch size.
+        Self.max_n_envs: Max parallel environments (sizes exploration buffers).
     """
 
-    comptime CRITIC_IN = obs_dim + action_dim
-    comptime ACTOR_CS = ActorModel.CACHE_SIZE
-    comptime CRITIC_CS = CriticModel.CACHE_SIZE
-    comptime ActorNet = Network[ActorModel, ActorOpt]
-    comptime CriticNet = Network[CriticModel, CriticOpt]
+    comptime CRITIC_IN = Self.obs_dim + Self.action_dim
+    comptime ACTOR_CS = Self.ActorModel.CACHE_SIZE
+    comptime CRITIC_CS = Self.CriticModel.CACHE_SIZE
+    comptime ActorNet = Network[Self.ActorModel, Self.ActorOpt]
+    comptime CriticNet = Network[Self.CriticModel, Self.CriticOpt]
     comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
     comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
 
     # GPU network states
-    var actor_online: GPUNetworkState[ActorModel, ActorOpt]
-    var actor_target: GPUNetworkState[ActorModel, ActorOpt]
-    var critic_online: GPUNetworkState[CriticModel, CriticOpt]
-    var critic_target: GPUNetworkState[CriticModel, CriticOpt]
+    var actor: GPUNetworkPair[Self.ActorModel, Self.ActorOpt]
+    var critic: GPUNetworkPair[Self.CriticModel, Self.CriticOpt]
 
     # GPU replay buffer
-    var buffer: GPUReplayBuffer[buffer_capacity, obs_dim, action_dim]
+    var buffer: GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim]
 
-    # Exploration buffers (sized by max_n_envs)
-    var rng_states: DeviceBuffer[DType.uint32]  # [max_n_envs * action_dim]
-    var raw_act: DeviceBuffer[dtype]            # [max_n_envs * action_dim]
-    var inf_ws: DeviceBuffer[dtype]             # [max_n_envs * ACTOR_WS]
+    # Exploration buffers (sized by Self.max_n_envs)
+    var rng_states: DeviceBuffer[DType.uint32]  # [Self.max_n_envs * Self.action_dim]
+    var raw_act: DeviceBuffer[dtype]            # [Self.max_n_envs * Self.action_dim]
+    var inf_ws: DeviceBuffer[dtype]             # [Self.max_n_envs * ACTOR_WS]
 
     # Training scratch — replay sample output
-    var s_obs: DeviceBuffer[dtype]    # [batch_size * obs_dim]
-    var s_act: DeviceBuffer[dtype]    # [batch_size * action_dim]
-    var s_rew: DeviceBuffer[dtype]    # [batch_size]
-    var s_nobs: DeviceBuffer[dtype]   # [batch_size * obs_dim]
-    var s_done: DeviceBuffer[dtype]   # [batch_size]
-    var s_idx: DeviceBuffer[DType.int32]  # [batch_size]
+    var s_obs: DeviceBuffer[dtype]    # [Self.batch_size * Self.obs_dim]
+    var s_act: DeviceBuffer[dtype]    # [Self.batch_size * Self.action_dim]
+    var s_rew: DeviceBuffer[dtype]    # [Self.batch_size]
+    var s_nobs: DeviceBuffer[dtype]   # [Self.batch_size * Self.obs_dim]
+    var s_done: DeviceBuffer[dtype]   # [Self.batch_size]
+    var s_idx: DeviceBuffer[DType.int32]  # [Self.batch_size]
 
     # Training scratch — TD target computation
-    var next_act: DeviceBuffer[dtype]   # [batch_size * action_dim]
-    var next_ci: DeviceBuffer[dtype]    # [batch_size * CRITIC_IN]
-    var next_q: DeviceBuffer[dtype]     # [batch_size * 1]
-    var targets: DeviceBuffer[dtype]    # [batch_size]
+    var next_act: DeviceBuffer[dtype]   # [Self.batch_size * Self.action_dim]
+    var next_ci: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_IN]
+    var next_q: DeviceBuffer[dtype]     # [Self.batch_size * 1]
+    var targets: DeviceBuffer[dtype]    # [Self.batch_size]
 
     # Training scratch — critic update
-    var ci: DeviceBuffer[dtype]         # [batch_size * CRITIC_IN]
-    var q_out: DeviceBuffer[dtype]      # [batch_size * 1]
-    var q_cache: DeviceBuffer[dtype]    # [batch_size * CRITIC_CS]
-    var critic_ws: DeviceBuffer[dtype]  # [batch_size * CRITIC_WS]
-    var q_grad: DeviceBuffer[dtype]     # [batch_size * 1]
-    var d_ci: DeviceBuffer[dtype]       # [batch_size * CRITIC_IN]
+    var ci: DeviceBuffer[dtype]         # [Self.batch_size * CRITIC_IN]
+    var q_out: DeviceBuffer[dtype]      # [Self.batch_size * 1]
+    var q_cache: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_CS]
+    var critic_ws: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_WS]
+    var q_grad: DeviceBuffer[dtype]     # [Self.batch_size * 1]
+    var d_ci: DeviceBuffer[dtype]       # [Self.batch_size * CRITIC_IN]
 
     # Training scratch — actor update
-    var actor_act: DeviceBuffer[dtype]      # [batch_size * action_dim]
-    var new_ci: DeviceBuffer[dtype]         # [batch_size * CRITIC_IN]
-    var new_q: DeviceBuffer[dtype]          # [batch_size * 1]
-    var new_q_cache: DeviceBuffer[dtype]    # [batch_size * CRITIC_CS]
-    var actor_cache: DeviceBuffer[dtype]    # [batch_size * ACTOR_CS]
-    var actor_ws: DeviceBuffer[dtype]       # [batch_size * ACTOR_WS]
-    var dq: DeviceBuffer[dtype]             # [batch_size * 1] constant -1/batch_size
-    var d_new_ci: DeviceBuffer[dtype]       # [batch_size * CRITIC_IN]
-    var d_act: DeviceBuffer[dtype]          # [batch_size * action_dim]
-    var d_obs: DeviceBuffer[dtype]          # [batch_size * obs_dim]
+    var actor_act: DeviceBuffer[dtype]      # [Self.batch_size * Self.action_dim]
+    var new_ci: DeviceBuffer[dtype]         # [Self.batch_size * CRITIC_IN]
+    var new_q: DeviceBuffer[dtype]          # [Self.batch_size * 1]
+    var new_q_cache: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_CS]
+    var actor_cache: DeviceBuffer[dtype]    # [Self.batch_size * ACTOR_CS]
+    var actor_ws: DeviceBuffer[dtype]       # [Self.batch_size * ACTOR_WS]
+    var dq: DeviceBuffer[dtype]             # [Self.batch_size * 1] constant -1/Self.batch_size
+    var d_new_ci: DeviceBuffer[dtype]       # [Self.batch_size * CRITIC_IN]
+    var d_act: DeviceBuffer[dtype]          # [Self.batch_size * Self.action_dim]
+    var d_obs: DeviceBuffer[dtype]          # [Self.batch_size * Self.obs_dim]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
-        self.actor_online = GPUNetworkState[ActorModel, ActorOpt](ctx)
-        self.actor_target = GPUNetworkState[ActorModel, ActorOpt](ctx)
-        self.critic_online = GPUNetworkState[CriticModel, CriticOpt](ctx)
-        self.critic_target = GPUNetworkState[CriticModel, CriticOpt](ctx)
-        self.buffer = GPUReplayBuffer[buffer_capacity, obs_dim, action_dim](
+        self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
+        self.critic = GPUNetworkPair[Self.CriticModel, Self.CriticOpt](ctx)
+        self.buffer = GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim](
             ctx
         )
 
         # Exploration buffers
         self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
-            max_n_envs * action_dim
+            Self.max_n_envs * Self.action_dim
         )
         self.raw_act = ctx.enqueue_create_buffer[dtype](
-            max_n_envs * action_dim
+            Self.max_n_envs * Self.action_dim
         )
         self.inf_ws = ctx.enqueue_create_buffer[dtype](
-            max_n_envs * Self.ACTOR_WS
+            Self.max_n_envs * Self.ACTOR_WS
         )
 
         # Replay sample output
-        self.s_obs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
+        self.s_obs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
         self.s_act = ctx.enqueue_create_buffer[dtype](
-            batch_size * action_dim
+            Self.batch_size * Self.action_dim
         )
-        self.s_rew = ctx.enqueue_create_buffer[dtype](batch_size)
-        self.s_nobs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
-        self.s_done = ctx.enqueue_create_buffer[dtype](batch_size)
-        self.s_idx = ctx.enqueue_create_buffer[DType.int32](batch_size)
+        self.s_rew = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        self.s_nobs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
+        self.s_done = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        self.s_idx = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
 
         # TD target computation
         self.next_act = ctx.enqueue_create_buffer[dtype](
-            batch_size * action_dim
+            Self.batch_size * Self.action_dim
         )
         self.next_ci = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_IN
+            Self.batch_size * Self.CRITIC_IN
         )
-        self.next_q = ctx.enqueue_create_buffer[dtype](batch_size * 1)
-        self.targets = ctx.enqueue_create_buffer[dtype](batch_size)
+        self.next_q = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
+        self.targets = ctx.enqueue_create_buffer[dtype](Self.batch_size)
 
         # Critic update
         self.ci = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_IN
+            Self.batch_size * Self.CRITIC_IN
         )
-        self.q_out = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.q_out = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
         self.q_cache = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_CS
+            Self.batch_size * Self.CRITIC_CS
         )
         self.critic_ws = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_WS
+            Self.batch_size * Self.CRITIC_WS
         )
-        self.q_grad = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.q_grad = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
         self.d_ci = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_IN
+            Self.batch_size * Self.CRITIC_IN
         )
 
         # Actor update
         self.actor_act = ctx.enqueue_create_buffer[dtype](
-            batch_size * action_dim
+            Self.batch_size * Self.action_dim
         )
         self.new_ci = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_IN
+            Self.batch_size * Self.CRITIC_IN
         )
-        self.new_q = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.new_q = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
         self.new_q_cache = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_CS
+            Self.batch_size * Self.CRITIC_CS
         )
         self.actor_cache = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.ACTOR_CS
+            Self.batch_size * Self.ACTOR_CS
         )
         self.actor_ws = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.ACTOR_WS
+            Self.batch_size * Self.ACTOR_WS
         )
-        self.dq = ctx.enqueue_create_buffer[dtype](batch_size * 1)
+        self.dq = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
         self.d_new_ci = ctx.enqueue_create_buffer[dtype](
-            batch_size * Self.CRITIC_IN
+            Self.batch_size * Self.CRITIC_IN
         )
         self.d_act = ctx.enqueue_create_buffer[dtype](
-            batch_size * action_dim
+            Self.batch_size * Self.action_dim
         )
-        self.d_obs = ctx.enqueue_create_buffer[dtype](batch_size * obs_dim)
+        self.d_obs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
 
-        # Pre-fill dq with -1/batch_size (constant policy-gradient weight)
+        # Pre-fill dq with -1/Self.batch_size (constant policy-gradient weight)
         ctx.synchronize()
-        var dq_host = ctx.enqueue_create_host_buffer[dtype](batch_size)
-        for i in range(batch_size):
-            dq_host[i] = Scalar[dtype](-1.0 / Float64(batch_size))
+        var dq_host = ctx.enqueue_create_host_buffer[dtype](Self.batch_size)
+        for i in range(Self.batch_size):
+            dq_host[i] = Scalar[dtype](-1.0 / Float64(Self.batch_size))
         ctx.enqueue_copy(self.dq, dq_host)
 
         # Initialize persistent exploration RNG states (xorshift32)
         ctx.synchronize()
         var rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            max_n_envs * action_dim
+            Self.max_n_envs * Self.action_dim
         )
         var rng_s: UInt32 = 12345
-        for i in range(max_n_envs * action_dim):
+        for i in range(Self.max_n_envs * Self.action_dim):
             rng_s = rng_s ^ (rng_s << 13)
             rng_s = rng_s ^ (rng_s >> 17)
             rng_s = rng_s ^ (rng_s << 5)
@@ -296,8 +298,8 @@ struct DDPGGPUState[
         )
 
     fn gpu_buffer_is_ready(self) -> Bool:
-        """Return True if the GPU replay buffer has at least batch_size samples."""
-        return self.buffer.is_ready[batch_size]()
+        """Return True if the GPU replay buffer has at least Self.batch_size samples."""
+        return self.buffer.is_ready[Self.batch_size]()
 
 
 # =============================================================================
@@ -381,10 +383,8 @@ struct DeepDDPGAgent[
     ]
 
     # Network states (heap-allocated params + grads + optimizer state)
-    var actor_online: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
-    var actor_target: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
-    var critic_online: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
-    var critic_target: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+    var actor: NetworkPair[Self.ActorModel, Adam[Self.actor_lr]]
+    var critic: NetworkPair[Self.CriticModel, Adam[Self.critic_lr]]
 
     # Replay buffer (action_dim-dimensional continuous actions)
     var buffer: ReplayBuffer[
@@ -406,6 +406,30 @@ struct DeepDDPGAgent[
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
+
+    # Pre-allocated train_step scratch (heap, avoids per-call stack allocation)
+    var _batch_obs: List[Scalar[dtype]]
+    var _batch_act: List[Scalar[dtype]]
+    var _batch_rew: List[Scalar[dtype]]
+    var _batch_next: List[Scalar[dtype]]
+    var _batch_done: List[Scalar[dtype]]
+    var _next_act: List[Scalar[dtype]]
+    var _next_ci: List[Scalar[dtype]]
+    var _next_q: List[Scalar[dtype]]
+    var _targets: List[Scalar[dtype]]
+    var _ci: List[Scalar[dtype]]
+    var _q_out: List[Scalar[dtype]]
+    var _q_cache: List[Scalar[dtype]]
+    var _q_grad: List[Scalar[dtype]]
+    var _d_ci: List[Scalar[dtype]]
+    var _actor_act: List[Scalar[dtype]]
+    var _actor_cache: List[Scalar[dtype]]
+    var _new_ci: List[Scalar[dtype]]
+    var _new_q: List[Scalar[dtype]]
+    var _dq: List[Scalar[dtype]]
+    var _d_new_ci: List[Scalar[dtype]]
+    var _d_act: List[Scalar[dtype]]
+    var _d_obs: List[Scalar[dtype]]
 
     fn __init__(
         out self,
@@ -430,21 +454,10 @@ struct DeepDDPGAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Initialize online networks with Xavier (actor, tanh) / Kaiming (critic, ReLU)
-        self.actor_online = NetworkState[Self.ActorModel, Adam[Self.actor_lr]](
-        )
-        self.actor_online.initialize[Xavier]()
-        self.actor_target = NetworkState[Self.ActorModel, Adam[Self.actor_lr]](
-            copy=self.actor_online
-        )
-
-        self.critic_online = NetworkState[
-            Self.CriticModel, Adam[Self.critic_lr]
-        ]()
-        self.critic_online.initialize[Kaiming]()
-        self.critic_target = NetworkState[
-            Self.CriticModel, Adam[Self.critic_lr]
-        ](copy=self.critic_online)
+        self.actor = NetworkPair[Self.ActorModel, Adam[Self.actor_lr]]()
+        self.actor.initialize[Xavier]()
+        self.critic = NetworkPair[Self.CriticModel, Adam[Self.critic_lr]]()
+        self.critic.initialize[Kaiming]()
 
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
@@ -461,69 +474,88 @@ struct DeepDDPGAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
+        self._batch_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
+        self._batch_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._batch_rew = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._batch_next = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
+        self._batch_done = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._next_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._next_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._next_q = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._targets = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._q_out = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._q_cache = List[Scalar[dtype]](capacity=Self.BATCH * Self.CriticModel.CACHE_SIZE)
+        self._q_grad = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._d_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._actor_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._actor_cache = List[Scalar[dtype]](capacity=Self.BATCH * Self.ActorModel.CACHE_SIZE)
+        self._new_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._new_q = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._dq = List[Scalar[dtype]](capacity=Self.BATCH)
+        self._d_new_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._d_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._d_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
+        for _ in range(Self.BATCH * Self.OBS):
+            self._batch_obs.append(Scalar[dtype](0))
+            self._batch_next.append(Scalar[dtype](0))
+            self._d_obs.append(Scalar[dtype](0))
+        for _ in range(Self.BATCH * Self.ACTIONS):
+            self._batch_act.append(Scalar[dtype](0))
+            self._next_act.append(Scalar[dtype](0))
+            self._actor_act.append(Scalar[dtype](0))
+            self._d_act.append(Scalar[dtype](0))
+        for _ in range(Self.BATCH):
+            self._batch_rew.append(Scalar[dtype](0))
+            self._batch_done.append(Scalar[dtype](0))
+            self._next_q.append(Scalar[dtype](0))
+            self._targets.append(Scalar[dtype](0))
+            self._q_out.append(Scalar[dtype](0))
+            self._q_grad.append(Scalar[dtype](0))
+            self._new_q.append(Scalar[dtype](0))
+            self._dq.append(Scalar[dtype](0))
+        for _ in range(Self.BATCH * Self.CRITIC_IN):
+            self._next_ci.append(Scalar[dtype](0))
+            self._ci.append(Scalar[dtype](0))
+            self._d_ci.append(Scalar[dtype](0))
+            self._new_ci.append(Scalar[dtype](0))
+            self._d_new_ci.append(Scalar[dtype](0))
+        for _ in range(Self.BATCH * Self.CriticModel.CACHE_SIZE):
+            self._q_cache.append(Scalar[dtype](0))
+        for _ in range(Self.BATCH * Self.ActorModel.CACHE_SIZE):
+            self._actor_cache.append(Scalar[dtype](0))
+
     # =========================================================================
     # OffPolicyAgent trait — required methods (CPU training)
     # =========================================================================
 
     fn select_action_list(
-        mut self, obs: List[Scalar[Float64]]
-    ) -> List[Scalar[Float64]]:
-        """Select action with Gaussian exploration noise (training).
-
-        Args:
-            obs: Observation as List[Float64].
-
-        Returns:
-            Action list of length action_dim, clipped to [-action_scale, action_scale].
-        """
-        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](obs_arr.unsafe_ptr())
-        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
+        mut self, obs: List[Float64]
+    ) -> List[Float64]:
+        """Select action with Gaussian exploration noise (training)."""
+        return deterministic_select_action[Self.ActorModel, Adam[Self.actor_lr]](
+            self.actor.online, obs, self.action_scale, self.noise_std
         )
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-        ](act_arr.unsafe_ptr())
-
-        var p = self.actor_online.params_view()
-        Self.ActorNet.forward[1](obs_t, act_t, p)
-
-        var result = List[Scalar[Float64]](capacity=Self.action_dim)
-        for i in range(Self.action_dim):
-            var a = Float64(act_arr[i]) * self.action_scale
-            a += self.noise_std * self.action_scale * gaussian_noise()
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            result.append(Float64(a))
-        return result^
 
     fn store_list_transition(
         mut self,
-        obs: List[Scalar[Float64]],
-        action: List[Scalar[Float64]],
+        obs: List[Float64],
+        action: List[Float64],
         reward: Float64,
-        next_obs: List[Scalar[Float64]],
+        next_obs: List[Float64],
         done: Bool,
     ) -> None:
-        """Store transition in the replay buffer.
-
-        Actions are stored unscaled (divided by action_scale) for consistency.
-        """
-        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
-        var next_arr = obs_to_inline[Self.OBS, DType.float64](next_obs)
-
-        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
+        """Store transition in the replay buffer."""
+        store_continuous_transition[Self.OBS, Self.ACTIONS, Self.buffer_capacity](
+            self.buffer,
+            obs,
+            action,
+            reward,
+            next_obs,
+            done,
+            self.action_scale,
+            self.total_steps,
         )
-        for i in range(Self.ACTIONS):
-            act_arr[i] = Scalar[dtype](Float64(action[i]) / self.action_scale)
-
-        self.buffer.add(obs_arr, act_arr, Scalar[dtype](reward), next_arr, done)
-        self.total_steps += 1
 
     fn is_ready(self) -> Bool:
         """Return True if buffer has enough samples to begin training."""
@@ -547,45 +579,17 @@ struct DeepDDPGAgent[
         """Return current exploration noise std."""
         return self.noise_std
 
-    fn random_action_list(self) -> List[Scalar[Float64]]:
+    fn random_action_list(self) -> List[Float64]:
         """Return a uniformly random action in [-action_scale, action_scale]."""
-        var result = List[Scalar[Float64]](capacity=Self.action_dim)
-        for _ in range(Self.action_dim):
-            var a = (random_float64() * 2.0 - 1.0) * self.action_scale
-            result.append(a)
-        return result^
+        return random_continuous_action(Self.action_dim, self.action_scale)
 
     fn select_greedy_action_list(
-        self, obs: List[Scalar[Float64]]
-    ) -> List[Scalar[Float64]]:
-        """Select action using deterministic policy (no exploration noise).
-
-        Used for evaluation. Same as select_action_list but without Gaussian
-        noise — pure actor forward pass.
-        """
-        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](obs_arr.unsafe_ptr())
-        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
+        self, obs: List[Float64]
+    ) -> List[Float64]:
+        """Select action using deterministic policy (no exploration noise)."""
+        return greedy_continuous_action[Self.ActorModel, Adam[Self.actor_lr]](
+            self.actor.online, obs, self.action_scale
         )
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-        ](act_arr.unsafe_ptr())
-
-        var p = self.actor_online.params_view()
-        Self.ActorNet.forward[1](obs_t, act_t, p)
-
-        var result = List[Scalar[Float64]](capacity=Self.action_dim)
-        for i in range(Self.action_dim):
-            var a = Float64(act_arr[i]) * self.action_scale
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            result.append(Float64(a))
-        return result^
 
     # =========================================================================
     # Core DDPG CPU Training Step
@@ -601,6 +605,7 @@ struct DeepDDPGAgent[
             return 0.0
 
         # Phase 1: Sample batch from replay buffer
+        # These 5 must remain local InlineArrays — ReplayBuffer.sample takes mut InlineArray
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
@@ -630,45 +635,37 @@ struct DeepDDPGAgent[
 
         # Phase 2: Compute TD targets
         # y = r + γ * Q_target(s', µ_target(s')) * (1 − done)
-        var next_act_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
         var next_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_act_arr.unsafe_ptr())
-        var p_actor_target = self.actor_target.params_view()
+        ](self._next_act.unsafe_ptr())
+        var p_actor_target = self.actor.target.params_view()
         Self.ActorNet.forward[Self.BATCH](
             next_obs_t, next_act_t, p_actor_target
         )
 
-        var next_ci_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
+        # Build next critic input: concat(batch_next, _next_act) via manual loop
+        # (batch_next is a local InlineArray; _next_act is a pre-allocated List)
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](self._next_ci.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                next_ci_arr[b * Self.CRITIC_IN + i] = batch_next[
+                self._next_ci[b * Self.CRITIC_IN + i] = batch_next[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                next_ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = next_act_arr[
-                    b * Self.ACTIONS + i
-                ]
+                self._next_ci[b * Self.CRITIC_IN + Self.OBS + i] = (
+                    self._next_act[b * Self.ACTIONS + i]
+                )
 
-        var next_ci_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](next_ci_arr.unsafe_ptr())
-        var next_q_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
-            uninitialized=True
-        )
         var next_q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](next_q_arr.unsafe_ptr())
-        var p_critic_target = self.critic_target.params_view()
+        ](self._next_q.unsafe_ptr())
+        var p_critic_target = self.critic.target.params_view()
         Self.CriticNet.forward[Self.BATCH](next_ci_t, next_q_t, p_critic_target)
 
-        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         for b in range(Self.BATCH):
-            var q = Float64(next_q_arr[b])
+            var q = Float64(self._next_q[b])
             if q != q:
                 q = 0.0
             var done_mask = 1.0 - Float64(batch_done[b])
@@ -679,176 +676,138 @@ struct DeepDDPGAgent[
                 tgt = 1000.0
             elif tgt < -1000.0:
                 tgt = -1000.0
-            targets[b] = Scalar[dtype](tgt)
+            self._targets[b] = Scalar[dtype](tgt)
 
         # Phase 3: Update Critic
-        var ci_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
-            uninitialized=True
-        )
+        # Build critic input: concat(batch_obs, batch_act) via manual loop
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+        ](self._ci.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                ci_arr[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+                self._ci[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
             for i in range(Self.ACTIONS):
-                ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
+                self._ci[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
                     b * Self.ACTIONS + i
                 ]
 
-        var ci_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](ci_arr.unsafe_ptr())
-        var q_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
-            uninitialized=True
-        )
         var q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](q_arr.unsafe_ptr())
-        var critic_cache_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
-        ](uninitialized=True)
+        ](self._q_out.unsafe_ptr())
         var critic_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](critic_cache_arr.unsafe_ptr())
+        ](self._q_cache.unsafe_ptr())
 
-        var p_critic = self.critic_online.params_view()
+        var p_critic = self.critic.params_view()
         Self.CriticNet.forward_with_cache[Self.BATCH](
             ci_t, q_t, p_critic, critic_cache_t
         )
 
-        var q_grad_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
-            uninitialized=True
-        )
+        var q_grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](self._q_grad.unsafe_ptr())
         var critic_loss: Float64 = 0.0
         for b in range(Self.BATCH):
-            var td_err = q_arr[b] - targets[b]
+            var td_err = self._q_out[b] - self._targets[b]
             critic_loss += Float64(td_err * td_err)
-            q_grad_arr[b] = (
+            self._q_grad[b] = (
                 Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
             )
         critic_loss /= Float64(Self.BATCH)
 
-        var q_grad_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](q_grad_arr.unsafe_ptr())
-        var d_ci_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
-            uninitialized=True
-        )
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](d_ci_arr.unsafe_ptr())
+        ](self._d_ci.unsafe_ptr())
 
-        var g_critic = self.critic_online.grads_view()
-        self.critic_online.zero_grads()
+        var g_critic = self.critic.grads_view()
+        self.critic.zero_grads()
         Self.CriticNet.backward[Self.BATCH](
             q_grad_t, d_ci_t, p_critic, critic_cache_t, g_critic
         )
-        self.critic_online.optimizer_step()
+        self.critic.optimizer_step()
 
         # Phase 4: Update Actor
-        var actor_act_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
         var actor_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](actor_act_arr.unsafe_ptr())
-        var actor_cache_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ActorModel.CACHE_SIZE
-        ](uninitialized=True)
+        ](self._actor_act.unsafe_ptr())
         var actor_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.ActorModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](actor_cache_arr.unsafe_ptr())
+        ](self._actor_cache.unsafe_ptr())
 
-        var p_actor = self.actor_online.params_view()
+        var p_actor = self.actor.params_view()
         Self.ActorNet.forward_with_cache[Self.BATCH](
             obs_t, actor_act_t, p_actor, actor_cache_t
         )
 
-        var new_ci_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                new_ci_arr[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
-            for i in range(Self.ACTIONS):
-                new_ci_arr[b * Self.CRITIC_IN + Self.OBS + i] = actor_act_arr[
-                    b * Self.ACTIONS + i
-                ]
-
+        # Build actor critic input: concat(batch_obs, _actor_act) via manual loop
         var new_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](new_ci_arr.unsafe_ptr())
-        var new_q_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
-            uninitialized=True
-        )
+        ](self._new_ci.unsafe_ptr())
+        for b in range(Self.BATCH):
+            for i in range(Self.OBS):
+                self._new_ci[b * Self.CRITIC_IN + i] = batch_obs[
+                    b * Self.OBS + i
+                ]
+            for i in range(Self.ACTIONS):
+                self._new_ci[b * Self.CRITIC_IN + Self.OBS + i] = (
+                    self._actor_act[b * Self.ACTIONS + i]
+                )
+
         var new_q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](new_q_arr.unsafe_ptr())
-        var new_cache_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CriticModel.CACHE_SIZE
-        ](uninitialized=True)
+        ](self._new_q.unsafe_ptr())
         var new_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](new_cache_arr.unsafe_ptr())
+        ](self._q_cache.unsafe_ptr())
 
         Self.CriticNet.forward_with_cache[Self.BATCH](
             new_ci_t, new_q_t, p_critic, new_cache_t
         )
 
-        var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * 1](
-            uninitialized=True
-        )
-        for b in range(Self.BATCH):
-            dq_arr[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
-
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](dq_arr.unsafe_ptr())
-        var d_new_ci_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
-        ](uninitialized=True)
+        ](self._dq.unsafe_ptr())
+        for b in range(Self.BATCH):
+            self._dq[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
+
         var d_new_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](d_new_ci_arr.unsafe_ptr())
+        ](self._d_new_ci.unsafe_ptr())
 
-        self.critic_online.zero_grads()
+        self.critic.zero_grads()
         Self.CriticNet.backward[Self.BATCH](
             dq_t, d_new_ci_t, p_critic, new_cache_t, g_critic
         )
 
-        var d_act_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
+        var d_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](self._d_act.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.ACTIONS):
-                d_act_arr[b * Self.ACTIONS + i] = d_new_ci_arr[
+                self._d_act[b * Self.ACTIONS + i] = self._d_new_ci[
                     b * Self.CRITIC_IN + Self.OBS + i
                 ]
 
-        var d_act_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](d_act_arr.unsafe_ptr())
-        var d_obs_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
-            uninitialized=True
-        )
         var d_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](d_obs_arr.unsafe_ptr())
+        ](self._d_obs.unsafe_ptr())
 
-        var g_actor = self.actor_online.grads_view()
-        self.actor_online.zero_grads()
+        var g_actor = self.actor.grads_view()
+        self.actor.zero_grads()
         Self.ActorNet.backward[Self.BATCH](
             d_act_t, d_obs_t, p_actor, actor_cache_t, g_actor
         )
-        self.actor_online.optimizer_step()
+        self.actor.optimizer_step()
 
         # Phase 5: Soft update target networks
-        self.actor_target.soft_update_from(self.actor_online, self.tau)
-        self.critic_target.soft_update_from(self.critic_online, self.tau)
+        self.actor.soft_update(self.tau)
+        self.critic.soft_update(self.tau)
 
         self.train_step_count += 1
         return critic_loss
@@ -872,22 +831,18 @@ struct DeepDDPGAgent[
         ctx: DeviceContext,
     ) raises -> None:
         """Upload CPU network states and replay buffer to GPU."""
-        gpu_state.actor_online.upload_from(self.actor_online, ctx)
-        gpu_state.actor_target.upload_from(self.actor_target, ctx)
-        gpu_state.critic_online.upload_from(self.critic_online, ctx)
-        gpu_state.critic_target.upload_from(self.critic_target, ctx)
+        gpu_state.actor.upload_from(self.actor, ctx)
+        gpu_state.critic.upload_from(self.critic, ctx)
         gpu_state.buffer.upload_from(self.buffer, ctx)
 
     fn download_from_gpu(
         mut self,
-        gpu_state: Self.GPUStateType,
+        mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
         """Download trained GPU weights back to CPU network states."""
-        gpu_state.actor_online.download_to(self.actor_online, ctx)
-        gpu_state.actor_target.download_to(self.actor_target, ctx)
-        gpu_state.critic_online.download_to(self.critic_online, ctx)
-        gpu_state.critic_target.download_to(self.critic_target, ctx)
+        gpu_state.actor.download_to(self.actor, ctx)
+        gpu_state.critic.download_to(self.critic, ctx)
 
     fn select_actions_gpu[N_ENVS: Int](
         mut self,
@@ -914,7 +869,7 @@ struct DeepDDPGAgent[
             MutAnyOrigin,
         ](gpu_state.rng_states.unsafe_ptr())
 
-        var p = gpu_state.actor_online.params_view()
+        var p = gpu_state.actor.online.params_view()
         Self.ActorNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
 
         var noise_std_s = Scalar[dtype](self.noise_std)
@@ -1016,10 +971,10 @@ struct DeepDDPGAgent[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](gpu_state.targets.unsafe_ptr())
 
-        var p_actor_t = gpu_state.actor_target.params_view()
-        var p_critic_t = gpu_state.critic_target.params_view()
-        var p_actor = gpu_state.actor_online.params_view()
-        var p_critic = gpu_state.critic_online.params_view()
+        var p_actor_t = gpu_state.actor.target.params_view()
+        var p_critic_t = gpu_state.critic.target.params_view()
+        var p_actor = gpu_state.actor.online.params_view()
+        var p_critic = gpu_state.critic.online.params_view()
 
         Self.ActorNet.forward_gpu[BATCH](
             ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws
@@ -1143,8 +1098,8 @@ struct DeepDDPGAgent[
             block_dim=(TPB,),
         )
 
-        var g_critic = gpu_state.critic_online.grads_view()
-        gpu_state.critic_online.zero_grads(ctx)
+        var g_critic = gpu_state.critic.online.grads_view()
+        gpu_state.critic.online.zero_grads(ctx)
         Self.CriticNet.backward_gpu[BATCH](
             ctx,
             q_grad_t,
@@ -1154,7 +1109,7 @@ struct DeepDDPGAgent[
             g_critic,
             gpu_state.critic_ws,
         )
-        gpu_state.critic_online.optimizer_step(ctx)
+        gpu_state.critic.online.optimizer_step(ctx)
 
         # ---- Phase 4: Actor update ----
         var actor_act_t = LayoutTensor[
@@ -1215,8 +1170,8 @@ struct DeepDDPGAgent[
             ctx, new_ci_t, new_q_t, p_critic, new_q_cache_t, gpu_state.critic_ws
         )
 
-        var g_critic2 = gpu_state.critic_online.grads_view()
-        gpu_state.critic_online.zero_grads(ctx)
+        var g_critic2 = gpu_state.critic.online.grads_view()
+        gpu_state.critic.online.zero_grads(ctx)
         Self.CriticNet.backward_gpu[BATCH](
             ctx,
             dq_t,
@@ -1245,8 +1200,8 @@ struct DeepDDPGAgent[
             block_dim=(TPB,),
         )
 
-        var g_actor = gpu_state.actor_online.grads_view()
-        gpu_state.actor_online.zero_grads(ctx)
+        var g_actor = gpu_state.actor.online.grads_view()
+        gpu_state.actor.online.zero_grads(ctx)
         Self.ActorNet.backward_gpu[BATCH](
             ctx,
             d_act_t,
@@ -1256,7 +1211,7 @@ struct DeepDDPGAgent[
             g_actor,
             gpu_state.actor_ws,
         )
-        gpu_state.actor_online.optimizer_step(ctx)
+        gpu_state.actor.online.optimizer_step(ctx)
 
     fn soft_update_targets_gpu(
         mut self,
@@ -1264,12 +1219,8 @@ struct DeepDDPGAgent[
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
         """Soft-update actor and critic target networks on GPU."""
-        gpu_state.actor_target.soft_update_from_gpu(
-            gpu_state.actor_online, self.tau, ctx
-        )
-        gpu_state.critic_target.soft_update_from_gpu(
-            gpu_state.critic_online, self.tau, ctx
-        )
+        gpu_state.actor.soft_update(self.tau, ctx)
+        gpu_state.critic.soft_update(self.tau, ctx)
 
     # =========================================================================
     # High-level CPU training loop (delegates to shared off-policy runner)
@@ -1337,7 +1288,7 @@ struct DeepDDPGAgent[
 
         GPU state (networks, replay buffer, scratch buffers) is created
         locally for the duration of training and freed when the method returns.
-        After this call self.actor_online / critic_online / targets hold the
+        After this call self.actor / critic (online and target) hold the
         trained GPU weights.
 
         Parameters:
@@ -1415,7 +1366,7 @@ struct DeepDDPGAgent[
     fn save_checkpoint(self, filepath: String) raises:
         """Save agent state to a checkpoint file.
 
-        Saves actor_online, actor_target, critic_online, critic_target params
+        Saves actor (online+target) and critic (online+target) params
         and optimizer states, plus runtime hyperparameters.
         The replay buffer is NOT saved.
 
@@ -1436,10 +1387,8 @@ struct DeepDDPGAgent[
             ACTOR_PARAM_SIZE + CRITIC_PARAM_SIZE,
             ACTOR_STATE_SIZE + CRITIC_STATE_SIZE,
         )
-        content += self.actor_online.write_sections("actor_online_")
-        content += self.actor_target.write_sections("actor_target_")
-        content += self.critic_online.write_sections("critic_online_")
-        content += self.critic_target.write_sections("critic_target_")
+        content += self.actor.write_sections("actor_")
+        content += self.critic.write_sections("critic_")
 
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
@@ -1464,10 +1413,8 @@ struct DeepDDPGAgent[
         """
         var content = read_checkpoint_file(filepath)
 
-        self.actor_online.read_sections(content, "actor_online_")
-        self.actor_target.read_sections(content, "actor_target_")
-        self.critic_online.read_sections(content, "critic_online_")
-        self.critic_target.read_sections(content, "critic_target_")
+        self.actor.read_sections(content, "actor_")
+        self.critic.read_sections(content, "critic_")
 
         var metadata = read_metadata_section(content)
 

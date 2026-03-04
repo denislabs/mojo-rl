@@ -58,35 +58,35 @@ struct CarRacingState[DTYPE: DType](
         self.wheel_omega_rr = 0.0
         self.speed = 0.0
 
-    fn __copyinit__(out self, other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.angle = other.angle
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angular_velocity = other.angular_velocity
-        self.wheel_angle_fl = other.wheel_angle_fl
-        self.wheel_angle_fr = other.wheel_angle_fr
-        self.wheel_omega_fl = other.wheel_omega_fl
-        self.wheel_omega_fr = other.wheel_omega_fr
-        self.wheel_omega_rl = other.wheel_omega_rl
-        self.wheel_omega_rr = other.wheel_omega_rr
-        self.speed = other.speed
+    fn __init__(out self, *, copy: Self):
+        self.x = copy.x
+        self.y = copy.y
+        self.angle = copy.angle
+        self.vx = copy.vx
+        self.vy = copy.vy
+        self.angular_velocity = copy.angular_velocity
+        self.wheel_angle_fl = copy.wheel_angle_fl
+        self.wheel_angle_fr = copy.wheel_angle_fr
+        self.wheel_omega_fl = copy.wheel_omega_fl
+        self.wheel_omega_fr = copy.wheel_omega_fr
+        self.wheel_omega_rl = copy.wheel_omega_rl
+        self.wheel_omega_rr = copy.wheel_omega_rr
+        self.speed = copy.speed
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.angle = other.angle
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angular_velocity = other.angular_velocity
-        self.wheel_angle_fl = other.wheel_angle_fl
-        self.wheel_angle_fr = other.wheel_angle_fr
-        self.wheel_omega_fl = other.wheel_omega_fl
-        self.wheel_omega_fr = other.wheel_omega_fr
-        self.wheel_omega_rl = other.wheel_omega_rl
-        self.wheel_omega_rr = other.wheel_omega_rr
-        self.speed = other.speed
+    fn __init__(out self, *, deinit take: Self):
+        self.x = take.x
+        self.y = take.y
+        self.angle = take.angle
+        self.vx = take.vx
+        self.vy = take.vy
+        self.angular_velocity = take.angular_velocity
+        self.wheel_angle_fl = take.wheel_angle_fl
+        self.wheel_angle_fr = take.wheel_angle_fr
+        self.wheel_omega_fl = take.wheel_omega_fl
+        self.wheel_omega_fr = take.wheel_omega_fr
+        self.wheel_omega_rl = take.wheel_omega_rl
+        self.wheel_omega_rr = take.wheel_omega_rr
+        self.speed = take.speed
 
     fn __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y

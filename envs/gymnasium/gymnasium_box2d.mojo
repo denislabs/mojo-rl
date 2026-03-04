@@ -47,11 +47,11 @@ struct GymLunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.action = existing.action
+    fn __init__(out self, *, copy: Self):
+        self.action = copy.action
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.action = existing.action
+    fn __init__(out self, *, deinit take: Self):
+        self.action = take.action
 
     @staticmethod
     fn nothing() -> Self:
@@ -82,11 +82,11 @@ struct GymBipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -99,11 +99,11 @@ struct GymBipedalWalkerAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var index: Int  # Placeholder for trait conformance
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
 
 # ============================================================================
@@ -117,11 +117,11 @@ struct GymCarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -133,11 +133,11 @@ struct GymCarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var index: Int  # Placeholder for trait conformance
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
 
 # ============================================================================

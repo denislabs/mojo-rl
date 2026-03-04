@@ -40,35 +40,35 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var visited_pairs: List[Int]
     var num_visited: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.num_states = existing.num_states
-        self.n_planning = existing.n_planning
-        self.model_next_state = existing.model_next_state.copy()
-        self.model_reward = existing.model_reward.copy()
-        self.visited_pairs = existing.visited_pairs.copy()
-        self.num_visited = existing.num_visited
+    fn __init__(out self, *, copy: Self):
+        self.q_table = copy.q_table
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
+        self.num_states = copy.num_states
+        self.n_planning = copy.n_planning
+        self.model_next_state = copy.model_next_state.copy()
+        self.model_reward = copy.model_reward.copy()
+        self.visited_pairs = copy.visited_pairs.copy()
+        self.num_visited = copy.num_visited
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.num_states = existing.num_states
-        self.n_planning = existing.n_planning
-        self.model_next_state = existing.model_next_state^
-        self.model_reward = existing.model_reward^
-        self.visited_pairs = existing.visited_pairs^
-        self.num_visited = existing.num_visited
+    fn __init__(out self, *, deinit take: Self):
+        self.q_table = take.q_table^
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
+        self.num_states = take.num_states
+        self.n_planning = take.n_planning
+        self.model_next_state = take.model_next_state^
+        self.model_reward = take.model_reward^
+        self.visited_pairs = take.visited_pairs^
+        self.num_visited = take.num_visited
 
     fn __init__(
         out self,
@@ -238,7 +238,9 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

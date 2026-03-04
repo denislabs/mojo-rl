@@ -38,15 +38,15 @@ struct CarRacingAction[DTYPE: DType](
         self.gas = gas
         self.brake = brake
 
-    fn __copyinit__(out self, existing: Self):
-        self.steering = existing.steering
-        self.gas = existing.gas
-        self.brake = existing.brake
+    fn __init__(out self, *, copy: Self):
+        self.steering = copy.steering
+        self.gas = copy.gas
+        self.brake = copy.brake
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.steering = existing.steering
-        self.gas = existing.gas
-        self.brake = existing.brake
+    fn __init__(out self, *, deinit take: Self):
+        self.steering = take.steering
+        self.gas = take.gas
+        self.brake = take.brake
 
     @staticmethod
     fn from_list(

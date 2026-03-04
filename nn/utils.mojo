@@ -82,3 +82,38 @@ fn concat_obs_action[
         dst[i] = obs[i]
     for i in range(ACT):
         dst[OBS + i] = act[i]
+
+
+fn concat_obs_action_batch[
+    OBS: Int, ACT: Int, BATCH: Int
+](
+    obs: InlineArray[Scalar[dtype], BATCH * OBS],
+    act: InlineArray[Scalar[dtype], BATCH * ACT],
+    mut dst: InlineArray[Scalar[dtype], BATCH * (OBS + ACT)],
+):
+    """Batch version of concat_obs_action for train_step critic inputs.
+
+    Builds a flat [BATCH × (OBS+ACT)] array by interleaving obs and action
+    slices per sample. Replaces the repeated double-loop pattern found in
+    DDPG / TD3 / SAC train_step:
+
+        for b in range(BATCH):
+            for i in range(OBS): dst[b*CI+i] = obs[b*OBS+i]
+            for i in range(ACT): dst[b*CI+OBS+i] = act[b*ACT+i]
+
+    Parameters:
+        OBS: Observation dimension per sample (compile-time).
+        ACT: Action dimension per sample (compile-time).
+        BATCH: Batch size (compile-time).
+
+    Args:
+        obs: Flat observation batch [BATCH * OBS].
+        act: Flat action batch [BATCH * ACT].
+        dst: Destination flat batch [BATCH * (OBS+ACT)] (written in-place).
+    """
+    comptime CI = OBS + ACT
+    for b in range(BATCH):
+        for i in range(OBS):
+            dst[b * CI + i] = obs[b * OBS + i]
+        for i in range(ACT):
+            dst[b * CI + OBS + i] = act[b * ACT + i]

@@ -5,19 +5,19 @@ eliminate the boilerplate warmup + episode loop duplicated across DQN, DQN+PER,
 DuelingDQN, DDPG, TD3, and SAC agents.
 
 The OffPolicyAgent trait is action-space agnostic: discrete and continuous
-agents both expose List[Scalar[Float64]] for actions.  For discrete agents
+agents both expose List[Float64] for actions.  For discrete agents
 each List has exactly one element (the chosen action index); for continuous
 agents the List length equals action_dim.
 
 Usage:
     struct MyAgent[...](OffPolicyAgent):
-        fn select_action_list(mut self, obs: List[Scalar[Float64]]) -> List[Scalar[Float64]]: ...
+        fn select_action_list(mut self, obs: List[Float64]) -> List[Float64]: ...
         fn store_list_transition(mut self, ...) -> None: ...
         fn is_ready(self) -> Bool: ...
         fn do_train_step(mut self) -> Float64: ...
         fn decay_explore(mut self) -> None: ...
         fn get_explore_rate(self) -> Float64: ...
-        fn random_action_list(self) -> List[Scalar[Float64]]: ...
+        fn random_action_list(self) -> List[Float64]: ...
 
     var metrics = run_offpolicy_discrete_train(agent, env, num_episodes=500)
     var metrics = run_offpolicy_continuous_train(agent, env, num_episodes=500)
@@ -48,8 +48,8 @@ trait OffPolicyAgent:
     """
 
     fn select_action_list(
-        mut self, obs: List[Scalar[Float64]]
-    ) -> List[Scalar[Float64]]:
+        mut self, obs: List[Float64]
+    ) -> List[Float64]:
         """Select an action given the current observation.
 
         Applies epsilon-greedy / noise internally.
@@ -64,10 +64,10 @@ trait OffPolicyAgent:
 
     fn store_list_transition(
         mut self,
-        obs: List[Scalar[Float64]],
-        action: List[Scalar[Float64]],
+        obs: List[Float64],
+        action: List[Float64],
         reward: Float64,
-        next_obs: List[Scalar[Float64]],
+        next_obs: List[Float64],
         done: Bool,
     ) -> None:
         """Store a transition in the replay buffer.
@@ -101,7 +101,7 @@ trait OffPolicyAgent:
         """Return current exploration rate (for logging)."""
         ...
 
-    fn random_action_list(self) -> List[Scalar[Float64]]:
+    fn random_action_list(self) -> List[Float64]:
         """Return a uniformly random action (used during warmup).
 
         Returns:
@@ -110,8 +110,8 @@ trait OffPolicyAgent:
         ...
 
     fn select_greedy_action_list(
-        self, obs: List[Scalar[Float64]]
-    ) -> List[Scalar[Float64]]:
+        self, obs: List[Float64]
+    ) -> List[Float64]:
         """Select action without exploration noise (for evaluation).
 
         DQN: pure argmax (epsilon=0). DDPG/TD3: actor forward, no Gaussian
@@ -181,7 +181,7 @@ fn run_offpolicy_discrete_train[
         var action = agent.random_action_list()
         var action_int = Int(Float64(action[0]))
         var result = env.step_obs(action_int)
-        var next_obs = result[0]
+        var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
         agent.store_list_transition(warmup_obs, action, reward, next_obs, done)
@@ -189,7 +189,7 @@ fn run_offpolicy_discrete_train[
         if done:
             warmup_obs = env.reset_obs_list()
         else:
-            warmup_obs = next_obs
+            warmup_obs = next_obs^
 
     # --- Training loop ---
     var total_steps = 0
@@ -202,7 +202,7 @@ fn run_offpolicy_discrete_train[
             var action = agent.select_action_list(obs)
             var action_int = Int(Float64(action[0]))
             var result = env.step_obs(action_int)
-            var next_obs = result[0]
+            var next_obs = result[0].copy()
             var reward = Float64(result[1])
             var done = result[2]
 
@@ -214,7 +214,7 @@ fn run_offpolicy_discrete_train[
             episode_reward += reward
             total_steps += 1
             episode_steps += 1
-            obs = next_obs
+            obs = next_obs^
 
             if done:
                 break
@@ -292,7 +292,7 @@ fn run_offpolicy_continuous_train[
 
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs_raw = env.reset_obs_list()
-    var warmup_obs = List[Scalar[Float64]]()
+    var warmup_obs = List[Float64]()
     for i in range(len(warmup_obs_raw)):
         warmup_obs.append(Float64(warmup_obs_raw[i]))
 
@@ -300,27 +300,26 @@ fn run_offpolicy_continuous_train[
     while warmup_count < warmup_steps:
         var action = agent.random_action_list()
         var result = env.step_continuous_vec(action)
-        var next_obs_raw = result[0]
-        var next_obs = List[Scalar[Float64]]()
-        for i in range(len(next_obs_raw)):
-            next_obs.append(Float64(next_obs_raw[i]))
+        var next_obs = List[Float64]()
+        for i in range(len(result[0])):
+            next_obs.append(Float64(result[0][i]))
         var reward = Float64(result[1])
         var done = result[2]
         agent.store_list_transition(warmup_obs, action, reward, next_obs, done)
         warmup_count += 1
         if done:
             var reset_raw = env.reset_obs_list()
-            warmup_obs = List[Scalar[Float64]]()
+            warmup_obs = List[Float64]()
             for i in range(len(reset_raw)):
                 warmup_obs.append(Float64(reset_raw[i]))
         else:
-            warmup_obs = next_obs
+            warmup_obs = next_obs^
 
     # --- Training loop ---
     var total_steps = 0
     for episode in range(num_episodes):
         var obs_raw = env.reset_obs_list()
-        var obs = List[Scalar[Float64]]()
+        var obs = List[Float64]()
         for i in range(len(obs_raw)):
             obs.append(Float64(obs_raw[i]))
 
@@ -330,10 +329,9 @@ fn run_offpolicy_continuous_train[
         for _ in range(max_steps_per_episode):
             var action = agent.select_action_list(obs)
             var result = env.step_continuous_vec(action)
-            var next_obs_raw = result[0]
-            var next_obs = List[Scalar[Float64]]()
-            for i in range(len(next_obs_raw)):
-                next_obs.append(Float64(next_obs_raw[i]))
+            var next_obs = List[Float64]()
+            for i in range(len(result[0])):
+                next_obs.append(Float64(result[0][i]))
             var reward = Float64(result[1])
             var done = result[2]
 
@@ -345,7 +343,7 @@ fn run_offpolicy_continuous_train[
             episode_reward += reward
             total_steps += 1
             episode_steps += 1
-            obs = next_obs
+            obs = next_obs^
 
             if done:
                 break

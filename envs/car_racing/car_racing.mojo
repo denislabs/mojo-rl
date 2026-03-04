@@ -200,41 +200,41 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __copyinit__(out self, other: Self):
+    fn __init__(out self, *, copy: Self):
         self.track = TrackGenerator[DType.float64]()
-        self.track.track = other.track.track.copy()
-        self.track.track_length = other.track.track_length
-        self.state_buffer = other.state_buffer.copy()
-        self.tiles_buffer = other.tiles_buffer.copy()
-        self.step_count = other.step_count
-        self.total_reward = other.total_reward
-        self.done = other.done
-        self.truncated = other.truncated
-        self.tiles_visited = other.tiles_visited
-        self.max_steps = other.max_steps
-        self.lap_complete_percent = other.lap_complete_percent
-        self.domain_randomize = other.domain_randomize
-        self.cached_state = other.cached_state
+        self.track.track = copy.track.track.copy()
+        self.track.track_length = copy.track.track_length
+        self.state_buffer = copy.state_buffer.copy()
+        self.tiles_buffer = copy.tiles_buffer.copy()
+        self.step_count = copy.step_count
+        self.total_reward = copy.total_reward
+        self.done = copy.done
+        self.truncated = copy.truncated
+        self.tiles_visited = copy.tiles_visited
+        self.max_steps = copy.max_steps
+        self.lap_complete_percent = copy.lap_complete_percent
+        self.domain_randomize = copy.domain_randomize
+        self.cached_state = copy.cached_state
         # Do not copy renderer — reset to null
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.track = other.track^
-        self.state_buffer = other.state_buffer^
-        self.tiles_buffer = other.tiles_buffer^
-        self.step_count = other.step_count
-        self.total_reward = other.total_reward
-        self.done = other.done
-        self.truncated = other.truncated
-        self.tiles_visited = other.tiles_visited
-        self.max_steps = other.max_steps
-        self.lap_complete_percent = other.lap_complete_percent
-        self.domain_randomize = other.domain_randomize
-        self.cached_state = other.cached_state^
+    fn __init__(out self, *, deinit take: Self):
+        self.track = take.track^
+        self.state_buffer = take.state_buffer^
+        self.tiles_buffer = take.tiles_buffer^
+        self.step_count = take.step_count
+        self.total_reward = take.total_reward
+        self.done = take.done
+        self.truncated = take.truncated
+        self.tiles_visited = take.tiles_visited
+        self.max_steps = take.max_steps
+        self.lap_complete_percent = take.lap_complete_percent
+        self.domain_randomize = take.domain_randomize
+        self.cached_state = take.cached_state^
         # Transfer renderer ownership
-        self._renderer = other._renderer
-        self._renderer_initialized = other._renderer_initialized
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
 
     # =========================================================================
     # Env Trait Methods

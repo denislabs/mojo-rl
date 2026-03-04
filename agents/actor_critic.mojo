@@ -501,44 +501,44 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             self.critic_weights.append(init_value)
             self.critic_traces.append(0.0)
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.lambda_ = existing.lambda_
-        self.entropy_coef = existing.entropy_coef
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.lambda_ = copy.lambda_
+        self.entropy_coef = copy.entropy_coef
         self.theta = List[List[Float64]]()
         self.actor_traces = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
             var action_traces = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
                 action_traces.append(0.0)
             self.theta.append(action_params^)
             self.actor_traces.append(action_traces^)
         self.critic_weights = List[Float64]()
         self.critic_traces = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.critic_weights.append(existing.critic_weights[t])
+        for t in range(copy.num_tiles):
+            self.critic_weights.append(copy.critic_weights[t])
             self.critic_traces.append(0.0)
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.lambda_ = existing.lambda_
-        self.entropy_coef = existing.entropy_coef
-        self.theta = existing.theta^
-        self.actor_traces = existing.actor_traces^
-        self.critic_weights = existing.critic_weights^
-        self.critic_traces = existing.critic_traces^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.lambda_ = take.lambda_
+        self.entropy_coef = take.entropy_coef
+        self.theta = take.theta^
+        self.actor_traces = take.actor_traces^
+        self.critic_weights = take.critic_weights^
+        self.critic_traces = take.critic_traces^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
@@ -934,42 +934,42 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.n_steps = existing.n_steps
-        self.entropy_coef = existing.entropy_coef
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.n_steps = copy.n_steps
+        self.entropy_coef = copy.entropy_coef
         self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
             self.theta.append(action_params^)
         self.critic_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.critic_weights.append(existing.critic_weights[t])
+        for t in range(copy.num_tiles):
+            self.critic_weights.append(copy.critic_weights[t])
         self.buffer_tiles = List[List[Int]]()
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.n_steps = existing.n_steps
-        self.entropy_coef = existing.entropy_coef
-        self.theta = existing.theta^
-        self.critic_weights = existing.critic_weights^
-        self.buffer_tiles = existing.buffer_tiles^
-        self.buffer_actions = existing.buffer_actions^
-        self.buffer_rewards = existing.buffer_rewards^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.n_steps = take.n_steps
+        self.entropy_coef = take.entropy_coef
+        self.theta = take.theta^
+        self.critic_weights = take.critic_weights^
+        self.buffer_tiles = take.buffer_tiles^
+        self.buffer_actions = take.buffer_actions^
+        self.buffer_rewards = take.buffer_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

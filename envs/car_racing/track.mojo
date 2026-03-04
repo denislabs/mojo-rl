@@ -78,7 +78,9 @@ struct TrackRNG:
 # =============================================================================
 
 
-struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
+struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """A point on the track centerline with direction."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center (for lap tracking)
@@ -98,17 +100,17 @@ struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Implic
         self.x = x
         self.y = y
 
-    fn __copyinit__(out self, other: Self):
-        self.alpha = other.alpha
-        self.beta = other.beta
-        self.x = other.x
-        self.y = other.y
+    fn __init__(out self, *, copy: Self):
+        self.alpha = copy.alpha
+        self.beta = copy.beta
+        self.x = copy.x
+        self.y = copy.y
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.alpha = other.alpha
-        self.beta = other.beta
-        self.x = other.x
-        self.y = other.y
+    fn __init__(out self, *, deinit take: Self):
+        self.alpha = take.alpha
+        self.beta = take.beta
+        self.x = take.x
+        self.y = take.y
 
 
 # =============================================================================
@@ -116,7 +118,9 @@ struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Implic
 # =============================================================================
 
 
-struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
+struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """A checkpoint on the track."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center
@@ -133,18 +137,20 @@ struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Implic
         self.x = x
         self.y = y
 
-    fn __copyinit__(out self, other: Self):
-        self.alpha = other.alpha
-        self.x = other.x
-        self.y = other.y
+    fn __init__(out self, *, copy: Self):
+        self.alpha = copy.alpha
+        self.x = copy.x
+        self.y = copy.y
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.alpha = other.alpha
-        self.x = other.x
-        self.y = other.y
+    fn __init__(out self, *, deinit take: Self):
+        self.alpha = take.alpha
+        self.x = take.x
+        self.y = take.y
 
 
-struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](Copyable, ImplicitlyCopyable, Movable):
+struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """A single track tile with quad vertices and friction.
 
     The tile is stored as 4 vertices in CCW order forming a convex quad.
@@ -201,21 +207,21 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Implici
         self.center_y = other.center_y
         self.direction = other.direction
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.v0_x = other.v0_x
-        self.v0_y = other.v0_y
-        self.v1_x = other.v1_x
-        self.v1_y = other.v1_y
-        self.v2_x = other.v2_x
-        self.v2_y = other.v2_y
-        self.v3_x = other.v3_x
-        self.v3_y = other.v3_y
-        self.friction = other.friction
-        self.visited = other.visited
-        self.idx = other.idx
-        self.center_x = other.center_x
-        self.center_y = other.center_y
-        self.direction = other.direction
+    fn __init__(out self, *, deinit take: Self):
+        self.v0_x = take.v0_x
+        self.v0_y = take.v0_y
+        self.v1_x = take.v1_x
+        self.v1_y = take.v1_y
+        self.v2_x = take.v2_x
+        self.v2_y = take.v2_y
+        self.v3_x = take.v3_x
+        self.v3_y = take.v3_y
+        self.friction = take.friction
+        self.visited = take.visited
+        self.idx = take.idx
+        self.center_x = take.center_x
+        self.center_y = take.center_y
+        self.direction = take.direction
 
     fn to_buffer[
         MAX_TILES: Int
@@ -240,7 +246,9 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Implici
         tiles[idx, TILE_FRICTION] = Scalar[dtype](self.friction)
 
 
-struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Movable):
+struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
+    Copyable, Movable
+):
     """Procedural track generator for CarRacing.
 
     Generates a closed-loop track around random checkpoints.
@@ -254,13 +262,13 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](Copyable, Mo
         self.track = List[TrackTile[Self.DTYPE]]()
         self.track_length = 0
 
-    fn __copyinit__(out self, other: Self):
-        self.track = other.track.copy()
-        self.track_length = other.track_length
+    fn __init__(out self, *, copy: Self):
+        self.track = copy.track.copy()
+        self.track_length = copy.track_length
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.track = other.track^
-        self.track_length = other.track_length
+    fn __init__(out self, *, deinit take: Self):
+        self.track = take.track^
+        self.track_length = take.track_length
 
     fn generate_simple_track(mut self):
         """Generate a simple circular track.

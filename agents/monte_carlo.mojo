@@ -22,31 +22,31 @@ struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var episode_actions: List[Int]
     var episode_rewards: List[Float64]
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.returns_sum = existing.returns_sum
-        self.returns_count = existing.returns_count
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.episode_states = existing.episode_states.copy()
-        self.episode_actions = existing.episode_actions.copy()
-        self.episode_rewards = existing.episode_rewards.copy()
+    fn __init__(out self, *, copy: Self):
+        self.q_table = copy.q_table
+        self.returns_sum = copy.returns_sum
+        self.returns_count = copy.returns_count
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
+        self.episode_states = copy.episode_states.copy()
+        self.episode_actions = copy.episode_actions.copy()
+        self.episode_rewards = copy.episode_rewards.copy()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.returns_sum = existing.returns_sum^
-        self.returns_count = existing.returns_count^
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.episode_states = existing.episode_states^
-        self.episode_actions = existing.episode_actions^
-        self.episode_rewards = existing.episode_rewards^
+    fn __init__(out self, *, deinit take: Self):
+        self.q_table = take.q_table^
+        self.returns_sum = take.returns_sum^
+        self.returns_count = take.returns_count^
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
+        self.episode_states = take.episode_states^
+        self.episode_actions = take.episode_actions^
+        self.episode_rewards = take.episode_rewards^
 
     fn __init__(
         out self,
@@ -186,7 +186,9 @@ struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

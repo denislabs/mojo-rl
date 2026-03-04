@@ -25,23 +25,23 @@ struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var epsilon_min: Float64
     var num_actions: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
+    fn __init__(out self, *, copy: Self):
+        self.q_table = copy.q_table
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
+    fn __init__(out self, *, deinit take: Self):
+        self.q_table = take.q_table^
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
 
     fn __init__(
         out self,
@@ -157,7 +157,9 @@ struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

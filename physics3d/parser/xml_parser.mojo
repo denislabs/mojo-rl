@@ -840,7 +840,8 @@ struct ComptimeActData(Copyable, Movable):
     var free_joint_qpos_adr: Int
 
     fn __init__(out self):
-        """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False."""
+        """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False.
+        """
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
@@ -853,7 +854,7 @@ struct ComptimeActData(Copyable, Movable):
         self.nq = 0
         self.free_joint_qpos_adr = -1
 
-    fn __copyinit__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
@@ -876,7 +877,7 @@ struct ComptimeActData(Copyable, Movable):
         for i in range(64):
             self.qpos0[i] = copy.qpos0[i]
 
-    fn __moveinit__(out self, deinit take: Self):
+    fn __init__(out self, *, move: Self):
         self.motor_gears = take.motor_gears^
         self.motor_dof_adr = take.motor_dof_adr^
         self.joint_is_limited = take.joint_is_limited^
@@ -964,9 +965,9 @@ fn parse_xml_model_data(xml: String) -> ComptimeActData:
             if len(stm_trimmed) > 0:
                 data.settotalmass = _parse_float(stm_trimmed)
 
-    var deg_factor = Float64(3.141592653589793 / 180.0) if angle_deg else Float64(
-        1.0
-    )
+    var deg_factor = Float64(
+        3.141592653589793 / 180.0
+    ) if angle_deg else Float64(1.0)
 
     # ---- Motor data -----------------------------------------------------------
     var act_sec = _extract_section(xml_clean, "actuator")

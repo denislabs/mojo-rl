@@ -14,7 +14,7 @@ from math import log, exp
 # ============================================================================
 
 
-struct FloatParam(Copyable, Movable, ImplicitlyCopyable):
+struct FloatParam(Copyable, ImplicitlyCopyable, Movable):
     """A single float parameter with its search space.
 
     Supports both linear and logarithmic scaling for sampling.
@@ -51,19 +51,19 @@ struct FloatParam(Copyable, Movable, ImplicitlyCopyable):
         self.log_scale = log_scale
         self.num_values = num_values
 
-    fn __copyinit__(out self, existing: Self):
-        self.name = existing.name
-        self.min_val = existing.min_val
-        self.max_val = existing.max_val
-        self.log_scale = existing.log_scale
-        self.num_values = existing.num_values
+    fn __init__(out self, *, copy: Self):
+        self.name = copy.name
+        self.min_val = copy.min_val
+        self.max_val = copy.max_val
+        self.log_scale = copy.log_scale
+        self.num_values = copy.num_values
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.name = existing.name^
-        self.min_val = existing.min_val
-        self.max_val = existing.max_val
-        self.log_scale = existing.log_scale
-        self.num_values = existing.num_values
+    fn __init__(out self, *, deinit take: Self):
+        self.name = take.name^
+        self.min_val = take.min_val
+        self.max_val = take.max_val
+        self.log_scale = take.log_scale
+        self.num_values = take.num_values
 
     fn sample_random(self) -> Float64:
         """Sample a random value from the parameter space."""
@@ -107,7 +107,7 @@ struct FloatParam(Copyable, Movable, ImplicitlyCopyable):
             return self.min_val + t * (self.max_val - self.min_val)
 
 
-struct IntParam(Copyable, Movable, ImplicitlyCopyable):
+struct IntParam(Copyable, ImplicitlyCopyable, Movable):
     """A single integer parameter with its search space."""
 
     var name: String
@@ -385,7 +385,9 @@ struct NStepHyperparams(Copyable, Movable):
         self.n = existing.n
 
     fn to_csv_header(self) -> String:
-        return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,n"
+        return (
+            "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,n"
+        )
 
     fn to_csv_row(self) -> String:
         return (
@@ -420,7 +422,9 @@ struct NStepParamSpace(Copyable, Movable):
         self.discount_factor = FloatParam(
             "discount_factor", 0.9, 0.999, log_scale=False, num_values=4
         )
-        self.epsilon = FloatParam("epsilon", 0.5, 1.0, log_scale=False, num_values=3)
+        self.epsilon = FloatParam(
+            "epsilon", 0.5, 1.0, log_scale=False, num_values=3
+        )
         self.epsilon_decay = FloatParam(
             "epsilon_decay", 0.99, 0.999, log_scale=False, num_values=3
         )
@@ -578,30 +582,34 @@ struct LambdaParamSpace(Copyable, Movable):
         self.discount_factor = FloatParam(
             "discount_factor", 0.9, 0.999, log_scale=False, num_values=4
         )
-        self.epsilon = FloatParam("epsilon", 0.5, 1.0, log_scale=False, num_values=3)
+        self.epsilon = FloatParam(
+            "epsilon", 0.5, 1.0, log_scale=False, num_values=3
+        )
         self.epsilon_decay = FloatParam(
             "epsilon_decay", 0.99, 0.999, log_scale=False, num_values=3
         )
         self.epsilon_min = FloatParam(
             "epsilon_min", 0.01, 0.1, log_scale=False, num_values=2
         )
-        self.lambda_ = FloatParam("lambda", 0.8, 0.99, log_scale=False, num_values=4)
+        self.lambda_ = FloatParam(
+            "lambda", 0.8, 0.99, log_scale=False, num_values=4
+        )
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.lambda_ = existing.lambda_
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.lambda_ = copy.lambda_
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate^
-        self.discount_factor = existing.discount_factor^
-        self.epsilon = existing.epsilon^
-        self.epsilon_decay = existing.epsilon_decay^
-        self.epsilon_min = existing.epsilon_min^
-        self.lambda_ = existing.lambda_^
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate^
+        self.discount_factor = take.discount_factor^
+        self.epsilon = take.epsilon^
+        self.epsilon_decay = take.epsilon_decay^
+        self.epsilon_min = take.epsilon_min^
+        self.lambda_ = take.lambda_^
 
     fn sample_random(self) -> LambdaHyperparams:
         return LambdaHyperparams(
@@ -730,7 +738,9 @@ struct ModelBasedParamSpace(Copyable, Movable):
         self.discount_factor = FloatParam(
             "discount_factor", 0.9, 0.999, log_scale=False, num_values=4
         )
-        self.epsilon = FloatParam("epsilon", 0.5, 1.0, log_scale=False, num_values=3)
+        self.epsilon = FloatParam(
+            "epsilon", 0.5, 1.0, log_scale=False, num_values=3
+        )
         self.epsilon_decay = FloatParam(
             "epsilon_decay", 0.99, 0.999, log_scale=False, num_values=3
         )
@@ -903,7 +913,9 @@ struct ReplayParamSpace(Copyable, Movable):
         self.discount_factor = FloatParam(
             "discount_factor", 0.9, 0.999, log_scale=False, num_values=4
         )
-        self.epsilon = FloatParam("epsilon", 0.5, 1.0, log_scale=False, num_values=3)
+        self.epsilon = FloatParam(
+            "epsilon", 0.5, 1.0, log_scale=False, num_values=3
+        )
         self.epsilon_decay = FloatParam(
             "epsilon_decay", 0.99, 0.999, log_scale=False, num_values=3
         )

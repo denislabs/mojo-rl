@@ -122,40 +122,40 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.use_baseline = copy.use_baseline
+        self.baseline_lr = copy.baseline_lr
         self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
             self.theta.append(action_params^)
         self.baseline_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.baseline_weights.append(existing.baseline_weights[t])
+        for t in range(copy.num_tiles):
+            self.baseline_weights.append(copy.baseline_weights[t])
         self.episode_tiles = List[List[Int]]()
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
-        self.theta = existing.theta^
-        self.baseline_weights = existing.baseline_weights^
-        self.episode_tiles = existing.episode_tiles^
-        self.episode_actions = existing.episode_actions^
-        self.episode_rewards = existing.episode_rewards^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.use_baseline = take.use_baseline
+        self.baseline_lr = take.baseline_lr
+        self.theta = take.theta^
+        self.baseline_weights = take.baseline_weights^
+        self.episode_tiles = take.episode_tiles^
+        self.episode_actions = take.episode_actions^
+        self.episode_rewards = take.episode_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits) for given state.
@@ -563,42 +563,42 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
+    fn __init__(out self, *, copy: Self):
+        self.num_actions = copy.num_actions
+        self.num_tiles = copy.num_tiles
+        self.num_tilings = copy.num_tilings
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.entropy_coef = copy.entropy_coef
+        self.use_baseline = copy.use_baseline
+        self.baseline_lr = copy.baseline_lr
         self.theta = List[List[Float64]]()
-        for a in range(existing.num_actions):
+        for a in range(copy.num_actions):
             var action_params = List[Float64]()
-            for t in range(existing.num_tiles):
-                action_params.append(existing.theta[a][t])
+            for t in range(copy.num_tiles):
+                action_params.append(copy.theta[a][t])
             self.theta.append(action_params^)
         self.baseline_weights = List[Float64]()
-        for t in range(existing.num_tiles):
-            self.baseline_weights.append(existing.baseline_weights[t])
+        for t in range(copy.num_tiles):
+            self.baseline_weights.append(copy.baseline_weights[t])
         self.episode_tiles = List[List[Int]]()
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_actions = existing.num_actions
-        self.num_tiles = existing.num_tiles
-        self.num_tilings = existing.num_tilings
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
-        self.theta = existing.theta^
-        self.baseline_weights = existing.baseline_weights^
-        self.episode_tiles = existing.episode_tiles^
-        self.episode_actions = existing.episode_actions^
-        self.episode_rewards = existing.episode_rewards^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_actions = take.num_actions
+        self.num_tiles = take.num_tiles
+        self.num_tilings = take.num_tilings
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.entropy_coef = take.entropy_coef
+        self.use_baseline = take.use_baseline
+        self.baseline_lr = take.baseline_lr
+        self.theta = take.theta^
+        self.baseline_weights = take.baseline_weights^
+        self.episode_tiles = take.episode_tiles^
+        self.episode_actions = take.episode_actions^
+        self.episode_rewards = take.episode_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
@@ -881,7 +881,9 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         return total_reward / Float64(num_episodes)
 
 
-fn _reinforce_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+fn _reinforce_obs_to_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
     var result = List[Scalar[DType.float64]](capacity=len(obs))
     for i in range(len(obs)):

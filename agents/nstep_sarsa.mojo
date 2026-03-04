@@ -38,35 +38,35 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var t: Int  # Current timestep in episode
     var T: Int  # Terminal timestep (infinity until episode ends)
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.n = existing.n
-        self.states = existing.states.copy()
-        self.actions = existing.actions.copy()
-        self.rewards = existing.rewards.copy()
-        self.t = existing.t
-        self.T = existing.T
+    fn __init__(out self, *, copy: Self):
+        self.q_table = copy.q_table
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
+        self.n = copy.n
+        self.states = copy.states.copy()
+        self.actions = copy.actions.copy()
+        self.rewards = copy.rewards.copy()
+        self.t = copy.t
+        self.T = copy.T
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.n = existing.n
-        self.states = existing.states^
-        self.actions = existing.actions^
-        self.rewards = existing.rewards^
-        self.t = existing.t
-        self.T = existing.T
+    fn __init__(out self, *, deinit take: Self):
+        self.q_table = take.q_table^
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
+        self.n = take.n
+        self.states = take.states^
+        self.actions = take.actions^
+        self.rewards = take.rewards^
+        self.t = take.t
+        self.T = take.T
 
     fn __init__(
         out self,
@@ -257,7 +257,9 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

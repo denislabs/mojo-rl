@@ -1850,7 +1850,7 @@ and exponent are defined on `LightSpec` for future shader parameterization (R.6)
 4. Added `render_sites()` to `ModelDefLike` trait and `ModelDef` struct (delegates to
    `Self.Sites.render_sites(...)`)
 5. Added `show_sites: Bool = False` field to `ModelRenderer` (constructor param +
-   `__moveinit__`); render loop calls `render_sites` when `show_sites=True`
+   `__init__(out self, *, deinit take: Self)`); render loop calls `render_sites` when `show_sites=True`
 
 **XML/parser path (`ModelDefFromXML` + `FlatModelDef`)**:
 6. Fixed `FlatModelDef.setup_model()` — was not writing site data to `model.site_body`
@@ -1863,7 +1863,7 @@ and exponent are defined on `LightSpec` for future shader parameterization (R.6)
 - `model/site_spec.mojo` — imports, `SitesLike.render_sites`, `_EmptySites.render_sites`,
   `Sites.render_sites`
 - `model/model_def.mojo` — `ModelDefLike.render_sites`, `ModelDef.render_sites`
-- `model/model_renderer.mojo` — `show_sites` field, `__init__`, `__moveinit__`, render call
+- `model/model_renderer.mojo` — `show_sites` field, `__init__`, `__init__(out self, *, deinit take: Self)`, render call
 - `parser/flat_model.mojo` — `FlatModelDef.setup_model()` now writes sites to model
 - `parser/model_def_from_xml.mojo` — `ModelDefFromXML.render_sites()`
 

@@ -65,19 +65,19 @@ struct ContinuousTransition[DTYPE: DType](
         self.next_state = next_state^
         self.done = done
 
-    fn __copyinit__(out self, existing: Self):
-        self.state = existing.state.copy()
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state.copy()
-        self.done = existing.done
+    fn __init__(out self, *, copy: Self):
+        self.state = copy.state.copy()
+        self.action = copy.action
+        self.reward = copy.reward
+        self.next_state = copy.next_state.copy()
+        self.done = copy.done
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.state = existing.state^
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state^
-        self.done = existing.done
+    fn __init__(out self, *, deinit take: Self):
+        self.state = take.state^
+        self.action = take.action
+        self.reward = take.reward
+        self.next_state = take.next_state^
+        self.done = take.done
 
 
 struct ContinuousReplayBuffer[DTYPE: DType]:
@@ -367,21 +367,21 @@ struct PrioritizedContinuousTransition[DTYPE: DType](
         self.done = done
         self.weight = weight
 
-    fn __copyinit__(out self, existing: Self):
-        self.state = existing.state.copy()
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state.copy()
-        self.done = existing.done
-        self.weight = existing.weight
+    fn __init__(out self, *, copy: Self):
+        self.state = copy.state.copy()
+        self.action = copy.action
+        self.reward = copy.reward
+        self.next_state = copy.next_state.copy()
+        self.done = copy.done
+        self.weight = copy.weight
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.state = existing.state^
-        self.action = existing.action
-        self.reward = existing.reward
-        self.next_state = existing.next_state^
-        self.done = existing.done
-        self.weight = existing.weight
+    fn __init__(out self, *, deinit take: Self):
+        self.state = take.state^
+        self.action = take.action
+        self.reward = take.reward
+        self.next_state = take.next_state^
+        self.done = take.done
+        self.weight = take.weight
 
 
 struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:

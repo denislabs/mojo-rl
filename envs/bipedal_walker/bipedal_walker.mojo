@@ -245,7 +245,7 @@ struct BipedalWalker[
         # Reset to initial state
         self._reset_cpu()
 
-    fn __copyinit__(out self, read other: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.physics = PhysicsStateOwned[
             BWConstants.NUM_BODIES,
@@ -261,35 +261,35 @@ struct BipedalWalker[
             BWConstants.EDGE_COUNT_OFFSET,
         ]()
         self.config = PhysicsConfig(
-            gravity_x=other.config.gravity_x,
-            gravity_y=other.config.gravity_y,
-            dt=other.config.dt,
-            friction=other.config.friction,
-            restitution=other.config.restitution,
-            baumgarte=other.config.baumgarte,
-            slop=other.config.slop,
-            velocity_iterations=other.config.velocity_iterations,
-            position_iterations=other.config.position_iterations,
+            gravity_x=copy.config.gravity_x,
+            gravity_y=copy.config.gravity_y,
+            dt=copy.config.dt,
+            friction=copy.config.friction,
+            restitution=copy.config.restitution,
+            baumgarte=copy.config.baumgarte,
+            slop=copy.config.slop,
+            velocity_iterations=copy.config.velocity_iterations,
+            position_iterations=copy.config.position_iterations,
         )
-        self.prev_shaping = other.prev_shaping
-        self.step_count = other.step_count
-        self.game_over = other.game_over
-        self.scroll = other.scroll
-        self.rng_seed = other.rng_seed
-        self.rng_counter = other.rng_counter
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
-        self.terrain_x = List[Scalar[Self.dtype]](other.terrain_x)
-        self.terrain_y = List[Scalar[Self.dtype]](other.terrain_y)
+        self.prev_shaping = copy.prev_shaping
+        self.step_count = copy.step_count
+        self.game_over = copy.game_over
+        self.scroll = copy.scroll
+        self.rng_seed = copy.rng_seed
+        self.rng_counter = copy.rng_counter
+        self.left_leg_contact = copy.left_leg_contact
+        self.right_leg_contact = copy.right_leg_contact
+        self.terrain_x = List[Scalar[Self.dtype]](copy.terrain_x)
+        self.terrain_y = List[Scalar[Self.dtype]](copy.terrain_y)
         self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = other.cached_state
+        self.cached_state = copy.cached_state
         # Do not copy renderer — reset to null
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
         self._init_physics_shapes()
         self._reset_cpu()
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.physics = PhysicsStateOwned[
             BWConstants.NUM_BODIES,
@@ -305,31 +305,31 @@ struct BipedalWalker[
             BWConstants.EDGE_COUNT_OFFSET,
         ]()
         self.config = PhysicsConfig(
-            gravity_x=other.config.gravity_x,
-            gravity_y=other.config.gravity_y,
-            dt=other.config.dt,
-            friction=other.config.friction,
-            restitution=other.config.restitution,
-            baumgarte=other.config.baumgarte,
-            slop=other.config.slop,
-            velocity_iterations=other.config.velocity_iterations,
-            position_iterations=other.config.position_iterations,
+            gravity_x=take.config.gravity_x,
+            gravity_y=take.config.gravity_y,
+            dt=take.config.dt,
+            friction=take.config.friction,
+            restitution=take.config.restitution,
+            baumgarte=take.config.baumgarte,
+            slop=take.config.slop,
+            velocity_iterations=take.config.velocity_iterations,
+            position_iterations=take.config.position_iterations,
         )
-        self.prev_shaping = other.prev_shaping
-        self.step_count = other.step_count
-        self.game_over = other.game_over
-        self.scroll = other.scroll
-        self.rng_seed = other.rng_seed
-        self.rng_counter = other.rng_counter
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
-        self.terrain_x = other.terrain_x^
-        self.terrain_y = other.terrain_y^
+        self.prev_shaping = take.prev_shaping
+        self.step_count = take.step_count
+        self.game_over = take.game_over
+        self.scroll = take.scroll
+        self.rng_seed = take.rng_seed
+        self.rng_counter = take.rng_counter
+        self.left_leg_contact = take.left_leg_contact
+        self.right_leg_contact = take.right_leg_contact
+        self.terrain_x = take.terrain_x^
+        self.terrain_y = take.terrain_y^
         self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = other.cached_state
+        self.cached_state = take.cached_state
         # Transfer renderer ownership
-        self._renderer = other._renderer
-        self._renderer_initialized = other._renderer_initialized
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
         self._init_physics_shapes()
         self._reset_cpu()
 

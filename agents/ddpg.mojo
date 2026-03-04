@@ -168,55 +168,55 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             self.critic_weights.append(w)
             self.target_critic_weights.append(w)
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_state_features = existing.num_state_features
-        self.num_critic_features = existing.num_critic_features
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.noise_std = existing.noise_std
-        self.noise_std_min = existing.noise_std_min
-        self.noise_decay = existing.noise_decay
-        self.action_scale = existing.action_scale
-        self.reward_scale = existing.reward_scale
-        self.updates_per_step = existing.updates_per_step
+    fn __init__(out self, *, copy: Self):
+        self.num_state_features = copy.num_state_features
+        self.num_critic_features = copy.num_critic_features
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.tau = copy.tau
+        self.noise_std = copy.noise_std
+        self.noise_std_min = copy.noise_std_min
+        self.noise_decay = copy.noise_decay
+        self.action_scale = copy.action_scale
+        self.reward_scale = copy.reward_scale
+        self.updates_per_step = copy.updates_per_step
 
         self.actor_weights = List[Float64]()
         self.target_actor_weights = List[Float64]()
-        for i in range(existing.num_state_features):
-            self.actor_weights.append(existing.actor_weights[i])
-            self.target_actor_weights.append(existing.target_actor_weights[i])
+        for i in range(copy.num_state_features):
+            self.actor_weights.append(copy.actor_weights[i])
+            self.target_actor_weights.append(copy.target_actor_weights[i])
 
         self.critic_weights = List[Float64]()
         self.target_critic_weights = List[Float64]()
-        for i in range(existing.num_critic_features):
-            self.critic_weights.append(existing.critic_weights[i])
-            self.target_critic_weights.append(existing.target_critic_weights[i])
+        for i in range(copy.num_critic_features):
+            self.critic_weights.append(copy.critic_weights[i])
+            self.target_critic_weights.append(copy.target_critic_weights[i])
 
         # Pre-allocate critic features storage
         self._critic_features = List[Float64](capacity=self.num_critic_features)
         for _ in range(self.num_critic_features):
             self._critic_features.append(0.0)
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_state_features = existing.num_state_features
-        self.num_critic_features = existing.num_critic_features
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.noise_std = existing.noise_std
-        self.noise_std_min = existing.noise_std_min
-        self.noise_decay = existing.noise_decay
-        self.action_scale = existing.action_scale
-        self.reward_scale = existing.reward_scale
-        self.updates_per_step = existing.updates_per_step
-        self.actor_weights = existing.actor_weights^
-        self.target_actor_weights = existing.target_actor_weights^
-        self.critic_weights = existing.critic_weights^
-        self.target_critic_weights = existing.target_critic_weights^
-        self._critic_features = existing._critic_features^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_state_features = take.num_state_features
+        self.num_critic_features = take.num_critic_features
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.tau = take.tau
+        self.noise_std = take.noise_std
+        self.noise_std_min = take.noise_std_min
+        self.noise_decay = take.noise_decay
+        self.action_scale = take.action_scale
+        self.reward_scale = take.reward_scale
+        self.updates_per_step = take.updates_per_step
+        self.actor_weights = take.actor_weights^
+        self.target_actor_weights = take.target_actor_weights^
+        self.critic_weights = take.critic_weights^
+        self.target_critic_weights = take.target_critic_weights^
+        self._critic_features = take._critic_features^
 
     # ========================================================================
     # Actor (Policy) Methods

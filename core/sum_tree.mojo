@@ -51,12 +51,12 @@ struct SumTree(Movable):
         for _ in range(tree_size):
             self.tree.append(0.0)
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.tree = existing.tree^
-        self.capacity = existing.capacity
-        self.write_ptr = existing.write_ptr
-        self.size = existing.size
+        self.tree = take.tree^
+        self.capacity = take.capacity
+        self.write_ptr = take.write_ptr
+        self.size = take.size
 
     fn _propagate(mut self, idx: Int, change: Float64):
         """Propagate priority change up to root.

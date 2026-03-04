@@ -64,19 +64,19 @@ struct CheckpointHeader(Copyable, Movable):
         self.state_size = state_size
         self.dtype_str = dtype_str
 
-    fn __copyinit__(out self, existing: Self):
-        self.version = existing.version
-        self.checkpoint_type = existing.checkpoint_type
-        self.param_size = existing.param_size
-        self.state_size = existing.state_size
-        self.dtype_str = existing.dtype_str
+    fn __init__(out self, *, copy: Self):
+        self.version = copy.version
+        self.checkpoint_type = copy.checkpoint_type
+        self.param_size = copy.param_size
+        self.state_size = copy.state_size
+        self.dtype_str = copy.dtype_str
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.version = existing.version
-        self.checkpoint_type = existing.checkpoint_type^
-        self.param_size = existing.param_size
-        self.state_size = existing.state_size
-        self.dtype_str = existing.dtype_str^
+    fn __init__(out self, *, deinit take: Self):
+        self.version = take.version
+        self.checkpoint_type = take.checkpoint_type^
+        self.param_size = take.param_size
+        self.state_size = take.state_size
+        self.dtype_str = take.dtype_str^
 
 
 fn write_checkpoint_header(

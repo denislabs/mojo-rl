@@ -84,7 +84,7 @@ fn run_offpolicy_continuous_eval[
             break
 
         var obs_raw = env.reset_obs_list()
-        var obs = List[Scalar[Float64]]()
+        var obs = List[Float64]()
         for i in range(len(obs_raw)):
             obs.append(Float64(obs_raw[i]))
 
@@ -94,16 +94,15 @@ fn run_offpolicy_continuous_eval[
         for _ in range(max_steps):
             var action = agent.select_greedy_action_list(obs)
             var result = env.step_continuous_vec(action)
-            var next_obs_raw = result[0]
-            var next_obs = List[Scalar[Float64]]()
-            for i in range(len(next_obs_raw)):
-                next_obs.append(Float64(next_obs_raw[i]))
+            var next_obs = List[Float64]()
+            for i in range(len(result[0])):
+                next_obs.append(Float64(result[0][i]))
             var reward = Float64(result[1])
             var done = result[2]
 
             episode_reward += reward
             episode_steps += 1
-            obs = next_obs
+            obs = next_obs^
 
             if render:
                 env.render_frame()
@@ -191,13 +190,13 @@ fn run_offpolicy_discrete_eval[
             var action_list = agent.select_greedy_action_list(obs)
             var action_int = Int(Float64(action_list[0]))
             var result = env.step_obs(action_int)
-            var next_obs = result[0]
+            var next_obs = result[0].copy()
             var reward = Float64(result[1])
             var done = result[2]
 
             episode_reward += reward
             episode_steps += 1
-            obs = next_obs
+            obs = next_obs^
 
             if done:
                 break

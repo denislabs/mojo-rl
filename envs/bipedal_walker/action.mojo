@@ -18,14 +18,14 @@ struct BipedalWalkerAction[DTYPE: DType](
         self.hip2 = 0.0
         self.knee2 = 0.0
 
-    fn __copyinit__(out self, existing: Self):
-        self.hip1 = existing.hip1
-        self.knee1 = existing.knee1
-        self.hip2 = existing.hip2
-        self.knee2 = existing.knee2
+    fn __init__(out self, *, copy: Self):
+        self.hip1 = copy.hip1
+        self.knee1 = copy.knee1
+        self.hip2 = copy.hip2
+        self.knee2 = copy.knee2
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.hip1 = existing.hip1
-        self.knee1 = existing.knee1
-        self.hip2 = existing.hip2
-        self.knee2 = existing.knee2
+    fn __init__(out self, *, deinit take: Self):
+        self.hip1 = take.hip1
+        self.knee1 = take.knee1
+        self.hip2 = take.hip2
+        self.knee2 = take.knee2

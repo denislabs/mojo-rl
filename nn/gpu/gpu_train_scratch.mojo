@@ -135,7 +135,7 @@ struct GPUTrainScratch[
             Self.BATCH_SIZE * (Self.OBS_DIM + Self.ACTION_DIM)
         )
 
-    fn __moveinit__(out self, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.obs_buf = take.obs_buf^
         self.actions_buf = take.actions_buf^
         self.rewards_buf = take.rewards_buf^

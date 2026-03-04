@@ -57,41 +57,41 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
     var beta_start: Float64
     var total_steps: Int  # Track steps for beta annealing
 
-    fn __copyinit__(out self, existing: Self):
-        self.q_table = existing.q_table
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.num_states = existing.num_states
+    fn __init__(out self, *, copy: Self):
+        self.q_table = copy.q_table
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.num_actions = copy.num_actions
+        self.num_states = copy.num_states
         # Note: PrioritizedReplayBuffer doesn't have copy, create new one
         self.buffer = PrioritizedReplayBuffer(
-            existing.buffer.capacity,
-            existing.buffer.alpha,
-            existing.buffer.beta,
-            existing.buffer.epsilon,
+            copy.buffer.capacity,
+            copy.buffer.alpha,
+            copy.buffer.beta,
+            copy.buffer.epsilon,
         )
-        self.batch_size = existing.batch_size
-        self.min_buffer_size = existing.min_buffer_size
-        self.beta_start = existing.beta_start
-        self.total_steps = existing.total_steps
+        self.batch_size = copy.batch_size
+        self.min_buffer_size = copy.min_buffer_size
+        self.beta_start = copy.beta_start
+        self.total_steps = copy.total_steps
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.q_table = existing.q_table^
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.num_actions = existing.num_actions
-        self.num_states = existing.num_states
-        self.buffer = existing.buffer^
-        self.batch_size = existing.batch_size
-        self.min_buffer_size = existing.min_buffer_size
-        self.beta_start = existing.beta_start
-        self.total_steps = existing.total_steps
+    fn __init__(out self, *, deinit take: Self):
+        self.q_table = take.q_table^
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.num_actions = take.num_actions
+        self.num_states = take.num_states
+        self.buffer = take.buffer^
+        self.batch_size = take.batch_size
+        self.min_buffer_size = take.min_buffer_size
+        self.beta_start = take.beta_start
+        self.total_steps = take.total_steps
 
     fn __init__(
         out self,
@@ -298,7 +298,9 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                self.update(state_idx, action_idx, Float64(reward), next_state_idx, done)
+                self.update(
+                    state_idx, action_idx, Float64(reward), next_state_idx, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1

@@ -152,7 +152,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __copyinit__(out self, *, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -180,7 +180,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __moveinit__(out self, *, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -764,7 +764,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __moveinit__(out self, *, deinit take: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings

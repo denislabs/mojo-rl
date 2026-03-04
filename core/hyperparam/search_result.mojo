@@ -7,7 +7,7 @@ aggregating them for analysis and export.
 from core.metrics import TrainingMetrics, compute_convergence_episode
 
 
-struct TrialResult(Copyable, Movable, ImplicitlyCopyable):
+struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
     """Result from a single hyperparameter trial.
 
     Computes and stores various metrics from training to enable
@@ -92,33 +92,33 @@ struct TrialResult(Copyable, Movable, ImplicitlyCopyable):
         else:
             self.convergence_episode = -1
 
-    fn __copyinit__(out self, existing: Self):
-        self.trial_id = existing.trial_id
-        self.hyperparams_str = existing.hyperparams_str
-        self.mean_reward = existing.mean_reward
-        self.max_reward = existing.max_reward
-        self.min_reward = existing.min_reward
-        self.std_reward = existing.std_reward
-        self.final_reward = existing.final_reward
-        self.convergence_episode = existing.convergence_episode
-        self.convergence_target = existing.convergence_target
-        self.mean_steps = existing.mean_steps
-        self.total_steps = existing.total_steps
-        self.training_episodes = existing.training_episodes
+    fn __init__(out self, *, copy: Self):
+        self.trial_id = copy.trial_id
+        self.hyperparams_str = copy.hyperparams_str
+        self.mean_reward = copy.mean_reward
+        self.max_reward = copy.max_reward
+        self.min_reward = copy.min_reward
+        self.std_reward = copy.std_reward
+        self.final_reward = copy.final_reward
+        self.convergence_episode = copy.convergence_episode
+        self.convergence_target = copy.convergence_target
+        self.mean_steps = copy.mean_steps
+        self.total_steps = copy.total_steps
+        self.training_episodes = copy.training_episodes
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.trial_id = existing.trial_id
-        self.hyperparams_str = existing.hyperparams_str^
-        self.mean_reward = existing.mean_reward
-        self.max_reward = existing.max_reward
-        self.min_reward = existing.min_reward
-        self.std_reward = existing.std_reward
-        self.final_reward = existing.final_reward
-        self.convergence_episode = existing.convergence_episode
-        self.convergence_target = existing.convergence_target
-        self.mean_steps = existing.mean_steps
-        self.total_steps = existing.total_steps
-        self.training_episodes = existing.training_episodes
+    fn __init__(out self, *, deinit take: Self):
+        self.trial_id = take.trial_id
+        self.hyperparams_str = take.hyperparams_str^
+        self.mean_reward = take.mean_reward
+        self.max_reward = take.max_reward
+        self.min_reward = take.min_reward
+        self.std_reward = take.std_reward
+        self.final_reward = take.final_reward
+        self.convergence_episode = take.convergence_episode
+        self.convergence_target = take.convergence_target
+        self.mean_steps = take.mean_steps
+        self.total_steps = take.total_steps
+        self.training_episodes = take.training_episodes
 
     @staticmethod
     fn csv_header() -> String:
@@ -184,21 +184,21 @@ struct SearchResults(Copyable, Movable):
         self.trials = List[TrialResult]()
         self.hyperparam_header = hyperparam_header
 
-    fn __copyinit__(out self, existing: Self):
-        self.algorithm_name = existing.algorithm_name
-        self.environment_name = existing.environment_name
-        self.search_type = existing.search_type
+    fn __init__(out self, *, copy: Self):
+        self.algorithm_name = copy.algorithm_name
+        self.environment_name = copy.environment_name
+        self.search_type = copy.search_type
         self.trials = List[TrialResult]()
-        for i in range(len(existing.trials)):
-            self.trials.append(existing.trials[i])
-        self.hyperparam_header = existing.hyperparam_header
+        for i in range(len(copy.trials)):
+            self.trials.append(copy.trials[i])
+        self.hyperparam_header = copy.hyperparam_header
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.algorithm_name = existing.algorithm_name^
-        self.environment_name = existing.environment_name^
-        self.search_type = existing.search_type^
-        self.trials = existing.trials^
-        self.hyperparam_header = existing.hyperparam_header^
+    fn __init__(out self, *, deinit take: Self):
+        self.algorithm_name = take.algorithm_name^
+        self.environment_name = take.environment_name^
+        self.search_type = take.search_type^
+        self.trials = take.trials^
+        self.hyperparam_header = take.hyperparam_header^
 
     fn add_trial(mut self, var trial: TrialResult):
         """Add a trial result to the collection."""
@@ -352,7 +352,9 @@ struct SearchResults(Copyable, Movable):
 
         var best_final = self.get_best_by_final_reward()
         print("Best by final reward:")
-        print("  Trial", best_final.trial_id, "- Final:", best_final.final_reward)
+        print(
+            "  Trial", best_final.trial_id, "- Final:", best_final.final_reward
+        )
         print("  Params:", best_final.hyperparams_str)
 
         var best_conv = self.get_best_by_convergence()
@@ -374,7 +376,8 @@ struct SearchResults(Copyable, Movable):
         """Print all trial results in a table format."""
         print("-" * 80)
         print(
-            "Trial | Mean Reward | Final Reward | Max Reward | Convergence | Steps"
+            "Trial | Mean Reward | Final Reward | Max Reward | Convergence |"
+            " Steps"
         )
         print("-" * 80)
 

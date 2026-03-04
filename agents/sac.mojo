@@ -178,63 +178,59 @@ struct SACAgent(Copyable, Movable):
             self.critic2_weights.append(w2)
             self.target_critic2_weights.append(w2)
 
-    fn __copyinit__(out self, existing: Self):
-        self.num_state_features = existing.num_state_features
-        self.num_critic_features = existing.num_critic_features
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.action_scale = existing.action_scale
-        self.alpha = existing.alpha
-        self.auto_alpha = existing.auto_alpha
-        self.alpha_lr = existing.alpha_lr
-        self.target_entropy = existing.target_entropy
-        self.log_alpha = existing.log_alpha
-        self.log_std_min = existing.log_std_min
-        self.log_std_max = existing.log_std_max
+    fn __init__(out self, *, copy: Self):
+        self.num_state_features = copy.num_state_features
+        self.num_critic_features = copy.num_critic_features
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.tau = copy.tau
+        self.action_scale = copy.action_scale
+        self.alpha = copy.alpha
+        self.auto_alpha = copy.auto_alpha
+        self.alpha_lr = copy.alpha_lr
+        self.target_entropy = copy.target_entropy
+        self.log_alpha = copy.log_alpha
+        self.log_std_min = copy.log_std_min
+        self.log_std_max = copy.log_std_max
 
         self.actor_mean_weights = List[Float64]()
         self.actor_logstd_weights = List[Float64]()
-        for i in range(existing.num_state_features):
-            self.actor_mean_weights.append(existing.actor_mean_weights[i])
-            self.actor_logstd_weights.append(existing.actor_logstd_weights[i])
+        for i in range(copy.num_state_features):
+            self.actor_mean_weights.append(copy.actor_mean_weights[i])
+            self.actor_logstd_weights.append(copy.actor_logstd_weights[i])
 
         self.critic1_weights = List[Float64]()
         self.target_critic1_weights = List[Float64]()
         self.critic2_weights = List[Float64]()
         self.target_critic2_weights = List[Float64]()
-        for i in range(existing.num_critic_features):
-            self.critic1_weights.append(existing.critic1_weights[i])
-            self.target_critic1_weights.append(
-                existing.target_critic1_weights[i]
-            )
-            self.critic2_weights.append(existing.critic2_weights[i])
-            self.target_critic2_weights.append(
-                existing.target_critic2_weights[i]
-            )
+        for i in range(copy.num_critic_features):
+            self.critic1_weights.append(copy.critic1_weights[i])
+            self.target_critic1_weights.append(copy.target_critic1_weights[i])
+            self.critic2_weights.append(copy.critic2_weights[i])
+            self.target_critic2_weights.append(copy.target_critic2_weights[i])
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.num_state_features = existing.num_state_features
-        self.num_critic_features = existing.num_critic_features
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.action_scale = existing.action_scale
-        self.alpha = existing.alpha
-        self.auto_alpha = existing.auto_alpha
-        self.alpha_lr = existing.alpha_lr
-        self.target_entropy = existing.target_entropy
-        self.log_alpha = existing.log_alpha
-        self.log_std_min = existing.log_std_min
-        self.log_std_max = existing.log_std_max
-        self.actor_mean_weights = existing.actor_mean_weights^
-        self.actor_logstd_weights = existing.actor_logstd_weights^
-        self.critic1_weights = existing.critic1_weights^
-        self.target_critic1_weights = existing.target_critic1_weights^
-        self.critic2_weights = existing.critic2_weights^
-        self.target_critic2_weights = existing.target_critic2_weights^
+    fn __init__(out self, *, deinit take: Self):
+        self.num_state_features = take.num_state_features
+        self.num_critic_features = take.num_critic_features
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.tau = take.tau
+        self.action_scale = take.action_scale
+        self.alpha = take.alpha
+        self.auto_alpha = take.auto_alpha
+        self.alpha_lr = take.alpha_lr
+        self.target_entropy = take.target_entropy
+        self.log_alpha = take.log_alpha
+        self.log_std_min = take.log_std_min
+        self.log_std_max = take.log_std_max
+        self.actor_mean_weights = take.actor_mean_weights^
+        self.actor_logstd_weights = take.actor_logstd_weights^
+        self.critic1_weights = take.critic1_weights^
+        self.target_critic1_weights = take.target_critic1_weights^
+        self.critic2_weights = take.critic2_weights^
+        self.target_critic2_weights = take.target_critic2_weights^
 
     # ========================================================================
     # Actor (Stochastic Policy) Methods

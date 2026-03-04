@@ -329,9 +329,9 @@ struct LunarLander[
         # Reset to initial state
         self._reset_cpu()
 
-    fn __copyinit__(out self, read other: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor - creates fresh physics state and copies data."""
-        self.particles = List[Particle[Self.dtype]](other.particles)
+        self.particles = List[Particle[Self.dtype]](copy.particles)
         # Create fresh physics state
         self.physics = PhysicsStateOwned[
             LLConstants.NUM_BODIES,
@@ -347,26 +347,26 @@ struct LunarLander[
             LLConstants.EDGE_COUNT_OFFSET,
         ]()
         self.config = PhysicsConfig(
-            gravity_x=other.config.gravity_x,
-            gravity_y=other.config.gravity_y,
-            dt=other.config.dt,
-            friction=other.config.friction,
-            restitution=other.config.restitution,
-            baumgarte=other.config.baumgarte,
-            slop=other.config.slop,
-            velocity_iterations=other.config.velocity_iterations,
-            position_iterations=other.config.position_iterations,
+            gravity_x=copy.config.gravity_x,
+            gravity_y=copy.config.gravity_y,
+            dt=copy.config.dt,
+            friction=copy.config.friction,
+            restitution=copy.config.restitution,
+            baumgarte=copy.config.baumgarte,
+            slop=copy.config.slop,
+            velocity_iterations=copy.config.velocity_iterations,
+            position_iterations=copy.config.position_iterations,
         )
-        self.prev_shaping = other.prev_shaping
-        self.step_count = other.step_count
-        self.game_over = other.game_over
-        self.rng_seed = other.rng_seed
-        self.rng_counter = other.rng_counter
-        self.wind_idx = other.wind_idx
-        self.torque_idx = other.torque_idx
-        self.terrain_heights = List[Scalar[Self.dtype]](other.terrain_heights)
+        self.prev_shaping = copy.prev_shaping
+        self.step_count = copy.step_count
+        self.game_over = copy.game_over
+        self.rng_seed = copy.rng_seed
+        self.rng_counter = copy.rng_counter
+        self.wind_idx = copy.wind_idx
+        self.torque_idx = copy.torque_idx
+        self.terrain_heights = List[Scalar[Self.dtype]](copy.terrain_heights)
         self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = other.cached_state
+        self.cached_state = copy.cached_state
         # Initialize physics shapes (critical for physics to work!)
         self._init_physics_shapes()
         # Reset to initialize physics state properly
@@ -375,9 +375,9 @@ struct LunarLander[
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __moveinit__(out self, deinit other: Self):
+    fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
-        self.particles = other.particles^
+        self.particles = take.particles^
         # Create fresh physics state
         self.physics = PhysicsStateOwned[
             LLConstants.NUM_BODIES,
@@ -393,33 +393,33 @@ struct LunarLander[
             LLConstants.EDGE_COUNT_OFFSET,
         ]()
         self.config = PhysicsConfig(
-            gravity_x=other.config.gravity_x,
-            gravity_y=other.config.gravity_y,
-            dt=other.config.dt,
-            friction=other.config.friction,
-            restitution=other.config.restitution,
-            baumgarte=other.config.baumgarte,
-            slop=other.config.slop,
-            velocity_iterations=other.config.velocity_iterations,
-            position_iterations=other.config.position_iterations,
+            gravity_x=take.config.gravity_x,
+            gravity_y=take.config.gravity_y,
+            dt=take.config.dt,
+            friction=take.config.friction,
+            restitution=take.config.restitution,
+            baumgarte=take.config.baumgarte,
+            slop=take.config.slop,
+            velocity_iterations=take.config.velocity_iterations,
+            position_iterations=take.config.position_iterations,
         )
-        self.prev_shaping = other.prev_shaping
-        self.step_count = other.step_count
-        self.game_over = other.game_over
-        self.rng_seed = other.rng_seed
-        self.rng_counter = other.rng_counter
-        self.wind_idx = other.wind_idx
-        self.torque_idx = other.torque_idx
-        self.terrain_heights = other.terrain_heights^
+        self.prev_shaping = take.prev_shaping
+        self.step_count = take.step_count
+        self.game_over = take.game_over
+        self.rng_seed = take.rng_seed
+        self.rng_counter = take.rng_counter
+        self.wind_idx = take.wind_idx
+        self.torque_idx = take.torque_idx
+        self.terrain_heights = take.terrain_heights^
         self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = other.cached_state
+        self.cached_state = take.cached_state
         # Initialize physics shapes (critical for physics to work!)
         self._init_physics_shapes()
         # Reset to initialize physics state properly
         self._reset_cpu()
         # Transfer renderer ownership
-        self._renderer = other._renderer
-        self._renderer_initialized = other._renderer_initialized
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
 
     # =========================================================================
     # CPU Single-Environment Methods

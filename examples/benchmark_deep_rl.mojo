@@ -48,9 +48,9 @@ fn benchmark_train_step() raises:
     # Fill buffer using List-based API
     print("\nFilling buffer with random transitions...")
     for _ in range(2000):
-        var obs = List[Scalar[Float64]]()
-        var next_obs = List[Scalar[Float64]]()
-        var action = List[Scalar[Float64]]()
+        var obs = List[Float64]()
+        var next_obs = List[Float64]()
+        var action = List[Float64]()
 
         for _ in range(obs_dim):
             obs.append(random_float64() * 2.0 - 1.0)
@@ -119,9 +119,9 @@ fn benchmark_episode() raises:
     # Pre-fill buffer using List-based API
     print("Pre-filling buffer...")
     for _ in range(1000):
-        var obs = List[Scalar[Float64]]()
-        var next_obs = List[Scalar[Float64]]()
-        var action = List[Scalar[Float64]]()
+        var obs = List[Float64]()
+        var next_obs = List[Float64]()
+        var action = List[Float64]()
         for _ in range(obs_dim):
             obs.append(random_float64() * 2.0 - 1.0)
             next_obs.append(random_float64() * 2.0 - 1.0)

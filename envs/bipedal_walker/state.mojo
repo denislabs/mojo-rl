@@ -49,47 +49,47 @@ struct BipedalWalkerState[DTYPE: DType](
         self.leg2_contact = 0.0
         self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=1.0)
 
-    fn __copyinit__(out self, other: Self):
-        self.hull_angle = other.hull_angle
-        self.hull_angular_velocity = other.hull_angular_velocity
-        self.vel_x = other.vel_x
-        self.vel_y = other.vel_y
-        self.hip1_angle = other.hip1_angle
-        self.hip1_speed = other.hip1_speed
-        self.knee1_angle = other.knee1_angle
-        self.knee1_speed = other.knee1_speed
-        self.leg1_contact = other.leg1_contact
-        self.hip2_angle = other.hip2_angle
-        self.hip2_speed = other.hip2_speed
-        self.knee2_angle = other.knee2_angle
-        self.knee2_speed = other.knee2_speed
-        self.leg2_contact = other.leg2_contact
+    fn __init__(out self, *, copy: Self):
+        self.hull_angle = copy.hull_angle
+        self.hull_angular_velocity = copy.hull_angular_velocity
+        self.vel_x = copy.vel_x
+        self.vel_y = copy.vel_y
+        self.hip1_angle = copy.hip1_angle
+        self.hip1_speed = copy.hip1_speed
+        self.knee1_angle = copy.knee1_angle
+        self.knee1_speed = copy.knee1_speed
+        self.leg1_contact = copy.leg1_contact
+        self.hip2_angle = copy.hip2_angle
+        self.hip2_speed = copy.hip2_speed
+        self.knee2_angle = copy.knee2_angle
+        self.knee2_speed = copy.knee2_speed
+        self.leg2_contact = copy.leg2_contact
         self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](
             fill=Scalar[Self.DTYPE](1.0)
         )
         for i in range(Self.NUM_LIDAR):
-            self.lidar[i] = other.lidar[i]
+            self.lidar[i] = copy.lidar[i]
 
-    fn __moveinit__(out self, deinit other: Self):
-        self.hull_angle = other.hull_angle
-        self.hull_angular_velocity = other.hull_angular_velocity
-        self.vel_x = other.vel_x
-        self.vel_y = other.vel_y
-        self.hip1_angle = other.hip1_angle
-        self.hip1_speed = other.hip1_speed
-        self.knee1_angle = other.knee1_angle
-        self.knee1_speed = other.knee1_speed
-        self.leg1_contact = other.leg1_contact
-        self.hip2_angle = other.hip2_angle
-        self.hip2_speed = other.hip2_speed
-        self.knee2_angle = other.knee2_angle
-        self.knee2_speed = other.knee2_speed
-        self.leg2_contact = other.leg2_contact
+    fn __init__(out self, *, deinit take: Self):
+        self.hull_angle = take.hull_angle
+        self.hull_angular_velocity = take.hull_angular_velocity
+        self.vel_x = take.vel_x
+        self.vel_y = take.vel_y
+        self.hip1_angle = take.hip1_angle
+        self.hip1_speed = take.hip1_speed
+        self.knee1_angle = take.knee1_angle
+        self.knee1_speed = take.knee1_speed
+        self.leg1_contact = take.leg1_contact
+        self.hip2_angle = take.hip2_angle
+        self.hip2_speed = take.hip2_speed
+        self.knee2_angle = take.knee2_angle
+        self.knee2_speed = take.knee2_speed
+        self.leg2_contact = take.leg2_contact
         self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](
             fill=Scalar[Self.DTYPE](1.0)
         )
         for i in range(Self.NUM_LIDAR):
-            self.lidar[i] = other.lidar[i]
+            self.lidar[i] = take.lidar[i]
 
     fn __eq__(self, other: Self) -> Bool:
         return (
