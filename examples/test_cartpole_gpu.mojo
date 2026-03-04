@@ -1,6 +1,6 @@
 """Test GPU CartPole vectorized environment."""
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from envs.cartpole_gpu import (

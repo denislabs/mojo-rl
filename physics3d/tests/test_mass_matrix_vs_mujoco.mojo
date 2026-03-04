@@ -9,8 +9,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
@@ -55,8 +55,22 @@ fn compare_mass_matrix(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
 
     # Set qpos
@@ -141,19 +155,36 @@ fn compare_mass_matrix(
             if not ok:
                 if fail_count < 10:  # Limit output
                     print(
-                        "  FAIL M[", i, ",", j, "]",
-                        " ours=", our_val,
-                        " mj=", mj_val,
-                        " abs_err=", abs_err,
-                        " rel_err=", rel_err,
+                        "  FAIL M[",
+                        i,
+                        ",",
+                        j,
+                        "]",
+                        " ours=",
+                        our_val,
+                        " mj=",
+                        mj_val,
+                        " abs_err=",
+                        abs_err,
+                        " rel_err=",
+                        rel_err,
                     )
                 fail_count += 1
                 all_pass = False
 
     if all_pass:
-        print("  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err
+        )
     else:
-        print("  FAILED", fail_count, "elements  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  FAILED",
+            fail_count,
+            "elements  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
+        )
 
     # Print our matrix for debugging
     print("  Our M diagonal:", end="")
@@ -189,15 +220,15 @@ fn test_zero_qpos() raises:
 fn test_nonzero_joints() raises:
     """Mass matrix with non-zero joint angles."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # rootx
-    qpos[1] = 0.7   # rootz
-    qpos[2] = 0.3   # rooty
+    qpos[0] = 1.0  # rootx
+    qpos[1] = 0.7  # rootz
+    qpos[2] = 0.3  # rooty
     qpos[3] = -0.4  # bthigh
-    qpos[4] = 0.5   # bshin
+    qpos[4] = 0.5  # bshin
     qpos[5] = -0.2  # bfoot
-    qpos[6] = 0.6   # fthigh
+    qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
-    qpos[8] = 0.3   # ffoot
+    qpos[8] = 0.3  # ffoot
     compare_mass_matrix("Non-zero joints", qpos)
 
 
@@ -205,12 +236,12 @@ fn test_extreme_joints() raises:
     """Mass matrix at joint limits."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
-    qpos[3] = -0.52   # bthigh min
-    qpos[4] = 0.785   # bshin max
-    qpos[5] = -0.4    # bfoot min
-    qpos[6] = -1.0    # fthigh min
-    qpos[7] = 0.87    # fshin max
-    qpos[8] = -0.5    # ffoot min
+    qpos[3] = -0.52  # bthigh min
+    qpos[4] = 0.785  # bshin max
+    qpos[5] = -0.4  # bfoot min
+    qpos[6] = -1.0  # fthigh min
+    qpos[7] = 0.87  # fshin max
+    qpos[8] = -0.5  # ffoot min
     compare_mass_matrix("Extreme joint angles", qpos)
 
 

@@ -8,8 +8,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, pi
-from collections import InlineArray
+from std.math import abs, pi
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data
@@ -48,8 +48,22 @@ fn compare_fk(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
 
     # Set qpos

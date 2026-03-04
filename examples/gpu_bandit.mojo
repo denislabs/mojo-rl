@@ -20,13 +20,13 @@ Run with:
     pixi run -e apple mojo run examples/gpu_bandit.mojo
 """
 
-from time import perf_counter_ns
-from math import exp, log
-from random import seed, random_float64
+from std.time import perf_counter_ns
+from std.math import exp, log
+from std.random import seed, random_float64
 
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext
-from gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 

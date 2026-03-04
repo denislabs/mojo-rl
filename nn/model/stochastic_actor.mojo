@@ -1,11 +1,11 @@
 from ..constants import dtype
 from .model import Model
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu.memory import AddressSpace
-from math import exp, log, sqrt
-from gpu.primitives import block
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.memory import AddressSpace
+from std.math import exp, log, sqrt
+from std.gpu.primitives import block
 
 from ..constants import TPB, TILE
 
@@ -107,7 +107,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             weight_scale: Scale for weight initialization (default 0.01).
             log_std_init: Initial value for log_std (default -0.5, std≈0.6).
         """
-        from random import random_float64
+        from std.random import random_float64
 
         # Initialize mean head weights with small random values
         var mean_W_size = Self.in_dim * Self.action_dim
@@ -147,7 +147,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             weight_scale: Scale for weight initialization (default 0.01).
             log_std_init: Initial value for log_std (default -0.5, std≈0.6).
         """
-        from random import random_float64
+        from std.random import random_float64
 
         # Initialize mean head weights with small random values
         var mean_W_size = Self.in_dim * Self.action_dim

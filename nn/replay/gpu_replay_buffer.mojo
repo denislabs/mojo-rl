@@ -37,7 +37,7 @@ from ..gpu import (
 )
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
@@ -106,7 +106,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
     fn upload_from(
         mut self,
-        cpu_buf: ReplayBuffer[Self.CAPACITY, Self.OBS_DIM, Self.ACTION_DIM, dtype],
+        cpu_buf: ReplayBuffer[
+            Self.CAPACITY, Self.OBS_DIM, Self.ACTION_DIM, dtype
+        ],
         ctx: DeviceContext,
     ) raises:
         """Upload CPU replay buffer contents to GPU device buffers.
@@ -157,7 +159,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         self.write_idx = cpu_buf.ptr
         self.size = cpu_buf.size
 
-    fn store[N_ENVS: Int](
+    fn store[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         states: DeviceBuffer[dtype],
@@ -346,7 +350,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         self.write_idx = (self.write_idx + N_ENVS) % Self.CAPACITY
         self.size = min(self.size + N_ENVS, Self.CAPACITY)
 
-    fn sample[BATCH: Int](
+    fn sample[
+        BATCH: Int
+    ](
         self,
         ctx: DeviceContext,
         rng_seed: UInt32,

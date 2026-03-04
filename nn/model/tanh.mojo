@@ -1,9 +1,9 @@
 from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from math import exp
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.math import exp
 
 
 struct Tanh[dim: Int](Model):
@@ -52,7 +52,7 @@ struct Tanh[dim: Int](Model):
         Caches tanh output for backward pass (needed for derivative).
         Note: params is unused (Tanh has no parameters).
         """
-        from math import exp
+        from std.math import exp
 
         for batch in range(BATCH):
             for i in range(Self.dim):
@@ -86,7 +86,7 @@ struct Tanh[dim: Int](Model):
 
         Note: params is unused (Tanh has no parameters).
         """
-        from math import exp
+        from std.math import exp
 
         for batch in range(BATCH):
             for i in range(Self.dim):
@@ -256,17 +256,23 @@ struct Tanh[dim: Int](Model):
     # but kept for API consistency with Linear.
     # =========================================================================
 
-
-
     @staticmethod
     fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
-        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
@@ -304,9 +310,15 @@ struct Tanh[dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
@@ -340,11 +352,21 @@ struct Tanh[dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
-        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
-        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU.

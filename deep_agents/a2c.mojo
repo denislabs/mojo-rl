@@ -32,8 +32,8 @@ Adam optimizer type). gamma, gae_lambda, entropy_coef, etc. remain runtime field
 Reference: Mnih et al., "Asynchronous Methods for Deep Reinforcement Learning" (2016)
 """
 
-from math import exp, log
-from random import random_float64, seed
+from std.math import exp, log
+from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 

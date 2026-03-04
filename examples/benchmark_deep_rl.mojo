@@ -6,8 +6,8 @@ Run with:
     pixi run mojo run examples/benchmark_deep_rl.mojo
 """
 
-from time import perf_counter_ns
-from random import random_float64
+from std.time import perf_counter_ns
+from std.random import random_float64
 from deep_agents import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
@@ -126,7 +126,9 @@ fn benchmark_episode() raises:
             obs.append(random_float64() * 2.0 - 1.0)
             next_obs.append(random_float64() * 2.0 - 1.0)
         action.append(random_float64() * 4.0 - 2.0)
-        agent.store_list_transition(obs, action, random_float64(), next_obs, False)
+        agent.store_list_transition(
+            obs, action, random_float64(), next_obs, False
+        )
 
     # Benchmark episodes
     var num_episodes = 5
@@ -158,7 +160,9 @@ fn benchmark_episode() raises:
             done = step_result[2]
 
             var next_obs_list = step_result[0]
-            agent.store_list_transition(obs_list, action_list, reward, next_obs_list, done)
+            agent.store_list_transition(
+                obs_list, action_list, reward, next_obs_list, done
+            )
 
             if agent.is_ready():
                 _ = agent.do_train_step()

@@ -6,10 +6,10 @@ Run with:
     pixi run -e apple mojo run tests/test_compile_nn.mojo
 """
 
-from time import perf_counter_ns
-from random import seed, random_float64
+from std.time import perf_counter_ns
+from std.random import seed, random_float64
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from nn.constants import dtype
 from nn.model import Linear

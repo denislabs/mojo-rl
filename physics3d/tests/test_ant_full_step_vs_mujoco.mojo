@@ -22,8 +22,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.rk4_integrator import RK4Integrator
@@ -37,13 +37,13 @@ from envs.ant.ant_config import AntConfig
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = AntModel.NQ          # 15
-comptime NV = AntModel.NV          # 14
+comptime NQ = AntModel.NQ  # 15
+comptime NV = AntModel.NV  # 14
 comptime NBODY = AntModel.NBODY
 comptime NJOINT = AntModel.NJOINT
 comptime NGEOM = AntModel.NGEOM
 comptime MAX_CONTACTS = AntModel.MAX_CONTACTS  # 40
-comptime ACTION_DIM = AntConfig.ACTION_DIM     # 8
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 
 # Tolerances — RK4 is 4th-order; expect tight match for no-contact cases.
 comptime QPOS_ABS_TOL: Float64 = 1e-3
@@ -69,10 +69,21 @@ fn compare_step(
 
     # === Our engine (RK4 + Newton) ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        AntModel.MAX_EQUALITY, AntModel.CONE_TYPE, AntModel.MAX_TENDON, AntModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        AntModel.MAX_EQUALITY,
+        AntModel.CONE_TYPE,
+        AntModel.MAX_TENDON,
+        AntModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE
+    ]()
     AntModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -98,8 +109,8 @@ fn compare_step(
     var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/ant.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.integrator = 1  # mjINT_RK4
-    mj_model.opt.solver = 2      # mjSOL_NEWTON
-    mj_model.opt.cone = 1        # mjCONE_ELLIPTIC
+    mj_model.opt.solver = 2  # mjSOL_NEWTON
+    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -142,11 +153,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -175,11 +192,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -188,17 +211,31 @@ fn compare_step(
 
     if all_pass:
         print(
-            "  ALL OK  qpos_max_abs=", qpos_max_abs,
-            " qpos_max_rel=", qpos_max_rel,
-            " qvel_max_abs=", qvel_max_abs,
-            " qvel_max_rel=", qvel_max_rel,
+            "  ALL OK  qpos_max_abs=",
+            qpos_max_abs,
+            " qpos_max_rel=",
+            qpos_max_rel,
+            " qvel_max_abs=",
+            qvel_max_abs,
+            " qvel_max_rel=",
+            qvel_max_rel,
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (max_abs=", qpos_max_abs,
-            " max_rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (max_abs=", qvel_max_abs,
-            " max_rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (max_abs=",
+            qpos_max_abs,
+            " max_rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (max_abs=",
+            qvel_max_abs,
+            " max_rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print full state for inspection
@@ -247,14 +284,14 @@ fn test_free_fall_with_actions() raises:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     # Moderate symmetric hip actions + ankle actions
-    actions[0] = 0.5   # hip_4
+    actions[0] = 0.5  # hip_4
     actions[1] = -0.3  # ankle_4
-    actions[2] = 0.5   # hip_1
+    actions[2] = 0.5  # hip_1
     actions[3] = -0.3  # ankle_1
     actions[4] = -0.5  # hip_2
-    actions[5] = 0.3   # ankle_2
+    actions[5] = 0.3  # ankle_2
     actions[6] = -0.5  # hip_3
-    actions[7] = 0.3   # ankle_3
+    actions[7] = 0.3  # ankle_3
     compare_step("Free fall with moderate actions", qpos, qvel, actions)
 
 
@@ -263,12 +300,21 @@ fn test_default_pose_no_action() raises:
     Tests standing pose — may have ground contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     # Exact init_qpos from XML
-    qpos[0] = 0.0;  qpos[1] = 0.0;  qpos[2] = 0.55
-    qpos[3] = 1.0;  qpos[4] = 0.0;  qpos[5] = 0.0;  qpos[6] = 0.0
-    qpos[7]  = 0.0;  qpos[8]  = 1.0
-    qpos[9]  = 0.0;  qpos[10] = -1.0
-    qpos[11] = 0.0;  qpos[12] = -1.0
-    qpos[13] = 0.0;  qpos[14] = 1.0
+    qpos[0] = 0.0
+    qpos[1] = 0.0
+    qpos[2] = 0.55
+    qpos[3] = 1.0
+    qpos[4] = 0.0
+    qpos[5] = 0.0
+    qpos[6] = 0.0
+    qpos[7] = 0.0
+    qpos[8] = 1.0
+    qpos[9] = 0.0
+    qpos[10] = -1.0
+    qpos[11] = 0.0
+    qpos[12] = -1.0
+    qpos[13] = 0.0
+    qpos[14] = 1.0
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     compare_step("Default init_qpos, no action", qpos, qvel, actions)
@@ -278,14 +324,22 @@ fn test_default_pose_with_actions() raises:
     """Default Ant pose with full motor actions — exercises combined
     contact + actuation through RK4 stages."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[2] = 0.55; qpos[3] = 1.0
-    qpos[8]  = 1.0; qpos[10] = -1.0; qpos[12] = -1.0; qpos[14] = 1.0
+    qpos[2] = 0.55
+    qpos[3] = 1.0
+    qpos[8] = 1.0
+    qpos[10] = -1.0
+    qpos[12] = -1.0
+    qpos[14] = 1.0
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.8;  actions[1] = 0.8
-    actions[2] = 0.8;  actions[3] = 0.8
-    actions[4] = -0.8; actions[5] = -0.8
-    actions[6] = -0.8; actions[7] = -0.8
+    actions[0] = 0.8
+    actions[1] = 0.8
+    actions[2] = 0.8
+    actions[3] = 0.8
+    actions[4] = -0.8
+    actions[5] = -0.8
+    actions[6] = -0.8
+    actions[7] = -0.8
     compare_step("Default pose, max symmetric actions", qpos, qvel, actions)
 
 
@@ -293,16 +347,17 @@ fn test_moving_with_velocity() raises:
     """Ant already translating and rotating — tests free-joint velocity
     integration (linear + angular velocity through quaternion update)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[2] = 1.5   # elevated to avoid immediate contacts
-    qpos[3] = 1.0   # qw
+    qpos[2] = 1.5  # elevated to avoid immediate contacts
+    qpos[3] = 1.0  # qw
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 1.0   # vx (translational)
-    qvel[1] = 0.5   # vy
+    qvel[0] = 1.0  # vx (translational)
+    qvel[1] = 0.5  # vy
     qvel[2] = -0.2  # vz (falling slowly)
-    qvel[3] = 0.3   # wx (angular velocity about x)
-    qvel[4] = 0.1   # wy
+    qvel[3] = 0.3  # wx (angular velocity about x)
+    qvel[4] = 0.1  # wy
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.3; actions[2] = 0.3
+    actions[0] = 0.3
+    actions[2] = 0.3
     compare_step("Moving torso + velocity + actions", qpos, qvel, actions)
 
 

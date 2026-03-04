@@ -19,54 +19,55 @@ Run:
     pixi run -e apple mojo build examples/kernel_benchmarks/bench_d_linear_kernels.mojo -o /tmp/bench_d
 """
 
-from memory import UnsafePointer
-from gpu.host import DeviceContext, DeviceBuffer
+from std.memory import UnsafePointer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.constants import dtype
 from nn.model.linear import Linear
 
 comptime BATCH: Int = 256
 
 
-fn trigger_linear[IN: Int, OUT: Int](
-    ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]
-) raises:
-    """Compile forward_no_cache, forward_with_cache, and backward for Linear[IN,OUT]."""
+fn trigger_linear[
+    IN: Int, OUT: Int
+](ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]) raises:
+    """Compile forward_no_cache, forward_with_cache, and backward for Linear[IN,OUT].
+    """
 
     @always_inline
     fn mk(n: Int) -> DeviceBuffer[dtype]:
         return DeviceBuffer[dtype](ctx, p, n, owning=False)
 
-    comptime P_SIZE: Int = IN * OUT + OUT      # weights + bias
-    comptime WS: Int = 1                        # Linear workspace is unused
+    comptime P_SIZE: Int = IN * OUT + OUT  # weights + bias
+    comptime WS: Int = 1  # Linear workspace is unused
 
     # Forward without cache (inference path)
     Linear[IN, OUT].forward_gpu_no_cache[BATCH](
         ctx,
-        mk(BATCH * OUT),   # output
-        mk(BATCH * IN),    # input
-        mk(P_SIZE),        # params
-        mk(WS),            # workspace (unused)
+        mk(BATCH * OUT),  # output
+        mk(BATCH * IN),  # input
+        mk(P_SIZE),  # params
+        mk(WS),  # workspace (unused)
     )
 
     # Forward with cache (training path — caches input for weight gradient)
     Linear[IN, OUT].forward_gpu[BATCH](
         ctx,
-        mk(BATCH * OUT),   # output
-        mk(BATCH * IN),    # input
-        mk(P_SIZE),        # params
-        mk(BATCH * IN),    # cache = saved input [BATCH * IN]
-        mk(WS),            # workspace
+        mk(BATCH * OUT),  # output
+        mk(BATCH * IN),  # input
+        mk(P_SIZE),  # params
+        mk(BATCH * IN),  # cache = saved input [BATCH * IN]
+        mk(WS),  # workspace
     )
 
     # Backward: dx + dW + db
     Linear[IN, OUT].backward_gpu[BATCH](
         ctx,
-        mk(BATCH * IN),    # grad_input (output)
-        mk(BATCH * OUT),   # grad_output
-        mk(P_SIZE),        # params (W)
-        mk(BATCH * IN),    # cache (saved input from forward)
-        mk(P_SIZE),        # grads (dW + db)
-        mk(WS),            # workspace
+        mk(BATCH * IN),  # grad_input (output)
+        mk(BATCH * OUT),  # grad_output
+        mk(P_SIZE),  # params (W)
+        mk(BATCH * IN),  # cache (saved input from forward)
+        mk(P_SIZE),  # grads (dW + db)
+        mk(WS),  # workspace
     )
 
 

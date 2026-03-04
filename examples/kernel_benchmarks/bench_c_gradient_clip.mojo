@@ -17,7 +17,7 @@ Run:
     pixi run -e apple mojo build examples/kernel_benchmarks/bench_c_gradient_clip.mojo -o /tmp/bench_c
 """
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from nn.constants import dtype, TPB
 from deep_agents.ppo.kernels import (
@@ -34,17 +34,18 @@ comptime TERM_P: Int = 132865
 comptime POL_P: Int = 135692
 comptime Q_P: Int = 160101  # same as REW_P -> kernel already compiled
 
-comptime ENC_BLOCKS: Int = (ENC_P + TPB - 1) // TPB    # 280
-comptime DYN_BLOCKS: Int = (DYN_P + TPB - 1) // TPB    # 782
-comptime REW_BLOCKS: Int = (REW_P + TPB - 1) // TPB    # 626
+comptime ENC_BLOCKS: Int = (ENC_P + TPB - 1) // TPB  # 280
+comptime DYN_BLOCKS: Int = (DYN_P + TPB - 1) // TPB  # 782
+comptime REW_BLOCKS: Int = (REW_P + TPB - 1) // TPB  # 626
 comptime TERM_BLOCKS: Int = (TERM_P + TPB - 1) // TPB  # 520
-comptime POL_BLOCKS: Int = (POL_P + TPB - 1) // TPB    # 531
+comptime POL_BLOCKS: Int = (POL_P + TPB - 1) // TPB  # 531
 
 
-fn trigger_gradient_norm[P: Int, BLOCKS: Int](
-    ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]
-) raises:
-    """Compile and run gradient_norm + gradient_reduce_apply for param size P."""
+fn trigger_gradient_norm[
+    P: Int, BLOCKS: Int
+](ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]) raises:
+    """Compile and run gradient_norm + gradient_reduce_apply for param size P.
+    """
     ctx.enqueue_function[
         gradient_norm_kernel[dtype, P, BLOCKS, TPB],
         gradient_norm_kernel[dtype, P, BLOCKS, TPB],
@@ -60,7 +61,7 @@ fn trigger_gradient_norm[P: Int, BLOCKS: Int](
     ](
         LayoutTensor[dtype, Layout.row_major(P), MutAnyOrigin](p),
         LayoutTensor[dtype, Layout.row_major(BLOCKS), MutAnyOrigin](p),
-        Scalar[dtype](1.0),    # max_grad_norm
+        Scalar[dtype](1.0),  # max_grad_norm
         grid_dim=(BLOCKS,),
         block_dim=(TPB,),
     )

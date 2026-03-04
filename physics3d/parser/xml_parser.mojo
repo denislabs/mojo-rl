@@ -22,7 +22,7 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 `<worldbody` would NOT match a search for `<body `).
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
 
 # =============================================================================

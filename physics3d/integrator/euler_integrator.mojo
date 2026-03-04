@@ -24,9 +24,9 @@ This produces bounded, physically correct contact forces instead of
 unbounded spring forces that can launch bodies into the sky.
 """
 
-from math import sqrt, abs
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.math import sqrt, abs
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one, ConeType

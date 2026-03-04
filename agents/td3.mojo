@@ -45,8 +45,8 @@ Example usage:
         agent.update(batch)
 """
 
-from math import exp, tanh, sqrt
-from random import random_float64
+from std.math import exp, tanh, sqrt
+from std.random import random_float64
 from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
@@ -905,7 +905,7 @@ struct TD3Agent(Copyable, Movable):
 
 fn _log(x: Float64) -> Float64:
     """Natural logarithm."""
-    from math import log
+    from std.math import log
 
     return log(x)
 

@@ -20,8 +20,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
@@ -38,7 +38,10 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
 )
 from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
+from physics3d.constraints.constraint_builder import (
+    build_constraints,
+    writeback_forces,
+)
 from physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -138,12 +141,23 @@ fn compare_vector(
 
     if all_ok:
         print(
-            "  ", label, " ALL OK  max_abs=", max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " ALL OK  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     else:
         print(
-            "  ", label, " FAILED", fail_count, " elements  max_abs=",
-            max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " FAILED",
+            fail_count,
+            " elements  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     return all_ok
 
@@ -164,13 +178,29 @@ fn compare_scalar(
     var ok = abs_err < abs_tol or rel_err < rel_tol
     if ok:
         print(
-            "    OK  ", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    OK  ",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     else:
         print(
-            "    FAIL", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    FAIL",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     return ok
 
@@ -191,9 +221,21 @@ fn compare_solver_forces(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
@@ -345,7 +387,7 @@ fn compare_solver_forces(
 
     # 10. Build constraints
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
+    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
         model, data, cdof, M_inv, dt, constraints
     )
 
@@ -360,9 +402,17 @@ fn compare_solver_forces(
     var our_nfric = constraints.num_friction
     var our_nlim = constraints.num_limits
     print(
-        "  Our: contacts=", our_ncon,
-        " rows=", constraints.num_rows,
-        " (N:", our_nnorm, " F:", our_nfric, " L:", our_nlim, ")",
+        "  Our: contacts=",
+        our_ncon,
+        " rows=",
+        constraints.num_rows,
+        " (N:",
+        our_nnorm,
+        " F:",
+        our_nfric,
+        " L:",
+        our_nlim,
+        ")",
     )
 
     # Save qacc0 before solver modifies it
@@ -371,7 +421,7 @@ fn compare_solver_forces(
         qacc0.append(qacc[i])
 
     # 12. Solve constraints (modifies qacc in-place)
-    NewtonSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
+    NewtonSolver.solve[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -409,9 +459,11 @@ fn compare_solver_forces(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our solver: pyramidal cone, Newton solver, Euler integrator
-    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel, MuJoCo default)
-    mj_model.opt.solver = 2     # Newton
-    mj_model.opt.integrator = 0 # Euler (match our M_hat = M + arm + dt*damp)
+    mj_model.opt.cone = (
+        0  # pyramidal (matches HalfCheetahModel, MuJoCo default)
+    )
+    mj_model.opt.solver = 2  # Newton
+    mj_model.opt.integrator = 0  # Euler (match our M_hat = M + arm + dt*damp)
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -437,7 +489,18 @@ fn compare_solver_forces(
         if diff > max_M_diff:
             max_M_diff = diff
         if diff > 0.001:
-            print("    M[", i, ",", i, "] ours=", our_Mii, " mj=", mj_Mii, " diff=", diff)
+            print(
+                "    M[",
+                i,
+                ",",
+                i,
+                "] ours=",
+                our_Mii,
+                " mj=",
+                mj_Mii,
+                " diff=",
+                diff,
+            )
     if max_M_diff < 0.001:
         print("    ALL M diag MATCH (max_diff=", max_M_diff, ")")
 
@@ -454,7 +517,18 @@ fn compare_solver_forces(
             if diff_ij > max_offdiag_diff:
                 max_offdiag_diff = diff_ij
             if diff_ij > 0.001:
-                print("    M[", i, ",", j, "] ours=", our_Mij, " mj=", mj_Mij, " diff=", diff_ij)
+                print(
+                    "    M[",
+                    i,
+                    ",",
+                    j,
+                    "] ours=",
+                    our_Mij,
+                    " mj=",
+                    mj_Mij,
+                    " diff=",
+                    diff_ij,
+                )
     if max_offdiag_diff < 0.001:
         print("    ALL off-diag MATCH (max_diff=", max_offdiag_diff, ")")
 
@@ -470,7 +544,16 @@ fn compare_solver_forces(
         var our_bias = Float64(bias[i])
         var diff_b = abs(mj_bias - our_bias)
         if diff_b > 0.01:
-            print("    bias[", i, "] ours=", our_bias, " mj=", mj_bias, " diff=", diff_b)
+            print(
+                "    bias[",
+                i,
+                "] ours=",
+                our_bias,
+                " mj=",
+                mj_bias,
+                " diff=",
+                diff_b,
+            )
     print("  MJ qfrc_smooth:", end="")
     for i in range(NV):
         print(" ", Float64(py=mj_smooth_flat[i]), end="")
@@ -576,11 +659,15 @@ fn compare_solver_forces(
             # Pyramidal: each contact has 4 edge rows, normal force = sum of all edge lambdas
             for edge_idx in range(4):
                 if mj_r + edge_idx < mj_nefc:
-                    mj_normal_forces[c] += Float64(py=mj_efc_force_flat[mj_r + edge_idx])
+                    mj_normal_forces[c] += Float64(
+                        py=mj_efc_force_flat[mj_r + edge_idx]
+                    )
             mj_total_normal += mj_normal_forces[c]
     print(
-        "  MJ:  contact_rows (pyramidal)=", mj_ncon * 4,
-        " limit_rows=", mj_limit_count,
+        "  MJ:  contact_rows (pyramidal)=",
+        mj_ncon * 4,
+        " limit_rows=",
+        mj_limit_count,
     )
 
     # === Cost comparison: evaluate our cost at both solutions ===
@@ -599,7 +686,12 @@ fn compare_solver_forces(
 
     # Cost at our solution
     var our_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, qacc, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        qacc,
+        qacc0,
+        f_net,
+        M,
     )
 
     # Cost at MuJoCo's solution
@@ -607,14 +699,22 @@ fn compare_solver_forces(
     for i in range(NV):
         mj_qacc_typed.append(Scalar[DTYPE](mj_qacc[i]))
     var mj_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, mj_qacc_typed, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        mj_qacc_typed,
+        qacc0,
+        f_net,
+        M,
     )
 
     print("  --- Cost comparison ---")
     print("    Our cost:    ", Float64(our_cost))
     print("    MuJoCo cost: ", Float64(mj_cost))
     if our_cost < mj_cost:
-        print("    OURS IS LOWER → cost functions differ or MuJoCo not fully converged")
+        print(
+            "    OURS IS LOWER → cost functions differ or MuJoCo not fully"
+            " converged"
+        )
     elif our_cost > mj_cost:
         print("    MUJOCO IS LOWER → our solver is suboptimal")
     else:
@@ -640,7 +740,16 @@ fn compare_solver_forces(
                 if d_diff > max_D_diff:
                     max_D_diff = d_diff
                 if d_diff > 0.01:
-                    print("    D[normal", n_cmp, "] ours=", our_D_n, " mj=", mj_D_n, " diff=", d_diff)
+                    print(
+                        "    D[normal",
+                        n_cmp,
+                        "] ours=",
+                        our_D_n,
+                        " mj=",
+                        mj_D_n,
+                        " diff=",
+                        d_diff,
+                    )
     if max_D_diff < 0.01:
         print("    ALL D values match (max_diff=", max_D_diff, ")")
     else:
@@ -699,8 +808,11 @@ fn compare_solver_forces(
     print()
     print("  --- Comparison 3: Total normal force ---")
     if not compare_scalar(
-        "total_normal", our_total_normal, mj_total_normal,
-        TOTAL_FORCE_ABS_TOL, TOTAL_FORCE_REL_TOL,
+        "total_normal",
+        our_total_normal,
+        mj_total_normal,
+        TOTAL_FORCE_ABS_TOL,
+        TOTAL_FORCE_REL_TOL,
     ):
         all_pass = False
 
@@ -717,10 +829,18 @@ fn compare_solver_forces(
         var ok = abs_err < PER_CONTACT_ABS_TOL or rel_err < PER_CONTACT_REL_TOL
         var status = "OK  " if ok else "FAIL"
         print(
-            "    [", status, "] contact", c,
-            " ours=", our_normal_forces[c],
-            " mj=", mj_normal_forces[c],
-            " abs=", abs_err, " rel=", rel_err,
+            "    [",
+            status,
+            "] contact",
+            c,
+            " ours=",
+            our_normal_forces[c],
+            " mj=",
+            mj_normal_forces[c],
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
 
     # 5. Per-row efc_force (informational)
@@ -741,10 +861,16 @@ fn compare_solver_forces(
         else:
             ctype_str = "? "
         print(
-            "    our[", r, "] type=", ctype_str,
-            " lambda=", Float64(constraints.rows[r].lambda_val),
-            " K=", Float64(constraints.rows[r].K),
-            " bias=", Float64(constraints.rows[r].bias),
+            "    our[",
+            r,
+            "] type=",
+            ctype_str,
+            " lambda=",
+            Float64(constraints.rows[r].lambda_val),
+            " K=",
+            Float64(constraints.rows[r].K),
+            " bias=",
+            Float64(constraints.rows[r].bias),
         )
 
     # Print MuJoCo rows
@@ -758,8 +884,12 @@ fn compare_solver_forces(
         else:
             tstr = String(t)
         print(
-            "    mj [", r, "] type=", tstr,
-            " force=", Float64(py=mj_efc_force_flat[r]),
+            "    mj [",
+            r,
+            "] type=",
+            tstr,
+            " force=",
+            Float64(py=mj_efc_force_flat[r]),
         )
 
     print()
@@ -789,7 +919,7 @@ fn test_low_pose_moving() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 2.0   # moving forward
+    qvel[0] = 2.0  # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # bthigh rotating
     compare_solver_forces("Low pose moving", qpos, qvel)
@@ -807,10 +937,10 @@ fn test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
-    qpos[3] = -0.5   # bthigh bent
-    qpos[4] = 0.8    # bshin extended
-    qpos[6] = 0.5    # fthigh bent
-    qpos[7] = -0.8   # fshin extended
+    qpos[3] = -0.5  # bthigh bent
+    qpos[4] = 0.8  # bshin extended
+    qpos[6] = 0.5  # fthigh bent
+    qpos[7] = -0.8  # fshin extended
     var qvel = InlineArray[Float64, NV](fill=0.0)
     compare_solver_forces("Bent legs", qpos, qvel)
 

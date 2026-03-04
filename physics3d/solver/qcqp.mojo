@@ -13,7 +13,7 @@ Two families of solvers:
 Reference: MuJoCo source (engine_util_solve.c lines 991-1212)
 """
 
-from math import sqrt
+from std.math import sqrt
 from ..types import _max_one
 
 

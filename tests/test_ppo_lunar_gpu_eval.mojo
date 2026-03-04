@@ -7,12 +7,12 @@ Run with:
     pixi run -e apple mojo run tests/test_ppo_lunar_gpu_eval.mojo
 """
 
-from math import exp
+from std.math import exp
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
 from envs.lunar_lander import LunarLanderEnv, LunarLander

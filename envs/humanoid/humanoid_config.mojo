@@ -1,6 +1,6 @@
 """Humanoid environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -113,7 +113,9 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         var x_after = data.qpos[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
-        var forward_reward = Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        var forward_reward = (
+            Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        )
 
         # Control cost
         var ctrl_cost = Scalar[DTYPE](0.0)
@@ -123,7 +125,9 @@ struct HumanoidConfig(Phyics3dEnvConfig):
 
         # Health check: torso world z = qpos[2] (after init offsets applied at reset)
         var z = data.qpos[2]
-        var is_healthy = z >= Scalar[DTYPE](Self.MIN_Z) and z <= Scalar[DTYPE](Self.MAX_Z)
+        var is_healthy = z >= Scalar[DTYPE](Self.MIN_Z) and z <= Scalar[DTYPE](
+            Self.MAX_Z
+        )
 
         # NaN check
         if is_healthy:
@@ -261,7 +265,9 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         if not is_healthy:
             healthy_reward = Scalar[DTYPE](0.0)
 
-        var reward = Scalar[DTYPE](1.25) * x_velocity + healthy_reward - ctrl_cost
+        var reward = (
+            Scalar[DTYPE](1.25) * x_velocity + healthy_reward - ctrl_cost
+        )
 
         return (reward, not is_healthy)
 
@@ -282,8 +288,12 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         # Free joint: torso starts at z=1.4 (from MJCF torso pos="0 0 1.4")
         # qpos[0:3] = translation (x, y, z), qpos[3:7] = quaternion (w, x, y, z)
         # We add the default offsets on top of reset noise
-        states[env, qpos_off + 2] = rebind[Scalar[DTYPE]](states[env, qpos_off + 2]) + Scalar[DTYPE](1.4)
-        states[env, qpos_off + 3] = rebind[Scalar[DTYPE]](states[env, qpos_off + 3]) + Scalar[DTYPE](1.0)
+        states[env, qpos_off + 2] = rebind[Scalar[DTYPE]](
+            states[env, qpos_off + 2]
+        ) + Scalar[DTYPE](1.4)
+        states[env, qpos_off + 3] = rebind[Scalar[DTYPE]](
+            states[env, qpos_off + 3]
+        ) + Scalar[DTYPE](1.0)
 
     # === GPU inline: Custom obs extraction (none — use model default 45D obs) ===
     @always_inline

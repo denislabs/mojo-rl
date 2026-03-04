@@ -19,8 +19,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
@@ -70,10 +70,22 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -93,9 +105,7 @@ fn compare_step(
 
         HalfCheetahModel.apply_actions(data, action_list)
 
-        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
-            model, data
-        )
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
 
     print("data.num_contacts:", data.num_contacts)
 
@@ -110,7 +120,9 @@ fn compare_step(
     # Match our engine settings: Euler integrator, Newton solver, elliptic cone
     mj_model.opt.integrator = 0  # mjINT_EULER
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel, MuJoCo default)
+    mj_model.opt.cone = (
+        0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel, MuJoCo default)
+    )
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -328,9 +340,7 @@ fn test_freefall_10_steps() raises:
     qpos[1] = 1.5  # high enough for 10 steps of free fall
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step(
-        "Free fall (10 steps)", qpos, qvel, actions, num_steps=10
-    )
+    compare_step("Free fall (10 steps)", qpos, qvel, actions, num_steps=10)
 
 
 fn test_standing_10_steps() raises:

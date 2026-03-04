@@ -15,13 +15,13 @@ Reward: -(θ² + 0.1*θ_dot² + 0.001*torque²)
 Episode never terminates naturally (always runs for max_steps=200).
 """
 
-from math import sqrt, cos, sin, pi
+from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from random import random_float64
-from random.philox import Random as PhiloxRandom
-from memory import alloc
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
+from std.memory import alloc
 
 from core import (
     BoxContinuousActionEnv,
@@ -173,23 +173,23 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __copyinit__(out self, existing: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor."""
-        self.max_speed = existing.max_speed
-        self.max_torque = existing.max_torque
-        self.dt = existing.dt
-        self.g = existing.g
-        self.m = existing.m
-        self.l = existing.l
-        self.theta = existing.theta
-        self.theta_dot = existing.theta_dot
-        self.steps = existing.steps
-        self.max_steps = existing.max_steps
-        self.done = existing.done
-        self.total_reward = existing.total_reward
-        self.last_torque = existing.last_torque
-        self.num_bins_angle = existing.num_bins_angle
-        self.num_bins_velocity = existing.num_bins_velocity
+        self.max_speed = copy.max_speed
+        self.max_torque = copy.max_torque
+        self.dt = copy.dt
+        self.g = copy.g
+        self.m = copy.m
+        self.l = copy.l
+        self.theta = copy.theta
+        self.theta_dot = copy.theta_dot
+        self.steps = copy.steps
+        self.max_steps = copy.max_steps
+        self.done = copy.done
+        self.total_reward = copy.total_reward
+        self.last_torque = copy.last_torque
+        self.num_bins_angle = copy.num_bins_angle
+        self.num_bins_velocity = copy.num_bins_velocity
         # Do not copy renderer — reset to null
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False

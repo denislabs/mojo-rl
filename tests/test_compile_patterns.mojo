@@ -12,11 +12,11 @@ Run with:
     pixi run -e apple mojo run tests/test_compile_patterns.mojo
 """
 
-from time import perf_counter_ns
-from random import seed, random_float64
+from std.time import perf_counter_ns
+from std.random import seed, random_float64
 
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
 from nn.constants import dtype

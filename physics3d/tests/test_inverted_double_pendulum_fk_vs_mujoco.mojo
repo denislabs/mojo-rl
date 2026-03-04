@@ -19,8 +19,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -34,11 +34,11 @@ from envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = InvertedDoublePendulumModel.NQ          # 3
-comptime NV = InvertedDoublePendulumModel.NV          # 3
-comptime NBODY = InvertedDoublePendulumModel.NBODY    # 4
+comptime NQ = InvertedDoublePendulumModel.NQ  # 3
+comptime NV = InvertedDoublePendulumModel.NV  # 3
+comptime NBODY = InvertedDoublePendulumModel.NBODY  # 4
 comptime NJOINT = InvertedDoublePendulumModel.NJOINT  # 3
-comptime NGEOM = InvertedDoublePendulumModel.NGEOM    # 5
+comptime NGEOM = InvertedDoublePendulumModel.NGEOM  # 5
 comptime MAX_CONTACTS = InvertedDoublePendulumModel.MAX_CONTACTS  # 5
 
 # Tolerance for comparison (float64)
@@ -73,7 +73,12 @@ fn compare_fk(
         InvertedDoublePendulumModel.NSITE,
     ]()
     var data = Data[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
         InvertedDoublePendulumModel.NSITE,
     ]()
     InvertedDoublePendulumModel.setup_model_and_data(model, data)
@@ -144,12 +149,16 @@ fn compare_fk(
         var mj_qz = Float64(py=mj_xquat_flat[b * 4 + 3])
 
         var diff_pos = (
-            abs(our_qx - mj_qx) + abs(our_qy - mj_qy)
-            + abs(our_qz - mj_qz) + abs(our_qw - mj_qw)
+            abs(our_qx - mj_qx)
+            + abs(our_qy - mj_qy)
+            + abs(our_qz - mj_qz)
+            + abs(our_qw - mj_qw)
         )
         var diff_neg = (
-            abs(our_qx + mj_qx) + abs(our_qy + mj_qy)
-            + abs(our_qz + mj_qz) + abs(our_qw + mj_qw)
+            abs(our_qx + mj_qx)
+            + abs(our_qy + mj_qy)
+            + abs(our_qz + mj_qz)
+            + abs(our_qw + mj_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
 
@@ -206,7 +215,8 @@ fn test_fk_displaced_cart() raises:
 
 
 fn test_fk_first_hinge_only() raises:
-    """FK with only the first hinge bent — pole tilted ~17 deg, pole2 follows."""
+    """FK with only the first hinge bent — pole tilted ~17 deg, pole2 follows.
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.3  # hinge: ~17 degrees tilt
     compare_fk("First hinge only (hinge=0.3 rad)", qpos)
@@ -216,8 +226,8 @@ fn test_fk_both_hinges_bent() raises:
     """FK with both hinges bent in opposite directions.
     Tests quaternion accumulation for a two-link chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 0.2   # cart displaced
-    qpos[1] = 0.4   # first hinge: pole bent ~23 deg
+    qpos[0] = 0.2  # cart displaced
+    qpos[1] = 0.4  # first hinge: pole bent ~23 deg
     qpos[2] = -0.3  # second hinge: pole2 bent back ~17 deg
     compare_fk("Both hinges bent (hinge=0.4, hinge2=-0.3)", qpos)
 
@@ -226,9 +236,9 @@ fn test_fk_large_tilt() raises:
     """FK with large first hinge tilt near the observation limit.
     Tests nonlinear rotation accumulation in the double pendulum chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = -0.5   # cart left
-    qpos[1] = 1.0    # ~57 deg tilt (large but not at limit)
-    qpos[2] = -0.6   # pole2 bent back
+    qpos[0] = -0.5  # cart left
+    qpos[1] = 1.0  # ~57 deg tilt (large but not at limit)
+    qpos[2] = -0.6  # pole2 bent back
     compare_fk("Large tilt (hinge=1.0, hinge2=-0.6)", qpos)
 
 

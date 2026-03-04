@@ -43,8 +43,8 @@ Example usage:
     agent.update(batch)
 """
 
-from math import exp, tanh, sqrt, log
-from random import random_float64
+from std.math import exp, tanh, sqrt, log
+from std.random import random_float64
 from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,

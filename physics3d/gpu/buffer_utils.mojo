@@ -3,10 +3,10 @@
 Provides functions to:
 1. Create GC state and model buffers
 2. Copy from CPU Model/Data to GPU buffers
-3. Copy from GPU buffers back to CPU Data
+3. Copy from std.gpu buffers back to CPU Data
 """
 
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from .constants import (
     state_size,

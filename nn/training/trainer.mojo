@@ -38,7 +38,7 @@ from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct TrainResult(ImplicitlyCopyable, Movable):
@@ -250,7 +250,7 @@ struct Trainer[
 
         Accepts a params LayoutTensor so it works with either
         state.params_view() (CPU NetworkState) or — after downloading
-        via gpu.download_to(state, ctx) — state.params_view() from GPU.
+        via gpu.download_to(state, ctx) — state.params_view() from std.gpu.
 
         Args:
             params: Model parameters [PARAM_SIZE] (e.g. state.params_view()).

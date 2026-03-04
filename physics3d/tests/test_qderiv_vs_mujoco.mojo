@@ -10,8 +10,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -50,9 +50,21 @@ fn compare_qderiv(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
@@ -101,7 +113,9 @@ fn compare_qderiv(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.integrator = 2  # mjINT_IMPLICIT (triggers full qDeriv with RNE)
+    mj_model.opt.integrator = (
+        2  # mjINT_IMPLICIT (triggers full qDeriv with RNE)
+    )
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -183,11 +197,19 @@ fn compare_qderiv(
                 num_fail += 1
                 if num_fail <= 10:
                     print(
-                        "    [", i, ",", j, "]",
-                        " ours=", our_val,
-                        " mj=", mj_val,
-                        " abs=", abs_err,
-                        " rel=", rel_err,
+                        "    [",
+                        i,
+                        ",",
+                        j,
+                        "]",
+                        " ours=",
+                        our_val,
+                        " mj=",
+                        mj_val,
+                        " abs=",
+                        abs_err,
+                        " rel=",
+                        rel_err,
                     )
 
     print("  Summary: checked", total_checked, "entries, failed:", num_fail)

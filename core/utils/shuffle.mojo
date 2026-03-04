@@ -16,7 +16,7 @@ Example usage:
     shuffle_indices_inline(100, indices)
 """
 
-from random import random_float64
+from std.random import random_float64
 
 
 fn shuffle_indices(n: Int, mut indices: List[Int]):
@@ -48,9 +48,7 @@ fn shuffle_indices(n: Int, mut indices: List[Int]):
         indices[j] = temp
 
 
-fn shuffle_indices_inline[
-    N: Int
-](n: Int, mut indices: InlineArray[Int, N]):
+fn shuffle_indices_inline[N: Int](n: Int, mut indices: InlineArray[Int, N]):
     """Generate shuffled indices [0, n) into an InlineArray using Fisher-Yates.
 
     Fills the first `n` elements with a random permutation of [0, n).

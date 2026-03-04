@@ -4,10 +4,14 @@ Uses SDL3's GPU API with Metal (MSL shaders) for true 3D rendering
 with Blinn-Phong lighting, depth buffering, and procedural checkerboard ground.
 """
 
-from memory import UnsafePointer, memcpy, alloc
-from math import sqrt, sin, cos
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric, Mat4 as Mat4Generic
-from ffi import _get_dylib_function
+from std.memory import UnsafePointer, memcpy, alloc
+from std.math import sqrt, sin, cos
+from math3d import (
+    Vec3 as Vec3Generic,
+    Quat as QuatGeneric,
+    Mat4 as Mat4Generic,
+)
+from std.ffi import _get_dylib_function
 from .sdl import (
     Ptr,
     lib,
@@ -1870,6 +1874,10 @@ struct Renderer3D(Movable):
             half_height: Half-height of cylindrical section.
             axis: Local axis (0=X, 1=Y, 2=Z).
             color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
         """
         var f_radius = Float32(radius)
         var f_half = Float32(half_height)
@@ -1973,8 +1981,12 @@ struct Renderer3D(Movable):
         """Enable skybox gradient background.
 
         Args:
-            top_r/g/b: Gradient top color (RGB, 0-1).
-            bottom_r/g/b: Gradient bottom color (RGB, 0-1).
+            top_r: Gradient top color red (0-1).
+            top_g: Gradient top color green (0-1).
+            top_b: Gradient top color blue (0-1).
+            bottom_r: Gradient bottom color red (0-1).
+            bottom_g: Gradient bottom color green (0-1).
+            bottom_b: Gradient bottom color blue (0-1).
         """
         self.draw_skybox = True
         self.skybox_uniforms.top_color[0] = top_r

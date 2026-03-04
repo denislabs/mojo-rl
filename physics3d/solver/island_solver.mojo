@@ -33,7 +33,7 @@ Exports
     solve_with_islands  — island-aware PGS solve (main entry point)
 """
 
-from math import abs
+from std.math import abs
 from ..types import Model, Data, _max_one, ConeType
 from ..constraints.constraint_data import (
     ConstraintData,

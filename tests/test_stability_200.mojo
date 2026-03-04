@@ -1,5 +1,5 @@
 """Quick stability test: 200 env steps with all +1.0 actions."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 
 

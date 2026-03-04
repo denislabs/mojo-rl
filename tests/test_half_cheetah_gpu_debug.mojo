@@ -16,7 +16,7 @@ Run with:
     pixi run -e nvidia mojo run tests/test_half_cheetah_gpu_debug.mojo
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn import dtype as gpu_dtype
 from envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 

@@ -12,13 +12,13 @@ All physics data is packed per-environment for efficient GPU access.
 Reference: gymnasium/envs/box2d/car_racing.py
 """
 
-from math import sqrt, cos, sin, pi
+from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from random.philox import Random as PhiloxRandom
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random.philox import Random as PhiloxRandom
 
-from memory import alloc
+from std.memory import alloc
 from core import BoxContinuousActionEnv, GPUContinuousEnv, Action, RenderableEnv
 from render import (
     Renderer2D,

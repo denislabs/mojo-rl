@@ -1,5 +1,5 @@
 """Debug friction: run one verbose step after injecting vx=1.0."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 
 
@@ -15,7 +15,9 @@ fn main():
     for _ in range(100):
         _ = env.step(zero_action)
 
-    print("After settling: rootx=", env.data.qpos[0], "rootz=", env.data.qpos[1])
+    print(
+        "After settling: rootx=", env.data.qpos[0], "rootz=", env.data.qpos[1]
+    )
     print("vx=", env.data.qvel[0], "nc=", env.data.num_contacts)
 
     # Inject horizontal velocity

@@ -15,7 +15,7 @@ No stdlib float parsing or trig imports are used; everything is computed
 with arithmetic helpers defined in xml_parser.mojo.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 from .xml_parser import (
     _extract_section,
     _extract_opening_tag,

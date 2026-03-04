@@ -6,10 +6,10 @@ Run with:
     pixi run -e apple mojo run tests/debug_ppo_gap_growth.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.pendulum import PendulumV2, PConstants
@@ -86,7 +86,9 @@ fn main() raises:
 
         while episodes_trained < TOTAL_EPISODES:
             # Train for EVAL_EVERY episodes
-            var episodes_this_round = min(EVAL_EVERY, TOTAL_EPISODES - episodes_trained)
+            var episodes_this_round = min(
+                EVAL_EVERY, TOTAL_EPISODES - episodes_trained
+            )
 
             var metrics = agent.train_gpu[PendulumV2[dtype]](
                 ctx,
@@ -96,7 +98,9 @@ fn main() raises:
             )
 
             episodes_trained += episodes_this_round
-            var train_avg = metrics.mean_reward_last_n(min(100, episodes_this_round))
+            var train_avg = metrics.mean_reward_last_n(
+                min(100, episodes_this_round)
+            )
 
             # Evaluate on CPU
             var eval_avg = agent.evaluate(
@@ -154,9 +158,10 @@ fn main() raises:
         # Analyze gap growth
         if len(train_rewards) > 1:
             var first_gap = train_rewards[0] - eval_rewards[0]
-            var last_gap = train_rewards[len(train_rewards) - 1] - eval_rewards[
-                len(eval_rewards) - 1
-            ]
+            var last_gap = (
+                train_rewards[len(train_rewards) - 1]
+                - eval_rewards[len(eval_rewards) - 1]
+            )
             var gap_growth = last_gap - first_gap
 
             print("Gap at start:", first_gap)

@@ -22,8 +22,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.implicit_integrator import ImplicitIntegrator
@@ -69,9 +69,21 @@ fn compare_step(
 
     # === Our engine (Implicit + Newton) ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
@@ -88,9 +100,7 @@ fn compare_step(
         for i in range(NV):
             data.qfrc[i] = Scalar[DTYPE](0)
         HalfCheetahModel.apply_actions(data, action_list)
-        ImplicitIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
-            model, data
-        )
+        ImplicitIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
 
     # === MuJoCo reference (opt.integrator=1 = mjINT_IMPLICIT) ===
     var mujoco = Python.import_module("mujoco")
@@ -101,7 +111,9 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.integrator = 2  # mjINT_IMPLICIT (full implicit with RNE vel derivative)
+    mj_model.opt.integrator = (
+        2  # mjINT_IMPLICIT (full implicit with RNE vel derivative)
+    )
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -141,11 +153,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -173,11 +191,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -186,17 +210,31 @@ fn compare_step(
 
     if all_pass:
         print(
-            "  ALL OK  qpos_max_abs=", qpos_max_abs,
-            " qpos_max_rel=", qpos_max_rel,
-            " qvel_max_abs=", qvel_max_abs,
-            " qvel_max_rel=", qvel_max_rel,
+            "  ALL OK  qpos_max_abs=",
+            qpos_max_abs,
+            " qpos_max_rel=",
+            qpos_max_rel,
+            " qvel_max_abs=",
+            qvel_max_abs,
+            " qvel_max_rel=",
+            qvel_max_rel,
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (max_abs=", qpos_max_abs,
-            " max_rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (max_abs=", qvel_max_abs,
-            " max_rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (max_abs=",
+            qpos_max_abs,
+            " max_rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (max_abs=",
+            qvel_max_abs,
+            " max_rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print values for inspection

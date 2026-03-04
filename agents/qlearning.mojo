@@ -1,5 +1,5 @@
 from core import TabularAgent, DiscreteEnv, RenderableEnv, TrainingMetrics
-from random import random_si64, random_float64
+from std.random import random_si64, random_float64
 
 
 struct QTable(Copyable, ImplicitlyCopyable, Movable):

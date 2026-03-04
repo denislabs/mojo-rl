@@ -38,9 +38,14 @@ References:
 - Sutton & Barto, Chapter 10.1: "Episodic Semi-gradient Control"
 """
 
-from random import random_float64, random_si64
+from std.random import random_float64, random_si64
 from core.linear_fa import LinearWeights
-from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics, FeatureExtractor
+from core import (
+    BoxDiscreteActionEnv,
+    RenderableEnv,
+    TrainingMetrics,
+    FeatureExtractor,
+)
 
 
 struct LinearQLearningAgent:
@@ -463,7 +468,9 @@ struct LinearSARSAAgent:
                 var phi_next = _compute_phi_f64(next_obs_f64, features)
                 var next_action = self.select_action(phi_next)
 
-                self.update(phi, action, Float64(reward), phi_next, next_action, done)
+                self.update(
+                    phi, action, Float64(reward), phi_next, next_action, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1
@@ -735,7 +742,9 @@ struct LinearSARSALambdaAgent:
                 var phi_next = _compute_phi_f64(next_obs_f64, features)
                 var next_action = self.select_action(phi_next)
 
-                self.update(phi, action, Float64(reward), phi_next, next_action, done)
+                self.update(
+                    phi, action, Float64(reward), phi_next, next_action, done
+                )
 
                 total_reward += Float64(reward)
                 steps += 1
@@ -816,7 +825,9 @@ struct LinearSARSALambdaAgent:
         return total_reward / Float64(num_episodes)
 
 
-fn _linear_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+fn _linear_obs_to_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
     var result = List[Scalar[DType.float64]](capacity=len(obs))
     for i in range(len(obs)):
@@ -824,7 +835,9 @@ fn _linear_obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DTy
     return result^
 
 
-fn _compute_phi_f64[F: FeatureExtractor](obs_f64: List[Float64], features: F) -> List[Float64]:
+fn _compute_phi_f64[
+    F: FeatureExtractor
+](obs_f64: List[Float64], features: F) -> List[Float64]:
     """Compute feature vector from Float64 obs, handling F.DTYPE conversion.
 
     Converts Float64 obs to F.DTYPE, computes features, then converts back to Float64.

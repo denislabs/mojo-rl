@@ -6,7 +6,7 @@ https://gymnasium.farama.org/environments/classic_control/pendulum/
 State layout for GPU-batched simulation with flat [BATCH, STATE_SIZE] buffers.
 """
 
-from math import pi
+from std.math import pi
 
 
 struct PendulumLayout:

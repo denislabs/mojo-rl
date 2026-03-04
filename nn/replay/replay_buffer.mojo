@@ -11,7 +11,7 @@ For the prioritized version, importance sampling weights are returned
 alongside samples to correct for the bias introduced by non-uniform sampling.
 """
 
-from random import random_float64
+from std.random import random_float64
 
 
 trait ReplayBufferTrait(ImplicitlyDestructible):

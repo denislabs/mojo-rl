@@ -20,8 +20,8 @@ Run with:
     pixi run mojo run examples/half_cheetah/tdmpc2_half_cheetah_training_cpu.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
 from deep_agents.tdmpc2 import TDMPC2Agent
 from envs.half_cheetah import (
@@ -190,10 +190,7 @@ fn main() raises:
     print()
     print("Total episodes: " + String(NUM_EPISODES))
     print("Training time: " + String(elapsed_s)[:6] + " seconds")
-    print(
-        "Episodes/second: "
-        + String(Float64(NUM_EPISODES) / elapsed_s)[:7]
-    )
+    print("Episodes/second: " + String(Float64(NUM_EPISODES) / elapsed_s)[:7])
     print()
 
     print(
@@ -209,13 +206,10 @@ fn main() raises:
     elif final_avg > 500.0:
         print("SUCCESS: Agent learned to run! (avg reward > 500)")
     elif final_avg > 100.0:
-        print(
-            "GOOD PROGRESS: Agent is learning locomotion (avg reward > 100)"
-        )
+        print("GOOD PROGRESS: Agent is learning locomotion (avg reward > 100)")
     elif final_avg > 0.0:
         print(
-            "LEARNING: Agent improving but needs more training"
-            " (avg reward > 0)"
+            "LEARNING: Agent improving but needs more training (avg reward > 0)"
         )
     else:
         print("EARLY STAGE: Agent still exploring (avg reward < 0)")

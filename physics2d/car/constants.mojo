@@ -6,7 +6,7 @@ the physical properties of the car, wheels, and friction model.
 Reference: gymnasium/envs/box2d/car_dynamics.py
 """
 
-from math import pi
+from std.math import pi
 
 # =============================================================================
 # Scale Factor
@@ -78,18 +78,18 @@ comptime STEERING_GAIN: Float64 = 50.0
 
 # Front-left wheel
 comptime WHEEL_POS_FL_X: Float64 = -55.0 * SIZE  # -1.1
-comptime WHEEL_POS_FL_Y: Float64 = 80.0 * SIZE   # 1.6
+comptime WHEEL_POS_FL_Y: Float64 = 80.0 * SIZE  # 1.6
 
 # Front-right wheel
-comptime WHEEL_POS_FR_X: Float64 = 55.0 * SIZE   # 1.1
-comptime WHEEL_POS_FR_Y: Float64 = 80.0 * SIZE   # 1.6
+comptime WHEEL_POS_FR_X: Float64 = 55.0 * SIZE  # 1.1
+comptime WHEEL_POS_FR_Y: Float64 = 80.0 * SIZE  # 1.6
 
 # Rear-left wheel
 comptime WHEEL_POS_RL_X: Float64 = -55.0 * SIZE  # -1.1
 comptime WHEEL_POS_RL_Y: Float64 = -82.0 * SIZE  # -1.64
 
 # Rear-right wheel
-comptime WHEEL_POS_RR_X: Float64 = 55.0 * SIZE   # 1.1
+comptime WHEEL_POS_RR_X: Float64 = 55.0 * SIZE  # 1.1
 comptime WHEEL_POS_RR_Y: Float64 = -82.0 * SIZE  # -1.64
 
 # =============================================================================
@@ -151,9 +151,9 @@ comptime HULL_OMEGA: Int = 5
 comptime HULL_STATE_SIZE: Int = 6
 
 # Wheel state indices (per wheel)
-comptime WHEEL_OMEGA: Int = 0      # Angular velocity of wheel
+comptime WHEEL_OMEGA: Int = 0  # Angular velocity of wheel
 comptime WHEEL_JOINT_ANGLE: Int = 1  # Steering joint angle (front wheels only)
-comptime WHEEL_PHASE: Int = 2       # Cumulative rotation (for rendering)
+comptime WHEEL_PHASE: Int = 2  # Cumulative rotation (for rendering)
 comptime WHEEL_STATE_SIZE: Int = 3
 
 # Control indices

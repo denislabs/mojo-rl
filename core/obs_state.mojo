@@ -4,7 +4,7 @@ ObsState[N] wraps an InlineArray[Float64, N] and implements the State trait.
 Replaces per-environment state structs like HalfCheetahState.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
 from .state import State
 

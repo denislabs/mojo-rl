@@ -8,10 +8,10 @@ This is an optimized collision system for environments with:
 Perfect for LunarLander where we need fast ground contact detection.
 """
 
-from math import cos, sin
+from std.math import cos, sin
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,

@@ -19,9 +19,9 @@ Both CPU and GPU supported. GPU uses 9 kernel launches per step:
   4 × (stage_kernel + solver) + 1 combine_kernel
 """
 
-from math import sqrt
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.math import sqrt
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one, ConeType

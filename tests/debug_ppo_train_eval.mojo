@@ -6,11 +6,11 @@ Run with:
     pixi run -e apple mojo run tests/debug_ppo_train_eval.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
-from math import sqrt
+from std.random import seed
+from std.time import perf_counter_ns
+from std.math import sqrt
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.pendulum import PendulumV2, PConstants

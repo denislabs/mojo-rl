@@ -7,8 +7,8 @@ Usage:
     pixi run mojo run examples/car_racing_v2_demo.mojo
 """
 
-from time import sleep
-from random import random_float64
+from std.time import sleep
+from std.random import random_float64
 
 from envs.car_racing import CarRacing, CarRacingAction
 from envs.car_racing.constants import CRConstants

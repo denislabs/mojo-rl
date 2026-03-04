@@ -1,6 +1,6 @@
 """Walker2d environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -34,8 +34,8 @@ struct Walker2dConfig(Phyics3dEnvConfig):
     # Gymnasium checks world_z ∈ [0.8, 2.0], where world_z = torso_pos_z(1.25) + qpos[rootz].
     # Since we reset qpos[rootz]=0, world_z ≈ 1.25 at reset.
     # Equivalent qpos[1] bounds: (-0.45, 0.75).
-    comptime MIN_Z = -0.45   # qpos[1] lower bound (world_z ≥ 0.8)
-    comptime MAX_Z = 0.75    # qpos[1] upper bound (world_z ≤ 2.0)
+    comptime MIN_Z = -0.45  # qpos[1] lower bound (world_z ≥ 0.8)
+    comptime MAX_Z = 0.75  # qpos[1] upper bound (world_z ≤ 2.0)
     comptime MAX_ANGLE = 1.0  # |qpos[2]| (rooty) upper bound
 
     # === CPU: Integrator step ===
@@ -138,7 +138,9 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         if is_healthy:
             healthy_reward = Scalar[DTYPE](Self.HEALTHY_REWARD)
 
-        var forward_reward = Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        var forward_reward = (
+            Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        )
         var reward = forward_reward + healthy_reward - ctrl_cost
 
         return (reward, not is_healthy)

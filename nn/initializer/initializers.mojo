@@ -20,8 +20,8 @@ Usage:
 """
 from layout import LayoutTensor, Layout
 from ..constants import dtype
-from math import sqrt, log, cos, sin, pi
-from random.philox import Random as PhiloxRandom
+from std.math import sqrt, log, cos, sin, pi
+from std.random.philox import Random as PhiloxRandom
 
 
 trait Initializer(Copyable & Movable & ImplicitlyCopyable):
@@ -202,7 +202,9 @@ struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
         for i in range(SIZE):
-            params[i] = Scalar[dtype](rand_vals[i] * range_val + Self.LOW)
+            params[i] = Scalar[dtype](
+                rand_vals[i] * range_val + Scalar[dtype](Self.LOW)
+            )
 
 
 struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
@@ -228,11 +230,15 @@ struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
                 u1 = 1e-10
 
             var z0 = sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
-            params[i] = Scalar[dtype](z0 * Self.STD + Self.MEAN)
+            params[i] = Scalar[dtype](
+                z0 * Scalar[dtype](Self.STD) + Scalar[dtype](Self.MEAN)
+            )
             i += 1
 
             # Use the second value if we have space
             if i < SIZE:
                 var z1 = sqrt(-2.0 * log(u1)) * sin(2.0 * pi * u2)
-                params[i] = Scalar[dtype](z1 * Self.STD + Self.MEAN)
+                params[i] = Scalar[dtype](
+                    z1 * Scalar[dtype](Self.STD) + Scalar[dtype](Self.MEAN)
+                )
                 i += 1

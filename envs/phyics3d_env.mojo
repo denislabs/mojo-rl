@@ -9,9 +9,9 @@ The CONFIG has full access to physics state for reward/termination —
 no hardcoded assumptions about which qpos indices matter.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
-from memory import alloc
+from std.memory import alloc
 from core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -25,8 +25,8 @@ from render import Renderer2D
 from nn import dtype as gpu_dtype
 
 # GPU imports
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import physics engine

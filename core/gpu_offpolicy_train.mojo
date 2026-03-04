@@ -48,7 +48,7 @@ Usage:
     )
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from .metrics import TrainingMetrics
 from .env_traits import GPUDiscreteEnv, GPUContinuousEnv
 from nn.constants import dtype
@@ -71,7 +71,9 @@ trait GPUOffPolicyState:
     GPUOffPolicyAgent and receives the state as a parameter.
     """
 
-    fn gpu_store[N_ENVS: Int](
+    fn gpu_store[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         prev_obs_buf: DeviceBuffer[dtype],
@@ -133,9 +135,7 @@ trait GPUOffPolicyAgent:
     comptime GPUStateType: GPUOffPolicyState
     """Concrete GPU state type holding all device buffers for this algorithm."""
 
-    fn make_gpu_state(
-        self, ctx: DeviceContext
-    ) raises -> Self.GPUStateType:
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent (networks, replay, scratch).
 
         Called once at the start of GPU training. Does NOT upload CPU weights —
@@ -175,7 +175,9 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn select_actions_gpu[N_ENVS: Int](
+    fn select_actions_gpu[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -201,7 +203,7 @@ trait GPUOffPolicyAgent:
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """Sample from GPU replay buffer and perform one full gradient update.
+        """Sample from std.gpu replay buffer and perform one full gradient update.
 
         Typical phases: sample → target Q → critic update → actor update.
         Uses self for hyperparams (gamma, tau, etc.) and gpu_state for buffers.
@@ -292,14 +294,10 @@ fn run_offpolicy_continuous_train_gpu[
     # ------------------------------------------------------------------
     # Allocate environment buffers (loop-owned, comptime sizes)
     # ------------------------------------------------------------------
-    var states_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs * E.STATE_SIZE
-    )
+    var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
-    var actions_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs * E.ACTION_DIM
-    )
+    var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
@@ -339,9 +337,7 @@ fn run_offpolicy_continuous_train_gpu[
         # ------------------------------------------------------------------
         # Select actions via agent's GPU policy (reads obs_buf)
         # ------------------------------------------------------------------
-        agent.select_actions_gpu[n_envs](
-            ctx, gpu_state, obs_buf, actions_buf
-        )
+        agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
 
         # ------------------------------------------------------------------
         # Step environment (obs_buf now holds next observations)
@@ -463,9 +459,7 @@ fn run_offpolicy_discrete_train_gpu[
     agent.upload_to_gpu(gpu_state, ctx)
 
     # Allocate environment buffers
-    var states_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs * E.STATE_SIZE
-    )
+    var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     # For discrete envs, actions are Float32 indices (shape: [n_envs])
@@ -499,9 +493,7 @@ fn run_offpolicy_discrete_train_gpu[
     for _ in range(num_steps):
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
-        agent.select_actions_gpu[n_envs](
-            ctx, gpu_state, obs_buf, actions_buf
-        )
+        agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
 
         E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
             ctx,

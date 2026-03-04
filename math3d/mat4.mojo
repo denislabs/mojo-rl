@@ -5,7 +5,7 @@ and perspective projection matrices for rendering.
 Uses row-major storage: m[row, col] where row is first index.
 """
 
-from math import sqrt, cos, sin, tan
+from std.math import sqrt, cos, sin, tan
 
 from .vec3 import Vec3
 from .mat3 import Mat3

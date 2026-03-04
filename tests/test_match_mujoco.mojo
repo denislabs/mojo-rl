@@ -1,5 +1,5 @@
 """Test: match MuJoCo initial state (rootz=0) and compare step-by-step."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 
 

@@ -9,8 +9,8 @@ Run with:
     pixi run -e apple mojo run tests/test_lunar_lander_v2_gpu_comparison.mojo
 """
 
-from gpu.host import DeviceContext
-from math import sqrt
+from std.gpu.host import DeviceContext
+from std.math import sqrt
 
 from envs.lunar_lander_v2_gpu import LunarLander, STATE_SIZE_VAL, OBS_OFFSET
 

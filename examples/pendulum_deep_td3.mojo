@@ -85,7 +85,7 @@ fn main() raises:
         print("Needs more training.")
 
     # Render one episode
-    var _ = agent.evaluate(env, num_episodes=1, verbose=True, render=True)
+    var _ = agent.evaluate(env, num_episodes=1, verbose=True)
 
     print("")
     print("=" * 60)

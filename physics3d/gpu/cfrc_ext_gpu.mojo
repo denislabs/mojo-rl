@@ -13,10 +13,10 @@ cfrc_ext[b*6 + 0..5] = [torque_x, torque_y, torque_z, force_x, force_y, force_z]
 expressed in world frame at subtree CoM of the body's kinematic root.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 from .constants import (
@@ -180,9 +180,15 @@ fn compute_cfrc_ext_gpu[
             var con_base = CONTACTS_OFF + ci * CONTACT_SIZE
 
             # Contact frame axes
-            var nx = rebind[Scalar[DTYPE]](states[env, con_base + CONTACT_IDX_NX])
-            var ny = rebind[Scalar[DTYPE]](states[env, con_base + CONTACT_IDX_NY])
-            var nz = rebind[Scalar[DTYPE]](states[env, con_base + CONTACT_IDX_NZ])
+            var nx = rebind[Scalar[DTYPE]](
+                states[env, con_base + CONTACT_IDX_NX]
+            )
+            var ny = rebind[Scalar[DTYPE]](
+                states[env, con_base + CONTACT_IDX_NY]
+            )
+            var nz = rebind[Scalar[DTYPE]](
+                states[env, con_base + CONTACT_IDX_NZ]
+            )
             var t1x = rebind[Scalar[DTYPE]](
                 states[env, con_base + CONTACT_IDX_FRAME_T1_X]
             )
@@ -238,10 +244,14 @@ fn compute_cfrc_ext_gpu[
             )
 
             var ka = Int(
-                rebind[Scalar[DTYPE]](states[env, con_base + CONTACT_IDX_BODY_A])
+                rebind[Scalar[DTYPE]](
+                    states[env, con_base + CONTACT_IDX_BODY_A]
+                )
             )
             var kb = Int(
-                rebind[Scalar[DTYPE]](states[env, con_base + CONTACT_IDX_BODY_B])
+                rebind[Scalar[DTYPE]](
+                    states[env, con_base + CONTACT_IDX_BODY_B]
+                )
             )
 
             # body_a: add direct force
@@ -264,15 +274,15 @@ fn compute_cfrc_ext_gpu[
                 states[env, base_off + 2] = rebind[Scalar[DTYPE]](
                     states[env, base_off + 2]
                 ) + (tw_z - cz_)
-                states[env, base_off + 3] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 3]
-                ) + fw_x
-                states[env, base_off + 4] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 4]
-                ) + fw_y
-                states[env, base_off + 5] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 5]
-                ) + fw_z
+                states[env, base_off + 3] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 3]) + fw_x
+                )
+                states[env, base_off + 4] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 4]) + fw_y
+                )
+                states[env, base_off + 5] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 5]) + fw_z
+                )
 
             # body_b: subtract reaction force (Newton's 3rd law)
             if kb > 0:
@@ -293,15 +303,15 @@ fn compute_cfrc_ext_gpu[
                 states[env, base_off + 2] = rebind[Scalar[DTYPE]](
                     states[env, base_off + 2]
                 ) - (tw_z - cz_)
-                states[env, base_off + 3] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 3]
-                ) - fw_x
-                states[env, base_off + 4] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 4]
-                ) - fw_y
-                states[env, base_off + 5] = rebind[Scalar[DTYPE]](
-                    states[env, base_off + 5]
-                ) - fw_z
+                states[env, base_off + 3] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 3]) - fw_x
+                )
+                states[env, base_off + 4] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 4]) - fw_y
+                )
+                states[env, base_off + 5] = (
+                    rebind[Scalar[DTYPE]](states[env, base_off + 5]) - fw_z
+                )
 
     ctx.enqueue_function[cfrc_ext_kernel, cfrc_ext_kernel](
         states,

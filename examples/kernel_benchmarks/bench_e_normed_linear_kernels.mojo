@@ -17,8 +17,8 @@ Run:
     pixi run -e apple mojo build examples/kernel_benchmarks/bench_e_normed_linear_kernels.mojo -o /tmp/bench_e
 """
 
-from memory import UnsafePointer
-from gpu.host import DeviceContext, DeviceBuffer
+from std.memory import UnsafePointer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.constants import dtype
 from nn.model.normed_linear import NormedLinear
 from nn.model.simnorm import SimNorm
@@ -29,10 +29,11 @@ comptime LATENT: Int = 256
 comptime SIMPLEX: Int = 8
 
 
-fn trigger_normed_linear[IN: Int, OUT: Int](
-    ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]
-) raises:
-    """Compile forward_no_cache, forward_with_cache, backward for NormedLinear[IN,OUT]."""
+fn trigger_normed_linear[
+    IN: Int, OUT: Int
+](ctx: DeviceContext, p: UnsafePointer[Scalar[dtype]]) raises:
+    """Compile forward_no_cache, forward_with_cache, backward for NormedLinear[IN,OUT].
+    """
 
     @always_inline
     fn mk(n: Int) -> DeviceBuffer[dtype]:
@@ -47,30 +48,30 @@ fn trigger_normed_linear[IN: Int, OUT: Int](
     NormedLinear[IN, OUT].forward_gpu_no_cache[BATCH](
         ctx,
         mk(BATCH * OUT),  # output
-        mk(BATCH * IN),   # input
-        mk(P),            # params
-        mk(WS),           # workspace
+        mk(BATCH * IN),  # input
+        mk(P),  # params
+        mk(WS),  # workspace
     )
 
     # Forward with cache (training)
     NormedLinear[IN, OUT].forward_gpu[BATCH](
         ctx,
         mk(BATCH * OUT),  # output
-        mk(BATCH * IN),   # input
-        mk(P),            # params
-        mk(BATCH * C),    # cache
-        mk(WS),           # workspace
+        mk(BATCH * IN),  # input
+        mk(P),  # params
+        mk(BATCH * C),  # cache
+        mk(WS),  # workspace
     )
 
     # Backward
     NormedLinear[IN, OUT].backward_gpu[BATCH](
         ctx,
-        mk(BATCH * IN),   # grad_input
+        mk(BATCH * IN),  # grad_input
         mk(BATCH * OUT),  # grad_output
-        mk(P),            # params
-        mk(BATCH * C),    # cache
-        mk(P),            # grad_params
-        mk(WS),           # workspace
+        mk(P),  # params
+        mk(BATCH * C),  # cache
+        mk(P),  # grad_params
+        mk(WS),  # workspace
     )
 
 

@@ -24,7 +24,7 @@ Used by: Swimmer environment (density=4000, viscosity=0.1).
 Reference: MuJoCo 3.3.6 src/engine/engine_passive.c, mj_inertiaBoxFluidModel.
 """
 
-from math import sqrt, abs
+from std.math import sqrt, abs
 
 from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE

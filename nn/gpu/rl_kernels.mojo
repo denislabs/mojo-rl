@@ -19,9 +19,9 @@ This module provides reusable GPU kernels for RL algorithms:
 - gather_batch_kernel: Gather sampled transitions into batch
 """
 
-from gpu import block_dim, block_idx, thread_idx
+from std.gpu import block_dim, block_idx, thread_idx
 from layout import Layout, LayoutTensor
-from memory import UnsafePointer
+from std.memory import UnsafePointer
 
 from .random import xorshift32, random_uniform
 

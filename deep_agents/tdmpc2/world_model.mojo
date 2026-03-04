@@ -19,8 +19,8 @@ Architecture (all MLPs use NormedLinear blocks):
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
-from math import exp, log, sqrt
-from random import random_float64
+from std.math import exp, log, sqrt
+from std.randomndom import random_float64
 
 from nn.constants import dtype
 from nn.model import (
@@ -278,7 +278,9 @@ struct WorldModel[
         mut cache: List[Scalar[dtype]],
     ):
         """Predict reward distribution logits with cache."""
-        self.reward_head.forward_with_cache_ptr[BATCH](z_a_ptr, logits_ptr, cache)
+        self.reward_head.forward_with_cache_ptr[BATCH](
+            z_a_ptr, logits_ptr, cache
+        )
 
     fn termination_forward[
         BATCH: Int
@@ -321,7 +323,9 @@ struct WorldModel[
         self.policy.forward_ptr[BATCH](z_ptr, out.unsafe_ptr())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
-                mean_ptr[b * Self.ACTION_DIM + i] = out[b * 2 * Self.ACTION_DIM + i]
+                mean_ptr[b * Self.ACTION_DIM + i] = out[
+                    b * 2 * Self.ACTION_DIM + i
+                ]
                 # Clamp log_std to [-10, 2] for numerical stability
                 var ls = Float64(
                     out[b * 2 * Self.ACTION_DIM + Self.ACTION_DIM + i]
@@ -417,7 +421,9 @@ struct WorldModel[
             var min_val = Float32(1e10)
             for q_idx in range(Self.NUM_Q):
                 var base = q_idx * BATCH * Self.NUM_BINS + b * Self.NUM_BINS
-                var logits_b = InlineArray[Float32, Self.NUM_BINS](uninitialized=True)
+                var logits_b = InlineArray[Float32, Self.NUM_BINS](
+                    uninitialized=True
+                )
                 for i in range(Self.NUM_BINS):
                     logits_b[i] = Float32(all_logits[base + i])
                 var val = decode_value_batch_scalar[Self.NUM_BINS](

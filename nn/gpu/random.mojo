@@ -1,5 +1,5 @@
-from math import cos, sin, log, sqrt, pi
-from random import random_float64
+from std.math import cos, sin, log, sqrt, pi
+from std.random import random_float64
 
 
 # =============================================================================
@@ -56,7 +56,7 @@ fn gaussian_noise() -> Float64:
 
     Example:
         var noise = gaussian_noise()
-        var scaled_noise = noise * std + mean  # For N(mean, std)
+        var scaled_noise = noise * std + mean  # For N(mean, std).
     """
     var u1 = random_float64()
     var u2 = random_float64()
@@ -76,7 +76,7 @@ fn gaussian_noise_pair() -> Tuple[Float64, Float64]:
         Tuple of two samples from N(0, 1).
 
     Example:
-        var (z1, z2) = gaussian_noise_pair()
+        var (z1, z2) = gaussian_noise_pair().
     """
     var u1 = random_float64()
     var u2 = random_float64()
@@ -91,7 +91,7 @@ fn gaussian_noise_pair() -> Tuple[Float64, Float64]:
 @always_inline
 fn gaussian_noise_gpu[
     dtype: DType
-](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]] where dtype.is_floating_point():
+](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
     """Generate standard Gaussian noise on GPU using Box-Muller transform.
 
     GPU-friendly version that maintains RNG state for deterministic sequences.
@@ -104,27 +104,27 @@ fn gaussian_noise_gpu[
 
     Example:
         var rng_state = Scalar[DType.uint32](12345)
-        var (noise, rng_state) = gaussian_noise_gpu[DType.float32](rng_state)
+        var (noise, rng_state) = gaussian_noise_gpu[DType.float32](rng_state).
     """
-    # Generate two uniform samples
-    var result1 = random_uniform[dtype](rng)
+    # Generate two uniform samples (as float64 internally for math ops)
+    var result1 = random_uniform[DType.float64](rng)
     var u1 = result1[0]
     var rng1 = result1[1]
 
-    var result2 = random_uniform[dtype](rng1)
+    var result2 = random_uniform[DType.float64](rng1)
     var u2 = result2[0]
     var rng2 = result2[1]
 
     # Avoid log(0)
-    if u1 < Scalar[dtype](1e-10):
-        u1 = Scalar[dtype](1e-10)
+    if u1 < 1e-10:
+        u1 = 1e-10
 
     # Box-Muller transform (returns one of the two values)
-    var r = sqrt(Scalar[dtype](-2.0) * log(u1))
-    var theta = Scalar[dtype](2.0 * pi) * u2
+    var r = sqrt(-2.0 * log(u1))
+    var theta = 2.0 * pi * u2
     var z = r * cos(theta)
 
-    return (z, rng2)
+    return (Scalar[dtype](z), rng2)
 
 
 @always_inline
@@ -132,7 +132,7 @@ fn gaussian_noise_pair_gpu[
     dtype: DType
 ](rng: Scalar[DType.uint32]) -> Tuple[
     Scalar[dtype], Scalar[dtype], Scalar[DType.uint32]
-] where dtype.is_floating_point():
+]:
     """Generate two independent Gaussian samples on GPU using Box-Muller.
 
     More efficient when you need multiple samples per thread.
@@ -143,23 +143,23 @@ fn gaussian_noise_pair_gpu[
     Returns:
         Tuple of (z1, z2, new_rng_state).
     """
-    # Generate two uniform samples
-    var result1 = random_uniform[dtype](rng)
+    # Generate two uniform samples (as float64 internally for math ops)
+    var result1 = random_uniform[DType.float64](rng)
     var u1 = result1[0]
     var rng1 = result1[1]
 
-    var result2 = random_uniform[dtype](rng1)
+    var result2 = random_uniform[DType.float64](rng1)
     var u2 = result2[0]
     var rng2 = result2[1]
 
     # Avoid log(0)
-    if u1 < Scalar[dtype](1e-10):
-        u1 = Scalar[dtype](1e-10)
+    if u1 < 1e-10:
+        u1 = 1e-10
 
     # Box-Muller transform
-    var r = sqrt(Scalar[dtype](-2.0) * log(u1))
-    var theta = Scalar[dtype](2.0 * pi) * u2
+    var r = sqrt(-2.0 * log(u1))
+    var theta = 2.0 * pi * u2
     var z1 = r * cos(theta)
     var z2 = r * sin(theta)
 
-    return (z1, z2, rng2)
+    return (Scalar[dtype](z1), Scalar[dtype](z2), rng2)

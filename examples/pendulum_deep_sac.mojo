@@ -88,7 +88,7 @@ fn main() raises:
     var eval_reward = agent.evaluate(
         env,
         num_episodes=10,
-        max_steps_per_episode=200,
+        max_steps=200,
     )
     print("Evaluation average reward:", String(eval_reward)[:8])
 

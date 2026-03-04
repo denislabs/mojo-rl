@@ -1,10 +1,10 @@
 from ..constants import dtype, TILE, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu.memory import AddressSpace
-from gpu.primitives import block
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.memory import AddressSpace
+from std.gpu.primitives import block
 
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
@@ -199,9 +199,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             barrier()
 
             comptime for k in range(TILE):
-                acc += rebind[Scalar[dtype]](input_shared[local_row, k]) * rebind[
-                    Scalar[dtype]
-                ](W_shared[k, local_col])
+                acc += rebind[Scalar[dtype]](
+                    input_shared[local_row, k]
+                ) * rebind[Scalar[dtype]](W_shared[k, local_col])
 
             barrier()
 
@@ -270,9 +270,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             barrier()
 
             comptime for k in range(TILE):
-                acc += rebind[Scalar[dtype]](input_shared[local_row, k]) * rebind[
-                    Scalar[dtype]
-                ](W_shared[k, local_col])
+                acc += rebind[Scalar[dtype]](
+                    input_shared[local_row, k]
+                ) * rebind[Scalar[dtype]](W_shared[k, local_col])
 
             barrier()
 
@@ -325,7 +325,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         for tile_idx in range(num_tiles):
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[global_row, dy_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    global_row, dy_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -395,22 +397,26 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             # cache.T[global_row, tile_idx*TILE+local_col] = cache[tile_idx*TILE+local_col, global_row]
             var batch_col = tile_idx * TILE + local_col
             if batch_col < BATCH and global_row < Self.IN_DIM:
-                cacheT_shared[local_row, local_col] = cache[batch_col, global_row]
+                cacheT_shared[local_row, local_col] = cache[
+                    batch_col, global_row
+                ]
             else:
                 cacheT_shared[local_row, local_col] = 0
 
             var batch_row = tile_idx * TILE + local_row
             if batch_row < BATCH and global_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[batch_row, global_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    batch_row, global_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
             barrier()
 
             comptime for k in range(TILE):
-                acc += rebind[Scalar[dtype]](cacheT_shared[local_row, k]) * rebind[
-                    Scalar[dtype]
-                ](dy_shared[k, local_col])
+                acc += rebind[Scalar[dtype]](
+                    cacheT_shared[local_row, k]
+                ) * rebind[Scalar[dtype]](dy_shared[k, local_col])
 
             barrier()
 
@@ -463,10 +469,18 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
-        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
@@ -520,9 +534,15 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
@@ -572,11 +592,21 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         BATCH: Int,
     ](
         ctx: DeviceContext,
-        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
-        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
-        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
-        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU using three tiled kernels.

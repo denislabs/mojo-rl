@@ -9,8 +9,8 @@ Run with:
     pixi run -e nvidia mojo run tests/test_compare_halfcheetah_models.mojo
 """
 
-from collections import InlineArray
-from gpu.host import DeviceContext
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext
 
 from physics3d.gpu.constants import (
     model_size_with_invweight,
@@ -164,7 +164,10 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
     var body_names = materialize[BODY_NAMES]()
     # ── Bodies ────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
-    print("BODIES  (mass, inv_mass, ixx/iyy/izz, inv_ixx/iyy/izz, local_pos, local_quat, parent, ipos, iquat)")
+    print(
+        "BODIES  (mass, inv_mass, ixx/iyy/izz, inv_ixx/iyy/izz, local_pos,"
+        " local_quat, parent, ipos, iquat)"
+    )
     print("=" * 70)
     for b in range(NBODY):
         var off = model_body_offset(b)
@@ -225,30 +228,62 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
         print("    inv_izz  xml=", iiz_x, " def=", iiz_d, marker(iiz_x, iiz_d))
         print(
             "    pos    xml=(",
-            px_x, py_x, pz_x,
-            ") def=(", px_d, py_d, pz_d, ")",
+            px_x,
+            py_x,
+            pz_x,
+            ") def=(",
+            px_d,
+            py_d,
+            pz_d,
+            ")",
             marker(px_x, px_d) + marker(py_x, py_d) + marker(pz_x, pz_d),
         )
         print(
             "    quat   xml=(",
-            bqx_x, bqy_x, bqz_x, bqw_x,
-            ") def=(", bqx_d, bqy_d, bqz_d, bqw_d, ")",
-            marker(bqx_x, bqx_d) + marker(bqy_x, bqy_d)
-            + marker(bqz_x, bqz_d) + marker(bqw_x, bqw_d),
+            bqx_x,
+            bqy_x,
+            bqz_x,
+            bqw_x,
+            ") def=(",
+            bqx_d,
+            bqy_d,
+            bqz_d,
+            bqw_d,
+            ")",
+            marker(bqx_x, bqx_d)
+            + marker(bqy_x, bqy_d)
+            + marker(bqz_x, bqz_d)
+            + marker(bqw_x, bqw_d),
         )
         print("    parent xml=", par_x, " def=", par_d, marker(par_x, par_d))
         print(
             "    ipos   xml=(",
-            cx_x, cy_x, cz_x,
-            ") def=(", cx_d, cy_d, cz_d, ")",
+            cx_x,
+            cy_x,
+            cz_x,
+            ") def=(",
+            cx_d,
+            cy_d,
+            cz_d,
+            ")",
             marker(cx_x, cx_d) + marker(cy_x, cy_d) + marker(cz_x, cz_d),
         )
         print(
             "    iquat  xml=(",
-            qx_x, qy_x, qz_x, qw_x,
-            ") def=(", qx_d, qy_d, qz_d, qw_d, ")",
-            marker(qx_x, qx_d) + marker(qy_x, qy_d)
-            + marker(qz_x, qz_d) + marker(qw_x, qw_d),
+            qx_x,
+            qy_x,
+            qz_x,
+            qw_x,
+            ") def=(",
+            qx_d,
+            qy_d,
+            qz_d,
+            qw_d,
+            ")",
+            marker(qx_x, qx_d)
+            + marker(qy_x, qy_d)
+            + marker(qz_x, qz_d)
+            + marker(qw_x, qw_d),
         )
 
     # ── Joints ────────────────────────────────────────────────────────────────
@@ -302,20 +337,56 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
         var q0_d = def_[off + JOINT_IDX_QPOS0]
 
         print("\n  [joint", j, joint_names[j], "]")
-        print("    type      xml=", jtype_x, " def=", jtype_d, marker(jtype_x, jtype_d))
-        print("    body_id   xml=", jbody_x, " def=", jbody_d, marker(jbody_x, jbody_d))
-        print("    qpos_adr  xml=", jqadr_x, " def=", jqadr_d, marker(jqadr_x, jqadr_d))
-        print("    dof_adr   xml=", jdadr_x, " def=", jdadr_d, marker(jdadr_x, jdadr_d))
+        print(
+            "    type      xml=",
+            jtype_x,
+            " def=",
+            jtype_d,
+            marker(jtype_x, jtype_d),
+        )
+        print(
+            "    body_id   xml=",
+            jbody_x,
+            " def=",
+            jbody_d,
+            marker(jbody_x, jbody_d),
+        )
+        print(
+            "    qpos_adr  xml=",
+            jqadr_x,
+            " def=",
+            jqadr_d,
+            marker(jqadr_x, jqadr_d),
+        )
+        print(
+            "    dof_adr   xml=",
+            jdadr_x,
+            " def=",
+            jdadr_d,
+            marker(jdadr_x, jdadr_d),
+        )
         print(
             "    pos       xml=(",
-            jpx_x, jpy_x, jpz_x,
-            ") def=(", jpx_d, jpy_d, jpz_d, ")",
+            jpx_x,
+            jpy_x,
+            jpz_x,
+            ") def=(",
+            jpx_d,
+            jpy_d,
+            jpz_d,
+            ")",
             marker(jpx_x, jpx_d) + marker(jpy_x, jpy_d) + marker(jpz_x, jpz_d),
         )
         print(
             "    axis      xml=(",
-            jax_x, jay_x, jaz_x,
-            ") def=(", jax_d, jay_d, jaz_d, ")",
+            jax_x,
+            jay_x,
+            jaz_x,
+            ") def=(",
+            jax_d,
+            jay_d,
+            jaz_d,
+            ")",
             marker(jax_x, jax_d) + marker(jay_x, jay_d) + marker(jaz_x, jaz_d),
         )
         print("    armature  xml=", arm_x, " def=", arm_d, marker(arm_x, arm_d))
@@ -323,15 +394,25 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
         print("    stiffness xml=", stf_x, " def=", stf_d, marker(stf_x, stf_d))
         print(
             "    range     xml=(",
-            rn_x, rx_x,
-            ") def=(", rn_d, rx_d, ")",
+            rn_x,
+            rx_x,
+            ") def=(",
+            rn_d,
+            rx_d,
+            ")",
             marker(rn_x, rn_d) + marker(rx_x, rx_d),
         )
         print("    tau_limit xml=", tau_x, " def=", tau_d, marker(tau_x, tau_d))
         print(
             "    solimp_lim xml=(",
-            s0_x, s1_x, s2_x,
-            ") def=(", s0_d, s1_d, s2_d, ")",
+            s0_x,
+            s1_x,
+            s2_x,
+            ") def=(",
+            s0_d,
+            s1_d,
+            s2_d,
+            ")",
             marker(s0_x, s0_d) + marker(s1_x, s1_d) + marker(s2_x, s2_d),
         )
         print("    qpos0     xml=", q0_x, " def=", q0_d, marker(q0_x, q0_d))
@@ -392,16 +473,32 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
         print("    body        xml=", gb_x, " def=", gb_d, marker(gb_x, gb_d))
         print(
             "    pos         xml=(",
-            gpx_x, gpy_x, gpz_x,
-            ") def=(", gpx_d, gpy_d, gpz_d, ")",
+            gpx_x,
+            gpy_x,
+            gpz_x,
+            ") def=(",
+            gpx_d,
+            gpy_d,
+            gpz_d,
+            ")",
             marker(gpx_x, gpx_d) + marker(gpy_x, gpy_d) + marker(gpz_x, gpz_d),
         )
         print(
             "    quat        xml=(",
-            gqx_x, gqy_x, gqz_x, gqw_x,
-            ") def=(", gqx_d, gqy_d, gqz_d, gqw_d, ")",
-            marker(gqx_x, gqx_d) + marker(gqy_x, gqy_d)
-            + marker(gqz_x, gqz_d) + marker(gqw_x, gqw_d),
+            gqx_x,
+            gqy_x,
+            gqz_x,
+            gqw_x,
+            ") def=(",
+            gqx_d,
+            gqy_d,
+            gqz_d,
+            gqw_d,
+            ")",
+            marker(gqx_x, gqx_d)
+            + marker(gqy_x, gqy_d)
+            + marker(gqz_x, gqz_d)
+            + marker(gqw_x, gqw_d),
         )
         print("    rbound      xml=", rb_x, " def=", rb_d, marker(rb_x, rb_d))
         print("    radius      xml=", r_x, " def=", r_d, marker(r_x, r_d))
@@ -412,14 +509,24 @@ fn compare_models(xml: List[Float32], def_: List[Float32]):
         print("    friction    xml=", fr_x, " def=", fr_d, marker(fr_x, fr_d))
         print(
             "    solref      xml=(",
-            sr0_x, sr1_x,
-            ") def=(", sr0_d, sr1_d, ")",
+            sr0_x,
+            sr1_x,
+            ") def=(",
+            sr0_d,
+            sr1_d,
+            ")",
             marker(sr0_x, sr0_d) + marker(sr1_x, sr1_d),
         )
         print(
             "    solimp      xml=(",
-            si0_x, si1_x, si2_x,
-            ") def=(", si0_d, si1_d, si2_d, ")",
+            si0_x,
+            si1_x,
+            si2_x,
+            ") def=(",
+            si0_d,
+            si1_d,
+            si2_d,
+            ")",
             marker(si0_x, si0_d) + marker(si1_x, si1_d) + marker(si2_x, si2_d),
         )
 
@@ -546,9 +653,16 @@ def main():
     print("\n" + "=" * 70)
     print("INVWEIGHT0  (body_invweight0[NBODY*2] + dof_invweight0[NV])")
     print("=" * 70)
-    comptime INVW_BODY_OFF = model_body_invweight0_offset[NBODY, NJOINT, NGEOM]()
+    comptime INVW_BODY_OFF = model_body_invweight0_offset[
+        NBODY, NJOINT, NGEOM
+    ]()
     comptime INVW_DOF_OFF = model_dof_invweight0_offset[NBODY, NJOINT, NGEOM]()
-    print("  body_invweight0_offset =", INVW_BODY_OFF, "  dof_invweight0_offset =", INVW_DOF_OFF)
+    print(
+        "  body_invweight0_offset =",
+        INVW_BODY_OFF,
+        "  dof_invweight0_offset =",
+        INVW_DOF_OFF,
+    )
     var bnames = materialize[BODY_NAMES]()
     var jnames = materialize[JOINT_NAMES]()
     for b in range(NBODY):
@@ -557,13 +671,33 @@ def main():
         var r_x = xml_vals[INVW_BODY_OFF + b * 2 + 1]
         var r_d = def_vals[INVW_BODY_OFF + b * 2 + 1]
         print(
-            "  body[", b, bnames[b], "] trans xml=", t_x, " def=", t_d, marker(t_x, t_d),
-            "  rot xml=", r_x, " def=", r_d, marker(r_x, r_d),
+            "  body[",
+            b,
+            bnames[b],
+            "] trans xml=",
+            t_x,
+            " def=",
+            t_d,
+            marker(t_x, t_d),
+            "  rot xml=",
+            r_x,
+            " def=",
+            r_d,
+            marker(r_x, r_d),
         )
     for v in range(NV):
         var vw_x = xml_vals[INVW_DOF_OFF + v]
         var vw_d = def_vals[INVW_DOF_OFF + v]
-        print("  dof[", v, jnames[v], "] xml=", vw_x, " def=", vw_d, marker(vw_x, vw_d))
+        print(
+            "  dof[",
+            v,
+            jnames[v],
+            "] xml=",
+            vw_x,
+            " def=",
+            vw_d,
+            marker(vw_x, vw_d),
+        )
 
     # ── Raw buffer diff — catch any remaining differences ─────────────────────
     print("\n" + "=" * 70)
@@ -577,7 +711,9 @@ def main():
             print("  buf[", i, "]  xml=", a, " def=", b, " diff=", a - b)
             ndiff += 1
     if ndiff == 0:
-        print("  (no differences found — buffers are identical within tolerance)")
+        print(
+            "  (no differences found — buffers are identical within tolerance)"
+        )
     else:
         print("\n  Total differing indices:", ndiff)
 

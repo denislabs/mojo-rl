@@ -33,7 +33,7 @@ from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 
 struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
@@ -102,21 +102,13 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     fn params_view(
         self,
-    ) -> LayoutTensor[
-        dtype,
-        Layout.row_major(Self.PARAM_SIZE),
-        MutAnyOrigin,
-    ]:
+    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
     fn grads_view(
         self,
-    ) -> LayoutTensor[
-        dtype,
-        Layout.row_major(Self.PARAM_SIZE),
-        MutAnyOrigin,
-    ]:
+    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
@@ -190,8 +182,12 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
 
     fn __init__(out self, *, copy: Self):
-        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.online)
-        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.target)
+        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](
+            copy=copy.online
+        )
+        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](
+            copy=copy.target
+        )
 
     fn __init__(out self, *, deinit take: Self):
         self.online = take.online^
@@ -226,21 +222,13 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     fn params_view(
         self,
-    ) -> LayoutTensor[
-        dtype,
-        Layout.row_major(Self.PARAM_SIZE),
-        MutAnyOrigin,
-    ]:
+    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
     fn grads_view(
         self,
-    ) -> LayoutTensor[
-        dtype,
-        Layout.row_major(Self.PARAM_SIZE),
-        MutAnyOrigin,
-    ]:
+    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
@@ -275,7 +263,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         mut cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,
     ) raises:
-        """Download both online and target from GPU to CPU (synchronizes).
+        """Download both online and target from std.gpu to CPU (synchronizes).
 
         Args:
             cpu: Destination CPU NetworkPair (modified in-place).

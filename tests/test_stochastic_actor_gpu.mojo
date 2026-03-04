@@ -6,8 +6,8 @@ Run with:
     pixi run -e apple mojo run -I . tests/test_stochastic_actor_gpu.mojo
 """
 
-from random import seed, random_float64
-from time import perf_counter_ns
+from std.random import seed, random_float64
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from nn.constants import dtype
 from nn.model.linear import Linear
@@ -20,7 +20,7 @@ from nn.optimizer.adam import Adam
 from nn.training.trainer import Trainer
 from nn.initializer.initializers import Kaiming
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 
 # =============================================================================

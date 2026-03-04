@@ -12,9 +12,9 @@ Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
-from math import cos, sin, pi
-from random import random_float64
-from memory import alloc
+from std.math import cos, sin, pi
+from std.random import random_float64
+from std.memory import alloc
 from core import (
     State,
     Action,

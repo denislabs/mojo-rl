@@ -7,10 +7,10 @@ Usage:
     pixi run -e apple mojo run examples/bipedal_walker_cpu_gpu_compare.mojo
 """
 
-from math import sqrt
-from gpu.host import DeviceContext, DeviceBuffer
+from std.math import sqrt
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-from random import seed as set_seed
+from std.random import seed as set_seed
 
 from envs.bipedal_walker import BipedalWalker, BWConstants
 from envs.bipedal_walker.action import BipedalWalkerAction
@@ -123,7 +123,7 @@ fn extract_gpu_observation[
     ctx: DeviceContext,
     env_idx: Int,
 ) raises -> InlineArray[Scalar[dtype], 24]:
-    """Extract observation from GPU state buffer."""
+    """Extract observation from std.gpu state buffer."""
     var obs = InlineArray[Scalar[dtype], 24](fill=Scalar[dtype](0))
 
     var obs_host = ctx.enqueue_create_host_buffer[dtype](24)
@@ -167,7 +167,7 @@ fn extract_gpu_body_state[
     env_idx: Int,
     body_idx: Int,
 ) raises -> InlineArray[Scalar[dtype], 6]:
-    """Extract body state (x, y, angle, vx, vy, omega) from GPU buffer."""
+    """Extract body state (x, y, angle, vx, vy, omega) from std.gpu buffer."""
     var state = InlineArray[Scalar[dtype], 6](fill=Scalar[dtype](0))
 
     var state_host = ctx.enqueue_create_host_buffer[dtype](6)
@@ -221,7 +221,7 @@ fn extract_gpu_metadata[
     ctx: DeviceContext,
     env_idx: Int,
 ) raises -> InlineArray[Scalar[dtype], 8]:
-    """Extract metadata from GPU."""
+    """Extract metadata from std.gpu."""
     var meta = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
 
     var meta_host = ctx.enqueue_create_host_buffer[dtype](8)

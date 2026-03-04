@@ -12,8 +12,8 @@ Actuator types:
 """
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..gpu.constants import (
     TPB,
     qpos_offset,

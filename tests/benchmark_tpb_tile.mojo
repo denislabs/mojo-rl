@@ -6,14 +6,14 @@ Run with:
     pixi run -e apple mojo run tests/benchmark_tpb_tile.mojo
 """
 
-from time import perf_counter_ns
-from random import seed, random_float64
-from math import sin, sqrt
-from memory import UnsafePointer
+from std.time import perf_counter_ns
+from std.random import seed, random_float64
+from std.math import sin, sqrt
+from std.memory import UnsafePointer
 
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype

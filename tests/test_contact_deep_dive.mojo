@@ -10,10 +10,10 @@ Run with:
     pixi run -e apple mojo run tests/test_contact_deep_dive.mojo
 """
 
-from math import cos, sin, sqrt, pi
-from random import seed, random_float64
+from std.math import cos, sin, sqrt, pi
+from std.random import seed, random_float64
 
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from envs.lunar_lander import LunarLanderEnv
 from envs.lunar_lander_gpu import (
@@ -62,8 +62,20 @@ fn main() raises:
 
     print("")
     print("GPU Environment (constants):")
-    print("  HELIPAD_Y = " + String(GPU_HELIPAD_Y) + " (H_UNITS/4 = " + String(H_UNITS/4.0) + ")")
-    print("  HELIPAD_X = " + String(HELIPAD_X) + " (W_UNITS/2 = " + String(W_UNITS/2.0) + ")")
+    print(
+        "  HELIPAD_Y = "
+        + String(GPU_HELIPAD_Y)
+        + " (H_UNITS/4 = "
+        + String(H_UNITS / 4.0)
+        + ")"
+    )
+    print(
+        "  HELIPAD_X = "
+        + String(HELIPAD_X)
+        + " (W_UNITS/2 = "
+        + String(W_UNITS / 2.0)
+        + ")"
+    )
     print("  LEG_AWAY = " + String(GPU_LEG_AWAY) + " (20/30)")
     print("  LEG_DOWN = " + String(GPU_LEG_DOWN) + " (18/30)")
 
@@ -90,7 +102,9 @@ fn main() raises:
     var H = Float32(400.0) / SCALE  # ~13.33 units
 
     var cpu_x_world = cpu_x_norm * (W / 2.0) + W / 2.0
-    var cpu_y_world = cpu_y_norm * (H / 2.0) + (Float32(cpu_env.helipad_y) + 18.0/SCALE)
+    var cpu_y_world = cpu_y_norm * (H / 2.0) + (
+        Float32(cpu_env.helipad_y) + 18.0 / SCALE
+    )
 
     print("CPU lander (denormalized):")
     print("  x_world = " + format_float(cpu_x_world))
@@ -101,29 +115,60 @@ fn main() raises:
     var left_leg_body = cpu_env.world.bodies[cpu_env.left_leg_idx].copy()
     var right_leg_body = cpu_env.world.bodies[cpu_env.right_leg_idx].copy()
 
-    print("  CPU left_leg_body.position = (" + format_float(Float32(left_leg_body.position.x))
-          + ", " + format_float(Float32(left_leg_body.position.y)) + ")")
-    print("  CPU right_leg_body.position = (" + format_float(Float32(right_leg_body.position.x))
-          + ", " + format_float(Float32(right_leg_body.position.y)) + ")")
+    print(
+        "  CPU left_leg_body.position = ("
+        + format_float(Float32(left_leg_body.position.x))
+        + ", "
+        + format_float(Float32(left_leg_body.position.y))
+        + ")"
+    )
+    print(
+        "  CPU right_leg_body.position = ("
+        + format_float(Float32(right_leg_body.position.x))
+        + ", "
+        + format_float(Float32(right_leg_body.position.y))
+        + ")"
+    )
 
     # GPU leg position calculation (geometric)
     var cos_angle = cos(cpu_angle)
     var sin_angle = sin(cpu_angle)
 
-    # From GPU code (lunar_lander_gpu.mojo:507-528):
+    # from std.gpu code (lunar_lander_gpu.mojo:507-528):
     # left_leg_x = x - LEG_AWAY * cos_angle + LEG_DOWN * sin_angle
     # left_leg_y = y - LEG_AWAY * sin_angle - LEG_DOWN * cos_angle
-    var gpu_left_leg_x = cpu_x_world - Float32(GPU_LEG_AWAY) * cos_angle + Float32(GPU_LEG_DOWN) * sin_angle
-    var gpu_left_leg_y = cpu_x_world - Float32(GPU_LEG_AWAY) * sin_angle - Float32(GPU_LEG_DOWN) * cos_angle  # BUG: should use y_world
+    var gpu_left_leg_x = (
+        cpu_x_world
+        - Float32(GPU_LEG_AWAY) * cos_angle
+        + Float32(GPU_LEG_DOWN) * sin_angle
+    )
+    var gpu_left_leg_y = (
+        cpu_x_world
+        - Float32(GPU_LEG_AWAY) * sin_angle
+        - Float32(GPU_LEG_DOWN) * cos_angle
+    )  # BUG: should use y_world
 
     # Correct calculation
-    var gpu_left_leg_y_correct = cpu_y_world - Float32(GPU_LEG_AWAY) * sin_angle - Float32(GPU_LEG_DOWN) * cos_angle
-    var gpu_right_leg_y_correct = cpu_y_world + Float32(GPU_LEG_AWAY) * sin_angle - Float32(GPU_LEG_DOWN) * cos_angle
+    var gpu_left_leg_y_correct = (
+        cpu_y_world
+        - Float32(GPU_LEG_AWAY) * sin_angle
+        - Float32(GPU_LEG_DOWN) * cos_angle
+    )
+    var gpu_right_leg_y_correct = (
+        cpu_y_world
+        + Float32(GPU_LEG_AWAY) * sin_angle
+        - Float32(GPU_LEG_DOWN) * cos_angle
+    )
 
     print("")
     print("GPU geometric leg positions (using CPU body position):")
-    print("  GPU left_leg_y (geometric) = " + format_float(gpu_left_leg_y_correct))
-    print("  GPU right_leg_y (geometric) = " + format_float(gpu_right_leg_y_correct))
+    print(
+        "  GPU left_leg_y (geometric) = " + format_float(gpu_left_leg_y_correct)
+    )
+    print(
+        "  GPU right_leg_y (geometric) = "
+        + format_float(gpu_right_leg_y_correct)
+    )
 
     # =========================================================================
     # 3. Contact detection threshold analysis
@@ -175,12 +220,18 @@ fn main() raises:
         # Denormalize y to world coords
         var y_norm = obs[1]
         var angle = obs[4]
-        var y_world = y_norm * (H / 2.0) + (Float32(cpu_env.helipad_y) + 18.0/SCALE)
+        var y_world = y_norm * (H / 2.0) + (
+            Float32(cpu_env.helipad_y) + 18.0 / SCALE
+        )
 
         # Compute GPU-style leg position
         var cos_a = cos(angle)
         var sin_a = sin(angle)
-        var gpu_style_leg_y = y_world - Float32(GPU_LEG_AWAY) * sin_a - Float32(GPU_LEG_DOWN) * cos_a
+        var gpu_style_leg_y = (
+            y_world
+            - Float32(GPU_LEG_AWAY) * sin_a
+            - Float32(GPU_LEG_DOWN) * cos_a
+        )
 
         # Would GPU detect contact?
         var gpu_would_contact = gpu_style_leg_y <= Float32(GPU_HELIPAD_Y)
@@ -190,13 +241,22 @@ fn main() raises:
         if gpu_would_contact_step < 0 and gpu_would_contact:
             gpu_would_contact_step = step
 
-        if step < 5 or step % 10 == 0 or cpu_contact_step == step or gpu_would_contact_step == step:
+        if (
+            step < 5
+            or step % 10 == 0
+            or cpu_contact_step == step
+            or gpu_would_contact_step == step
+        ):
             var gpu_contact_str = "YES" if gpu_would_contact else "no"
             print(
-                String(step) + "    | "
-                + format_float(y_norm, 10) + " | "
-                + format_float(cpu_left_contact, 9) + " | "
-                + format_float(gpu_style_leg_y, 12) + " | "
+                String(step)
+                + "    | "
+                + format_float(y_norm, 10)
+                + " | "
+                + format_float(cpu_left_contact, 9)
+                + " | "
+                + format_float(gpu_style_leg_y, 12)
+                + " | "
                 + gpu_contact_str
             )
 
@@ -216,7 +276,13 @@ fn main() raises:
     print("  GPU would contact: step " + String(gpu_would_contact_step))
 
     if cpu_contact_step != gpu_would_contact_step:
-        print("  MISMATCH: " + String(abs_f32(Float32(cpu_contact_step - gpu_would_contact_step))) + " steps difference!")
+        print(
+            "  MISMATCH: "
+            + String(
+                abs_f32(Float32(cpu_contact_step - gpu_would_contact_step))
+            )
+            + " steps difference!"
+        )
 
     # =========================================================================
     # 5. Analysis of CPU terrain
@@ -239,7 +305,9 @@ fn main() raises:
     print("Helipad region terrain height: " + String(cpu_env.helipad_y))
     print("GPU flat terrain height: " + String(GPU_HELIPAD_Y))
 
-    var terrain_diff = abs_f32(Float32(cpu_env.helipad_y) - Float32(GPU_HELIPAD_Y))
+    var terrain_diff = abs_f32(
+        Float32(cpu_env.helipad_y) - Float32(GPU_HELIPAD_Y)
+    )
     print("Difference: " + format_float(terrain_diff))
 
     # =========================================================================
@@ -252,7 +320,9 @@ fn main() raises:
     print("")
     print("1. TERRAIN HEIGHT:")
     print("   - CPU helipad_y varies per reset (random terrain generation)")
-    print("   - GPU uses fixed HELIPAD_Y = H_UNITS/4 = " + String(GPU_HELIPAD_Y))
+    print(
+        "   - GPU uses fixed HELIPAD_Y = H_UNITS/4 = " + String(GPU_HELIPAD_Y)
+    )
     print("   - This causes contact timing mismatch!")
     print("")
     print("2. LEG POSITION:")

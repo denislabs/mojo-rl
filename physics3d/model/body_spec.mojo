@@ -35,7 +35,7 @@ from ..gpu.constants import (
     BODY_IDX_IQUAT_W,
     model_body_offset,
 )
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 from render import Color
 
 # =============================================================================

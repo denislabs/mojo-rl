@@ -8,8 +8,8 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_cheetah_policy_diag.mojo
 """
 
-from math import sqrt, pi, abs
-from random import seed
+from std.math import sqrt, pi, abs
+from std.random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from nn.constants import dtype

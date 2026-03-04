@@ -19,9 +19,9 @@ Usage:
     matmul_bias_tanh_cached_kernel[BATCH, M, N, K, TILE](output, input, W, bias, cache)
 """
 
-from math import tanh
-from gpu import thread_idx, block_idx, barrier
-from gpu.memory import AddressSpace
+from std.math import tanh
+from std.gpu import thread_idx, block_idx, barrier
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from ..constants import dtype

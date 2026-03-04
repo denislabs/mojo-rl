@@ -11,8 +11,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
@@ -148,9 +148,21 @@ fn main() raises:
     print("\n--- Part 2: Our engine intermediate values ---")
 
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, ConeType.ELLIPTIC, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        ConeType.ELLIPTIC,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -330,9 +342,7 @@ fn main() raises:
         var mj = Float64(py=mj_qfrc_actuator[i])
         var diff = abs(ours - mj)
         if diff > 1e-12 or ours != 0 or mj != 0:
-            print(
-                "    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff
-            )
+            print("    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff)
 
     # Compare bias forces
     print("\n  Bias forces (our bias vs MJ qfrc_bias):")
@@ -344,9 +354,7 @@ fn main() raises:
         if diff > max_bias_diff:
             max_bias_diff = diff
         if diff > 1e-6:
-            print(
-                "    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff
-            )
+            print("    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff)
     print("    Max bias diff:", max_bias_diff)
 
     # Compare passive forces
@@ -390,9 +398,7 @@ fn main() raises:
         var diff = abs(ours - mj)
         if diff > max_fnet_diff:
             max_fnet_diff = diff
-        print(
-            "    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff
-        )
+        print("    dof[", i, "]: ours=", ours, " mj=", mj, " diff=", diff)
     print("    Max f_net diff:", max_fnet_diff)
 
     # Compare qacc
@@ -503,8 +509,14 @@ fn main() raises:
         var diff = abs(qa - qas)
         if diff > 1e-10:
             print(
-                "      dof[", i, "]: qacc=", qa, " qacc_smooth=", qas,
-                " diff=", diff
+                "      dof[",
+                i,
+                "]: qacc=",
+                qa,
+                " qacc_smooth=",
+                qas,
+                " diff=",
+                diff,
             )
     print("    (Only showing diffs > 1e-10)")
 
@@ -580,8 +592,14 @@ fn main() raises:
             max_residual = residual
         if residual > 0.01:
             print(
-                "    row", i, ": M_hat*qacc_mj=", Mq, " f_mj=", f_mj,
-                " residual=", residual
+                "    row",
+                i,
+                ": M_hat*qacc_mj=",
+                Mq,
+                " f_mj=",
+                f_mj,
+                " residual=",
+                residual,
             )
     print("  Max residual (M_hat_ours * qacc_mj - f_mj):", max_residual)
     if max_residual > 1.0:
@@ -638,8 +656,16 @@ fn main() raises:
                 var diff = abs(ours_val - mj_val)
                 if diff > 1e-6:
                     print(
-                        "    M[", i, ",", j, "]: ours=", ours_val,
-                        " mj=", mj_val, " diff=", diff
+                        "    M[",
+                        i,
+                        ",",
+                        j,
+                        "]: ours=",
+                        ours_val,
+                        " mj=",
+                        mj_val,
+                        " diff=",
+                        diff,
                     )
 
     # =====================================================================
@@ -666,12 +692,25 @@ fn main() raises:
         var mj_q = Float64(py=mj_qacc_s[i])
         var our_q = Float64(qacc[i])
         print(
-            "    dof[", i, "]: numpy=", np_q, " mj=", mj_q, " ours=", our_q,
-            " np-mj=", abs(np_q - mj_q), " np-ours=", abs(np_q - our_q),
+            "    dof[",
+            i,
+            "]: numpy=",
+            np_q,
+            " mj=",
+            mj_q,
+            " ours=",
+            our_q,
+            " np-mj=",
+            abs(np_q - mj_q),
+            " np-ours=",
+            abs(np_q - our_q),
         )
 
     # If numpy matches ours but not MuJoCo's, then mj_fullM(qM) ≠ d->M
-    print("\n  If numpy≈ours but ≠mj: mj_fullM(qM) differs from d->M used internally")
+    print(
+        "\n  If numpy≈ours but ≠mj: mj_fullM(qM) differs from d->M used"
+        " internally"
+    )
     print("  If numpy≈mj but ≠ours: our M computation differs")
 
     # =====================================================================
@@ -713,8 +752,16 @@ fn main() raises:
                     max_csr_diff = diff
                 if diff > 1e-10:
                     print(
-                        "    M[", i, ",", j, "]: CSR=", csr_val, " qM=",
-                        qm_val, " diff=", diff,
+                        "    M[",
+                        i,
+                        ",",
+                        j,
+                        "]: CSR=",
+                        csr_val,
+                        " qM=",
+                        qm_val,
+                        " diff=",
+                        diff,
                     )
         print("  Max CSR vs qM diff:", max_csr_diff)
 
@@ -739,8 +786,14 @@ fn main() raises:
             if diff > max_csr_qacc_diff:
                 max_csr_qacc_diff = diff
             print(
-                "    dof[", i, "]: CSR_solve=", np_q, " mj=", mj_q,
-                " diff=", diff,
+                "    dof[",
+                i,
+                "]: CSR_solve=",
+                np_q,
+                " mj=",
+                mj_q,
+                " diff=",
+                diff,
             )
         print("  Max CSR qacc diff:", max_csr_qacc_diff)
 
@@ -770,7 +823,11 @@ fn main() raises:
         print("    Diagonal:")
         for i in range(NV):
             print(
-                "    M_hat[", i, ",", i, "] =",
+                "    M_hat[",
+                i,
+                ",",
+                i,
+                "] =",
                 Float64(py=M_hat_prefactor[i][i]),
             )
 
@@ -817,9 +874,16 @@ fn main() raises:
             var mj_q = Float64(py=mj_qacc_s[i])
             var our_q = Float64(qacc[i])
             print(
-                "    dof[", i, "]: final=", np_q, " mj=", mj_q,
-                " ours=", our_q,
-                " final-mj=", abs(np_q - mj_q),
+                "    dof[",
+                i,
+                "]: final=",
+                np_q,
+                " mj=",
+                mj_q,
+                " ours=",
+                our_q,
+                " final-mj=",
+                abs(np_q - mj_q),
             )
 
     except e:

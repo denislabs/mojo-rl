@@ -5,7 +5,7 @@ from .linear import Linear
 from .layer_norm import LayerNorm
 from .mish import Mish
 from layout import LayoutTensor, Layout
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct NormedLinear[in_dim: Int, out_dim: Int](Model):
@@ -131,7 +131,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward with caching."""
-        Self._Inner.forward_gpu[BATCH](ctx, output, input, params, cache, workspace)
+        Self._Inner.forward_gpu[BATCH](
+            ctx, output, input, params, cache, workspace
+        )
 
     @staticmethod
     fn forward_gpu_no_cache[

@@ -7,7 +7,7 @@ iterative algorithms consuming pre-built ConstraintData.
 This consolidates code previously duplicated across PGS, CG, and Newton solvers.
 """
 
-from math import sqrt, pow
+from std.math import sqrt, pow
 from ..types import (
     Model,
     Data,

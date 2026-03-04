@@ -14,11 +14,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs, sqrt
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs, sqrt
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
@@ -117,8 +117,13 @@ comptime BATCH = 1
 comptime MC = _max_one[MAX_CONTACTS]()
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM,
-    HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+    NBODY,
+    NJOINT,
+    NV,
+    NGEOM,
+    HalfCheetahModel.MAX_EQUALITY,
+    HalfCheetahModel.MAX_TENDON,
+    HalfCheetahModel.NSITE,
 ]()
 
 # Workspace: integrator temps + M_inv + solver common normal block
@@ -184,38 +189,84 @@ fn jacobian_kernel[
 
     # 1. Forward kinematics
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 2. Body velocities
     compute_body_velocities_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 3. Detect contacts
     detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        NGEOM,
     ](env, state, model)
 
     # 4. Compute cdof
     compute_cdof_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 5. Composite inertia
     compute_composite_inertia_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 6. Mass matrix (CRBA)
     compute_mass_matrix_full_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 6b. Add armature only (Euler: M_solver = M + armature)
@@ -244,8 +295,16 @@ fn jacobian_kernel[
 
     # 9. Bias forces (needed for qacc0 -> qacc_constrained)
     compute_bias_forces_rne_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 10. f_net = qfrc - bias - damping*qvel - stiffness*(qpos-springref)
@@ -259,46 +318,86 @@ fn jacobian_kernel[
 
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-        var damp_val = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var damp_val = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_DAMPING]
+        )
         if damp_val > Scalar[DTYPE](0):
             if jnt_type == JNT_FREE:
                 for d in range(6):
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr + d]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr + d]
+                    )
                     workspace[env, fnet_idx + dof_adr + d] = cur - damp_val * v
             elif jnt_type == JNT_BALL:
                 for d in range(3):
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr + d]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr + d]
+                    )
                     workspace[env, fnet_idx + dof_adr + d] = cur - damp_val * v
             else:
                 var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
-                var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                var cur = rebind[Scalar[DTYPE]](
+                    workspace[env, fnet_idx + dof_adr]
+                )
                 workspace[env, fnet_idx + dof_adr] = cur - damp_val * v
 
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-        var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
-        var stiff = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_STIFFNESS])
-        var sref = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_SPRINGREF])
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var qpos_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+        )
+        var stiff = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_STIFFNESS]
+        )
+        var sref = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_SPRINGREF]
+        )
         if stiff > Scalar[DTYPE](0):
             if jnt_type == JNT_FREE:
                 for d in range(6):
-                    var qp = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + d])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                    workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (qp - sref)
+                    var qp = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + d]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr + d]
+                    )
+                    workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                        qp - sref
+                    )
             elif jnt_type == JNT_BALL:
                 for d in range(3):
-                    var qp = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + d])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                    workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (qp - sref)
+                    var qp = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + d]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr + d]
+                    )
+                    workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                        qp - sref
+                    )
             else:
                 var qp = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
-                var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                var cur = rebind[Scalar[DTYPE]](
+                    workspace[env, fnet_idx + dof_adr]
+                )
                 workspace[env, fnet_idx + dof_adr] = cur - stiff * (qp - sref)
 
     # 11. LDL solve -> qacc0
@@ -313,17 +412,33 @@ fn jacobian_kernel[
     comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
     comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
 
-    var nc = Int(rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS]))
+    var nc = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
     if nc > MAX_CONTACTS:
         nc = MAX_CONTACTS
 
-    var sr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0])
-    var sr_dr = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1])
-    var si_dmin = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0])
-    var si_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1])
-    var si_width = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2])
-    var si_midpoint = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3])
-    var si_power = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4])
+    var sr_tc = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
+    )
+    var sr_dr = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
+    )
+    var si_dmin = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
+    )
+    var si_dmax = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+    )
+    var si_width = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
+    )
+    var si_midpoint = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_3]
+    )
+    var si_power = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_4]
+    )
     if si_width < Scalar[DTYPE](1e-6):
         si_width = Scalar[DTYPE](1e-6)
     if si_dmax < Scalar[DTYPE](1e-4):
@@ -334,21 +449,48 @@ fn jacobian_kernel[
     # 14. Init common normal workspace
     for c in range(MC):
         init_common_normal_workspace_gpu[
-            DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+            DTYPE,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            WS_SIZE,
+            BATCH,
         ](env, c, workspace)
 
     # 15. Precompute contact normals (computes J_n)
     for c in range(nc):
         precompute_contact_normal_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
             HalfCheetahModel.MAX_EQUALITY,
-            COMPUTE_RHS=False, RHS_IDX=0,
-            MAX_TENDON=HalfCheetahModel.MAX_TENDON,
-            NSITE=HalfCheetahModel.NSITE,
+            COMPUTE_RHS=False,
+            RHS_IDX=0,
+            MAX_TENDON = HalfCheetahModel.MAX_TENDON,
+            NSITE = HalfCheetahModel.NSITE,
         ](
-            env, c, nc, state, model, workspace,
-            K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint, si_power,
+            env,
+            c,
+            nc,
+            state,
+            model,
+            workspace,
+            K_spring,
+            B_damp,
+            si_dmin,
+            si_dmax,
+            si_width,
+            si_midpoint,
+            si_power,
         )
 
     # 16. Read J_n rows into result buffer
@@ -370,7 +512,19 @@ fn compare_jacobian(
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
     test_qvel: InlineArray[Float64, NV],
-    model_cpu: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model_cpu: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ],
     model_buf: DeviceBuffer[DTYPE],
     mut state_host: HostBuffer[DTYPE],
     mut state_buf: DeviceBuffer[DTYPE],
@@ -382,7 +536,9 @@ fn compare_jacobian(
     print("--- Test:", test_name, "---")
 
     # === CPU pipeline ===
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[i])
     for i in range(NV):
@@ -446,10 +602,14 @@ fn compare_jacobian(
     var cpu_ncon = data_cpu.num_contacts
     var cpu_nnorm = constraints.num_normals
     print(
-        "  CPU: contacts=", cpu_ncon,
-        " normal_rows=", cpu_nnorm,
-        " friction_rows=", constraints.num_friction,
-        " limit_rows=", constraints.num_limits,
+        "  CPU: contacts=",
+        cpu_ncon,
+        " normal_rows=",
+        cpu_nnorm,
+        " friction_rows=",
+        constraints.num_friction,
+        " limit_rows=",
+        constraints.num_limits,
     )
 
     # === GPU pipeline ===
@@ -474,8 +634,17 @@ fn compare_jacobian(
     ctx.synchronize()
 
     comptime kernel_fn = jacobian_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, TOTAL_WS_SIZE, RESULT_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        TOTAL_WS_SIZE,
+        RESULT_SIZE,
     ]
 
     var state_tensor = LayoutTensor[
@@ -492,7 +661,10 @@ fn compare_jacobian(
     ](result_buf.unsafe_ptr())
 
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, ws_tensor, result_tensor,
+        state_tensor,
+        model_tensor,
+        ws_tensor,
+        result_tensor,
         grid_dim=(BATCH,),
         block_dim=(1,),
     )
@@ -529,15 +701,30 @@ fn compare_jacobian(
         var ci = data_cpu.contacts[c]
         var J_n_cpu = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
         compute_contact_jacobian_row[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE,
-            NGEOM, HalfCheetahModel.MAX_EQUALITY,
-            HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            V_SIZE,
+            NGEOM,
+            HalfCheetahModel.MAX_EQUALITY,
+            HalfCheetahModel.CONE_TYPE,
+            HalfCheetahModel.MAX_TENDON,
             HalfCheetahModel.NSITE,
         ](
-            model_cpu, data_cpu, cdof,
-            ci.body_a, ci.body_b,
-            ci.pos_x, ci.pos_y, ci.pos_z,
-            ci.normal_x, ci.normal_y, ci.normal_z,
+            model_cpu,
+            data_cpu,
+            cdof,
+            ci.body_a,
+            ci.body_b,
+            ci.pos_x,
+            ci.pos_y,
+            ci.pos_z,
+            ci.normal_x,
+            ci.normal_y,
+            ci.normal_z,
             J_n_cpu,
         )
 
@@ -567,13 +754,21 @@ fn compare_jacobian(
 
         if row_pass:
             print(
-                "  J_n[", c, "] OK  max_abs=", row_max_abs,
-                " max_rel=", row_max_rel,
+                "  J_n[",
+                c,
+                "] OK  max_abs=",
+                row_max_abs,
+                " max_rel=",
+                row_max_rel,
             )
         else:
             print(
-                "  J_n[", c, "] FAIL  max_abs=", row_max_abs,
-                " max_rel=", row_max_rel,
+                "  J_n[",
+                c,
+                "] FAIL  max_abs=",
+                row_max_abs,
+                " max_rel=",
+                row_max_rel,
             )
             print("    CPU J_n:", end="")
             for v in range(NV):
@@ -587,13 +782,17 @@ fn compare_jacobian(
 
     if all_pass:
         print(
-            "  ALL OK  max_abs=", max_abs_err,
-            " max_rel=", max_rel_err,
+            "  ALL OK  max_abs=",
+            max_abs_err,
+            " max_rel=",
+            max_rel_err,
         )
     else:
         print(
-            "  FAILED  max_abs=", max_abs_err,
-            " max_rel=", max_rel_err,
+            "  FAILED  max_abs=",
+            max_abs_err,
+            " max_rel=",
+            max_rel_err,
         )
 
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
@@ -609,13 +808,29 @@ fn test_low_static() raises:
     print()
 
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data_ref = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -625,19 +840,48 @@ fn test_low_static() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    compare_jacobian(ctx, "Low static (rootz=-0.2)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host, result_buf, result_host)
+    compare_jacobian(
+        ctx,
+        "Low static (rootz=-0.2)",
+        qpos,
+        qvel,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+        result_buf,
+        result_host,
+    )
     print()
 
 
 fn test_low_moving() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data_ref = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -649,19 +893,48 @@ fn test_low_moving() raises:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[0] = 1.0
     qvel[2] = -0.5
-    compare_jacobian(ctx, "Low moving (rootz=-0.2, vel)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host, result_buf, result_host)
+    compare_jacobian(
+        ctx,
+        "Low moving (rootz=-0.2, vel)",
+        qpos,
+        qvel,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+        result_buf,
+        result_host,
+    )
     print()
 
 
 fn test_very_low() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data_ref = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -671,7 +944,20 @@ fn test_very_low() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.5
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    compare_jacobian(ctx, "Very low (rootz=-0.5)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host, result_buf, result_host)
+    compare_jacobian(
+        ctx,
+        "Very low (rootz=-0.5)",
+        qpos,
+        qvel,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+        result_buf,
+        result_host,
+    )
     print()
 
 
@@ -682,15 +968,32 @@ fn main() raises:
     test_bent_legs()
     print("All jacobian CPU vs GPU tests passed.")
 
+
 fn test_bent_legs() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data_ref = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * TOTAL_WS_SIZE)
@@ -704,5 +1007,18 @@ fn test_bent_legs() raises:
     qpos[6] = 0.5
     qpos[7] = -0.8
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    compare_jacobian(ctx, "Bent legs (rootz=-0.15, joints)", qpos, qvel, model_cpu, model_buf, state_host, state_buf, workspace_buf, ws_host, result_buf, result_host)
+    compare_jacobian(
+        ctx,
+        "Bent legs (rootz=-0.15, joints)",
+        qpos,
+        qvel,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+        result_buf,
+        result_host,
+    )
     print()

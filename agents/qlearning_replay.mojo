@@ -1,4 +1,4 @@
-from random import random_si64, random_float64
+from std.random import random_si64, random_float64
 from .qlearning import QTable
 from core import (
     TabularAgent,

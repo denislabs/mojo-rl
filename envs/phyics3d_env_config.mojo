@@ -9,7 +9,7 @@ The config has full access to physics state (qpos, qvel, etc.) for reward
 and termination — no hardcoded assumptions about which joints matter.
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data

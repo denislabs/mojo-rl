@@ -42,8 +42,8 @@ Example usage:
         agent.update_from_episode()
 """
 
-from math import exp, log
-from random import random_float64
+from std.math import exp, log
+from std.random import random_float64
 from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 from core.utils.softmax import softmax, sample_from_probs, argmax_probs

@@ -39,8 +39,8 @@ Example usage:
 """
 
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,
@@ -265,7 +265,15 @@ struct UnifiedConstraintSolver:
                 BODIES_OFFSET,
                 JOINTS_OFFSET,
                 VEL_ITERATIONS,
-            ](state, contacts, contact_counts, joint_counts, friction, restitution, dt)
+            ](
+                state,
+                contacts,
+                contact_counts,
+                joint_counts,
+                friction,
+                restitution,
+                dt,
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             state,

@@ -17,7 +17,7 @@ Example usage:
     normalize_inline(buffer_len, advantages)
 """
 
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 
 
 fn normalize(mut values: List[Float64], eps: Float64 = 1e-8):

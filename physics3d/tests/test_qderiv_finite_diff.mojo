@@ -8,8 +8,8 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -38,13 +38,26 @@ comptime CRB_SIZE = NBODY * 10
 
 fn compute_bias_at_qvel(
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ],
     qpos: InlineArray[Float64, NQ],
     qvel: InlineArray[Float64, NV],
 ) raises -> List[Scalar[DTYPE]]:
-    """Compute full RNE bias forces (gravity + Coriolis) for given qpos, qvel."""
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    """Compute full RNE bias forces (gravity + Coriolis) for given qpos, qvel.
+    """
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos[i])
     for i in range(NV):
@@ -74,9 +87,21 @@ fn test_qderiv_finite_diff() raises:
 
     # Setup model
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
 
     # Test configuration with nonzero velocities
@@ -157,10 +182,14 @@ fn test_qderiv_finite_diff() raises:
         var damp = joint.damping
         if joint.jnt_type == JNT_FREE:
             for d in range(6):
-                qDeriv_fd[(dof_adr + d) * NV + (dof_adr + d)] -= Scalar[DTYPE](damp)
+                qDeriv_fd[(dof_adr + d) * NV + (dof_adr + d)] -= Scalar[DTYPE](
+                    damp
+                )
         elif joint.jnt_type == JNT_BALL:
             for d in range(3):
-                qDeriv_fd[(dof_adr + d) * NV + (dof_adr + d)] -= Scalar[DTYPE](damp)
+                qDeriv_fd[(dof_adr + d) * NV + (dof_adr + d)] -= Scalar[DTYPE](
+                    damp
+                )
         else:
             qDeriv_fd[dof_adr * NV + dof_adr] -= Scalar[DTYPE](damp)
 
@@ -189,11 +218,19 @@ fn test_qderiv_finite_diff() raises:
                 num_fail += 1
                 if num_fail <= 15:
                     print(
-                        "  [", i, ",", j, "]",
-                        " analytical=", a_val,
-                        " fd=", fd_val,
-                        " abs=", abs_err,
-                        " rel=", rel_err,
+                        "  [",
+                        i,
+                        ",",
+                        j,
+                        "]",
+                        " analytical=",
+                        a_val,
+                        " fd=",
+                        fd_val,
+                        " abs=",
+                        abs_err,
+                        " rel=",
+                        rel_err,
                     )
 
     print("  Summary: checked", NV * NV, "entries, failed:", num_fail)
@@ -222,7 +259,9 @@ fn test_qderiv_finite_diff() raises:
     else:
         print()
         print("  FAIL — analytical derivative has errors")
-    assert_true(num_fail == 0, "qDeriv analytical vs finite difference mismatch")
+    assert_true(
+        num_fail == 0, "qDeriv analytical vs finite difference mismatch"
+    )
 
 
 fn main() raises:

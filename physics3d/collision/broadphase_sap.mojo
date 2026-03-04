@@ -20,7 +20,7 @@ Algorithm (SAP path)
    c. For each candidate pair: body filter → narrowphase dispatch.
 """
 
-from math import sqrt, abs
+from std.math import sqrt, abs
 from layout import LayoutTensor, Layout
 from ..types import (
     Model,

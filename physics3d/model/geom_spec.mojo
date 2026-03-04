@@ -23,7 +23,7 @@ Usage:
     # Capsule with explicit friction override
     comptime MyCap = Capsule[body_idx=1, radius=0.046, friction=0.4]
 """
-from math import sqrt
+from std.math import sqrt
 from ..constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
@@ -70,7 +70,7 @@ from ..gpu.constants import (
     GEOM_IDX_MARGIN as _GEOM_IDX_MARGIN,
     model_geom_offset,
 )
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 
 # Sentinel values for "use model default" (re-exported for convenience)
 comptime _UNSET_F64: Float64 = -1.0

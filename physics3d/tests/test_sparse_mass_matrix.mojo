@@ -9,8 +9,8 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_sparse_mass_matrix.mojo
 """
 
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -37,8 +37,8 @@ from testing import assert_true, TestSuite
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = HalfCheetahModel.NQ   # 9
-comptime NV = HalfCheetahModel.NV   # 9
+comptime NQ = HalfCheetahModel.NQ  # 9
+comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
@@ -62,16 +62,28 @@ comptime TOL: Float64 = 1e-12
 
 
 fn check_sparse_pattern(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]
 ) raises:
     """Verify: actual_nnz == count_sparse_nnz, all positions in lower triangle,
     diagonal present in every row."""
     print("--- Test: Sparsity pattern ---")
 
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
-    build_sparse_pattern[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM
-    ](model, sM)
+    build_sparse_pattern[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM](
+        model, sM
+    )
 
     var nnz = count_sparse_nnz[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM
@@ -81,22 +93,46 @@ fn check_sparse_pattern(
 
     if sM.actual_nnz != nnz:
         print("  FAIL: actual_nnz != count_sparse_nnz")
-        assert_true(False, "Sparse pattern test failed: actual_nnz != count_sparse_nnz")
+        assert_true(
+            False, "Sparse pattern test failed: actual_nnz != count_sparse_nnz"
+        )
 
     # Every row must contain its diagonal as the last element
     for i in range(NV):
         var dp = sM.diag_pos(i)
         if sM.col_ind[dp] != i:
-            print("  FAIL: row", i, "diagonal wrong (col_ind =", sM.col_ind[dp], ")")
-            assert_true(False, "Sparse pattern test failed: row " + String(i) + " diagonal wrong")
+            print(
+                "  FAIL: row",
+                i,
+                "diagonal wrong (col_ind =",
+                sM.col_ind[dp],
+                ")",
+            )
+            assert_true(
+                False,
+                "Sparse pattern test failed: row "
+                + String(i)
+                + " diagonal wrong",
+            )
 
     # All column indices must be in lower triangle (col <= row)
     for i in range(NV):
         var adr_i = sM.row_adr[i]
         for t in range(sM.row_nnz[i]):
             if sM.col_ind[adr_i + t] > i:
-                print("  FAIL: row", i, "has col_ind", sM.col_ind[adr_i + t], "> i")
-                assert_true(False, "Sparse pattern test failed: row " + String(i) + " has col_ind > i (not lower triangle)")
+                print(
+                    "  FAIL: row",
+                    i,
+                    "has col_ind",
+                    sM.col_ind[adr_i + t],
+                    "> i",
+                )
+                assert_true(
+                    False,
+                    "Sparse pattern test failed: row "
+                    + String(i)
+                    + " has col_ind > i (not lower triangle)",
+                )
 
     print("  PASS  actual_nnz =", sM.actual_nnz)
 
@@ -107,7 +143,19 @@ fn check_sparse_pattern(
 
 
 fn check_sparse_values_match_dense(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) raises:
@@ -115,7 +163,9 @@ fn check_sparse_values_match_dense(
     compute_mass_matrix_full (reference)."""
     print("--- Test: Sparse == Dense values  [", test_name, "] ---")
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -137,12 +187,20 @@ fn check_sparse_values_match_dense(
 
     # Sparse
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
-    build_sparse_pattern[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM
-    ](model, sM)
+    build_sparse_pattern[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM](
+        model, sM
+    )
     compute_mass_matrix_sparse[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        NM, CDOF_SIZE, CRB_SIZE, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NM,
+        CDOF_SIZE,
+        CRB_SIZE,
+        NGEOM,
     ](model, data, cdof, crb, sM)
 
     # Expand sparse to dense
@@ -165,15 +223,31 @@ fn check_sparse_values_match_dense(
                 fail_count += 1
                 if fail_count <= 5:
                     print(
-                        "  FAIL M[", i, ",", j, "]  dense =", d,
-                        "  sparse =", s, "  err =", err,
+                        "  FAIL M[",
+                        i,
+                        ",",
+                        j,
+                        "]  dense =",
+                        d,
+                        "  sparse =",
+                        s,
+                        "  err =",
+                        err,
                     )
 
     if fail_count == 0:
         print("  PASS  max_err =", max_err)
     else:
         print("  FAIL", fail_count, "entries  max_err =", max_err)
-        assert_true(False, "Sparse values match dense test failed [" + test_name + "]: " + String(fail_count) + " entries exceed tolerance, max_err = " + String(max_err))
+        assert_true(
+            False,
+            "Sparse values match dense test failed ["
+            + test_name
+            + "]: "
+            + String(fail_count)
+            + " entries exceed tolerance, max_err = "
+            + String(max_err),
+        )
 
 
 # =============================================================================
@@ -182,14 +256,30 @@ fn check_sparse_values_match_dense(
 
 
 fn check_sparse_solve_matches_dense(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) raises:
     """Verify ldl_solve_sparse(b) == ldl_solve(b) for multiple rhs vectors."""
-    print("--- Test: Sparse LDL solve == Dense LDL solve  [", test_name, "] ---")
+    print(
+        "--- Test: Sparse LDL solve == Dense LDL solve  [", test_name, "] ---"
+    )
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -223,12 +313,20 @@ fn check_sparse_solve_matches_dense(
 
     # Build sparse M with armature
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
-    build_sparse_pattern[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM
-    ](model, sM)
+    build_sparse_pattern[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM](
+        model, sM
+    )
     compute_mass_matrix_sparse[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        NM, CDOF_SIZE, CRB_SIZE, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NM,
+        CDOF_SIZE,
+        CRB_SIZE,
+        NGEOM,
     ](model, data, cdof, crb, sM)
     for j in range(model.num_joints):
         var dof = model.joints[j].dof_adr
@@ -271,17 +369,32 @@ fn check_sparse_solve_matches_dense(
                 fail_count += 1
                 if fail_count <= 5:
                     print(
-                        "  FAIL rhs", rhs_case, "x[", i, "]",
-                        "  dense =", Float64(x_dense[i]),
-                        "  sparse =", Float64(x_sparse[i]),
-                        "  err =", err,
+                        "  FAIL rhs",
+                        rhs_case,
+                        "x[",
+                        i,
+                        "]",
+                        "  dense =",
+                        Float64(x_dense[i]),
+                        "  sparse =",
+                        Float64(x_sparse[i]),
+                        "  err =",
+                        err,
                     )
 
     if fail_count == 0:
         print("  PASS  max_err =", max_err)
     else:
         print("  FAIL", fail_count, "entries  max_err =", max_err)
-        assert_true(False, "Sparse LDL solve matches dense test failed [" + test_name + "]: " + String(fail_count) + " entries exceed tolerance, max_err = " + String(max_err))
+        assert_true(
+            False,
+            "Sparse LDL solve matches dense test failed ["
+            + test_name
+            + "]: "
+            + String(fail_count)
+            + " entries exceed tolerance, max_err = "
+            + String(max_err),
+        )
 
 
 # =============================================================================
@@ -290,14 +403,28 @@ fn check_sparse_solve_matches_dense(
 
 
 fn check_sparse_solve_residual(
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ],
     test_name: String,
     qpos_vals: InlineArray[Float64, NQ],
 ) raises:
     """Verify M * ldl_solve_sparse(b) ≈ b (small residual)."""
     print("--- Test: Sparse solve residual  [", test_name, "] ---")
 
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_vals[i])
     forward_kinematics(model, data)
@@ -312,12 +439,20 @@ fn check_sparse_solve_residual(
     compute_composite_inertia(model, data, crb)
 
     var sM = SparseMassMatrix[DTYPE, NV, NM]()
-    build_sparse_pattern[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM
-    ](model, sM)
+    build_sparse_pattern[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, NGEOM](
+        model, sM
+    )
     compute_mass_matrix_sparse[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        NM, CDOF_SIZE, CRB_SIZE, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NM,
+        CDOF_SIZE,
+        CRB_SIZE,
+        NGEOM,
     ](model, data, cdof, crb, sM)
     for j in range(model.num_joints):
         var dof = model.joints[j].dof_adr
@@ -356,7 +491,14 @@ fn check_sparse_solve_residual(
         print("  PASS  max_residual =", max_res)
     else:
         print("  FAIL  max_residual =", max_res)
-        assert_true(False, "Sparse solve residual test failed [" + test_name + "]: max_residual = " + String(max_res) + " exceeds 1e-9")
+        assert_true(
+            False,
+            "Sparse solve residual test failed ["
+            + test_name
+            + "]: max_residual = "
+            + String(max_res)
+            + " exceeds 1e-9",
+        )
 
 
 # =============================================================================
@@ -372,8 +514,22 @@ fn test_sparse_mass_matrix_all() raises:
     print("=" * 60)
     print()
 
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, _setup_data)
 
     # --- Pattern test ---

@@ -13,11 +13,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import (
@@ -41,13 +41,13 @@ from envs.walker2d.walker2d_xml import Walker2dModel
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = Walker2dModel.NQ          # 9
-comptime NV = Walker2dModel.NV          # 9
-comptime NBODY = Walker2dModel.NBODY    # 8 (worldbody + torso + 2×(thigh+leg+foot))
+comptime NQ = Walker2dModel.NQ  # 9
+comptime NV = Walker2dModel.NV  # 9
+comptime NBODY = Walker2dModel.NBODY  # 8 (worldbody + torso + 2×(thigh+leg+foot))
 comptime NJOINT = Walker2dModel.NJOINT  # 9
-comptime NGEOM = Walker2dModel.NGEOM    # 8
+comptime NGEOM = Walker2dModel.NGEOM  # 8
 comptime MAX_CONTACTS = Walker2dModel.MAX_CONTACTS  # 20
-comptime NSITE = Walker2dModel.NSITE    # 0
+comptime NSITE = Walker2dModel.NSITE  # 0
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -74,14 +74,24 @@ fn fk_kernel[
     MODEL_SIZE: Int,
     BATCH: Int,
 ](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     if env >= BATCH:
         return
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
 
@@ -101,11 +111,21 @@ fn compare_fk(
 
     # === CPU FK ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        Walker2dModel.MAX_EQUALITY, Walker2dModel.CONE_TYPE,
-        Walker2dModel.MAX_TENDON, Walker2dModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        Walker2dModel.MAX_EQUALITY,
+        Walker2dModel.CONE_TYPE,
+        Walker2dModel.MAX_TENDON,
+        Walker2dModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, Walker2dModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, Walker2dModel.NSITE
+    ]()
     Walker2dModel.setup_model_and_data[DTYPE](model_cpu, data_cpu)
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -130,10 +150,21 @@ fn compare_fk(
     ](model_buf.unsafe_ptr())
 
     comptime kernel_fn = fk_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ]
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, grid_dim=(BATCH,), block_dim=(1,),
+        state_tensor,
+        model_tensor,
+        grid_dim=(BATCH,),
+        block_dim=(1,),
     )
     ctx.synchronize()
 
@@ -166,7 +197,9 @@ fn compare_fk(
         var gpu_px = Float64(state_host[xpos_off + b * 3 + 0])
         var gpu_py = Float64(state_host[xpos_off + b * 3 + 1])
         var gpu_pz = Float64(state_host[xpos_off + b * 3 + 2])
-        var pos_err = abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        var pos_err = (
+            abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        )
         if pos_err > POS_TOL:
             print("  FAIL xpos ", body_names[b], " err=", pos_err)
             print("    cpu:", cpu_px, cpu_py, cpu_pz)
@@ -184,12 +217,16 @@ fn compare_fk(
         var gpu_qz = Float64(state_host[xquat_off + b * 4 + 2])
         var gpu_qw = Float64(state_host[xquat_off + b * 4 + 3])
         var diff_pos = (
-            abs(cpu_qx - gpu_qx) + abs(cpu_qy - gpu_qy)
-            + abs(cpu_qz - gpu_qz) + abs(cpu_qw - gpu_qw)
+            abs(cpu_qx - gpu_qx)
+            + abs(cpu_qy - gpu_qy)
+            + abs(cpu_qz - gpu_qz)
+            + abs(cpu_qw - gpu_qw)
         )
         var diff_neg = (
-            abs(cpu_qx + gpu_qx) + abs(cpu_qy + gpu_qy)
-            + abs(cpu_qz + gpu_qz) + abs(cpu_qw + gpu_qw)
+            abs(cpu_qx + gpu_qx)
+            + abs(cpu_qy + gpu_qy)
+            + abs(cpu_qz + gpu_qz)
+            + abs(cpu_qw + gpu_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
         if quat_err > QUAT_TOL:
@@ -206,7 +243,11 @@ fn compare_fk(
         var gpu_xi_x = Float64(state_host[xipos_off + b * 3 + 0])
         var gpu_xi_y = Float64(state_host[xipos_off + b * 3 + 1])
         var gpu_xi_z = Float64(state_host[xipos_off + b * 3 + 2])
-        var xipos_err = abs(cpu_xi_x - gpu_xi_x) + abs(cpu_xi_y - gpu_xi_y) + abs(cpu_xi_z - gpu_xi_z)
+        var xipos_err = (
+            abs(cpu_xi_x - gpu_xi_x)
+            + abs(cpu_xi_y - gpu_xi_y)
+            + abs(cpu_xi_z - gpu_xi_z)
+        )
         if xipos_err > POS_TOL:
             print("  FAIL xipos", body_names[b], " err=", xipos_err)
             print("    cpu:", cpu_xi_x, cpu_xi_y, cpu_xi_z)
@@ -254,33 +295,35 @@ fn test_fk_walker2d() raises:
     # Config 3: bent right leg
     var qpos3 = InlineArray[Float64, NQ](fill=0.0)
     qpos3[1] = 1.25  # rootz
-    qpos3[3] = 0.5   # thigh_joint (right)
+    qpos3[3] = 0.5  # thigh_joint (right)
     qpos3[4] = -0.8  # leg_joint (right)
-    qpos3[5] = 0.3   # foot_joint (right)
-    compare_fk(ctx, "Bent right leg (thigh=0.5, leg=-0.8, foot=0.3)", qpos3, model_buf)
+    qpos3[5] = 0.3  # foot_joint (right)
+    compare_fk(
+        ctx, "Bent right leg (thigh=0.5, leg=-0.8, foot=0.3)", qpos3, model_buf
+    )
     print()
 
     # Config 4: symmetric gait (both legs bent)
     var qpos4 = InlineArray[Float64, NQ](fill=0.0)
-    qpos4[1] = 1.25   # rootz
-    qpos4[2] = 0.1    # rooty
-    qpos4[3] = 0.3    # thigh_joint (right)
-    qpos4[4] = -0.5   # leg_joint (right)
-    qpos4[6] = -0.3   # thigh_joint_left
-    qpos4[7] = -0.5   # leg_joint_left
+    qpos4[1] = 1.25  # rootz
+    qpos4[2] = 0.1  # rooty
+    qpos4[3] = 0.3  # thigh_joint (right)
+    qpos4[4] = -0.5  # leg_joint (right)
+    qpos4[6] = -0.3  # thigh_joint_left
+    qpos4[7] = -0.5  # leg_joint_left
     compare_fk(ctx, "Symmetric gait", qpos4, model_buf)
     print()
 
     # Config 5: extreme joint angles
     var qpos5 = InlineArray[Float64, NQ](fill=0.0)
-    qpos5[1] = 1.25   # rootz
-    qpos5[2] = 0.5    # rooty (lean forward)
-    qpos5[3] = 1.0    # thigh_joint
-    qpos5[4] = -1.2   # leg_joint
-    qpos5[5] = 0.6    # foot_joint
-    qpos5[6] = -1.0   # thigh_joint_left
-    qpos5[7] = 1.2    # leg_joint_left
-    qpos5[8] = -0.6   # foot_joint_left
+    qpos5[1] = 1.25  # rootz
+    qpos5[2] = 0.5  # rooty (lean forward)
+    qpos5[3] = 1.0  # thigh_joint
+    qpos5[4] = -1.2  # leg_joint
+    qpos5[5] = 0.6  # foot_joint
+    qpos5[6] = -1.0  # thigh_joint_left
+    qpos5[7] = 1.2  # leg_joint_left
+    qpos5[8] = -0.6  # foot_joint_left
     compare_fk(ctx, "Extreme joint angles", qpos5, model_buf)
     print()
 

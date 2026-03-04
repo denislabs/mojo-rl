@@ -9,10 +9,10 @@ It can optionally have:
 The constraint ensures the anchor points on both bodies remain coincident.
 """
 
-from math import cos, sin, sqrt
+from std.math import cos, sin, sqrt
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,
@@ -756,7 +756,12 @@ struct RevoluteJointSolver:
 
         var n_joints = Int(joint_counts[env])
         RevoluteJointSolver.solve_velocity_single_env[
-            BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
+            BATCH,
+            NUM_BODIES,
+            MAX_JOINTS,
+            STATE_SIZE,
+            BODIES_OFFSET,
+            JOINTS_OFFSET,
         ](env, state, n_joints, dt)
 
     @always_inline
@@ -945,7 +950,12 @@ struct RevoluteJointSolver:
 
         var n_joints = Int(joint_counts[env])
         RevoluteJointSolver.solve_position_single_env[
-            BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
+            BATCH,
+            NUM_BODIES,
+            MAX_JOINTS,
+            STATE_SIZE,
+            BODIES_OFFSET,
+            JOINTS_OFFSET,
         ](env, state, n_joints, baumgarte, slop)
 
     @staticmethod

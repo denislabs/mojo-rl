@@ -5,8 +5,8 @@ including support for both grid search (discrete enumeration) and random
 search (continuous sampling).
 """
 
-from random import random_float64, seed
-from math import log, exp
+from std.random import random_float64, seed
+from std.math import log, exp
 
 
 # ============================================================================
@@ -125,15 +125,15 @@ struct IntParam(Copyable, ImplicitlyCopyable, Movable):
         self.name = name
         self.values = values^
 
-    fn __copyinit__(out self, existing: Self):
-        self.name = existing.name
+    fn __init__(out self, *, copy: Self):
+        self.name = copy.name
         self.values = List[Int]()
-        for i in range(len(existing.values)):
-            self.values.append(existing.values[i])
+        for i in range(len(copy.values)):
+            self.values.append(copy.values[i])
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.name = existing.name^
-        self.values = existing.values^
+    fn __init__(out self, *, deinit take: Self):
+        self.name = take.name^
+        self.values = take.values^
 
     fn sample_random(self) -> Int:
         """Sample a random value from the parameter space."""
@@ -166,11 +166,11 @@ struct BoolParam(Copyable, Movable):
     fn __init__(out self, name: String):
         self.name = name
 
-    fn __copyinit__(out self, existing: Self):
-        self.name = existing.name
+    fn __init__(out self, *, copy: Self):
+        self.name = copy.name
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.name = existing.name^
+    fn __init__(out self, *, deinit take: Self):
+        self.name = take.name^
 
     fn sample_random(self) -> Bool:
         """Sample a random boolean value."""
@@ -212,19 +212,19 @@ struct TabularHyperparams(Copyable, Movable):
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
 
     fn to_csv_header(self) -> String:
         """Return CSV header for hyperparameters."""
@@ -272,19 +272,19 @@ struct TabularParamSpace(Copyable, Movable):
             "epsilon_min", 0.01, 0.1, log_scale=False, num_values=2
         )
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate^
-        self.discount_factor = existing.discount_factor^
-        self.epsilon = existing.epsilon^
-        self.epsilon_decay = existing.epsilon_decay^
-        self.epsilon_min = existing.epsilon_min^
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate^
+        self.discount_factor = take.discount_factor^
+        self.epsilon = take.epsilon^
+        self.epsilon_decay = take.epsilon_decay^
+        self.epsilon_min = take.epsilon_min^
 
     fn sample_random(self) -> TabularHyperparams:
         """Sample random hyperparameters from the search space."""
@@ -368,21 +368,21 @@ struct NStepHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.n = n
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n = existing.n
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.n = copy.n
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n = existing.n
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.n = take.n
 
     fn to_csv_header(self) -> String:
         return (
@@ -439,21 +439,21 @@ struct NStepParamSpace(Copyable, Movable):
         n_values.append(10)
         self.n = IntParam("n", n_values^)
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n = existing.n
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.n = copy.n
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate^
-        self.discount_factor = existing.discount_factor^
-        self.epsilon = existing.epsilon^
-        self.epsilon_decay = existing.epsilon_decay^
-        self.epsilon_min = existing.epsilon_min^
-        self.n = existing.n^
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate^
+        self.discount_factor = take.discount_factor^
+        self.epsilon = take.epsilon^
+        self.epsilon_decay = take.epsilon_decay^
+        self.epsilon_min = take.epsilon_min^
+        self.n = take.n^
 
     fn sample_random(self) -> NStepHyperparams:
         return NStepHyperparams(
@@ -530,21 +530,21 @@ struct LambdaHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.lambda_ = lambda_
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.lambda_ = existing.lambda_
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.lambda_ = copy.lambda_
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.lambda_ = existing.lambda_
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.lambda_ = take.lambda_
 
     fn to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,lambda"
@@ -686,21 +686,21 @@ struct ModelBasedHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.n_planning = n_planning
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n_planning = existing.n_planning
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.n_planning = copy.n_planning
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n_planning = existing.n_planning
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.n_planning = take.n_planning
 
     fn to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,n_planning"
@@ -755,21 +755,21 @@ struct ModelBasedParamSpace(Copyable, Movable):
         n_values.append(50)
         self.n_planning = IntParam("n_planning", n_values^)
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.n_planning = existing.n_planning
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.n_planning = copy.n_planning
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate^
-        self.discount_factor = existing.discount_factor^
-        self.epsilon = existing.epsilon^
-        self.epsilon_decay = existing.epsilon_decay^
-        self.epsilon_min = existing.epsilon_min^
-        self.n_planning = existing.n_planning^
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate^
+        self.discount_factor = take.discount_factor^
+        self.epsilon = take.epsilon^
+        self.epsilon_decay = take.epsilon_decay^
+        self.epsilon_min = take.epsilon_min^
+        self.n_planning = take.n_planning^
 
     fn sample_random(self) -> ModelBasedHyperparams:
         return ModelBasedHyperparams(
@@ -852,25 +852,25 @@ struct ReplayHyperparams(Copyable, Movable):
         self.batch_size = batch_size
         self.min_buffer_size = min_buffer_size
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.buffer_size = existing.buffer_size
-        self.batch_size = existing.batch_size
-        self.min_buffer_size = existing.min_buffer_size
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.buffer_size = copy.buffer_size
+        self.batch_size = copy.batch_size
+        self.min_buffer_size = copy.min_buffer_size
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.buffer_size = existing.buffer_size
-        self.batch_size = existing.batch_size
-        self.min_buffer_size = existing.min_buffer_size
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate
+        self.discount_factor = take.discount_factor
+        self.epsilon = take.epsilon
+        self.epsilon_decay = take.epsilon_decay
+        self.epsilon_min = take.epsilon_min
+        self.buffer_size = take.buffer_size
+        self.batch_size = take.batch_size
+        self.min_buffer_size = take.min_buffer_size
 
     fn to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,buffer_size,batch_size,min_buffer_size"
@@ -936,23 +936,23 @@ struct ReplayParamSpace(Copyable, Movable):
         batch_values.append(64)
         self.batch_size = IntParam("batch_size", batch_values^)
 
-    fn __copyinit__(out self, existing: Self):
-        self.learning_rate = existing.learning_rate
-        self.discount_factor = existing.discount_factor
-        self.epsilon = existing.epsilon
-        self.epsilon_decay = existing.epsilon_decay
-        self.epsilon_min = existing.epsilon_min
-        self.buffer_size = existing.buffer_size
-        self.batch_size = existing.batch_size
+    fn __init__(out self, *, copy: Self):
+        self.learning_rate = copy.learning_rate
+        self.discount_factor = copy.discount_factor
+        self.epsilon = copy.epsilon
+        self.epsilon_decay = copy.epsilon_decay
+        self.epsilon_min = copy.epsilon_min
+        self.buffer_size = copy.buffer_size
+        self.batch_size = copy.batch_size
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.learning_rate = existing.learning_rate^
-        self.discount_factor = existing.discount_factor^
-        self.epsilon = existing.epsilon^
-        self.epsilon_decay = existing.epsilon_decay^
-        self.epsilon_min = existing.epsilon_min^
-        self.buffer_size = existing.buffer_size^
-        self.batch_size = existing.batch_size^
+    fn __init__(out self, *, deinit take: Self):
+        self.learning_rate = take.learning_rate^
+        self.discount_factor = take.discount_factor^
+        self.epsilon = take.epsilon^
+        self.epsilon_decay = take.epsilon_decay^
+        self.epsilon_min = take.epsilon_min^
+        self.buffer_size = take.buffer_size^
+        self.batch_size = take.batch_size^
 
     fn sample_random(self) -> ReplayHyperparams:
         var buffer = self.buffer_size.sample_random()
@@ -1038,21 +1038,21 @@ struct PolicyGradientHyperparams(Copyable, Movable):
         self.use_baseline = use_baseline
         self.baseline_lr = baseline_lr
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.entropy_coef = copy.entropy_coef
+        self.use_baseline = copy.use_baseline
+        self.baseline_lr = copy.baseline_lr
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
-        self.use_baseline = existing.use_baseline
-        self.baseline_lr = existing.baseline_lr
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.entropy_coef = take.entropy_coef
+        self.use_baseline = take.use_baseline
+        self.baseline_lr = take.baseline_lr
 
     fn to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,entropy_coef,use_baseline,baseline_lr"
@@ -1095,17 +1095,17 @@ struct PolicyGradientParamSpace(Copyable, Movable):
             "entropy_coef", 0.001, 0.1, log_scale=True, num_values=3
         )
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.entropy_coef = existing.entropy_coef
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.entropy_coef = copy.entropy_coef
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr^
-        self.critic_lr = existing.critic_lr^
-        self.discount_factor = existing.discount_factor^
-        self.entropy_coef = existing.entropy_coef^
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr^
+        self.critic_lr = take.critic_lr^
+        self.discount_factor = take.discount_factor^
+        self.entropy_coef = take.entropy_coef^
 
     fn sample_random(self) -> PolicyGradientHyperparams:
         return PolicyGradientHyperparams(
@@ -1183,25 +1183,25 @@ struct PPOHyperparams(Copyable, Movable):
         self.num_epochs = num_epochs
         self.normalize_advantages = normalize_advantages
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.num_epochs = existing.num_epochs
-        self.normalize_advantages = existing.normalize_advantages
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.gae_lambda = copy.gae_lambda
+        self.clip_epsilon = copy.clip_epsilon
+        self.entropy_coef = copy.entropy_coef
+        self.num_epochs = copy.num_epochs
+        self.normalize_advantages = copy.normalize_advantages
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.num_epochs = existing.num_epochs
-        self.normalize_advantages = existing.normalize_advantages
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.gae_lambda = take.gae_lambda
+        self.clip_epsilon = take.clip_epsilon
+        self.entropy_coef = take.entropy_coef
+        self.num_epochs = take.num_epochs
+        self.normalize_advantages = take.normalize_advantages
 
     fn to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,gae_lambda,clip_epsilon,entropy_coef,num_epochs"
@@ -1260,23 +1260,23 @@ struct PPOParamSpace(Copyable, Movable):
         epoch_values.append(8)
         self.num_epochs = IntParam("num_epochs", epoch_values^)
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.gae_lambda = existing.gae_lambda
-        self.clip_epsilon = existing.clip_epsilon
-        self.entropy_coef = existing.entropy_coef
-        self.num_epochs = existing.num_epochs
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.gae_lambda = copy.gae_lambda
+        self.clip_epsilon = copy.clip_epsilon
+        self.entropy_coef = copy.entropy_coef
+        self.num_epochs = copy.num_epochs
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr^
-        self.critic_lr = existing.critic_lr^
-        self.discount_factor = existing.discount_factor^
-        self.gae_lambda = existing.gae_lambda^
-        self.clip_epsilon = existing.clip_epsilon^
-        self.entropy_coef = existing.entropy_coef^
-        self.num_epochs = existing.num_epochs^
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr^
+        self.critic_lr = take.critic_lr^
+        self.discount_factor = take.discount_factor^
+        self.gae_lambda = take.gae_lambda^
+        self.clip_epsilon = take.clip_epsilon^
+        self.entropy_coef = take.entropy_coef^
+        self.num_epochs = take.num_epochs^
 
     fn sample_random(self) -> PPOHyperparams:
         return PPOHyperparams(
@@ -1380,33 +1380,33 @@ struct ContinuousHyperparams(Copyable, Movable):
         self.alpha = alpha
         self.auto_alpha = auto_alpha
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.noise_std = existing.noise_std
-        self.buffer_size = existing.buffer_size
-        self.batch_size = existing.batch_size
-        self.policy_delay = existing.policy_delay
-        self.target_noise_std = existing.target_noise_std
-        self.target_noise_clip = existing.target_noise_clip
-        self.alpha = existing.alpha
-        self.auto_alpha = existing.auto_alpha
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.tau = copy.tau
+        self.noise_std = copy.noise_std
+        self.buffer_size = copy.buffer_size
+        self.batch_size = copy.batch_size
+        self.policy_delay = copy.policy_delay
+        self.target_noise_std = copy.target_noise_std
+        self.target_noise_clip = copy.target_noise_clip
+        self.alpha = copy.alpha
+        self.auto_alpha = copy.auto_alpha
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.noise_std = existing.noise_std
-        self.buffer_size = existing.buffer_size
-        self.batch_size = existing.batch_size
-        self.policy_delay = existing.policy_delay
-        self.target_noise_std = existing.target_noise_std
-        self.target_noise_clip = existing.target_noise_clip
-        self.alpha = existing.alpha
-        self.auto_alpha = existing.auto_alpha
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr
+        self.critic_lr = take.critic_lr^
+        self.discount_factor = take.discount_factor^
+        self.tau = take.tau^
+        self.noise_std = take.noise_std^
+        self.buffer_size = take.buffer_size^
+        self.batch_size = take.batch_size^
+        self.policy_delay = take.policy_delay^
+        self.target_noise_std = take.target_noise_std^
+        self.target_noise_clip = take.target_noise_clip^
+        self.alpha = take.alpha^
+        self.auto_alpha = take.auto_alpha^
 
     fn to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,tau,noise_std,buffer_size,batch_size,policy_delay,target_noise_std,target_noise_clip,alpha,auto_alpha"
@@ -1470,21 +1470,21 @@ struct ContinuousParamSpace(Copyable, Movable):
         batch_values.append(256)
         self.batch_size = IntParam("batch_size", batch_values^)
 
-    fn __copyinit__(out self, existing: Self):
-        self.actor_lr = existing.actor_lr
-        self.critic_lr = existing.critic_lr
-        self.discount_factor = existing.discount_factor
-        self.tau = existing.tau
-        self.noise_std = existing.noise_std
-        self.batch_size = existing.batch_size
+    fn __init__(out self, *, copy: Self):
+        self.actor_lr = copy.actor_lr
+        self.critic_lr = copy.critic_lr
+        self.discount_factor = copy.discount_factor
+        self.tau = copy.tau
+        self.noise_std = copy.noise_std
+        self.batch_size = copy.batch_size
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.actor_lr = existing.actor_lr^
-        self.critic_lr = existing.critic_lr^
-        self.discount_factor = existing.discount_factor^
-        self.tau = existing.tau^
-        self.noise_std = existing.noise_std^
-        self.batch_size = existing.batch_size^
+    fn __init__(out self, *, deinit take: Self):
+        self.actor_lr = take.actor_lr^
+        self.critic_lr = take.critic_lr^
+        self.discount_factor = take.discount_factor^
+        self.tau = take.tau^
+        self.noise_std = take.noise_std^
+        self.batch_size = take.batch_size^
 
     fn sample_random(self) -> ContinuousHyperparams:
         return ContinuousHyperparams(

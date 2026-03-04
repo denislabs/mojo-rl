@@ -22,10 +22,10 @@ Run with:
     pixi run -e nvidia mojo run examples/half_cheetah/tdmpc2_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.tdmpc2 import TDMPC2Agent
 from envs.half_cheetah import (

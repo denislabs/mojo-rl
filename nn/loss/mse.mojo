@@ -5,9 +5,9 @@
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.primitives import block
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct MSELoss(LossFunction):
@@ -27,17 +27,21 @@ struct MSELoss(LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) -> Float64:
         """Mean Squared Error loss: L = mean((output - target)^2)."""
         comptime SIZE = BATCH * OUT_DIM
         var loss: Float64 = 0.0
         for row in range(BATCH):
             for col in range(OUT_DIM):
-                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
-                    rebind[Scalar[dtype]](target[row, col])
-                )
+                var diff = Float64(
+                    rebind[Scalar[dtype]](output[row, col])
+                ) - Float64(rebind[Scalar[dtype]](target[row, col]))
                 loss += diff * diff
         return loss / Float64(SIZE)
 
@@ -46,17 +50,23 @@ struct MSELoss(LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        mut grad: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ):
         """Gradient of MSE loss: dL/dy = 2 * (output - target) / size."""
         comptime SIZE = BATCH * OUT_DIM
         for row in range(BATCH):
             for col in range(OUT_DIM):
-                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
-                    rebind[Scalar[dtype]](target[row, col])
-                )
+                var diff = Float64(
+                    rebind[Scalar[dtype]](output[row, col])
+                ) - Float64(rebind[Scalar[dtype]](target[row, col]))
                 grad[row, col] = Scalar[dtype](2.0 * diff / Float64(SIZE))
 
     # =========================================================================

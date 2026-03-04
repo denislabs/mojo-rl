@@ -1,6 +1,6 @@
 """Hopper environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data

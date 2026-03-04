@@ -8,9 +8,9 @@ Fields that use sentinel value -1.0 mean "use ModelDefaults".
 Resolution happens at Joints.setup_model time.
 """
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim, barrier
-from math import sqrt
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.math import sqrt
 
 from ..gpu.constants import (
     TPB,
@@ -47,10 +47,10 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS0,
     model_joint_offset,
 )
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JointDef
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
-from random.philox import Random as PhiloxRandom
+from std.random.philox import Random as PhiloxRandom
 
 # Sentinel value for "use model default"
 comptime _UNSET_F64: Float64 = -1.0
@@ -1022,7 +1022,9 @@ struct Joints[*J: JointSpec](JointsLike):
         comptime QFRC_OFF = qfrc_offset[NQ_VAL, NV_VAL]()
 
         # Create RNG with unique seed per environment
-        var rng = PhiloxRandom(seed=seed * 2654435761 + env * 12345, offset=0)
+        var rng = PhiloxRandom(
+            seed=UInt64(seed) * 2654435761 + UInt64(env) * 12345, offset=0
+        )
 
         # Generate noise batches (4 values at a time from Philox)
         # We need NQ values for qpos + NV values for qvel

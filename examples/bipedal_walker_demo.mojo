@@ -18,8 +18,8 @@ from envs.bipedal_walker import (
     BipedalWalkerState,
     BipedalWalkerAction,
 )
-from random import random_float64, seed
-from time import sleep
+from std.random import random_float64, seed
+from std.time import sleep
 
 
 fn main() raises:

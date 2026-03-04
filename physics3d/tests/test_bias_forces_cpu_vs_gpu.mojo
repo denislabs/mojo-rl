@@ -11,10 +11,10 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import (

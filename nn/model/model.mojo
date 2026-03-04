@@ -1,6 +1,6 @@
 from ..constants import dtype
 from layout import LayoutTensor, Layout
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait Model(Movable & ImplicitlyCopyable):

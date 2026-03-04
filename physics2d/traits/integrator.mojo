@@ -6,7 +6,7 @@ They implement both CPU and GPU execution paths following the nn pattern.
 
 from ..constants import dtype, BODY_STATE_SIZE
 from layout import LayoutTensor, Layout
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait Integrator(Movable & ImplicitlyCopyable):

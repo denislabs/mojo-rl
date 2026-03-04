@@ -19,8 +19,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -33,11 +33,11 @@ from envs.swimmer.swimmer_config import SwimmerConfig
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = SwimmerModel.NQ          # 5 (slider1, slider2, free_body_rot, motor1_rot, motor2_rot)
-comptime NV = SwimmerModel.NV          # 5
-comptime NBODY = SwimmerModel.NBODY    # 4 (worldbody, torso, mid, back)
+comptime NQ = SwimmerModel.NQ  # 5 (slider1, slider2, free_body_rot, motor1_rot, motor2_rot)
+comptime NV = SwimmerModel.NV  # 5
+comptime NBODY = SwimmerModel.NBODY  # 4 (worldbody, torso, mid, back)
 comptime NJOINT = SwimmerModel.NJOINT  # 5
-comptime NGEOM = SwimmerModel.NGEOM    # 3 capsules
+comptime NGEOM = SwimmerModel.NGEOM  # 3 capsules
 comptime MAX_CONTACTS = SwimmerModel.MAX_CONTACTS  # 5
 
 # Tolerance for comparison (float64)
@@ -59,10 +59,21 @@ fn compare_fk(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        SwimmerModel.MAX_EQUALITY, SwimmerModel.CONE_TYPE, SwimmerModel.MAX_TENDON, SwimmerModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        SwimmerModel.MAX_EQUALITY,
+        SwimmerModel.CONE_TYPE,
+        SwimmerModel.MAX_TENDON,
+        SwimmerModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SwimmerModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SwimmerModel.NSITE
+    ]()
     SwimmerModel.setup_model_and_data(model, data)
 
     # Set qpos
@@ -112,7 +123,9 @@ fn compare_fk(
         var our_py = Float64(data.xpos[b * 3 + 1])
         var our_pz = Float64(data.xpos[b * 3 + 2])
 
-        var pos_err = abs(our_px - mj_px) + abs(our_py - mj_py) + abs(our_pz - mj_pz)
+        var pos_err = (
+            abs(our_px - mj_px) + abs(our_py - mj_py) + abs(our_pz - mj_pz)
+        )
 
         if pos_err > POS_TOL:
             print("  FAIL xpos ", bname, " err=", pos_err)
@@ -135,12 +148,16 @@ fn compare_fk(
 
         # Quaternions q and -q represent the same rotation
         var diff_pos = (
-            abs(our_qx - mj_qx) + abs(our_qy - mj_qy)
-            + abs(our_qz - mj_qz) + abs(our_qw - mj_qw)
+            abs(our_qx - mj_qx)
+            + abs(our_qy - mj_qy)
+            + abs(our_qz - mj_qz)
+            + abs(our_qw - mj_qw)
         )
         var diff_neg = (
-            abs(our_qx + mj_qx) + abs(our_qy + mj_qy)
-            + abs(our_qz + mj_qz) + abs(our_qw + mj_qw)
+            abs(our_qx + mj_qx)
+            + abs(our_qy + mj_qy)
+            + abs(our_qz + mj_qz)
+            + abs(our_qw + mj_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
 
@@ -194,16 +211,17 @@ fn test_fk_nonzero_position() raises:
     """FK with the swimmer displaced in the x-y plane.
     Slide joints move the body; body orientations should be unchanged."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 3.0   # slider1 (x translation)
+    qpos[0] = 3.0  # slider1 (x translation)
     qpos[1] = -2.0  # slider2 (y translation)
     compare_fk("Nonzero x-y position (slider1=3, slider2=-2)", qpos)
 
 
 fn test_fk_bent_joints() raises:
     """FK with motor joints bent — exercises the 3-body chain FK.
-    motor1_rot bends mid relative to torso, motor2_rot bends back relative to mid."""
+    motor1_rot bends mid relative to torso, motor2_rot bends back relative to mid.
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[3] = 0.5   # motor1_rot (mid bent ~28.6 deg relative to torso)
+    qpos[3] = 0.5  # motor1_rot (mid bent ~28.6 deg relative to torso)
     qpos[4] = -0.5  # motor2_rot (back bent ~28.6 deg relative to mid)
     compare_fk("Bent joints (motor1=0.5, motor2=-0.5 rad)", qpos)
 
@@ -212,11 +230,11 @@ fn test_fk_rotated_and_bent() raises:
     """FK with torso rotated + both motor joints bent.
     Tests composition of rotation through the full body chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # x position
-    qpos[1] = 0.5   # y position
+    qpos[0] = 1.0  # x position
+    qpos[1] = 0.5  # y position
     qpos[2] = 0.785  # free_body_rot = 45 deg = pi/4
-    qpos[3] = 0.3   # motor1_rot
-    qpos[4] = 0.3   # motor2_rot (S-curve shape)
+    qpos[3] = 0.3  # motor1_rot
+    qpos[4] = 0.3  # motor2_rot (S-curve shape)
     compare_fk("Rotated torso + bent joints (45 deg + 0.3/0.3 rad)", qpos)
 
 
@@ -225,8 +243,8 @@ fn test_fk_large_position() raises:
     should not affect body orientations)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # slider1 far in x
-    qpos[3] = 0.8    # motor1_rot
-    qpos[4] = -0.8   # motor2_rot (C-curve shape)
+    qpos[3] = 0.8  # motor1_rot
+    qpos[4] = -0.8  # motor2_rot (C-curve shape)
     compare_fk("Large x position (100m) + C-curve joints", qpos)
 
 
@@ -234,7 +252,7 @@ fn test_fk_near_joint_limits() raises:
     """FK near the joint limits of motor1_rot and motor2_rot (±100 degrees).
     Range is ±100 deg = ±1.745 rad."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[3] = 1.5   # motor1_rot near limit (~86 deg)
+    qpos[3] = 1.5  # motor1_rot near limit (~86 deg)
     qpos[4] = -1.5  # motor2_rot near lower limit
     compare_fk("Near joint limits (±1.5 rad)", qpos)
 

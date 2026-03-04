@@ -7,10 +7,10 @@ Run with:
     pixi run -e apple mojo run tests/test_ppo_lunar_debug_mean.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.lunar_lander import LunarLander, LLConstants
@@ -126,7 +126,7 @@ fn main() raises:
         print()
 
         # Print final mean action
-        # Need to copy params from GPU first
+        # Need to copy params from std.gpu first
         var final_action = get_mean_action(agent)
         print("Final mean action (after training):")
         print(

@@ -9,12 +9,12 @@ The flat state layout is compatible with GPUDiscreteEnv trait.
 All physics data is packed per-environment for efficient GPU access.
 """
 
-from math import sqrt, cos, sin, pi, tanh
+from std.math import sqrt, cos, sin, pi, tanh
 from layout import Layout, LayoutTensor
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from memory import alloc
-from random.philox import Random as PhiloxRandom
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import alloc
+from std.random.philox import Random as PhiloxRandom
 
 from core import (
     GPUDiscreteEnv,
@@ -467,7 +467,8 @@ struct LunarLander[
         # This ensures same seed+counter produces same state on both CPU and GPU
         self.rng_counter += 1
         var combined_seed = (
-            Int(self.rng_seed) * 2654435761 + self.rng_counter * 12345
+            UInt64(self.rng_seed) * 2654435761
+            + UInt64(self.rng_counter) * 12345
         )
         var rng = PhiloxRandom(seed=combined_seed, offset=0)
         var rand_vals = rng.step_uniform()
@@ -642,7 +643,8 @@ struct LunarLander[
         comptime if Self.ENABLE_WIND:
             self.rng_counter += 1
             var wind_rng = PhiloxRandom(
-                seed=Int(self.rng_seed) + 2000, offset=self.rng_counter
+                seed=UInt64(self.rng_seed) + 2000,
+                offset=UInt64(self.rng_counter),
             )
             var wind_rand = wind_rng.step_uniform()
             self.wind_idx = Int((Float64(wind_rand[0]) * 2.0 - 1.0) * 9999.0)
@@ -827,8 +829,10 @@ struct LunarLander[
         """Spawn flame particles from main engine.
 
         Args:
-            pos_x, pos_y: Lander center position.
-            tip_x, tip_y: Unit vector pointing "up" from lander (sin(angle), cos(angle)).
+            pos_x: X-coordinate of lander center position.
+            pos_y: Y-coordinate of lander center position.
+            tip_x: X-coordinate of unit vector pointing "up" from lander (sin(angle)).
+            tip_y: Y-coordinate of unit vector pointing "up" from lander (cos(angle)).
             power: Engine power (0.0 to 1.0).
         """
         if power <= 0.0:
@@ -881,9 +885,12 @@ struct LunarLander[
         """Spawn flame particles from side engine.
 
         Args:
-            pos_x, pos_y: Lander center position.
-            tip_x, tip_y: Unit vector pointing "up" from lander.
-            side_x, side_y: Unit vector pointing "right" from lander (-tip_y, tip_x).
+            pos_x: X-coordinate of lander center position.
+            pos_y: Y-coordinate of lander center position.
+            tip_x: X-coordinate of unit vector pointing "up" from lander (sin(angle)).
+            tip_y: Y-coordinate of unit vector pointing "up" from lander (cos(angle)).
+            side_x: X-coordinate of unit vector pointing "right" from lander (-tip_y).
+            side_y: Y-coordinate of unit vector pointing "right" from lander (tip_x).
             direction: -1 for left engine, +1 for right engine.
             power: Engine power (0.0 to 1.0).
         """
@@ -1061,7 +1068,7 @@ struct LunarLander[
         # Engine dispersion RNG matches GPU pattern for consistency:
         # GPU uses: seed = env + 12345, offset = step_count
         # CPU (single env = 0) uses: seed = 12345, offset = step_count
-        var rng = PhiloxRandom(seed=12345, offset=self.step_count)
+        var rng = PhiloxRandom(seed=12345, offset=UInt64(self.step_count))
         var rand_vals = rng.step_uniform()
         var dispersion_x = (
             Float64(rand_vals[0]) * 2.0 - 1.0
@@ -1861,11 +1868,11 @@ struct LunarLander[
         # Use Philox RNG (GPU-compatible counter-based RNG)
         # Note: seed is already combined_seed from wrapper (= base_seed * 2654435761 + env * 12345)
         # Use separate RNG streams for velocity and terrain to match CPU exactly
-        var velocity_rng = PhiloxRandom(seed=seed, offset=0)
+        var velocity_rng = PhiloxRandom(seed=UInt64(seed), offset=0)
         var velocity_rand = velocity_rng.step_uniform()
 
         # Terrain uses separate RNG stream (seed + 1000) matching CPU
-        var terrain_rng = PhiloxRandom(seed=seed + 1000, offset=0)
+        var terrain_rng = PhiloxRandom(seed=UInt64(seed) + 1000, offset=0)
 
         # Generate terrain (matching CPU version with smoothing)
         var n_edges = LLConstants.TERRAIN_CHUNKS - 1

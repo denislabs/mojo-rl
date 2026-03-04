@@ -11,8 +11,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -51,9 +51,21 @@ fn compare_fk(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        HopperModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data(model, data)
 
     # Set qpos
@@ -67,9 +79,7 @@ fn compare_fk(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
-    )
+    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     var mj_data = mujoco.MjData(mj_model)
 

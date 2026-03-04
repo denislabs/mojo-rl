@@ -9,8 +9,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
@@ -33,7 +33,7 @@ comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS
 comptime ACTION_DIM = HopperConfig.ACTION_DIM
 
 # Tolerances
-comptime TOL: Float64 = 1.0    # N or Nm absolute tolerance
+comptime TOL: Float64 = 1.0  # N or Nm absolute tolerance
 comptime FRAC_TOL: Float64 = 0.5  # 50% relative tolerance for large forces
 
 
@@ -49,9 +49,21 @@ fn run_test(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        HopperModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -89,10 +101,12 @@ fn run_test(
     # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
 
-    var xml_path = String("../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml")
+    var xml_path = String(
+        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
+    )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_model.opt.cone = 1     # mjCONE_ELLIPTIC
-    mj_model.opt.solver = 2   # mjSOL_NEWTON
+    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.solver = 2  # mjSOL_NEWTON
     mj_model.opt.integrator = 0  # mjINT_EULER
     var mj_data = mujoco.MjData(mj_model)
 

@@ -12,13 +12,13 @@ Operations:
 - gpu_sigmoid: output = 1 / (1 + exp(-input))
 """
 
-from gpu.host import DeviceContext
-from gpu.host.compile import get_gpu_target
+from std.gpu.host import DeviceContext
+from std.gpu.host.compile import get_gpu_target
 from layout import Layout, LayoutTensor
 from utils import IndexList
 from algorithm.functional import elementwise
 from sys import simd_width_of, align_of
-from math import tanh, exp, max
+from std.math import tanh, exp, max
 
 
 fn gpu_add[

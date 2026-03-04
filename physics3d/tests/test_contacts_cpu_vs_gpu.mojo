@@ -11,11 +11,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs, sqrt
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs, sqrt
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -105,14 +105,29 @@ fn contact_kernel[
 
     # 1. Forward kinematics
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 2. Detect contacts
     detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        NGEOM,
     ](env, state, model)
 
 
@@ -125,7 +140,19 @@ fn compare_contacts(
     ctx: DeviceContext,
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
-    model_cpu: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE],
+    model_cpu: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ],
     model_buf: DeviceBuffer[DTYPE],
     mut state_host: HostBuffer[DTYPE],
     mut state_buf: DeviceBuffer[DTYPE],
@@ -133,7 +160,9 @@ fn compare_contacts(
     print("--- Test:", test_name, "---")
 
     # === CPU ===
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](test_qpos[i])
 
@@ -156,8 +185,16 @@ fn compare_contacts(
     ctx.synchronize()
 
     comptime kernel_fn = contact_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        NGEOM,
     ]
 
     var state_tensor = LayoutTensor[
@@ -168,7 +205,8 @@ fn compare_contacts(
     ](model_buf.unsafe_ptr())
 
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor,
+        state_tensor,
+        model_tensor,
         grid_dim=(BATCH,),
         block_dim=(1,),
     )
@@ -186,7 +224,9 @@ fn compare_contacts(
     var all_pass = True
 
     if cpu_ncon != gpu_ncon:
-        print("  FAIL: contact count mismatch! CPU=", cpu_ncon, " GPU=", gpu_ncon)
+        print(
+            "  FAIL: contact count mismatch! CPU=", cpu_ncon, " GPU=", gpu_ncon
+        )
         all_pass = False
 
     var matched = InlineArray[Int, MC](fill=-1)
@@ -217,9 +257,8 @@ fn compare_contacts(
 
             var ci = data_cpu.contacts[cc]
             var body_match = (
-                (ci.body_a == g_body_a and ci.body_b == g_body_b)
-                or (ci.body_a == g_body_b and ci.body_b == g_body_a)
-            )
+                ci.body_a == g_body_a and ci.body_b == g_body_b
+            ) or (ci.body_a == g_body_b and ci.body_b == g_body_a)
             if not body_match:
                 continue
 
@@ -234,8 +273,14 @@ fn compare_contacts(
         if best_idx < 0:
             if g_dist < 0:
                 print(
-                    "  FAIL: no CPU match for GPU[", gc, "] body(",
-                    g_body_a, ",", g_body_b, ") dist=", g_dist,
+                    "  FAIL: no CPU match for GPU[",
+                    gc,
+                    "] body(",
+                    g_body_a,
+                    ",",
+                    g_body_b,
+                    ") dist=",
+                    g_dist,
                 )
                 all_pass = False
             continue
@@ -245,9 +290,23 @@ fn compare_contacts(
 
         if best_pos_err > POS_TOL:
             print(
-                "  FAIL pos[", gc, "] err=", best_pos_err,
-                " cpu=(", Float64(ci.pos_x), ",", Float64(ci.pos_y), ",", Float64(ci.pos_z),
-                ") gpu=(", g_px, ",", g_py, ",", g_pz, ")",
+                "  FAIL pos[",
+                gc,
+                "] err=",
+                best_pos_err,
+                " cpu=(",
+                Float64(ci.pos_x),
+                ",",
+                Float64(ci.pos_y),
+                ",",
+                Float64(ci.pos_z),
+                ") gpu=(",
+                g_px,
+                ",",
+                g_py,
+                ",",
+                g_pz,
+                ")",
             )
             all_pass = False
 
@@ -258,24 +317,55 @@ fn compare_contacts(
         )
         if dot < NORMAL_DOT_MIN:
             print(
-                "  FAIL normal[", gc, "] dot=", dot,
-                " cpu=(", Float64(ci.normal_x), ",", Float64(ci.normal_y), ",", Float64(ci.normal_z),
-                ") gpu=(", g_nx, ",", g_ny, ",", g_nz, ")",
+                "  FAIL normal[",
+                gc,
+                "] dot=",
+                dot,
+                " cpu=(",
+                Float64(ci.normal_x),
+                ",",
+                Float64(ci.normal_y),
+                ",",
+                Float64(ci.normal_z),
+                ") gpu=(",
+                g_nx,
+                ",",
+                g_ny,
+                ",",
+                g_nz,
+                ")",
             )
             all_pass = False
 
         var dist_err = abs(Float64(ci.dist) - g_dist)
         if dist_err > DIST_TOL:
             print(
-                "  FAIL dist[", gc, "] err=", dist_err,
-                " cpu=", Float64(ci.dist), " gpu=", g_dist,
+                "  FAIL dist[",
+                gc,
+                "] err=",
+                dist_err,
+                " cpu=",
+                Float64(ci.dist),
+                " gpu=",
+                g_dist,
             )
             all_pass = False
 
         print(
-            "  Contact", gc, ": body(", g_body_a, ",", g_body_b,
-            ") dist cpu=", Float64(ci.dist), " gpu=", g_dist,
-            " pos_err=", best_pos_err, " normal_dot=", dot,
+            "  Contact",
+            gc,
+            ": body(",
+            g_body_a,
+            ",",
+            g_body_b,
+            ") dist cpu=",
+            Float64(ci.dist),
+            " gpu=",
+            g_dist,
+            " pos_err=",
+            best_pos_err,
+            " normal_dot=",
+            dot,
         )
 
     if all_pass:
@@ -292,111 +382,262 @@ fn test_high_above_ground() raises:
     print("=" * 60)
     print("Model: HalfCheetah (NGEOM=", NGEOM, ")")
     print("Precision: float32")
-    print("Tolerances: pos=", POS_TOL, " dist=", DIST_TOL, " normal_dot>", NORMAL_DOT_MIN)
+    print(
+        "Tolerances: pos=",
+        POS_TOL,
+        " dist=",
+        DIST_TOL,
+        " normal_dot>",
+        NORMAL_DOT_MIN,
+    )
     print()
 
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5
-    compare_contacts(ctx, "High above ground (rootz=0.5)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "High above ground (rootz=0.5)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 
 fn test_default_pose() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    compare_contacts(ctx, "Default pose (rootz=0)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "Default pose (rootz=0)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 
 fn test_low_static() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2
-    compare_contacts(ctx, "Low static (rootz=-0.2)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "Low static (rootz=-0.2)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 
 fn test_very_low() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.5
-    compare_contacts(ctx, "Very low (rootz=-0.5)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "Very low (rootz=-0.5)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 
 fn test_bent_legs() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.15
     qpos[3] = -0.5  # bthigh
-    qpos[4] = 0.8   # bshin
-    qpos[6] = 0.5   # fthigh
+    qpos[4] = 0.8  # bshin
+    qpos[6] = 0.5  # fthigh
     qpos[7] = -0.8  # fshin
-    compare_contacts(ctx, "Bent legs (rootz=-0.15)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "Bent legs (rootz=-0.15)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 
 fn test_tilted() raises:
     var ctx = DeviceContext()
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _setup_data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _setup_data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, _setup_data)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
     qpos[2] = 0.3  # rooty
-    compare_contacts(ctx, "Tilted (rootz=-0.3, rooty=0.3)", qpos, model_cpu, model_buf, state_host, state_buf)
+    compare_contacts(
+        ctx,
+        "Tilted (rootz=-0.3, rooty=0.3)",
+        qpos,
+        model_cpu,
+        model_buf,
+        state_host,
+        state_buf,
+    )
     print()
 
 

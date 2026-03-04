@@ -10,9 +10,9 @@ Algorithm (matching Gymnasium car_racing.py):
 4. Create quad tiles from path points with TRACK_WIDTH offset
 """
 
-from math import sin, cos, sqrt, pi, atan2
-from random import random_float64
-from random.philox import Random as PhiloxRandom
+from std.math import sin, cos, sqrt, pi, atan2
+from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from physics2d.car.constants import (
@@ -53,7 +53,9 @@ struct TrackRNG:
     fn next(mut self) -> UInt64:
         """Generate next random value."""
         self.counter += 1
-        var rng = PhiloxRandom(seed=self.seed, offset=self.counter)
+        var rng = PhiloxRandom(
+            seed=UInt64(self.seed), offset=UInt64(self.counter)
+        )
         var vals = rng.step_uniform()
         # Convert float to UInt64-like range
         return UInt64(Float64(vals[0]) * Float64(UInt64.MAX))
@@ -61,7 +63,9 @@ struct TrackRNG:
     fn uniform(mut self, low: Float64, high: Float64) -> Float64:
         """Generate uniform random float in [low, high)."""
         self.counter += 1
-        var rng = PhiloxRandom(seed=self.seed, offset=self.counter)
+        var rng = PhiloxRandom(
+            seed=UInt64(self.seed), offset=UInt64(self.counter)
+        )
         var vals = rng.step_uniform()
         var normalized = Float64(vals[0])
         return low + normalized * (high - low)
@@ -191,21 +195,21 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
         self.center_y = 0.0
         self.direction = 0.0
 
-    fn __copyinit__(out self, other: Self):
-        self.v0_x = other.v0_x
-        self.v0_y = other.v0_y
-        self.v1_x = other.v1_x
-        self.v1_y = other.v1_y
-        self.v2_x = other.v2_x
-        self.v2_y = other.v2_y
-        self.v3_x = other.v3_x
-        self.v3_y = other.v3_y
-        self.friction = other.friction
-        self.visited = other.visited
-        self.idx = other.idx
-        self.center_x = other.center_x
-        self.center_y = other.center_y
-        self.direction = other.direction
+    fn __init__(out self, *, copy: Self):
+        self.v0_x = copy.v0_x
+        self.v0_y = copy.v0_y
+        self.v1_x = copy.v1_x
+        self.v1_y = copy.v1_y
+        self.v2_x = copy.v2_x
+        self.v2_y = copy.v2_y
+        self.v3_x = copy.v3_x
+        self.v3_y = copy.v3_y
+        self.friction = copy.friction
+        self.visited = copy.visited
+        self.idx = copy.idx
+        self.center_x = copy.center_x
+        self.center_y = copy.center_y
+        self.direction = copy.direction
 
     fn __init__(out self, *, deinit take: Self):
         self.v0_x = take.v0_x

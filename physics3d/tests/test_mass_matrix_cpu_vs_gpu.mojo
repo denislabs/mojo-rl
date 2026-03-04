@@ -11,11 +11,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data, _max_one
 from physics3d.kinematics.forward_kinematics import (
@@ -105,26 +105,57 @@ fn mass_matrix_kernel[
 
     # 1. Forward kinematics (writes xpos, xquat, xipos to state)
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 2. Compute cdof (writes to workspace at offset 0)
     compute_cdof_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 3. Compute composite inertia (writes to workspace at ws_crb_offset)
     compute_composite_inertia_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 4. Compute mass matrix (writes to workspace at ws_M_offset)
     compute_mass_matrix_full_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
 
@@ -143,8 +174,22 @@ fn compare_mass_matrix(
     print("--- Test:", test_name, "---")
 
     # === CPU: FK + cdof + CRB + mass matrix ===
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model_cpu = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model_cpu, data_cpu)
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -197,12 +242,22 @@ fn compare_mass_matrix(
     ](workspace_buf.unsafe_ptr())
 
     comptime kernel_fn = mass_matrix_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ]
 
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, ws_tensor,
+        state_tensor,
+        model_tensor,
+        ws_tensor,
         grid_dim=(BATCH,),
         block_dim=(1,),
     )
@@ -238,24 +293,38 @@ fn compare_mass_matrix(
             if not ok:
                 if fail_count < 10:
                     print(
-                        "  FAIL M[", i, ",", j, "]",
-                        " cpu=", cpu_val,
-                        " gpu=", gpu_val,
-                        " abs_err=", abs_err,
-                        " rel_err=", rel_err,
+                        "  FAIL M[",
+                        i,
+                        ",",
+                        j,
+                        "]",
+                        " cpu=",
+                        cpu_val,
+                        " gpu=",
+                        gpu_val,
+                        " abs_err=",
+                        abs_err,
+                        " rel_err=",
+                        rel_err,
                     )
                 fail_count += 1
                 all_pass = False
 
     if all_pass:
         print(
-            "  ALL OK  max_abs_err=", max_abs_err,
-            " max_rel_err=", max_rel_err,
+            "  ALL OK  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
         )
     else:
         print(
-            "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
-            " max_rel_err=", max_rel_err,
+            "  FAILED",
+            fail_count,
+            "elements  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
         )
 
     # Print diagonals for inspection
@@ -314,15 +383,15 @@ fn test_nonzero_joints() raises:
     ctx.synchronize()
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # rootx
-    qpos[1] = 0.7   # rootz
-    qpos[2] = 0.3   # rooty
+    qpos[0] = 1.0  # rootx
+    qpos[1] = 0.7  # rootz
+    qpos[2] = 0.3  # rooty
     qpos[3] = -0.4  # bthigh
-    qpos[4] = 0.5   # bshin
+    qpos[4] = 0.5  # bshin
     qpos[5] = -0.2  # bfoot
-    qpos[6] = 0.6   # fthigh
+    qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
-    qpos[8] = 0.3   # ffoot
+    qpos[8] = 0.3  # ffoot
     compare_mass_matrix(ctx, "Non-zero joints", qpos, model_buf)
     print()
 
@@ -335,12 +404,12 @@ fn test_extreme_joints() raises:
 
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
-    qpos[3] = -0.52   # bthigh min
-    qpos[4] = 0.785   # bshin max
-    qpos[5] = -0.4    # bfoot min
-    qpos[6] = -1.0    # fthigh min
-    qpos[7] = 0.87    # fshin max
-    qpos[8] = -0.5    # ffoot min
+    qpos[3] = -0.52  # bthigh min
+    qpos[4] = 0.785  # bshin max
+    qpos[5] = -0.4  # bfoot min
+    qpos[6] = -1.0  # fthigh min
+    qpos[7] = 0.87  # fshin max
+    qpos[8] = -0.5  # ffoot min
     compare_mass_matrix(ctx, "Extreme joint angles", qpos, model_buf)
     print()
 

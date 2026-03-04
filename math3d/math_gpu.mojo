@@ -8,7 +8,7 @@ Functions:
 - atan_gpu: Single-argument arctangent (GPU-compatible)
 """
 
-from math import sqrt
+from std.math import sqrt
 
 
 @always_inline

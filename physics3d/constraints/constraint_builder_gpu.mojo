@@ -22,7 +22,7 @@ Common normal workspace block layout (at solver_idx):
   COMMON_NORMAL_SIZE = 13*MC + 2*MC*NV
 """
 
-from math import sqrt, pow
+from std.math import sqrt, pow
 from layout import LayoutTensor, Layout
 from ..types import _max_one, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE

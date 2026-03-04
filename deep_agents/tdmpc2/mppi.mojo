@@ -10,8 +10,8 @@ MPPI plans in latent space over a horizon H by:
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
-from math import exp, sqrt, cos, log
-from random import random_float64
+from std.math import exp, sqrt, cos, log
+from std.randomndom import random_float64
 
 from nn.constants import dtype
 from .world_model import WorldModel, decode_value_batch_scalar
@@ -102,19 +102,29 @@ fn plan[
     for _iter in range(NUM_ITERATIONS):
         # Step 1: Sample NUM_PI_TRAJS trajectories from the learned policy
         for s in range(NUM_PI_TRAJS):
-            var z_curr = InlineArray[Scalar[dtype], LATENT_DIM](uninitialized=True)
+            var z_curr = InlineArray[Scalar[dtype], LATENT_DIM](
+                uninitialized=True
+            )
             for i in range(LATENT_DIM):
                 z_curr[i] = z0[i]
 
             for t in range(HORIZON):
                 # Get policy mean (deterministic action from learned policy)
-                var z_in = InlineArray[Scalar[dtype], LATENT_DIM](uninitialized=True)
+                var z_in = InlineArray[Scalar[dtype], LATENT_DIM](
+                    uninitialized=True
+                )
                 for i in range(LATENT_DIM):
                     z_in[i] = z_curr[i]
-                var pi_mean = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
-                var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
+                var pi_mean = InlineArray[Scalar[dtype], ACTION_DIM](
+                    uninitialized=True
+                )
+                var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](
+                    uninitialized=True
+                )
                 wm.policy_forward[1](
-                    z_in.unsafe_ptr(), pi_mean.unsafe_ptr(), pi_log_std.unsafe_ptr()
+                    z_in.unsafe_ptr(),
+                    pi_mean.unsafe_ptr(),
+                    pi_log_std.unsafe_ptr(),
                 )
 
                 var base = s * HORIZON * ACTION_DIM + t * ACTION_DIM
@@ -150,7 +160,9 @@ fn plan[
 
         # Step 3: Evaluate all trajectories
         for s in range(TOTAL_SAMPLES):
-            var z_curr = InlineArray[Scalar[dtype], LATENT_DIM](uninitialized=True)
+            var z_curr = InlineArray[Scalar[dtype], LATENT_DIM](
+                uninitialized=True
+            )
             for i in range(LATENT_DIM):
                 z_curr[i] = z0[i]
 
@@ -170,9 +182,13 @@ fn plan[
                     za[LATENT_DIM + a] = Scalar[dtype](actions[base + a])
 
                 # Predict reward
-                var rew_logits = InlineArray[Scalar[dtype], NUM_BINS](uninitialized=True)
+                var rew_logits = InlineArray[Scalar[dtype], NUM_BINS](
+                    uninitialized=True
+                )
                 wm.reward_forward[1](za.unsafe_ptr(), rew_logits.unsafe_ptr())
-                var rew_logits_f32 = InlineArray[Float32, NUM_BINS](uninitialized=True)
+                var rew_logits_f32 = InlineArray[Float32, NUM_BINS](
+                    uninitialized=True
+                )
                 for i in range(NUM_BINS):
                     rew_logits_f32[i] = Float32(rew_logits[i])
                 var reward_val = Float64(
@@ -185,10 +201,16 @@ fn plan[
                 wm.dynamics_forward[1](za.unsafe_ptr(), z_curr.unsafe_ptr())
 
             # Bootstrap terminal value: min_Q(z_H, π(z_H))
-            var pi_mean = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
-            var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
+            var pi_mean = InlineArray[Scalar[dtype], ACTION_DIM](
+                uninitialized=True
+            )
+            var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](
+                uninitialized=True
+            )
             wm.policy_forward[1](
-                z_curr.unsafe_ptr(), pi_mean.unsafe_ptr(), pi_log_std.unsafe_ptr()
+                z_curr.unsafe_ptr(),
+                pi_mean.unsafe_ptr(),
+                pi_log_std.unsafe_ptr(),
             )
 
             var za_terminal = InlineArray[
@@ -202,7 +224,9 @@ fn plan[
                 act = _clamp(act, -1.0, 1.0)
                 za_terminal[LATENT_DIM + a] = Scalar[dtype](act)
 
-            var terminal_values = InlineArray[Scalar[dtype], 1](uninitialized=True)
+            var terminal_values = InlineArray[Scalar[dtype], 1](
+                uninitialized=True
+            )
             wm.q_min_forward[1](
                 za_terminal.unsafe_ptr(), terminal_values.unsafe_ptr(), True
             )  # use targets

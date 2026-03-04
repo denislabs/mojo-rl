@@ -22,7 +22,7 @@ Expected performance on CartPole:
 CartPole is solved when average reward > 475 over 100 episodes.
 """
 
-from random import seed
+from std.random import seed
 
 from envs import CartPoleEnv
 from deep_agents.a2c import DeepA2CAgent

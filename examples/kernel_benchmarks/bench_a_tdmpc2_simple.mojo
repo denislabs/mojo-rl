@@ -17,7 +17,7 @@ Run:
     pixi run -e apple mojo build examples/kernel_benchmarks/bench_a_tdmpc2_simple.mojo -o /tmp/bench_a
 """
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from nn.constants import dtype, TPB
 from deep_agents.tdmpc2.kernels import (
@@ -58,7 +58,9 @@ fn trigger_kernels(ctx: DeviceContext) raises:
     ](
         LayoutTensor[dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin](p),
         LayoutTensor[dtype, Layout.row_major(BATCH, ACT), MutAnyOrigin](p),
-        LayoutTensor[dtype, Layout.row_major(BATCH, LATENT + ACT), MutAnyOrigin](p),
+        LayoutTensor[
+            dtype, Layout.row_major(BATCH, LATENT + ACT), MutAnyOrigin
+        ](p),
         grid_dim=(BLOCKS,),
         block_dim=(TPB,),
     )
@@ -68,7 +70,9 @@ fn trigger_kernels(ctx: DeviceContext) raises:
         tdmpc2_extract_obs_step_kernel[dtype, BATCH, OBS, H],
         tdmpc2_extract_obs_step_kernel[dtype, BATCH, OBS, H],
     ](
-        LayoutTensor[dtype, Layout.row_major(BATCH * (H + 1) * OBS), MutAnyOrigin](p),
+        LayoutTensor[
+            dtype, Layout.row_major(BATCH * (H + 1) * OBS), MutAnyOrigin
+        ](p),
         0,  # step
         LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](p),
         grid_dim=(BLOCKS,),
@@ -106,7 +110,9 @@ fn trigger_kernels(ctx: DeviceContext) raises:
         tdmpc2_extract_z_from_za_grad_kernel[dtype, BATCH, LATENT, ACT],
         tdmpc2_extract_z_from_za_grad_kernel[dtype, BATCH, LATENT, ACT],
     ](
-        LayoutTensor[dtype, Layout.row_major(BATCH, LATENT + ACT), MutAnyOrigin](p),
+        LayoutTensor[
+            dtype, Layout.row_major(BATCH, LATENT + ACT), MutAnyOrigin
+        ](p),
         LayoutTensor[dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin](p),
         grid_dim=(BLOCKS,),
         block_dim=(TPB,),

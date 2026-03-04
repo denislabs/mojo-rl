@@ -10,10 +10,10 @@ Run with:
     pixi run -e apple mojo run tests/benchmark_matmul_apple.mojo
 """
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
-from time import perf_counter_ns
-from random import random_float64
+from std.time import perf_counter_ns
+from std.random import random_float64
 
 from nn.gpu.matmul import tiled_matmul_kernel
 from nn.gpu.matmul_apple import (

@@ -19,12 +19,12 @@ Note: Mojo nightly requires struct parameters to be accessed as 'Self.param'
 inside the struct body. All dimension parameters follow this convention.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
-from random.philox import Random as PhiloxRandom
+from std.random.philox import Random as PhiloxRandom
 from render import Color, Renderer3D, Light, Camera3D
 from math3d import Vec3 as _Vec3G, Quat as _QuatG
 
@@ -154,6 +154,7 @@ struct ModelDefFromXML[
             Use when custom_extract_obs_gpu produces different dimensionality than
             the default formula (e.g. InvertedDoublePendulum needs OBS_DIM=9 with
             sin/cos transforms despite nq-skip+nv=6).
+        timestep:      Simulation timestep (default 0.01).
     """
 
     # === Dimensions required by ModelDefLike ===

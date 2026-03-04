@@ -1,7 +1,11 @@
 """Debug friction: print constraint Jacobians and solver internals."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
-from physics3d.constraints.constraint_data import CNSTR_NORMAL, CNSTR_FRICTION_T1, CNSTR_FRICTION_T2
+from physics3d.constraints.constraint_data import (
+    CNSTR_NORMAL,
+    CNSTR_FRICTION_T1,
+    CNSTR_FRICTION_T2,
+)
 
 
 fn main():
@@ -23,16 +27,24 @@ fn main():
     for step in range(20):
         _ = env.step(zero_action)
         print(
-            "Step", step + 1,
-            "vx=", env.data.qvel[0],
-            "nc=", env.data.num_contacts,
+            "Step",
+            step + 1,
+            "vx=",
+            env.data.qvel[0],
+            "nc=",
+            env.data.num_contacts,
         )
         for c in range(env.data.num_contacts):
             var ct = env.data.contacts[c]
             print(
-                "  c", c,
-                "fn=", ct.force_n,
-                "ft1=", ct.force_t1,
-                "ft2=", ct.force_t2,
-                "dist=", ct.dist,
+                "  c",
+                c,
+                "fn=",
+                ct.force_n,
+                "ft1=",
+                ct.force_t1,
+                "ft2=",
+                ct.force_t2,
+                "dist=",
+                ct.dist,
             )

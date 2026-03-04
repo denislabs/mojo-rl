@@ -12,7 +12,7 @@ For simple HINGE-only chains (like pendulums), the mass matrix has a simpler str
 Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 """
 
-from math import sqrt
+from std.math import sqrt
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, ConeType

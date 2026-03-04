@@ -10,8 +10,8 @@ Run with:
     pixi run mojo run test_dqn.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
 from deep_agents.dqn import DQNAgent
 from envs import CartPoleEnv

@@ -15,7 +15,7 @@ from physics3d.kinematics.forward_kinematics import (
 )
 from physics3d.joint_types import JNT_FREE, JNT_BALL
 from envs.half_cheetah import HalfCheetah
-from math import abs
+from std.math import abs
 
 comptime NQ = 10
 comptime NV = 10

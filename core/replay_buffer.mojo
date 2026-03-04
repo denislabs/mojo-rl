@@ -1,6 +1,6 @@
 """Experience Replay Buffer for off-policy RL algorithms."""
 
-from random import random_si64, random_float64
+from std.random import random_si64, random_float64
 from .sum_tree import SumTree
 
 

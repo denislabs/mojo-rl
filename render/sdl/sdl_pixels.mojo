@@ -70,7 +70,7 @@ color space relative to the standard XYZ color space.
 https://en.wikipedia.org/wiki/CIE_1931_color_space
 
 The transfer characteristic, or opto-electrical transfer function (OETF),
-is the way a color is converted from mathematically linear space into a
+is the way a color is converted from std.mathematically linear space into a
 non-linear output signals.
 
 https://en.wikipedia.org/wiki/Rec._709#Transfer_characteristics

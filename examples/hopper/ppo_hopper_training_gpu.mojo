@@ -17,10 +17,10 @@ Run with:
     pixi run -e nvidia mojo run tests/test_ppo_hopper_continuous_gpu.mojo   # NVIDIA GPU
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper, HopperCurriculum, HopperConfig

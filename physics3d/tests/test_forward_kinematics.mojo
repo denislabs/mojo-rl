@@ -9,7 +9,7 @@ Run with:
     pixi run mojo run physics3d/generalized/tests/test_forward_kinematics.mojo
 """
 
-from math import sqrt, pi, abs
+from std.math import sqrt, pi, abs
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.kinematics.quat_math import quat_rotate

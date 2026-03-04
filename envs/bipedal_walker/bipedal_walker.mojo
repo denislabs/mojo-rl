@@ -10,12 +10,12 @@ The flat state layout is compatible with GPUContinuousEnv trait.
 All physics data is packed per-environment for efficient GPU access.
 """
 
-from math import sqrt, cos, sin, pi, tanh
-from memory import alloc
+from std.math import sqrt, cos, sin, pi, tanh
+from std.memory import alloc
 from layout import Layout, LayoutTensor
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from random.philox import Random as PhiloxRandom
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random.philox import Random as PhiloxRandom
 
 from core import (
     GPUContinuousEnv,
@@ -416,7 +416,7 @@ struct BipedalWalker[
         self.terrain_x.clear()
         self.terrain_y.clear()
 
-        var terrain_rng = PhiloxRandom(seed=seed + 1000, offset=0)
+        var terrain_rng = PhiloxRandom(seed=UInt64(seed) + 1000, offset=0)
 
         var y = Scalar[Self.dtype](BWConstants.TERRAIN_HEIGHT)
         var velocity = Scalar[Self.dtype](0.0)

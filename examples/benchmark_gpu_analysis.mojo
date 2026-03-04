@@ -19,13 +19,13 @@ Run with:
     pixi run -e apple mojo run examples/benchmark_gpu_analysis.mojo
 """
 
-from time import perf_counter_ns
-from math import sqrt
-from random import random_float64, seed
+from std.time import perf_counter_ns
+from std.math import sqrt
+from std.random import random_float64, seed
 
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext
-from gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 

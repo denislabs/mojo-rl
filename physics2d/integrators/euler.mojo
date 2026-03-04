@@ -7,10 +7,10 @@ This integrator follows Box2D's integration order:
 This order is crucial for energy conservation in constrained systems.
 """
 
-from math import cos, sin, pi
+from std.math import cos, sin, pi
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,

@@ -9,10 +9,10 @@ Run with:
     pixi run -e apple mojo run tests/test_loss_gpu.mojo
 """
 
-from time import perf_counter_ns
-from random import seed, random_float64
+from std.time import perf_counter_ns
+from std.random import seed, random_float64
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from nn.constants import dtype
 from nn.model import Linear, ReLU, Tanh, Softmax, seq

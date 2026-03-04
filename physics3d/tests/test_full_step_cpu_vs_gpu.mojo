@@ -12,9 +12,9 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, ConeType
@@ -98,7 +98,9 @@ fn compare_step(
         HalfCheetahModel.MAX_TENDON,
         HalfCheetahModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
@@ -134,7 +136,9 @@ fn compare_step(
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
     # Apply actions to get qfrc (use a temp data)
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_temp = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -341,7 +345,19 @@ fn test_free_fall_1_step() raises:
     qpos[1] = 1.5  # rootz high enough for free fall
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Free fall (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -365,7 +381,19 @@ fn test_free_fall_with_actions_1_step() raises:
     act[3] = 0.5  # fthigh
     act[4] = -0.3  # fshin
     act[5] = 0.1  # ffoot
-    compare_step("Free fall + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall + actions (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -394,7 +422,19 @@ fn test_moving_with_actions_1_step() raises:
     act[1] = -0.5
     act[3] = 1.0
     act[4] = -0.5
-    compare_step("Moving + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Moving + actions (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -412,7 +452,19 @@ fn test_free_fall_10_steps() raises:
     qpos[1] = 1.5  # rootz high enough for free fall
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Free fall (10 steps)", qpos, qvel, act, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall (10 steps)",
+        qpos,
+        qvel,
+        act,
+        10,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -441,7 +493,19 @@ fn test_moving_with_actions_10_steps() raises:
     act[1] = -0.5
     act[3] = 1.0
     act[4] = -0.5
-    compare_step("Moving + actions (10 steps)", qpos, qvel, act, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Moving + actions (10 steps)",
+        qpos,
+        qvel,
+        act,
+        10,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -470,7 +534,19 @@ fn test_extreme_velocities_1_step() raises:
     qvel[7] = -5.0
     qvel[8] = 3.0
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Extreme velocities (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Extreme velocities (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 

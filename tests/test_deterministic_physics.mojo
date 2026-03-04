@@ -1,16 +1,16 @@
 """Test physics with deterministic (no random) engine dispersion.
 
-This test isolates how much drift comes from random number differences
+This test isolates how much drift comes from std.random number differences
 vs actual physics implementation differences.
 
 Run with:
     pixi run -e apple mojo run tests/test_deterministic_physics.mojo
 """
 
-from math import cos, sin, sqrt, pi
-from random import seed
+from std.math import cos, sin, sqrt, pi
+from std.random import seed
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from envs.lunar_lander import LunarLanderEnv, LunarLanderAction
 from envs.lunar_lander_gpu_v3 import gpu_dtype
@@ -48,6 +48,7 @@ fn format_float(val: Float64, width: Int = 10) -> String:
 
 struct SimplifiedPhysics:
     """Minimal physics matching GPU implementation exactly (no random)."""
+
     var x: Float64
     var y: Float64
     var vx: Float64
@@ -55,8 +56,15 @@ struct SimplifiedPhysics:
     var angle: Float64
     var angular_vel: Float64
 
-    fn __init__(out self, x_obs: Float64, y_obs: Float64, vx_obs: Float64,
-                vy_obs: Float64, angle: Float64, angular_vel_obs: Float64):
+    fn __init__(
+        out self,
+        x_obs: Float64,
+        y_obs: Float64,
+        vx_obs: Float64,
+        vy_obs: Float64,
+        angle: Float64,
+        angular_vel_obs: Float64,
+    ):
         # Denormalize from observation to world coords
         self.x = x_obs * (W_UNITS / 2.0) + HELIPAD_X
         self.y = y_obs * (H_UNITS / 2.0) + (HELIPAD_Y + LEG_DOWN)
@@ -161,9 +169,12 @@ fn main() raises:
 
     # Create simplified physics from same initial state
     var simple_phys = SimplifiedPhysics(
-        Float64(cpu_obs[0]), Float64(cpu_obs[1]),
-        Float64(cpu_obs[2]), Float64(cpu_obs[3]),
-        Float64(cpu_obs[4]), Float64(cpu_obs[5])
+        Float64(cpu_obs[0]),
+        Float64(cpu_obs[1]),
+        Float64(cpu_obs[2]),
+        Float64(cpu_obs[3]),
+        Float64(cpu_obs[4]),
+        Float64(cpu_obs[5]),
     )
 
     print("Initial state:")
@@ -174,7 +185,10 @@ fn main() raises:
     print("")
 
     # Run both physics for several steps
-    print("Running 50 steps with action sequence: [nop, main, main, left, right] x 10")
+    print(
+        "Running 50 steps with action sequence: [nop, main, main, left, right]"
+        " x 10"
+    )
     print("")
 
     var actions = List[Int]()
@@ -185,7 +199,10 @@ fn main() raises:
         actions.append(1)
         actions.append(3)
 
-    print("Step | CPU vy    | Simple vy | vy diff   | CPU angle | Simple ang | angle diff")
+    print(
+        "Step | CPU vy    | Simple vy | vy diff   | CPU angle | Simple ang |"
+        " angle diff"
+    )
     print("-" * 80)
 
     var max_vy_diff: Float64 = 0.0
@@ -222,12 +239,18 @@ fn main() raises:
                 action_str = "right"
 
             print(
-                String(step) + "    | "
-                + format_float(Float64(cpu_next[3]), 9) + " | "
-                + format_float(simple_obs[3], 9) + " | "
-                + format_float(vy_diff, 9) + " | "
-                + format_float(Float64(cpu_next[4]), 9) + " | "
-                + format_float(simple_obs[4], 9) + " | "
+                String(step)
+                + "    | "
+                + format_float(Float64(cpu_next[3]), 9)
+                + " | "
+                + format_float(simple_obs[3], 9)
+                + " | "
+                + format_float(vy_diff, 9)
+                + " | "
+                + format_float(Float64(cpu_next[4]), 9)
+                + " | "
+                + format_float(simple_obs[4], 9)
+                + " | "
                 + format_float(angle_diff, 9)
             )
 
@@ -246,12 +269,19 @@ fn main() raises:
 
     if max_vy_diff < 0.01 and max_angle_diff < 0.01:
         print("CONCLUSION: Physics implementation is correct!")
-        print("The drift in GPU tests comes from RANDOM DISPERSION differences.")
+        print(
+            "The drift in GPU tests comes from std.random DISPERSION"
+            " differences."
+        )
     elif max_vy_diff < 0.1 and max_angle_diff < 0.1:
-        print("CONCLUSION: Physics mostly correct, small numerical differences.")
+        print(
+            "CONCLUSION: Physics mostly correct, small numerical differences."
+        )
         print("Random dispersion contributes significantly to overall drift.")
     else:
-        print("CONCLUSION: Significant physics implementation differences found.")
+        print(
+            "CONCLUSION: Significant physics implementation differences found."
+        )
         print("Need to investigate engine impulse or integration code.")
 
     print("=" * 70)

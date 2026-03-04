@@ -12,9 +12,9 @@ Run with:
     pixi run -e apple mojo run tests/debug_hopper_cpu_gpu_policy_comparison.mojo
 """
 
-from random import seed
+from std.random import seed
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOContinuousAgent
@@ -89,7 +89,7 @@ fn extract_gpu_state[
     InlineArray[Scalar[gpu_dtype], 6],
     InlineArray[Scalar[gpu_dtype], 6],
 ]:
-    """Extract qpos and qvel from GPU state buffer."""
+    """Extract qpos and qvel from std.gpu state buffer."""
     comptime QPOS_OFF = qpos_offset[NQ, NV]()
     comptime QVEL_OFF = qvel_offset[NQ, NV]()
 
@@ -247,7 +247,7 @@ fn main() raises:
         forward_kinematics_gpu,
     )
     from layout import Layout, LayoutTensor
-    from gpu import thread_idx, block_idx, block_dim
+    from std.gpu import thread_idx, block_idx, block_dim
 
     var states = LayoutTensor[
         gpu_dtype,

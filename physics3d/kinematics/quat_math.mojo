@@ -11,7 +11,7 @@ Functions:
 - axis_angle_to_quat: Convert axis-angle to quaternion
 """
 
-from math import sqrt, sin, cos, acos, atan2
+from std.math import sqrt, sin, cos, acos, atan2
 
 
 # =============================================================================

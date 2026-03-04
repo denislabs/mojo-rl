@@ -22,7 +22,7 @@ Usage:
     agent._backward_critic(ctx, scratch)      # uses grad_output_buf etc.
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.constants import dtype
 
 

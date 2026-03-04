@@ -9,7 +9,7 @@ Run with:
     pixi run mojo run physics3d/tests/test_pendulum.mojo
 """
 
-from math import sqrt, pi, sin, cos, abs
+from std.math import sqrt, pi, sin, cos, abs
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import forward_kinematics

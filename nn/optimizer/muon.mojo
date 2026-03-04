@@ -13,9 +13,9 @@
 from ..constants import dtype, TPB
 from .optimizer import Optimizer
 from layout import LayoutTensor, Layout
-from math import sqrt
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.math import sqrt
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct Muon[

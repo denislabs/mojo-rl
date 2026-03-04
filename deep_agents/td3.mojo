@@ -43,8 +43,8 @@ Reference: Fujimoto et al., "Addressing Function Approximation Error in
 Actor-Critic Methods" (2018)
 """
 
-from math import exp, sqrt
-from random import random_float64, seed
+from std.math import exp, sqrt
+from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
@@ -52,7 +52,13 @@ from nn.constants import dtype, TILE, TPB
 from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
 from nn.optimizer import Optimizer, Adam
 from nn.initializer import Kaiming, Xavier
-from nn.training import Network, NetworkState, GPUNetworkState, NetworkPair, GPUNetworkPair
+from nn.training import (
+    Network,
+    NetworkState,
+    GPUNetworkState,
+    NetworkPair,
+    GPUNetworkPair,
+)
 from nn.utils import obs_to_inline, concat_obs_action_batch
 from deep_agents.offpolicy_helpers import (
     deterministic_select_action,
@@ -70,7 +76,7 @@ from nn.gpu import (
     td_target_min_twin_kernel,
     add_gaussian_noise_kernel,
 )
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
@@ -122,15 +128,15 @@ struct TD3GPUState[
     CPU weights are uploaded separately via DeepTD3Agent.upload_to_gpu.
 
     Parameters:
-        Self.ActorModel: Actor network model type.
-        Self.ActorOpt: Actor optimizer type.
-        Self.CriticModel: Critic network model type (shared between critic1 and critic2).
-        Self.CriticOpt: Critic optimizer type.
-        Self.buffer_capacity: GPU replay buffer capacity.
-        Self.obs_dim: Observation space dimension.
-        Self.action_dim: Action space dimension.
-        Self.batch_size: Training batch size.
-        Self.max_n_envs: Max parallel environments (sizes exploration buffers).
+        ActorModel: Actor network model type.
+        ActorOpt: Actor optimizer type.
+        CriticModel: Critic network model type (shared between critic1 and critic2).
+        CriticOpt: Critic optimizer type.
+        buffer_capacity: GPU replay buffer capacity.
+        obs_dim: Observation space dimension.
+        action_dim: Action space dimension.
+        batch_size: Training batch size.
+        max_n_envs: Max parallel environments (sizes exploration buffers).
     """
 
     comptime CRITIC_IN = Self.obs_dim + Self.action_dim
@@ -147,65 +153,79 @@ struct TD3GPUState[
     var critic2: GPUNetworkPair[Self.CriticModel, Self.CriticOpt]
 
     # GPU replay buffer
-    var buffer: GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim]
+    var buffer: GPUReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim
+    ]
 
     # Exploration buffers (sized by Self.max_n_envs)
-    var rng_states: DeviceBuffer[DType.uint32]  # [Self.max_n_envs * Self.action_dim]
-    var raw_act: DeviceBuffer[dtype]            # [Self.max_n_envs * Self.action_dim]
-    var inf_ws: DeviceBuffer[dtype]             # [Self.max_n_envs * ACTOR_WS]
+    var rng_states: DeviceBuffer[
+        DType.uint32
+    ]  # [Self.max_n_envs * Self.action_dim]
+    var raw_act: DeviceBuffer[dtype]  # [Self.max_n_envs * Self.action_dim]
+    var inf_ws: DeviceBuffer[dtype]  # [Self.max_n_envs * ACTOR_WS]
 
     # Training scratch — replay sample output
-    var s_obs: DeviceBuffer[dtype]        # [Self.batch_size * Self.obs_dim]
-    var s_act: DeviceBuffer[dtype]        # [Self.batch_size * Self.action_dim]
-    var s_rew: DeviceBuffer[dtype]        # [Self.batch_size]
-    var s_nobs: DeviceBuffer[dtype]       # [Self.batch_size * Self.obs_dim]
-    var s_done: DeviceBuffer[dtype]       # [Self.batch_size]
+    var s_obs: DeviceBuffer[dtype]  # [Self.batch_size * Self.obs_dim]
+    var s_act: DeviceBuffer[dtype]  # [Self.batch_size * Self.action_dim]
+    var s_rew: DeviceBuffer[dtype]  # [Self.batch_size]
+    var s_nobs: DeviceBuffer[dtype]  # [Self.batch_size * Self.obs_dim]
+    var s_done: DeviceBuffer[dtype]  # [Self.batch_size]
     var s_idx: DeviceBuffer[DType.int32]  # [Self.batch_size]
 
     # Training scratch — target computation (TD3: twin critics)
-    var next_act: DeviceBuffer[dtype]        # [Self.batch_size * Self.action_dim] clean target actor output
-    var noisy_next_act: DeviceBuffer[dtype]  # [Self.batch_size * Self.action_dim] smoothed target actions
-    var next_ci: DeviceBuffer[dtype]         # [Self.batch_size * CRITIC_IN]
-    var nq1: DeviceBuffer[dtype]             # [Self.batch_size] critic1_target output
-    var nq2: DeviceBuffer[dtype]             # [Self.batch_size] critic2_target output
-    var targets: DeviceBuffer[dtype]         # [Self.batch_size] TD targets
+    var next_act: DeviceBuffer[
+        dtype
+    ]  # [Self.batch_size * Self.action_dim] clean target actor output
+    var noisy_next_act: DeviceBuffer[
+        dtype
+    ]  # [Self.batch_size * Self.action_dim] smoothed target actions
+    var next_ci: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
+    var nq1: DeviceBuffer[dtype]  # [Self.batch_size] critic1_target output
+    var nq2: DeviceBuffer[dtype]  # [Self.batch_size] critic2_target output
+    var targets: DeviceBuffer[dtype]  # [Self.batch_size] TD targets
 
     # Training scratch — critic1 update
-    var ci: DeviceBuffer[dtype]          # [Self.batch_size * CRITIC_IN]
-    var q1_out: DeviceBuffer[dtype]      # [Self.batch_size * 1]
-    var q1_cache: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_CS]
+    var ci: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
+    var q1_out: DeviceBuffer[dtype]  # [Self.batch_size * 1]
+    var q1_cache: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_CS]
     var critic1_ws: DeviceBuffer[dtype]  # workspace
-    var q1_grad: DeviceBuffer[dtype]     # [Self.batch_size * 1]
-    var d_ci1: DeviceBuffer[dtype]       # [Self.batch_size * CRITIC_IN]
+    var q1_grad: DeviceBuffer[dtype]  # [Self.batch_size * 1]
+    var d_ci1: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
 
     # Training scratch — critic2 update
-    var q2_out: DeviceBuffer[dtype]      # [Self.batch_size * 1]
-    var q2_cache: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_CS]
+    var q2_out: DeviceBuffer[dtype]  # [Self.batch_size * 1]
+    var q2_cache: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_CS]
     var critic2_ws: DeviceBuffer[dtype]  # workspace
-    var q2_grad: DeviceBuffer[dtype]     # [Self.batch_size * 1]
-    var d_ci2: DeviceBuffer[dtype]       # [Self.batch_size * CRITIC_IN]
+    var q2_grad: DeviceBuffer[dtype]  # [Self.batch_size * 1]
+    var d_ci2: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
 
     # Training scratch — actor update (delayed)
-    var actor_act: DeviceBuffer[dtype]      # [Self.batch_size * Self.action_dim]
-    var new_ci: DeviceBuffer[dtype]         # [Self.batch_size * CRITIC_IN]
-    var new_q: DeviceBuffer[dtype]          # [Self.batch_size * 1]
-    var new_q_cache: DeviceBuffer[dtype]    # [Self.batch_size * CRITIC_CS]
-    var actor_cache: DeviceBuffer[dtype]    # [Self.batch_size * ACTOR_CS]
-    var actor_ws: DeviceBuffer[dtype]       # [Self.batch_size * ACTOR_WS]
-    var dq: DeviceBuffer[dtype]             # [Self.batch_size * 1] constant -1/Self.batch_size
-    var d_new_ci: DeviceBuffer[dtype]       # [Self.batch_size * CRITIC_IN]
-    var d_act: DeviceBuffer[dtype]          # [Self.batch_size * Self.action_dim]
-    var d_obs: DeviceBuffer[dtype]          # [Self.batch_size * Self.obs_dim]
+    var actor_act: DeviceBuffer[dtype]  # [Self.batch_size * Self.action_dim]
+    var new_ci: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
+    var new_q: DeviceBuffer[dtype]  # [Self.batch_size * 1]
+    var new_q_cache: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_CS]
+    var actor_cache: DeviceBuffer[dtype]  # [Self.batch_size * ACTOR_CS]
+    var actor_ws: DeviceBuffer[dtype]  # [Self.batch_size * ACTOR_WS]
+    var dq: DeviceBuffer[
+        dtype
+    ]  # [Self.batch_size * 1] constant -1/Self.batch_size
+    var d_new_ci: DeviceBuffer[dtype]  # [Self.batch_size * CRITIC_IN]
+    var d_act: DeviceBuffer[dtype]  # [Self.batch_size * Self.action_dim]
+    var d_obs: DeviceBuffer[dtype]  # [Self.batch_size * Self.obs_dim]
 
     # TD3-specific: target policy smoothing RNG (separate from exploration RNG)
-    var td3_noise_rng: DeviceBuffer[DType.uint32]  # [Self.batch_size * Self.action_dim]
+    var td3_noise_rng: DeviceBuffer[
+        DType.uint32
+    ]  # [Self.batch_size * Self.action_dim]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
         self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
         self.critic1 = GPUNetworkPair[Self.CriticModel, Self.CriticOpt](ctx)
         self.critic2 = GPUNetworkPair[Self.CriticModel, Self.CriticOpt](ctx)
-        self.buffer = GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim](ctx)
+        self.buffer = GPUReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, Self.action_dim
+        ](ctx)
 
         # Exploration buffers
         self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
@@ -219,10 +239,16 @@ struct TD3GPUState[
         )
 
         # Replay sample output
-        self.s_obs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
-        self.s_act = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.action_dim)
+        self.s_obs = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size * Self.obs_dim
+        )
+        self.s_act = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size * Self.action_dim
+        )
         self.s_rew = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.s_nobs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
+        self.s_nobs = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size * Self.obs_dim
+        )
         self.s_done = ctx.enqueue_create_buffer[dtype](Self.batch_size)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
 
@@ -241,7 +267,9 @@ struct TD3GPUState[
         self.targets = ctx.enqueue_create_buffer[dtype](Self.batch_size)
 
         # Critic1 update
-        self.ci = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.CRITIC_IN)
+        self.ci = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size * Self.CRITIC_IN
+        )
         self.q1_out = ctx.enqueue_create_buffer[dtype](Self.batch_size * 1)
         self.q1_cache = ctx.enqueue_create_buffer[dtype](
             Self.batch_size * Self.CRITIC_CS
@@ -291,7 +319,9 @@ struct TD3GPUState[
         self.d_act = ctx.enqueue_create_buffer[dtype](
             Self.batch_size * Self.action_dim
         )
-        self.d_obs = ctx.enqueue_create_buffer[dtype](Self.batch_size * Self.obs_dim)
+        self.d_obs = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size * Self.obs_dim
+        )
 
         # Target policy smoothing RNG
         self.td3_noise_rng = ctx.enqueue_create_buffer[DType.uint32](
@@ -335,7 +365,9 @@ struct TD3GPUState[
     # GPUOffPolicyState required methods
     # -------------------------------------------------------------------------
 
-    fn gpu_store[N_ENVS: Int](
+    fn gpu_store[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         prev_obs_buf: DeviceBuffer[dtype],
@@ -350,7 +382,8 @@ struct TD3GPUState[
         )
 
     fn gpu_buffer_is_ready(self) -> Bool:
-        """Return True if the GPU replay buffer has at least Self.batch_size samples."""
+        """Return True if the GPU replay buffer has at least Self.batch_size samples.
+        """
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -475,26 +508,30 @@ struct DeepTD3Agent[
     var _batch_rew: List[Scalar[dtype]]
     var _batch_next: List[Scalar[dtype]]
     var _batch_done: List[Scalar[dtype]]
-    var _next_act: List[Scalar[dtype]]        # BATCH * ACTIONS
-    var _next_ci: List[Scalar[dtype]]         # BATCH * CRITIC_IN
-    var _nq1: List[Scalar[dtype]]             # BATCH * 1
-    var _nq2: List[Scalar[dtype]]             # BATCH * 1
-    var _targets: List[Scalar[dtype]]         # BATCH
-    var _ci: List[Scalar[dtype]]              # BATCH * CRITIC_IN
-    var _q1_out: List[Scalar[dtype]]          # BATCH * 1
-    var _q2_out: List[Scalar[dtype]]          # BATCH * 1
-    var _q1_cache: List[Scalar[dtype]]        # BATCH * CriticModel.CACHE_SIZE
-    var _q2_cache: List[Scalar[dtype]]        # BATCH * CriticModel.CACHE_SIZE
-    var _q_grad: List[Scalar[dtype]]          # BATCH * 1 (reused for q1_grad and q2_grad)
-    var _d_ci: List[Scalar[dtype]]            # BATCH * CRITIC_IN (reused for d_c1 and d_c2)
-    var _actor_act: List[Scalar[dtype]]       # BATCH * ACTIONS
-    var _actor_cache: List[Scalar[dtype]]     # BATCH * ActorModel.CACHE_SIZE
-    var _new_ci: List[Scalar[dtype]]          # BATCH * CRITIC_IN
-    var _new_q: List[Scalar[dtype]]           # BATCH * 1
-    var _dq: List[Scalar[dtype]]              # BATCH * 1
-    var _d_new_ci: List[Scalar[dtype]]        # BATCH * CRITIC_IN
-    var _d_act: List[Scalar[dtype]]           # BATCH * ACTIONS
-    var _d_obs: List[Scalar[dtype]]           # BATCH * OBS
+    var _next_act: List[Scalar[dtype]]  # BATCH * ACTIONS
+    var _next_ci: List[Scalar[dtype]]  # BATCH * CRITIC_IN
+    var _nq1: List[Scalar[dtype]]  # BATCH * 1
+    var _nq2: List[Scalar[dtype]]  # BATCH * 1
+    var _targets: List[Scalar[dtype]]  # BATCH
+    var _ci: List[Scalar[dtype]]  # BATCH * CRITIC_IN
+    var _q1_out: List[Scalar[dtype]]  # BATCH * 1
+    var _q2_out: List[Scalar[dtype]]  # BATCH * 1
+    var _q1_cache: List[Scalar[dtype]]  # BATCH * CriticModel.CACHE_SIZE
+    var _q2_cache: List[Scalar[dtype]]  # BATCH * CriticModel.CACHE_SIZE
+    var _q_grad: List[
+        Scalar[dtype]
+    ]  # BATCH * 1 (reused for q1_grad and q2_grad)
+    var _d_ci: List[
+        Scalar[dtype]
+    ]  # BATCH * CRITIC_IN (reused for d_c1 and d_c2)
+    var _actor_act: List[Scalar[dtype]]  # BATCH * ACTIONS
+    var _actor_cache: List[Scalar[dtype]]  # BATCH * ActorModel.CACHE_SIZE
+    var _new_ci: List[Scalar[dtype]]  # BATCH * CRITIC_IN
+    var _new_q: List[Scalar[dtype]]  # BATCH * 1
+    var _dq: List[Scalar[dtype]]  # BATCH * 1
+    var _d_new_ci: List[Scalar[dtype]]  # BATCH * CRITIC_IN
+    var _d_act: List[Scalar[dtype]]  # BATCH * ACTIONS
+    var _d_obs: List[Scalar[dtype]]  # BATCH * OBS
 
     fn __init__(
         out self,
@@ -552,12 +589,16 @@ struct DeepTD3Agent[
         self.checkpoint_path = checkpoint_path
 
         self._batch_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
-        self._batch_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._batch_act = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.ACTIONS
+        )
         self._batch_rew = List[Scalar[dtype]](capacity=Self.BATCH)
         self._batch_next = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
         self._batch_done = List[Scalar[dtype]](capacity=Self.BATCH)
         self._next_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
-        self._next_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._next_ci = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.CRITIC_IN
+        )
         self._nq1 = List[Scalar[dtype]](capacity=Self.BATCH)
         self._nq2 = List[Scalar[dtype]](capacity=Self.BATCH)
         self._targets = List[Scalar[dtype]](capacity=Self.BATCH)
@@ -572,14 +613,18 @@ struct DeepTD3Agent[
         )
         self._q_grad = List[Scalar[dtype]](capacity=Self.BATCH)
         self._d_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
-        self._actor_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._actor_act = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.ACTIONS
+        )
         self._actor_cache = List[Scalar[dtype]](
             capacity=Self.BATCH * Self.ActorModel.CACHE_SIZE
         )
         self._new_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
         self._new_q = List[Scalar[dtype]](capacity=Self.BATCH)
         self._dq = List[Scalar[dtype]](capacity=Self.BATCH)
-        self._d_new_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._d_new_ci = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.CRITIC_IN
+        )
         self._d_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
         self._d_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
         for _ in range(Self.BATCH * Self.OBS):
@@ -618,13 +663,11 @@ struct DeepTD3Agent[
     # OffPolicyAgent trait — required methods (CPU training)
     # =========================================================================
 
-    fn select_action_list(
-        mut self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_action_list(mut self, obs: List[Float64]) -> List[Float64]:
         """Select action with Gaussian exploration noise (training)."""
-        return deterministic_select_action[Self.ActorModel, Adam[Self.actor_lr]](
-            self.actor.online, obs, self.action_scale, self.noise_std
-        )
+        return deterministic_select_action[
+            Self.ActorModel, Adam[Self.actor_lr]
+        ](self.actor.online, obs, self.action_scale, self.noise_std)
 
     fn store_list_transition(
         mut self,
@@ -635,7 +678,9 @@ struct DeepTD3Agent[
         done: Bool,
     ) -> None:
         """Store transition in the replay buffer."""
-        store_continuous_transition[Self.OBS, Self.ACTIONS, Self.buffer_capacity](
+        store_continuous_transition[
+            Self.OBS, Self.ACTIONS, Self.buffer_capacity
+        ](
             self.buffer,
             obs,
             action,
@@ -672,9 +717,7 @@ struct DeepTD3Agent[
         """Return a uniformly random action in [-action_scale, action_scale]."""
         return random_continuous_action(Self.action_dim, self.action_scale)
 
-    fn select_greedy_action_list(
-        self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select action using deterministic policy (no exploration noise)."""
         return greedy_continuous_action[Self.ActorModel, Adam[Self.actor_lr]](
             self.actor.online, obs, self.action_scale
@@ -772,9 +815,9 @@ struct DeepTD3Agent[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                self._next_ci[b * Self.CRITIC_IN + Self.OBS + i] = (
-                    self._next_act[b * Self.ACTIONS + i]
-                )
+                self._next_ci[
+                    b * Self.CRITIC_IN + Self.OBS + i
+                ] = self._next_act[b * Self.ACTIONS + i]
 
         # Forward both target critics
         var nq1_t = LayoutTensor[
@@ -934,9 +977,9 @@ struct DeepTD3Agent[
                         b * Self.OBS + i
                     ]
                 for i in range(Self.ACTIONS):
-                    self._new_ci[b * Self.CRITIC_IN + Self.OBS + i] = (
-                        self._actor_act[b * Self.ACTIONS + i]
-                    )
+                    self._new_ci[
+                        b * Self.CRITIC_IN + Self.OBS + i
+                    ] = self._actor_act[b * Self.ACTIONS + i]
 
             var new_q_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
@@ -1088,9 +1131,7 @@ struct DeepTD3Agent[
     # GPUOffPolicyAgent trait — required methods
     # =========================================================================
 
-    fn make_gpu_state(
-        self, ctx: DeviceContext
-    ) raises -> Self.GPUStateType:
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for TD3 training.
 
         Does NOT upload CPU weights — call upload_to_gpu after this.
@@ -1110,7 +1151,7 @@ struct DeepTD3Agent[
 
     fn download_from_gpu(
         mut self,
-        gpu_state: Self.GPUStateType,
+        mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
         """Download trained GPU weights back to CPU network states."""
@@ -1118,14 +1159,17 @@ struct DeepTD3Agent[
         gpu_state.critic1.download_to(self.critic1, ctx)
         gpu_state.critic2.download_to(self.critic2, ctx)
 
-    fn select_actions_gpu[N_ENVS: Int](
+    fn select_actions_gpu[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
         obs_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Forward actor on GPU for N_ENVS environments + add exploration noise."""
+        """Forward actor on GPU for N_ENVS environments + add exploration noise.
+        """
         comptime BLOCKS = (N_ENVS * Self.ACTIONS + TPB - 1) // TPB
 
         var obs_t = LayoutTensor[
@@ -1144,7 +1188,9 @@ struct DeepTD3Agent[
         ](gpu_state.rng_states.unsafe_ptr())
 
         var p = gpu_state.actor.online.params_view()
-        Self.ActorNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+        Self.ActorNet.forward_gpu[N_ENVS](
+            ctx, obs_t, raw_t, p, gpu_state.inf_ws
+        )
 
         var noise_std_s = Scalar[dtype](self.noise_std)
         var scale_s = Scalar[dtype](self.action_scale)
@@ -1442,7 +1488,13 @@ struct DeepTD3Agent[
         var g_c1 = gpu_state.critic1.online.grads_view()
         gpu_state.critic1.online.zero_grads(ctx)
         Self.CriticNet.backward_gpu[BATCH](
-            ctx, q1_grad_t, d_ci1_t, p_c1, q1_cache_t, g_c1, gpu_state.critic1_ws
+            ctx,
+            q1_grad_t,
+            d_ci1_t,
+            p_c1,
+            q1_cache_t,
+            g_c1,
+            gpu_state.critic1_ws,
         )
         gpu_state.critic1.online.optimizer_step(ctx)
 
@@ -1483,7 +1535,13 @@ struct DeepTD3Agent[
         var g_c2 = gpu_state.critic2.online.grads_view()
         gpu_state.critic2.online.zero_grads(ctx)
         Self.CriticNet.backward_gpu[BATCH](
-            ctx, q2_grad_t, d_ci2_t, p_c2, q2_cache_t, g_c2, gpu_state.critic2_ws
+            ctx,
+            q2_grad_t,
+            d_ci2_t,
+            p_c2,
+            q2_cache_t,
+            g_c2,
+            gpu_state.critic2_ws,
         )
         gpu_state.critic2.online.optimizer_step(ctx)
 
@@ -1519,7 +1577,12 @@ struct DeepTD3Agent[
 
             # Actor forward with cache
             Self.ActorNet.forward_gpu_with_cache[BATCH](
-                ctx, obs_t, actor_act_t, p_actor, actor_cache_t, gpu_state.actor_ws
+                ctx,
+                obs_t,
+                actor_act_t,
+                p_actor,
+                actor_cache_t,
+                gpu_state.actor_ws,
             )
 
             # Concat(obs, actor_actions) → new_ci
@@ -1547,7 +1610,12 @@ struct DeepTD3Agent[
 
             # Critic1 forward for policy gradient (use critic1 per TD3 paper)
             Self.CriticNet.forward_gpu_with_cache[BATCH](
-                ctx, new_ci_t, new_q_t, p_c1, new_q_cache_t, gpu_state.critic1_ws
+                ctx,
+                new_ci_t,
+                new_q_t,
+                p_c1,
+                new_q_cache_t,
+                gpu_state.critic1_ws,
             )
 
             # Critic1 backward for action gradients (no optimizer step)

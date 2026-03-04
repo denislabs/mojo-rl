@@ -33,12 +33,12 @@ Usage:
 Reference: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
-from math import exp, log, sqrt, cos, tanh
-from random import random_float64, seed
-from time import perf_counter_ns
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from gpu.memory import AddressSpace
+from std.math import exp, log, sqrt, cos, tanh
+from std.random import random_float64, seed
+from std.time import perf_counter_ns
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
@@ -81,7 +81,7 @@ from core import (
     NoCurriculumScheduler,
 )
 from render import Renderer2D
-from memory import UnsafePointer
+from std.memory import UnsafePointer
 from core.utils.gae import compute_gae_inline
 from core.utils.normalization import normalize_inline, RunningMeanStd
 from core.utils.shuffle import shuffle_indices_inline
@@ -1605,7 +1605,7 @@ struct DeepPPOContinuousAgent[
                 # =============================================================
 
                 for i in range(Self.n_envs):
-                    # Build action list from GPU buffer
+                    # Build action list from std.gpu buffer
                     var action_list = List[Scalar[dtype]]()
                     for a in range(Self.ACTIONS):
                         var action_val = Float64(

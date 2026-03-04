@@ -20,9 +20,9 @@ Usage:
     ]
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 from std.builtin.variadics import Variadic
-from random.philox import Random as PhiloxRandom
+from std.random.philox import Random as PhiloxRandom
 from render import Color, Renderer3D, Light, Camera3D
 from math3d import Vec3 as _Vec3G, Quat as _QuatG
 
@@ -55,7 +55,7 @@ from ..types import (
     ConeType,
 )
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from math import sqrt
+from std.math import sqrt
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -65,8 +65,8 @@ from ..constants import (
 )
 
 # GPU imports
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from ..gpu.constants import (
     TPB,
@@ -161,13 +161,13 @@ from ..dynamics.mass_matrix import (
     compute_mass_matrix_full_gpu,
 )
 from ..dynamics.jacobian import compute_cdof_gpu, compute_composite_inertia_gpu
-from memory import UnsafePointer
+from std.memory import UnsafePointer
 from .inertia_from_geom import (
     geom_volume,
     compute_inertia_from_geoms,
     compute_inertia_from_geoms_buffer,
 )
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 from ..model.defaults_spec import ModelDefaults
 from ..model.body_spec import BodiesLike, _EmptyBodies
 from ..model.joint_spec import JointsLike, _EmptyJoints

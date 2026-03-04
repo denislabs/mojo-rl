@@ -4,7 +4,7 @@ ContAction[N] wraps an InlineArray[Float64, N] and implements the Action trait.
 Replaces per-environment action structs like HalfCheetahAction.
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 
 from .action import Action
 

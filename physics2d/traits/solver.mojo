@@ -6,7 +6,7 @@ to prevent interpenetration and enforce friction.
 
 from ..constants import dtype, BODY_STATE_SIZE, CONTACT_DATA_SIZE
 from layout import LayoutTensor, Layout
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait ConstraintSolver(Movable & ImplicitlyCopyable):
@@ -44,10 +44,14 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     ](
         self,
         mut bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         mut contacts: LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -72,10 +76,14 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     ](
         self,
         mut bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         contacts: LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin

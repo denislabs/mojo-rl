@@ -27,7 +27,7 @@ Example:
     ```
 """
 
-from math import sqrt
+from std.math import sqrt
 from layout import LayoutTensor, Layout
 
 from .constants import (

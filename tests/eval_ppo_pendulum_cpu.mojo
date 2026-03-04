@@ -14,8 +14,8 @@ Requirements:
     - Trained checkpoint file (ppo_pendulum_gpu.ckpt)
 """
 
-from random import seed
-from time import perf_counter_ns, sleep
+from std.random import seed
+from std.time import perf_counter_ns, sleep
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.pendulum import PendulumV2, PConstants

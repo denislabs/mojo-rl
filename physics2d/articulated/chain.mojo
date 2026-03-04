@@ -4,7 +4,7 @@ Provides utilities for defining and manipulating articulated body chains
 such as those used in Hopper, Walker2d, and HalfCheetah planar environments.
 """
 
-from math import cos, sin, sqrt
+from std.math import cos, sin, sqrt
 from layout import LayoutTensor, Layout
 
 from physics_gpu.constants import (
@@ -97,7 +97,9 @@ struct LinkDef:
         self.joint_upper = joint_upper
 
 
-fn compute_link_inertia(mass: Float64, length: Float64, width: Float64) -> Float64:
+fn compute_link_inertia(
+    mass: Float64, length: Float64, width: Float64
+) -> Float64:
     """Compute moment of inertia for a rectangular link (rod).
 
     I = (1/12) * m * (l^2 + w^2) for rectangle about center
@@ -129,7 +131,9 @@ struct ArticulatedChain[
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         parent_indices: StaticTuple[Int, NUM_BODIES],
     ):
@@ -177,8 +181,12 @@ struct ArticulatedChain[
                 # Position child so its anchor coincides with parent anchor
                 var cos_c = cos(child_angle)
                 var sin_c = sin(child_angle)
-                var child_x = world_anchor_x - (anchor_bx * cos_c - anchor_by * sin_c)
-                var child_y = world_anchor_y - (anchor_bx * sin_c + anchor_by * cos_c)
+                var child_x = world_anchor_x - (
+                    anchor_bx * cos_c - anchor_by * sin_c
+                )
+                var child_y = world_anchor_y - (
+                    anchor_bx * sin_c + anchor_by * cos_c
+                )
 
                 state[env, child_off + IDX_X] = child_x
                 state[env, child_off + IDX_Y] = child_y
@@ -194,7 +202,9 @@ struct ArticulatedChain[
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         out angles: StaticTuple[Scalar[dtype], NUM_JOINTS],
     ):
@@ -209,8 +219,12 @@ struct ArticulatedChain[
             var body_b = Int(state[env, joint_off + JOINT_BODY_B])
             var ref_angle = state[env, joint_off + JOINT_REF_ANGLE]
 
-            var angle_a = state[env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_ANGLE]
-            var angle_b = state[env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_ANGLE]
+            var angle_a = state[
+                env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_ANGLE
+            ]
+            var angle_b = state[
+                env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_ANGLE
+            ]
 
             angles[j] = angle_b - angle_a - ref_angle
 
@@ -221,7 +235,9 @@ struct ArticulatedChain[
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         out velocities: StaticTuple[Scalar[dtype], NUM_JOINTS],
     ):
@@ -235,8 +251,12 @@ struct ArticulatedChain[
             var body_a = Int(state[env, joint_off + JOINT_BODY_A])
             var body_b = Int(state[env, joint_off + JOINT_BODY_B])
 
-            var omega_a = state[env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_OMEGA]
-            var omega_b = state[env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_OMEGA]
+            var omega_a = state[
+                env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_OMEGA
+            ]
+            var omega_b = state[
+                env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_OMEGA
+            ]
 
             velocities[j] = omega_b - omega_a
 
@@ -251,7 +271,9 @@ struct ArticulatedChain[
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         actions: StaticTuple[Scalar[dtype], NUM_JOINTS],
         max_torque: Scalar[dtype] = Scalar[dtype](DEFAULT_MAX_TORQUE),
@@ -277,8 +299,12 @@ struct ArticulatedChain[
             var body_a_off = BODIES_OFFSET + body_a * BODY_STATE_SIZE
             var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE
 
-            state[env, body_a_off + IDX_TAU] = state[env, body_a_off + IDX_TAU] - torque
-            state[env, body_b_off + IDX_TAU] = state[env, body_b_off + IDX_TAU] + torque
+            state[env, body_a_off + IDX_TAU] = (
+                state[env, body_a_off + IDX_TAU] - torque
+            )
+            state[env, body_b_off + IDX_TAU] = (
+                state[env, body_b_off + IDX_TAU] + torque
+            )
 
     @staticmethod
     fn apply_pd_control[
@@ -287,7 +313,9 @@ struct ArticulatedChain[
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         target_angles: StaticTuple[Scalar[dtype], NUM_JOINTS],
         kp: Scalar[dtype] = Scalar[dtype](DEFAULT_KP),
@@ -306,10 +334,18 @@ struct ArticulatedChain[
             var ref_angle = state[env, joint_off + JOINT_REF_ANGLE]
 
             # Current joint state
-            var angle_a = state[env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_ANGLE]
-            var angle_b = state[env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_ANGLE]
-            var omega_a = state[env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_OMEGA]
-            var omega_b = state[env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_OMEGA]
+            var angle_a = state[
+                env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_ANGLE
+            ]
+            var angle_b = state[
+                env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_ANGLE
+            ]
+            var omega_a = state[
+                env, BODIES_OFFSET + body_a * BODY_STATE_SIZE + IDX_OMEGA
+            ]
+            var omega_b = state[
+                env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_OMEGA
+            ]
 
             var current_angle = angle_b - angle_a - ref_angle
             var current_velocity = omega_b - omega_a
@@ -328,8 +364,12 @@ struct ArticulatedChain[
             var body_a_off = BODIES_OFFSET + body_a * BODY_STATE_SIZE
             var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE
 
-            state[env, body_a_off + IDX_TAU] = state[env, body_a_off + IDX_TAU] - torque
-            state[env, body_b_off + IDX_TAU] = state[env, body_b_off + IDX_TAU] + torque
+            state[env, body_a_off + IDX_TAU] = (
+                state[env, body_a_off + IDX_TAU] - torque
+            )
+            state[env, body_b_off + IDX_TAU] = (
+                state[env, body_b_off + IDX_TAU] + torque
+            )
 
     # =========================================================================
     # Observation Helpers
@@ -341,7 +381,9 @@ struct ArticulatedChain[
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
     ) -> Tuple[
         Scalar[dtype],
@@ -369,7 +411,9 @@ struct ArticulatedChain[
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
     ) -> Tuple[Scalar[dtype], Scalar[dtype]]:
         """Compute center of mass position for the entire chain."""

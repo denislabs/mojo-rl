@@ -18,8 +18,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
@@ -118,14 +118,27 @@ fn compare_constraint_params(
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
 ) raises:
-    """Compute constraints in both engines with identical state, compare params."""
+    """Compute constraints in both engines with identical state, compare params.
+    """
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Now set the test configuration
@@ -314,7 +327,9 @@ fn compare_constraint_params(
         # Compute our impedance: recover from diagApprox and inv_K_imp
         var our_inv_K_imp_n = Float64(constraints.rows[our_norm_idx].inv_K_imp)
         var our_R_n = 1.0 / our_inv_K_imp_n - our_K_n
-        var our_diagApprox_n = Float64(constraints.rows[our_norm_idx].diagApprox)
+        var our_diagApprox_n = Float64(
+            constraints.rows[our_norm_idx].diagApprox
+        )
         var our_imp_n: Float64
         if our_diagApprox_n > 1e-12:
             our_imp_n = our_diagApprox_n / (our_diagApprox_n + our_R_n)
@@ -346,18 +361,14 @@ fn compare_constraint_params(
 
         # D (Delassus / primal stiffness)
         total_checks += 1
-        if compare_scalar(
-            "D(normal)", our_D_n, mj_D_n, DR_ABS_TOL, DR_REL_TOL
-        ):
+        if compare_scalar("D(normal)", our_D_n, mj_D_n, DR_ABS_TOL, DR_REL_TOL):
             pass_checks += 1
         else:
             all_pass = False
 
         # R (regularizer)
         total_checks += 1
-        if compare_scalar(
-            "R(normal)", our_R_n, mj_R_n, DR_ABS_TOL, DR_REL_TOL
-        ):
+        if compare_scalar("R(normal)", our_R_n, mj_R_n, DR_ABS_TOL, DR_REL_TOL):
             pass_checks += 1
         else:
             all_pass = False
@@ -421,7 +432,9 @@ fn compare_constraint_params(
                 all_pass = False
 
             # D/R for friction
-            var our_R_t1 = 1.0 / Float64(constraints.rows[our_t1_idx].inv_K_imp) - our_K_t1
+            var our_R_t1 = (
+                1.0 / Float64(constraints.rows[our_t1_idx].inv_K_imp) - our_K_t1
+            )
             var mj_R_t1 = Float64(py=mj_R[matched_mj_t1])
             total_checks += 1
             if compare_scalar(
@@ -467,10 +480,14 @@ fn compare_constraint_params(
                     constraints.rows[our_lim_idx].inv_K_imp
                 )
                 var our_R_lim = 1.0 / our_inv_K_imp_lim - our_K_lim
-                var our_diagApprox_lim = Float64(constraints.rows[our_lim_idx].diagApprox)
+                var our_diagApprox_lim = Float64(
+                    constraints.rows[our_lim_idx].diagApprox
+                )
                 var our_imp_lim: Float64
                 if our_diagApprox_lim > 1e-12:
-                    our_imp_lim = our_diagApprox_lim / (our_diagApprox_lim + our_R_lim)
+                    our_imp_lim = our_diagApprox_lim / (
+                        our_diagApprox_lim + our_R_lim
+                    )
                 else:
                     our_imp_lim = our_inv_K_imp_lim * our_K_lim
                 var our_D_lim = 1.0 / our_R_lim if our_R_lim > 1e-12 else 0.0
@@ -488,9 +505,7 @@ fn compare_constraint_params(
                     all_pass = False
 
                 # aref
-                var our_aref_lim = -Float64(
-                    constraints.rows[our_lim_idx].bias
-                )
+                var our_aref_lim = -Float64(constraints.rows[our_lim_idx].bias)
                 var mj_aref_lim = Float64(py=mj_aref[mj_lim_idx])
                 total_checks += 1
                 if compare_scalar(

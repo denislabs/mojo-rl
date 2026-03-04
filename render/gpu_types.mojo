@@ -4,9 +4,13 @@ Vertex structs, uniform buffer layouts, mesh handles, and conversion helpers
 for the SDL3 GPU-accelerated renderer.
 """
 
-from memory import UnsafePointer, memcpy
-from math import sqrt, tan, sin, cos
-from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic, Quat as QuatGeneric
+from std.memory import UnsafePointer, memcpy
+from std.math import sqrt, tan, sin, cos
+from math3d import (
+    Vec3 as Vec3Generic,
+    Mat4 as Mat4Generic,
+    Quat as QuatGeneric,
+)
 from .sdl import Ptr, AnyOrigin, GPUBuffer
 from .types import Color
 

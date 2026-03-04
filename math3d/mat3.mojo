@@ -4,7 +4,7 @@ Provides Mat3 struct for 3D rotation matrices and general 3x3 linear transforms.
 Uses row-major storage: m[row, col] where row is first index.
 """
 
-from math import sqrt, cos, sin
+from std.math import sqrt, cos, sin
 
 from .vec3 import Vec3
 from .quat import Quat
@@ -151,7 +151,9 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # =========================================================================
 
     @staticmethod
-    fn rotation_x(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_x(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around X axis.
 
         Args:
@@ -162,7 +164,9 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         return Self(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c)
 
     @staticmethod
-    fn rotation_y(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_y(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Y axis.
 
         Args:
@@ -173,7 +177,9 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         return Self(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c)
 
     @staticmethod
-    fn rotation_z(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_z(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Z axis.
 
         Args:
@@ -184,7 +190,9 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         return Self(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0)
 
     @staticmethod
-    fn rotation_axis(axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_axis(
+        axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around arbitrary axis.
 
         Args:
@@ -570,16 +578,22 @@ fn mat3_identity[DTYPE: DType]() -> Mat3[DTYPE]:
     return Mat3[DTYPE].identity()
 
 
-fn mat3_rotation_x[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+fn mat3_rotation_x[
+    DTYPE: DType
+](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around X axis."""
     return Mat3.rotation_x(angle)
 
 
-fn mat3_rotation_y[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+fn mat3_rotation_y[
+    DTYPE: DType
+](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around Y axis."""
     return Mat3.rotation_y(angle)
 
 
-fn mat3_rotation_z[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+fn mat3_rotation_z[
+    DTYPE: DType
+](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around Z axis."""
     return Mat3.rotation_z(angle)

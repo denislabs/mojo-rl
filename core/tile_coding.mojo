@@ -22,8 +22,8 @@ Example usage:
     var tiles = tc.get_tiles(state)  # Returns num_tilings active tile indices
 """
 
-from random import random_float64
-from math import floor
+from std.random import random_float64
+from std.math import floor
 
 
 struct TileCoding[DTYPE: DType]:

@@ -7,9 +7,9 @@ Run with:
     pixi run -e apple mojo run tests/test_ppo_lunar_eval_builtin.mojo
 """
 
-from random import seed
+from std.random import seed
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.lunar_lander import LunarLander, LLConstants

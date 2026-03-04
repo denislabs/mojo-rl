@@ -33,12 +33,12 @@ Usage:
     var avg_reward = agent.evaluate(env, num_episodes=10, greedy=True)
 """
 
-from math import exp
-from random import random_float64, seed
+from std.math import exp
+from std.random import random_float64, seed
 
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
@@ -335,9 +335,9 @@ struct DQNAgent[
         var batch_obs = InlineArray[
             Scalar[dtype], Self.batch_size * Self.obs_dim
         ](uninitialized=True)
-        var batch_actions_tmp = InlineArray[
-            Scalar[dtype], Self.batch_size
-        ](uninitialized=True)
+        var batch_actions_tmp = InlineArray[Scalar[dtype], Self.batch_size](
+            uninitialized=True
+        )
         var batch_rewards = InlineArray[Scalar[dtype], Self.batch_size](
             uninitialized=True
         )
@@ -349,9 +349,9 @@ struct DQNAgent[
         )
 
         # action_dim=1 — use a length-1 row per sample then flatten
-        var batch_act1 = InlineArray[
-            Scalar[dtype], Self.batch_size * 1
-        ](uninitialized=True)
+        var batch_act1 = InlineArray[Scalar[dtype], Self.batch_size * 1](
+            uninitialized=True
+        )
         self.buffer.sample[Self.batch_size](
             batch_obs, batch_act1, batch_rewards, batch_next_obs, batch_dones
         )
@@ -371,9 +371,9 @@ struct DQNAgent[
         ](batch_next_obs.unsafe_ptr())
 
         # Forward: online with cache
-        var q_arr = InlineArray[
-            Scalar[dtype], Self.batch_size * Self.ACTIONS
-        ](uninitialized=True)
+        var q_arr = InlineArray[Scalar[dtype], Self.batch_size * Self.ACTIONS](
+            uninitialized=True
+        )
         var q_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.batch_size, Self.ACTIONS),
@@ -721,7 +721,9 @@ struct DQNAgent[
     # GPU Training Helpers
     # =========================================================================
 
-    fn _select_actions_gpu[N: Int](
+    fn _select_actions_gpu[
+        N: Int
+    ](
         self,
         ctx: DeviceContext,
         mut obs_buf: DeviceBuffer[dtype],
@@ -751,9 +753,9 @@ struct DQNAgent[
         var p = gpu_online.params_view()
         Self.Q_Network.forward_gpu[N](ctx, obs_t, q_t, p, workspace_buf)
 
-        var actions_t = LayoutTensor[
-            dtype, Layout.row_major(N), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+        var actions_t = LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin](
+            actions_buf.unsafe_ptr()
+        )
         var seed_s = Scalar[DType.uint32](rng_seed)
         var epsilon_s = Scalar[dtype](self.epsilon)
 
@@ -906,21 +908,15 @@ struct DQNAgent[
 
             @always_inline
             fn double_td_wrapper(
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 onq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
                 tnq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
-                rew: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
-                don: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+                don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 g: Scalar[dtype],
             ):
                 dqn_double_td_target_kernel[dtype, BATCH, Self.ACTIONS](
@@ -938,20 +934,15 @@ struct DQNAgent[
                 block_dim=(TPB,),
             )
         else:
+
             @always_inline
             fn td_wrapper(
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 nq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
-                rew: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
-                don: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+                don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 g: Scalar[dtype],
             ):
                 dqn_td_target_kernel[dtype, BATCH, Self.ACTIONS](
@@ -989,9 +980,7 @@ struct DQNAgent[
             for a in range(Self.ACTIONS):
                 if a == action:
                     grd[b, a] = (
-                        Scalar[dtype](2.0)
-                        * td_error
-                        / Scalar[dtype](BATCH)
+                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
                     )
                 else:
                     grd[b, a] = Scalar[dtype](0.0)
@@ -1077,7 +1066,9 @@ struct DQNAgent[
         # GPU Replay Buffer (local — freed on function exit)
         # =====================================================================
         var rb = GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim](ctx)
-        var indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
+        var indices_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.batch_size
+        )
 
         # =====================================================================
         # Pre-allocate environment and training buffers
@@ -1122,7 +1113,9 @@ struct DQNAgent[
         var sampled_next_obs_buf = ctx.enqueue_create_buffer[dtype](
             BATCH_OBS_SIZE
         )
-        var sampled_dones_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        var sampled_dones_buf = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size
+        )
 
         # Workspace buffers
         var env_ws_buf = ctx.enqueue_create_buffer[dtype](ENV_WS_SIZE)
@@ -1232,9 +1225,7 @@ struct DQNAgent[
 
         @always_inline
         fn extract_wrapper(
-            d: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
+            d: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
             ep_r: LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
             ],
@@ -1341,7 +1332,7 @@ struct DQNAgent[
         # =====================================================================
         # Timing counters
         # =====================================================================
-        from time import perf_counter_ns
+        from std.time import perf_counter_ns
 
         var time_action_select: UInt = 0
         var time_env_step: UInt = 0
@@ -1377,9 +1368,7 @@ struct DQNAgent[
                 actions_buf,
                 gpu_online,
                 env_ws_buf,
-                UInt32(
-                    total_steps * 2654435761 + iteration_count * 7919
-                ),
+                UInt32(total_steps * 2654435761 + iteration_count * 7919),
             )
             ctx.synchronize()
             var t1 = perf_counter_ns()

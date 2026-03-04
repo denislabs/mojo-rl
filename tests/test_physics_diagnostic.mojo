@@ -10,8 +10,8 @@ Run with:
     pixi run -e apple mojo run tests/test_physics_diagnostic.mojo
 """
 
-from math import cos, sin, sqrt
-from random import seed, random_float64
+from std.math import cos, sin, sqrt
+from std.random import seed, random_float64
 
 
 fn abs_f32(x: Float32) -> Float32:
@@ -23,7 +23,8 @@ fn abs_scalar(x: Scalar[DType.float32]) -> Scalar[DType.float32]:
     """Absolute value for Scalar."""
     return x if x >= 0 else -x
 
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from envs.lunar_lander import LunarLanderEnv
 from envs.lunar_lander_gpu import LunarLanderGPU, gpu_dtype
@@ -66,9 +67,20 @@ fn print_comparison_row(
     var status_v2 = "OK" if diff_v2 < 0.1 else "DRIFT"
 
     print(
-        "  " + name + ": CPU=" + format_float(cpu, 8)
-        + " | V1=" + format_float(gpu_v1, 8) + " (" + status_v1 + ")"
-        + " | V2=" + format_float(gpu_v2, 8) + " (" + status_v2 + ")"
+        "  "
+        + name
+        + ": CPU="
+        + format_float(cpu, 8)
+        + " | V1="
+        + format_float(gpu_v1, 8)
+        + " ("
+        + status_v1
+        + ")"
+        + " | V2="
+        + format_float(gpu_v2, 8)
+        + " ("
+        + status_v2
+        + ")"
     )
 
 
@@ -139,7 +151,9 @@ fn run_gpu_v1_step(
     comptime BATCH_SIZE = 1
     comptime STATE_SIZE = 8
 
-    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * STATE_SIZE)
+    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
+        BATCH_SIZE * STATE_SIZE
+    )
     var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
@@ -179,7 +193,9 @@ fn run_gpu_v2_step(
     comptime BATCH_SIZE = 1
     comptime STATE_SIZE = V2_STATE_SIZE  # 12
 
-    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * STATE_SIZE)
+    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
+        BATCH_SIZE * STATE_SIZE
+    )
     var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
@@ -234,16 +250,33 @@ fn test_freefall(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
     # For GPU, start with same normalized state
     var gpu_v1_state = create_gpu_state_v1(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
     var gpu_v2_state = create_gpu_state_v2(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
 
     print("Initial state:")
-    print("  y_obs=" + format_float(cpu_obs[1]) + " vy_obs=" + format_float(cpu_obs[3]))
+    print(
+        "  y_obs="
+        + format_float(cpu_obs[1])
+        + " vy_obs="
+        + format_float(cpu_obs[3])
+    )
     print("")
 
     var max_drift_v1: Float32 = 0.0
@@ -272,11 +305,16 @@ fn test_freefall(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
         if step < 5 or step % 5 == 0:
             print(
-                String(step) + "    | "
-                + format_float(cpu_next[3], 9) + " | "
-                + format_float(gpu_v1_next[3], 9) + " | "
-                + format_float(gpu_v2_next[3], 9) + " | "
-                + format_float(diff_v1, 9) + " | "
+                String(step)
+                + "    | "
+                + format_float(cpu_next[3], 9)
+                + " | "
+                + format_float(gpu_v1_next[3], 9)
+                + " | "
+                + format_float(gpu_v2_next[3], 9)
+                + " | "
+                + format_float(diff_v1, 9)
+                + " | "
                 + format_float(diff_v2, 9)
             )
 
@@ -325,18 +363,33 @@ fn test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     var cpu_obs = cpu_env.get_obs_list()
 
     var gpu_v1_state = create_gpu_state_v1(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
     var gpu_v2_state = create_gpu_state_v2(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
 
     var max_drift_v1: Float32 = 0.0
     var max_drift_v2: Float32 = 0.0
 
-    print("Step | CPU vy    | V1 vy     | V2 vy     | CPU angle | V1 angle  | V2 angle")
+    print(
+        "Step | CPU vy    | V1 vy     | V2 vy     | CPU angle | V1 angle  | V2"
+        " angle"
+    )
     print("-" * 80)
 
     for step in range(NUM_STEPS):
@@ -346,7 +399,9 @@ fn test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
         var cpu_next = cpu_result[0].to_list()
         var cpu_done = cpu_result[2]
 
-        var gpu_v1_next = run_gpu_v1_step(ctx, gpu_v1_state, 2, 12345)  # Fixed seed
+        var gpu_v1_next = run_gpu_v1_step(
+            ctx, gpu_v1_state, 2, 12345
+        )  # Fixed seed
         var gpu_v2_next = run_gpu_v2_step(ctx, gpu_v2_state, 2, 12345)
 
         # Compare vy and angle
@@ -365,12 +420,18 @@ fn test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
         if step < 5 or step % 5 == 0:
             print(
-                String(step) + "    | "
-                + format_float(cpu_next[3], 9) + " | "
-                + format_float(gpu_v1_next[3], 9) + " | "
-                + format_float(gpu_v2_next[3], 9) + " | "
-                + format_float(cpu_next[4], 9) + " | "
-                + format_float(gpu_v1_next[4], 9) + " | "
+                String(step)
+                + "    | "
+                + format_float(cpu_next[3], 9)
+                + " | "
+                + format_float(gpu_v1_next[3], 9)
+                + " | "
+                + format_float(gpu_v2_next[3], 9)
+                + " | "
+                + format_float(cpu_next[4], 9)
+                + " | "
+                + format_float(gpu_v1_next[4], 9)
+                + " | "
                 + format_float(gpu_v2_next[4], 9)
             )
 
@@ -418,18 +479,33 @@ fn test_side_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     var cpu_obs = cpu_env.get_obs_list()
 
     var gpu_v1_state = create_gpu_state_v1(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
     var gpu_v2_state = create_gpu_state_v2(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
 
     var max_drift_v1: Float32 = 0.0
     var max_drift_v2: Float32 = 0.0
 
-    print("Step | Action | CPU ang_v | V1 ang_v  | V2 ang_v  | V1 diff   | V2 diff")
+    print(
+        "Step | Action | CPU ang_v | V1 ang_v  | V2 ang_v  | V1 diff   | V2"
+        " diff"
+    )
     print("-" * 75)
 
     for step in range(NUM_STEPS):
@@ -456,11 +532,18 @@ fn test_side_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
         if step < 5 or step % 5 == 0:
             print(
-                String(step) + "    | " + action_str + "  | "
-                + format_float(cpu_next[5], 9) + " | "
-                + format_float(gpu_v1_next[5], 9) + " | "
-                + format_float(gpu_v2_next[5], 9) + " | "
-                + format_float(diff_v1, 9) + " | "
+                String(step)
+                + "    | "
+                + action_str
+                + "  | "
+                + format_float(cpu_next[5], 9)
+                + " | "
+                + format_float(gpu_v1_next[5], 9)
+                + " | "
+                + format_float(gpu_v2_next[5], 9)
+                + " | "
+                + format_float(diff_v1, 9)
+                + " | "
                 + format_float(diff_v2, 9)
             )
 
@@ -512,19 +595,34 @@ fn test_contact(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     var cpu_obs = cpu_env.get_obs_list()
 
     var gpu_v1_state = create_gpu_state_v1(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
     var gpu_v2_state = create_gpu_state_v2(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
 
     var max_drift_v1: Float32 = 0.0
     var max_drift_v2: Float32 = 0.0
     var contact_step = -1
 
-    print("Step | CPU y     | V1 y      | V2 y      | CPU leg_L | V1 leg_L  | V2 leg_L")
+    print(
+        "Step | CPU y     | V1 y      | V2 y      | CPU leg_L | V1 leg_L  | V2"
+        " leg_L"
+    )
     print("-" * 80)
 
     # Let it fall with main engine to slow descent
@@ -569,12 +667,18 @@ fn test_contact(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
         if should_print:
             print(
-                String(step) + "    | "
-                + format_float(cpu_next[1], 9) + " | "
-                + format_float(gpu_v1_next[1], 9) + " | "
-                + format_float(gpu_v2_next[1], 9) + " | "
-                + format_float(cpu_left_contact, 9) + " | "
-                + format_float(v1_left_contact, 9) + " | "
+                String(step)
+                + "    | "
+                + format_float(cpu_next[1], 9)
+                + " | "
+                + format_float(gpu_v1_next[1], 9)
+                + " | "
+                + format_float(gpu_v2_next[1], 9)
+                + " | "
+                + format_float(cpu_left_contact, 9)
+                + " | "
+                + format_float(v1_left_contact, 9)
+                + " | "
                 + format_float(v2_left_contact, 9)
             )
 
@@ -624,12 +728,24 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     var cpu_obs = cpu_env.get_obs_list()
 
     var gpu_v1_state = create_gpu_state_v1(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
     var gpu_v2_state = create_gpu_state_v2(
-        cpu_obs[0], cpu_obs[1], cpu_obs[2], cpu_obs[3],
-        cpu_obs[4], cpu_obs[5], cpu_obs[6], cpu_obs[7]
+        cpu_obs[0],
+        cpu_obs[1],
+        cpu_obs[2],
+        cpu_obs[3],
+        cpu_obs[4],
+        cpu_obs[5],
+        cpu_obs[6],
+        cpu_obs[7],
     )
 
     var max_drift_v1: Float32 = 0.0
@@ -639,7 +755,10 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     var divergence_v1 = List[Float32]()
     var divergence_v2 = List[Float32]()
 
-    print("Using simple control policy: main engine if falling, side engines for angle")
+    print(
+        "Using simple control policy: main engine if falling, side engines for"
+        " angle"
+    )
     print("")
 
     for step in range(150):
@@ -662,8 +781,12 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
         var cpu_next = cpu_result[0].to_list()
         var cpu_done = cpu_result[2]
 
-        var gpu_v1_next = run_gpu_v1_step(ctx, gpu_v1_state, action, step + 1000)
-        var gpu_v2_next = run_gpu_v2_step(ctx, gpu_v2_state, action, step + 1000)
+        var gpu_v1_next = run_gpu_v1_step(
+            ctx, gpu_v1_state, action, step + 1000
+        )
+        var gpu_v2_next = run_gpu_v2_step(
+            ctx, gpu_v2_state, action, step + 1000
+        )
 
         # Compute total state divergence
         var total_diff_v1: Float32 = 0.0
@@ -689,9 +812,15 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
             elif action == 3:
                 action_str = "right"
             print(
-                "Step " + String(step) + " [" + action_str + "]: "
-                + "V1 div=" + format_float(total_diff_v1, 8)
-                + " V2 div=" + format_float(total_diff_v2, 8)
+                "Step "
+                + String(step)
+                + " ["
+                + action_str
+                + "]: "
+                + "V1 div="
+                + format_float(total_diff_v1, 8)
+                + " V2 div="
+                + format_float(total_diff_v2, 8)
             )
 
         if cpu_done:
@@ -738,10 +867,24 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 
         print("")
         print("  Divergence trend:")
-        print("    V1: early=" + format_float(early_v1) + " late=" + format_float(late_v1)
-              + " growth=" + format_float(late_v1 / early_v1 if early_v1 > 0.001 else 0.0) + "x")
-        print("    V2: early=" + format_float(early_v2) + " late=" + format_float(late_v2)
-              + " growth=" + format_float(late_v2 / early_v2 if early_v2 > 0.001 else 0.0) + "x")
+        print(
+            "    V1: early="
+            + format_float(early_v1)
+            + " late="
+            + format_float(late_v1)
+            + " growth="
+            + format_float(late_v1 / early_v1 if early_v1 > 0.001 else 0.0)
+            + "x"
+        )
+        print(
+            "    V2: early="
+            + format_float(early_v2)
+            + " late="
+            + format_float(late_v2)
+            + " growth="
+            + format_float(late_v2 / early_v2 if early_v2 > 0.001 else 0.0)
+            + "x"
+        )
 
     return (max_drift_v1, max_drift_v2)
 
@@ -773,7 +916,9 @@ fn main() raises:
     # Summary
     print_header("DIAGNOSTIC SUMMARY")
     print("")
-    print("Component              | GPU V1 Drift | GPU V2 Drift | Primary Issue")
+    print(
+        "Component              | GPU V1 Drift | GPU V2 Drift | Primary Issue"
+    )
     print("-" * 70)
 
     fn drift_status(d: Float32) -> String:
@@ -786,33 +931,53 @@ fn main() raises:
 
     print(
         "Free-fall (gravity)    | "
-        + format_float(freefall_drift[0], 12) + " | "
-        + format_float(freefall_drift[1], 12) + " | "
-        + drift_status(freefall_drift[0]) + "/" + drift_status(freefall_drift[1])
+        + format_float(freefall_drift[0], 12)
+        + " | "
+        + format_float(freefall_drift[1], 12)
+        + " | "
+        + drift_status(freefall_drift[0])
+        + "/"
+        + drift_status(freefall_drift[1])
     )
     print(
         "Main engine (impulse)  | "
-        + format_float(main_engine_drift[0], 12) + " | "
-        + format_float(main_engine_drift[1], 12) + " | "
-        + drift_status(main_engine_drift[0]) + "/" + drift_status(main_engine_drift[1])
+        + format_float(main_engine_drift[0], 12)
+        + " | "
+        + format_float(main_engine_drift[1], 12)
+        + " | "
+        + drift_status(main_engine_drift[0])
+        + "/"
+        + drift_status(main_engine_drift[1])
     )
     print(
         "Side engine (torque)   | "
-        + format_float(side_engine_drift[0], 12) + " | "
-        + format_float(side_engine_drift[1], 12) + " | "
-        + drift_status(side_engine_drift[0]) + "/" + drift_status(side_engine_drift[1])
+        + format_float(side_engine_drift[0], 12)
+        + " | "
+        + format_float(side_engine_drift[1], 12)
+        + " | "
+        + drift_status(side_engine_drift[0])
+        + "/"
+        + drift_status(side_engine_drift[1])
     )
     print(
         "Contact (landing)      | "
-        + format_float(contact_drift[0], 12) + " | "
-        + format_float(contact_drift[1], 12) + " | "
-        + drift_status(contact_drift[0]) + "/" + drift_status(contact_drift[1])
+        + format_float(contact_drift[0], 12)
+        + " | "
+        + format_float(contact_drift[1], 12)
+        + " | "
+        + drift_status(contact_drift[0])
+        + "/"
+        + drift_status(contact_drift[1])
     )
     print(
         "Full landing sequence  | "
-        + format_float(landing_drift[0], 12) + " | "
-        + format_float(landing_drift[1], 12) + " | "
-        + drift_status(landing_drift[0]) + "/" + drift_status(landing_drift[1])
+        + format_float(landing_drift[0], 12)
+        + " | "
+        + format_float(landing_drift[1], 12)
+        + " | "
+        + drift_status(landing_drift[0])
+        + "/"
+        + drift_status(landing_drift[1])
     )
 
     print("")
@@ -846,8 +1011,20 @@ fn main() raises:
         max_v2 = contact_drift[1]
         worst_component_v2 = "contact"
 
-    print("V1 worst component: " + worst_component_v1 + " (drift=" + format_float(max_v1) + ")")
-    print("V2 worst component: " + worst_component_v2 + " (drift=" + format_float(max_v2) + ")")
+    print(
+        "V1 worst component: "
+        + worst_component_v1
+        + " (drift="
+        + format_float(max_v1)
+        + ")"
+    )
+    print(
+        "V2 worst component: "
+        + worst_component_v2
+        + " (drift="
+        + format_float(max_v2)
+        + ")"
+    )
     print("")
 
     if worst_component_v2 == "contact":
@@ -855,7 +1032,10 @@ fn main() raises:
         print("   - Use impulse-based velocity response instead of damping")
         print("   - Increase contact solver iterations (try 6-8)")
         print("   - Match Box2D's Baumgarte stabilization parameters")
-    elif worst_component_v2 == "main engine" or worst_component_v2 == "side engine":
+    elif (
+        worst_component_v2 == "main engine"
+        or worst_component_v2 == "side engine"
+    ):
         print("-> Focus on improving ENGINE PHYSICS:")
         print("   - Verify torque calculation matches CPU exactly")
         print("   - Check integration order (apply impulse then integrate)")

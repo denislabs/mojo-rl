@@ -1,9 +1,9 @@
 from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
-from math import exp
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.math import exp
 
 
 struct Softmax[dim: Int](Model):

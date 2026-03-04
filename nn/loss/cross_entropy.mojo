@@ -5,10 +5,10 @@
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.primitives import block
-from gpu.host import DeviceContext, DeviceBuffer
-from math import exp, log
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.math import exp, log
 
 
 struct CrossEntropyLoss(LossFunction):
@@ -44,8 +44,12 @@ struct CrossEntropyLoss(LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) -> Float64:
         """Cross-Entropy Loss: per-sample log-softmax, averaged over batch.
 
@@ -60,12 +64,19 @@ struct CrossEntropyLoss(LossFunction):
                     max_val = val
             var sum_exp: Float64 = 0.0
             for col in range(OUT_DIM):
-                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+                sum_exp += exp(
+                    Float64(rebind[Scalar[dtype]](output[row, col])) - max_val
+                )
             var log_sum_exp = max_val + log(sum_exp)
             var sample_loss: Float64 = 0.0
             for col in range(OUT_DIM):
-                var log_sm = Float64(rebind[Scalar[dtype]](output[row, col])) - log_sum_exp
-                sample_loss -= Float64(rebind[Scalar[dtype]](target[row, col])) * log_sm
+                var log_sm = (
+                    Float64(rebind[Scalar[dtype]](output[row, col]))
+                    - log_sum_exp
+                )
+                sample_loss -= (
+                    Float64(rebind[Scalar[dtype]](target[row, col])) * log_sm
+                )
             total_loss += sample_loss
         return total_loss / Float64(BATCH)
 
@@ -74,11 +85,18 @@ struct CrossEntropyLoss(LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        mut grad: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ):
-        """Gradient of Cross-Entropy: dL/dy = (softmax(output) - target) / BATCH."""
+        """Gradient of Cross-Entropy: dL/dy = (softmax(output) - target) / BATCH.
+        """
         for row in range(BATCH):
             var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
             for col in range(1, OUT_DIM):
@@ -87,11 +105,20 @@ struct CrossEntropyLoss(LossFunction):
                     max_val = val
             var sum_exp: Float64 = 0.0
             for col in range(OUT_DIM):
-                sum_exp += exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val)
+                sum_exp += exp(
+                    Float64(rebind[Scalar[dtype]](output[row, col])) - max_val
+                )
             for col in range(OUT_DIM):
-                var sm = exp(Float64(rebind[Scalar[dtype]](output[row, col])) - max_val) / sum_exp
+                var sm = (
+                    exp(
+                        Float64(rebind[Scalar[dtype]](output[row, col]))
+                        - max_val
+                    )
+                    / sum_exp
+                )
                 grad[row, col] = Scalar[dtype](
-                    (sm - Float64(rebind[Scalar[dtype]](target[row, col]))) / Float64(BATCH)
+                    (sm - Float64(rebind[Scalar[dtype]](target[row, col])))
+                    / Float64(BATCH)
                 )
 
     # =========================================================================

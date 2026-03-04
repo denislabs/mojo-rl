@@ -3,7 +3,7 @@
 # =============================================================================
 
 from .constants import LLConstants
-from math import sqrt
+from std.math import sqrt
 
 
 @always_inline

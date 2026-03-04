@@ -6,8 +6,8 @@ holds the fully-populated data parsed from MJCF XML and can populate a Model
 struct via setup_model().
 """
 
-from collections import InlineArray
-from math import sqrt
+from std.collections import InlineArray
+from std.math import sqrt
 from physics3d.types import Model, ConeType
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 

@@ -7,10 +7,10 @@ Run with:
     pixi run -e apple mojo run tests/test_cpu_gpu_physics_match_v2.mojo
 """
 
-from math import cos, sin, sqrt
-from random import seed, random_float64
+from std.math import cos, sin, sqrt
+from std.random import seed, random_float64
 
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from envs.lunar_lander import LunarLanderEnv, LunarLander, LLConstants
 

@@ -6,7 +6,7 @@ This test identifies differences between CPU and GPU physics by:
 3. Comparing resulting states step by step
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from nn import dtype as gpu_dtype
 
@@ -96,7 +96,7 @@ fn extract_gpu_qpos_qvel[
     mut out_qpos: List[Scalar[gpu_dtype]],
     mut out_qvel: List[Scalar[gpu_dtype]],
 ):
-    """Extract qpos and qvel from GPU state buffer."""
+    """Extract qpos and qvel from std.gpu state buffer."""
     comptime QPOS_OFF = qpos_offset[6, 6]()
     comptime QVEL_OFF = qvel_offset[6, 6]()
 

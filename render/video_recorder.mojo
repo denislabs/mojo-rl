@@ -1,6 +1,6 @@
 """Video recorder using Python's imageio library.
 
-Captures frames as BGRA pixel buffers (from GPU readback or SDL surface)
+Captures frames as BGRA pixel buffers (from std.gpu readback or SDL surface)
 and encodes them into a video file (MP4 / GIF) via imageio.
 
 Usage:

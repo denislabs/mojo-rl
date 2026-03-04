@@ -14,8 +14,8 @@ For each body b:
 No model buffer access required — pure state-buffer to state-buffer computation.
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 from .constants import (

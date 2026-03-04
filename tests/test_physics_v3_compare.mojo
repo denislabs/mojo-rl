@@ -4,10 +4,10 @@ Run with:
     pixi run -e apple mojo run tests/test_physics_v3_compare.mojo
 """
 
-from math import sqrt
-from random import seed
+from std.math import sqrt
+from std.random import seed
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from envs.lunar_lander import LunarLanderEnv
 from envs.lunar_lander_gpu_v3 import LunarLanderGPUv3, gpu_dtype
@@ -44,7 +44,9 @@ fn run_gpu_step(
     comptime BATCH_SIZE = 1
     comptime STATE_SIZE = 8
 
-    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * STATE_SIZE)
+    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
+        BATCH_SIZE * STATE_SIZE
+    )
     var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
@@ -159,8 +161,12 @@ fn main() raises:
             elif action == 3:
                 action_str = "right"
             print(
-                String(step) + "    | " + action_str + "  | "
-                + format_float(total_diff, 10) + " | "
+                String(step)
+                + "    | "
+                + action_str
+                + "  | "
+                + format_float(total_diff, 10)
+                + " | "
                 + state_names[worst_idx]
             )
 
@@ -180,8 +186,17 @@ fn main() raises:
     print("-" * 40)
     var total_max: Float32 = 0.0
     for j in range(8):
-        var status = "OK" if max_drift[j] < 0.1 else ("MODERATE" if max_drift[j] < 0.5 else "HIGH")
-        print("  " + state_names[j] + ": " + format_float(max_drift[j], 10) + " " + status)
+        var status = "OK" if max_drift[j] < 0.1 else (
+            "MODERATE" if max_drift[j] < 0.5 else "HIGH"
+        )
+        print(
+            "  "
+            + state_names[j]
+            + ": "
+            + format_float(max_drift[j], 10)
+            + " "
+            + status
+        )
         total_max += max_drift[j]
     print("")
     print("Total max drift: " + format_float(total_max))

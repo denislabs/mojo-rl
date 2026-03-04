@@ -23,8 +23,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -81,8 +81,22 @@ fn compare_qacc0(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -265,21 +279,33 @@ fn compare_qacc0(
         var ok = abs_err < ABS_TOL or rel_err < REL_TOL
         if not ok:
             print(
-                "  FAIL qacc0[", i, "]",
-                " ours=", our_val,
-                " mj=", mj_val,
-                " abs_err=", abs_err,
-                " rel_err=", rel_err,
+                "  FAIL qacc0[",
+                i,
+                "]",
+                " ours=",
+                our_val,
+                " mj=",
+                mj_val,
+                " abs_err=",
+                abs_err,
+                " rel_err=",
+                rel_err,
             )
             fail_count += 1
             all_pass = False
 
     if all_pass:
-        print("  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err
+        )
     else:
         print(
-            "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
-            " max_rel_err=", max_rel_err,
+            "  FAILED",
+            fail_count,
+            "elements  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
         )
         assert_true(False, "compare_qacc0 failed for: " + test_name)
 
@@ -359,17 +385,17 @@ fn test_with_actions() raises:
 fn test_nonzero_vel() raises:
     """Non-zero joints + velocity — qacc0 includes Coriolis + damping."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # rootx
-    qpos[1] = 0.7   # rootz
-    qpos[2] = 0.1   # rooty
+    qpos[0] = 1.0  # rootx
+    qpos[1] = 0.7  # rootz
+    qpos[2] = 0.1  # rooty
     qpos[3] = -0.3  # bthigh
-    qpos[6] = 0.4   # fthigh
+    qpos[6] = 0.4  # fthigh
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 2.0   # rootx vel (running)
-    qvel[2] = 0.5   # rooty vel (pitching)
+    qvel[0] = 2.0  # rootx vel (running)
+    qvel[2] = 0.5  # rooty vel (pitching)
     qvel[3] = -1.0  # bthigh vel
-    qvel[4] = 0.8   # bshin vel
-    qvel[6] = 1.2   # fthigh vel
+    qvel[4] = 0.8  # bshin vel
+    qvel[6] = 1.2  # fthigh vel
     qvel[7] = -0.6  # fshin vel
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     compare_qacc0("Nonzero vel (Coriolis + damping)", qpos, qvel, actions)
@@ -406,7 +432,8 @@ fn test_full_combo() raises:
 
 fn test_ground_contact_pose() raises:
     """Ground contact pose — qacc0 should not be affected by contacts.
-    (contacts affect qacc via solver, but qacc0 = unconstrained acceleration)."""
+    (contacts affect qacc via solver, but qacc0 = unconstrained acceleration).
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz low — touches ground
     var qvel = InlineArray[Float64, NV](fill=0.0)

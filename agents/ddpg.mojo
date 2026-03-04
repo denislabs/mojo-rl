@@ -47,8 +47,8 @@ Example usage:
         agent.update(batch)
 """
 
-from math import exp, tanh, sqrt, cos
-from random import random_float64
+from std.math import exp, tanh, sqrt, cos
+from std.random import random_float64
 from core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
@@ -774,7 +774,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
 
 fn _log(x: Float64) -> Float64:
     """Natural logarithm."""
-    from math import log
+    from std.math import log
 
     return log(x)
 

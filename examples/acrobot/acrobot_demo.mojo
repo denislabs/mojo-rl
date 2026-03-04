@@ -4,7 +4,7 @@ Run with: pixi run mojo run examples/acrobot_demo.mojo
 """
 
 from envs import AcrobotEnv, AcrobotAction
-from random import random_float64
+from std.random import random_float64
 
 
 fn main() raises:

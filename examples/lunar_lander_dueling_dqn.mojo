@@ -30,7 +30,7 @@ Expected performance:
 LunarLander is solved when average reward > 200 over 100 episodes.
 """
 
-from random import seed
+from std.random import seed
 
 from envs.lunar_lander import LunarLanderEnv
 from deep_agents.dueling_dqn import DuelingDQNAgent

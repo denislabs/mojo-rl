@@ -3,7 +3,7 @@
 Simple value types with no SDL library dependency.
 """
 
-from memory import UnsafePointer
+from std.memory import UnsafePointer
 
 
 struct SDLHandle(ImplicitlyCopyable, Movable):

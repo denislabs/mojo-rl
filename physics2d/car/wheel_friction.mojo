@@ -15,7 +15,7 @@ Physics Overview:
 Reference: gymnasium/envs/box2d/car_dynamics.py, lines 171-266
 """
 
-from math import sqrt, cos, sin
+from std.math import sqrt, cos, sin
 from layout import LayoutTensor, Layout
 
 from .constants import (

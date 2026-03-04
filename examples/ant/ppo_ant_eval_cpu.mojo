@@ -10,8 +10,8 @@ Run with:
     pixi run mojo run tests/test_ppo_ant_continuous_eval_cpu.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.ant import (

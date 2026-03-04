@@ -11,8 +11,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.kinematics.forward_kinematics import (
@@ -28,7 +28,10 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
 )
 from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
+from physics3d.constraints.constraint_builder import (
+    build_constraints,
+    writeback_forces,
+)
 from physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -119,12 +122,23 @@ fn compare_vector(
 
     if all_ok:
         print(
-            "  ", label, " ALL OK  max_abs=", max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " ALL OK  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     else:
         print(
-            "  ", label, " FAILED", fail_count, " elements  max_abs=",
-            max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " FAILED",
+            fail_count,
+            " elements  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     assert_true(all_ok, label + " mismatch")
 
@@ -144,9 +158,21 @@ fn compare_solver_forces(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        HopperModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -285,7 +311,7 @@ fn compare_solver_forces(
 
     # 10. Build constraints
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=HopperModel.CONE_TYPE](
+    build_constraints[CONE_TYPE = HopperModel.CONE_TYPE](
         model, data, cdof, M_inv, dt, constraints
     )
 
@@ -297,9 +323,17 @@ fn compare_solver_forces(
 
     var our_ncon = data.num_contacts
     print(
-        "  Our: contacts=", our_ncon,
-        " rows=", constraints.num_rows,
-        " (N:", constraints.num_normals, " F:", constraints.num_friction, " L:", constraints.num_limits, ")",
+        "  Our: contacts=",
+        our_ncon,
+        " rows=",
+        constraints.num_rows,
+        " (N:",
+        constraints.num_normals,
+        " F:",
+        constraints.num_friction,
+        " L:",
+        constraints.num_limits,
+        ")",
     )
 
     # Save qacc0
@@ -308,7 +342,7 @@ fn compare_solver_forces(
         qacc0.append(qacc[i])
 
     # 12. Solve constraints
-    NewtonSolver.solve[CONE_TYPE=HopperModel.CONE_TYPE](
+    NewtonSolver.solve[CONE_TYPE = HopperModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -327,13 +361,11 @@ fn compare_solver_forces(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
-    )
+    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_model.opt.cone = 1       # elliptic (matches HopperModel)
-    mj_model.opt.solver = 2     # Newton
-    mj_model.opt.integrator = 0 # Euler
+    mj_model.opt.cone = 1  # elliptic (matches HopperModel)
+    mj_model.opt.solver = 2  # Newton
+    mj_model.opt.integrator = 0  # Euler
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -370,13 +402,23 @@ fn compare_solver_forces(
         )
 
     var our_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, qacc, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        qacc,
+        qacc0,
+        f_net,
+        M,
     )
     var mj_qacc_typed = List[Scalar[DTYPE]](capacity=V_SIZE)
     for i in range(NV):
         mj_qacc_typed.append(Scalar[DTYPE](mj_qacc[i]))
     var mj_cost = compute_total_cost_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
-        constraints, D_vals_cmp, mj_qacc_typed, qacc0, f_net, M,
+        constraints,
+        D_vals_cmp,
+        mj_qacc_typed,
+        qacc0,
+        f_net,
+        M,
     )
 
     print("  --- Cost comparison ---")
@@ -400,9 +442,7 @@ fn compare_solver_forces(
 
     print()
     print("  --- qacc (NV) ---")
-    compare_vector(
-        "qacc", our_qacc, mj_qacc, QACC_ABS_TOL, QACC_REL_TOL
-    )
+    compare_vector("qacc", our_qacc, mj_qacc, QACC_ABS_TOL, QACC_REL_TOL)
 
     print("  Our qacc:", end="")
     for i in range(NV):
@@ -430,10 +470,16 @@ fn compare_solver_forces(
         else:
             ctype_str = "? "
         print(
-            "    our[", r, "] type=", ctype_str,
-            " lambda=", Float64(constraints.rows[r].lambda_val),
-            " K=", Float64(constraints.rows[r].K),
-            " bias=", Float64(constraints.rows[r].bias),
+            "    our[",
+            r,
+            "] type=",
+            ctype_str,
+            " lambda=",
+            Float64(constraints.rows[r].lambda_val),
+            " K=",
+            Float64(constraints.rows[r].K),
+            " bias=",
+            Float64(constraints.rows[r].bias),
         )
 
     var mj_efc_force_flat = mj_data.efc_force.flatten().tolist()
@@ -455,11 +501,19 @@ fn compare_solver_forces(
         for i in range(NV):
             j_str += " " + String(Float64(py=mj_efc_J_flat[r * NV + i]))
         print(
-            "    mj [", r, "] type=", tstr,
-            " force=", Float64(py=mj_efc_force_flat[r]),
-            " D=", Float64(py=mj_efc_D_flat[r]),
-            " aref=", Float64(py=mj_efc_aref_flat[r]),
-            " J=[", j_str, "]",
+            "    mj [",
+            r,
+            "] type=",
+            tstr,
+            " force=",
+            Float64(py=mj_efc_force_flat[r]),
+            " D=",
+            Float64(py=mj_efc_D_flat[r]),
+            " aref=",
+            Float64(py=mj_efc_aref_flat[r]),
+            " J=[",
+            j_str,
+            "]",
         )
     print()
     print("  --- Our Jacobian rows for active constraints ---")
@@ -494,7 +548,7 @@ fn test_low_pose_moving() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 2.0   # moving forward
+    qvel[0] = 2.0  # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # thigh rotating
     compare_solver_forces("Low pose moving", qpos, qvel)
@@ -512,9 +566,9 @@ fn test_bent_joints() raises:
     """Bent joints — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
-    qpos[3] = -0.5   # thigh bent
-    qpos[4] = 0.5    # leg extended
-    qpos[5] = -0.3   # foot bent
+    qpos[3] = -0.5  # thigh bent
+    qpos[4] = 0.5  # leg extended
+    qpos[5] = -0.3  # foot bent
     var qvel = InlineArray[Float64, NV](fill=0.0)
     compare_solver_forces("Bent joints", qpos, qvel)
 

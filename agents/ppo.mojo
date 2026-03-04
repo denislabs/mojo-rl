@@ -45,8 +45,8 @@ Example usage:
     agent.update(next_tiles, done)
 """
 
-from math import exp, log
-from random import random_float64
+from std.math import exp, log
+from std.random import random_float64
 from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 from core.utils.gae import compute_gae, compute_returns_from_advantages

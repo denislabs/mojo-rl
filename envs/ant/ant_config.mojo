@@ -1,6 +1,6 @@
 """Ant environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -36,7 +36,7 @@ struct AntConfig(Phyics3dEnvConfig):
     comptime MAX_HEIGHT: Scalar[DType.float64] = 1.0
 
     # Dimensions
-    comptime OBS_DIM: Int = 27   # qpos[2:15] + qvel[0:14]
+    comptime OBS_DIM: Int = 27  # qpos[2:15] + qvel[0:14]
     comptime ACTION_DIM: Int = 8
 
     # === CPU: Integrator step ===

@@ -16,9 +16,9 @@ Note: MuJoCo 3.3.6 includes Coriolis derivatives for ImplicitFast, causing
 3.4.x per the original design intent (see MuJoCo 3.0 changelog).
 """
 
-from math import sqrt
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.math import sqrt
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one

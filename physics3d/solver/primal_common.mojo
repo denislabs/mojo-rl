@@ -15,7 +15,7 @@ Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
            mujoco-main/src/engine/engine_core_constraint.c (mj_constraintUpdate_impl)
 """
 
-from math import sqrt, max
+from std.math import sqrt, max
 from ..types import _max_one
 from ..constraints.constraint_data import (
     CNSTR_NORMAL,

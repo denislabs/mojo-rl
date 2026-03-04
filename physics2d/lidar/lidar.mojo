@@ -4,10 +4,10 @@ Implements ray-edge intersection testing for lidar sensor simulation.
 Casts rays from the hull and detects terrain intersections.
 """
 
-from math import sqrt, sin, cos, pi
+from std.math import sqrt, sin, cos, pi
 from layout import Layout, LayoutTensor
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import dtype, TPB
 
@@ -64,7 +64,12 @@ struct Lidar:
         var u = (ray_dx * dy - ray_dy * dx) / denom  # Parameter along edge
 
         # Check if intersection is valid (t in [0, 1], u in [0, 1])
-        if t >= Scalar[dtype](0.0) and t <= Scalar[dtype](1.0) and u >= Scalar[dtype](0.0) and u <= Scalar[dtype](1.0):
+        if (
+            t >= Scalar[dtype](0.0)
+            and t <= Scalar[dtype](1.0)
+            and u >= Scalar[dtype](0.0)
+            and u <= Scalar[dtype](1.0)
+        ):
             return t
 
         return Scalar[dtype](-1.0)
@@ -107,7 +112,11 @@ struct Lidar:
         # Looking downward/forward from the hull
         for i in range(NUM_LIDAR):
             # Angle relative to hull: 0 to 1.5 radians
-            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](NUM_LIDAR - 1)
+            var local_angle = (
+                Scalar[dtype](i)
+                * Scalar[dtype](1.5)
+                / Scalar[dtype](NUM_LIDAR - 1)
+            )
             var world_angle = hull_angle - local_angle - Scalar[dtype](pi / 2.0)
 
             # Ray direction (downward/forward)
@@ -128,8 +137,14 @@ struct Lidar:
                 var edge_y1 = state[0, edge_off + 3]
 
                 var t = Lidar._ray_edge_intersection(
-                    hull_x, hull_y, ray_dx, ray_dy,
-                    edge_x0, edge_y0, edge_x1, edge_y1,
+                    hull_x,
+                    hull_y,
+                    ray_dx,
+                    ray_dy,
+                    edge_x0,
+                    edge_y0,
+                    edge_x1,
+                    edge_y1,
                 )
 
                 if t >= Scalar[dtype](0.0) and t < min_t:
@@ -182,7 +197,11 @@ struct Lidar:
 
         for i in range(NUM_LIDAR):
             # Angle relative to hull: 0 to 1.5 radians
-            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](NUM_LIDAR - 1)
+            var local_angle = (
+                Scalar[dtype](i)
+                * Scalar[dtype](1.5)
+                / Scalar[dtype](NUM_LIDAR - 1)
+            )
             var world_angle = hull_angle - local_angle - Scalar[dtype](pi / 2.0)
 
             # Ray direction
@@ -203,8 +222,14 @@ struct Lidar:
                 var edge_y1 = state[env, edge_off + 3]
 
                 var t = Lidar._ray_edge_intersection(
-                    hull_x, hull_y, ray_dx, ray_dy,
-                    edge_x0, edge_y0, edge_x1, edge_y1,
+                    hull_x,
+                    hull_y,
+                    ray_dx,
+                    ray_dy,
+                    edge_x0,
+                    edge_y0,
+                    edge_x1,
+                    edge_y1,
                 )
 
                 if t >= Scalar[dtype](0.0) and t < min_t:
@@ -249,8 +274,14 @@ struct Lidar:
         var hull_angle = state[env, hull_off + 2]  # IDX_ANGLE
 
         Lidar.raycast_env_gpu[
-            BATCH, STATE_SIZE, OBS_DIM, EDGES_OFFSET, EDGE_COUNT_OFFSET,
-            LIDAR_START_IDX, NUM_LIDAR, MAX_EDGES,
+            BATCH,
+            STATE_SIZE,
+            OBS_DIM,
+            EDGES_OFFSET,
+            EDGE_COUNT_OFFSET,
+            LIDAR_START_IDX,
+            NUM_LIDAR,
+            MAX_EDGES,
         ](env, state, obs, hull_x, hull_y, hull_angle, lidar_range)
 
     @staticmethod
@@ -299,8 +330,15 @@ struct Lidar:
             lidar_range: Scalar[dtype],
         ):
             Lidar._raycast_kernel[
-                BATCH, STATE_SIZE, OBS_DIM, BODIES_OFFSET, EDGES_OFFSET,
-                EDGE_COUNT_OFFSET, LIDAR_START_IDX, NUM_LIDAR, MAX_EDGES,
+                BATCH,
+                STATE_SIZE,
+                OBS_DIM,
+                BODIES_OFFSET,
+                EDGES_OFFSET,
+                EDGE_COUNT_OFFSET,
+                LIDAR_START_IDX,
+                NUM_LIDAR,
+                MAX_EDGES,
             ](state, obs, lidar_range)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

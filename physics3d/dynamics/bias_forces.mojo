@@ -10,7 +10,7 @@ For simple HINGE chains (pendulums), the gravity term dominates:
 Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 """
 
-from math import sin, cos
+from std.math import sin, cos
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one, ConeType
@@ -1217,7 +1217,7 @@ fn compute_bias_forces_rne_gpu[
 ):
     """Compute bias forces using full RNE algorithm (GPU version).
 
-    Same algorithm as compute_bias_forces_rne but reads from GPU LayoutTensors.
+    Same algorithm as compute_bias_forces_rne but reads from std.gpu LayoutTensors.
     Computes b(q, qvel) = C(q, qvel)*qvel + g(q).
     Reads cdof from workspace, writes bias to workspace.
     """

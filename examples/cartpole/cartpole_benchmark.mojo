@@ -5,11 +5,11 @@ Compares:
 2. Learning performance (final reward)
 """
 
-from time import perf_counter_ns
+from std.time import perf_counter_ns
 from envs.gymnasium import GymCartPoleEnv
 from envs import CartPoleEnv
 from agents.qlearning import QLearningAgent
-from random import seed
+from std.random import seed
 
 
 fn compute_total_steps(steps: List[Int]) -> Int:

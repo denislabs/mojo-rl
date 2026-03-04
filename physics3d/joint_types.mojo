@@ -9,7 +9,7 @@ Joint types define how DOFs are added to the kinematic chain:
 Reference: MuJoCo joint types (mjJNT_FREE, mjJNT_BALL, mjJNT_SLIDE, mjJNT_HINGE)
 """
 
-from math import sqrt
+from std.math import sqrt
 
 # =============================================================================
 # Joint Type Constants
@@ -108,7 +108,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_z=Scalar[Self.DTYPE](0),
             tau_limit=Scalar[Self.DTYPE](1000.0),
             range_min=Scalar[Self.DTYPE](-1e10),  # Effectively unlimited
-            range_max=Scalar[Self.DTYPE](1e10),   # Effectively unlimited
+            range_max=Scalar[Self.DTYPE](1e10),  # Effectively unlimited
             armature=Scalar[Self.DTYPE](0),
             damping=Scalar[Self.DTYPE](0),
             stiffness=Scalar[Self.DTYPE](0),

@@ -34,8 +34,8 @@ Usage:
 Reference: Wang et al. "Dueling Network Architectures for Deep RL" (2016)
 """
 
-from math import exp
-from random import random_float64, seed
+from std.math import exp
+from std.randomndom import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
@@ -116,12 +116,12 @@ struct DuelingDQNAgent[
     comptime AdvNet = Network[Self.AdvModel, Adam[Self.lr]]
 
     # Network states
-    var backbone_online:  NetworkState[Self.BackboneModel, Adam[Self.lr]]
-    var backbone_target:  NetworkState[Self.BackboneModel, Adam[Self.lr]]
-    var value_online:     NetworkState[Self.ValueModel,    Adam[Self.lr]]
-    var value_target:     NetworkState[Self.ValueModel,    Adam[Self.lr]]
-    var adv_online:       NetworkState[Self.AdvModel,      Adam[Self.lr]]
-    var adv_target:       NetworkState[Self.AdvModel,      Adam[Self.lr]]
+    var backbone_online: NetworkState[Self.BackboneModel, Adam[Self.lr]]
+    var backbone_target: NetworkState[Self.BackboneModel, Adam[Self.lr]]
+    var value_online: NetworkState[Self.ValueModel, Adam[Self.lr]]
+    var value_target: NetworkState[Self.ValueModel, Adam[Self.lr]]
+    var adv_online: NetworkState[Self.AdvModel, Adam[Self.lr]]
+    var adv_target: NetworkState[Self.AdvModel, Adam[Self.lr]]
 
     # Replay buffer (action_dim=1 for discrete actions stored as scalar)
     var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
@@ -318,7 +318,9 @@ struct DuelingDQNAgent[
         done: Bool,
     ):
         """Store a transition in the replay buffer."""
-        var action_arr = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](action))
+        var action_arr = InlineArray[Scalar[dtype], 1](
+            fill=Scalar[dtype](action)
+        )
         self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
         self.total_steps += 1
 
@@ -352,17 +354,23 @@ struct DuelingDQNAgent[
             uninitialized=True
         )
 
-        var batch_act_flat = InlineArray[
-            Scalar[dtype], Self.BATCH * 1
-        ](uninitialized=True)
+        var batch_act_flat = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
         self.buffer.sample[Self.BATCH](
-            batch_obs, batch_act_flat, batch_rewards, batch_next_obs, batch_dones
+            batch_obs,
+            batch_act_flat,
+            batch_rewards,
+            batch_next_obs,
+            batch_dones,
         )
         for i in range(Self.BATCH):
             batch_act1[i] = batch_act_flat[i]
 
         # --- Phase 2: Compute TD targets ---
-        var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
         comptime if Self.double_dqn:
             var online_next_q = InlineArray[
@@ -430,7 +438,9 @@ struct DuelingDQNAgent[
             MutAnyOrigin,
         ](backbone_cache_arr.unsafe_ptr())
         var pb = self.backbone_online.params_view()
-        Self.BackboneNet.forward_with_cache[Self.BATCH](obs_t, h2_t, pb, backbone_cache_t)
+        Self.BackboneNet.forward_with_cache[Self.BATCH](
+            obs_t, h2_t, pb, backbone_cache_t
+        )
 
         # Value head
         var v_arr = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
@@ -446,7 +456,9 @@ struct DuelingDQNAgent[
             MutAnyOrigin,
         ](value_cache_arr.unsafe_ptr())
         var pv = self.value_online.params_view()
-        Self.ValueNet.forward_with_cache[Self.BATCH](h2_t, v_t, pv, value_cache_t)
+        Self.ValueNet.forward_with_cache[Self.BATCH](
+            h2_t, v_t, pv, value_cache_t
+        )
 
         # Advantage head
         var adv_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
@@ -519,36 +531,40 @@ struct DuelingDQNAgent[
         var dv_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
         ](dv_arr.unsafe_ptr())
-        var dh2_from_v_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
-            uninitialized=True
-        )
+        var dh2_from_v_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.HIDDEN
+        ](uninitialized=True)
         var dh2_from_v_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
         ](dh2_from_v_arr.unsafe_ptr())
         var gv = self.value_online.grads_view()
         self.value_online.zero_grads()
-        Self.ValueNet.backward[Self.BATCH](dv_t, dh2_from_v_t, pv, value_cache_t, gv)
+        Self.ValueNet.backward[Self.BATCH](
+            dv_t, dh2_from_v_t, pv, value_cache_t, gv
+        )
         self.value_online.optimizer_step()
 
         # Backward advantage head: dh2_from_a
         var da_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
         ](da_arr.unsafe_ptr())
-        var dh2_from_a_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
-            uninitialized=True
-        )
+        var dh2_from_a_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.HIDDEN
+        ](uninitialized=True)
         var dh2_from_a_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
         ](dh2_from_a_arr.unsafe_ptr())
         var ga = self.adv_online.grads_view()
         self.adv_online.zero_grads()
-        Self.AdvNet.backward[Self.BATCH](da_t, dh2_from_a_t, pa, adv_cache_t, ga)
+        Self.AdvNet.backward[Self.BATCH](
+            da_t, dh2_from_a_t, pa, adv_cache_t, ga
+        )
         self.adv_online.optimizer_step()
 
         # Combine gradients from both streams for backbone backward
-        var dh2_combined_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.HIDDEN](
-            uninitialized=True
-        )
+        var dh2_combined_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.HIDDEN
+        ](uninitialized=True)
         var dh2_combined_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
         ](dh2_combined_arr.unsafe_ptr())
@@ -564,7 +580,9 @@ struct DuelingDQNAgent[
         ](dobs_arr.unsafe_ptr())
         var gb = self.backbone_online.grads_view()
         self.backbone_online.zero_grads()
-        Self.BackboneNet.backward[Self.BATCH](dh2_combined_t, dobs_t, pb, backbone_cache_t, gb)
+        Self.BackboneNet.backward[Self.BATCH](
+            dh2_combined_t, dobs_t, pb, backbone_cache_t, gb
+        )
         self.backbone_online.optimizer_step()
 
         # --- Phase 6: Soft update target networks ---
@@ -626,15 +644,23 @@ struct DuelingDQNAgent[
         )
 
         # Warmup
-        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](
+            uninitialized=True
+        )
+        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](
+            uninitialized=True
+        )
         fill_inline(env.reset_obs_list(), warmup_obs)
         var warmup_count = 0
         while warmup_count < warmup_steps:
-            var action = Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
+            var action = (
+                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
+            )
             var result = env.step_obs(action)
             fill_inline(result[0], warmup_next)
-            self.store_transition(warmup_obs, action, Float64(result[1]), warmup_next, result[2])
+            self.store_transition(
+                warmup_obs, action, Float64(result[1]), warmup_next, result[2]
+            )
             fill_inline(result[0], warmup_obs)
             warmup_count += 1
             if result[2]:
@@ -791,12 +817,15 @@ struct DuelingDQNAgent[
             write_metadata_section,
             save_checkpoint_file,
         )
+
         var param_size = (
             Self.BackboneModel.PARAM_SIZE
             + Self.ValueModel.PARAM_SIZE
             + Self.AdvModel.PARAM_SIZE
         )
-        var content = write_checkpoint_header("dueling_dqn", param_size, param_size)
+        var content = write_checkpoint_header(
+            "dueling_dqn", param_size, param_size
+        )
         content += self.backbone_online.write_sections("backbone_online_")
         content += self.backbone_target.write_sections("backbone_target_")
         content += self.value_online.write_sections("value_online_")
@@ -820,6 +849,7 @@ struct DuelingDQNAgent[
             read_metadata_section,
             get_metadata_value,
         )
+
         var content = read_checkpoint_file(filepath)
         self.backbone_online.read_sections(content, "backbone_online_")
         self.backbone_target.read_sections(content, "backbone_target_")

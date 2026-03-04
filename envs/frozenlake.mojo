@@ -1,5 +1,5 @@
 from core import State, Action, Env, DiscreteEnv, RenderableEnv
-from random import random_float64
+from std.random import random_float64
 
 
 @fieldwise_init
@@ -8,11 +8,11 @@ struct FrozenState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var position: Int  # Flat index (0 to size*size - 1)
 
-    fn __copyinit__(out self, existing: Self):
-        self.position = existing.position
+    fn __init__(out self, *, copy: Self):
+        self.position = copy.position
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.position = existing.position
+    fn __init__(out self, *, deinit take: Self):
+        self.position = take.position
 
     fn __eq__(self, other: Self) -> Bool:
         return self.position == other.position
@@ -24,11 +24,11 @@ struct FrozenAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, *, copy: Self):
+        self.direction = copy.direction
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, *, deinit take: Self):
+        self.direction = take.direction
 
     @staticmethod
     fn left() -> Self:

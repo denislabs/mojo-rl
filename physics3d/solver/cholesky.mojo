@@ -12,7 +12,7 @@ Functions:
 - chol_rank1_update: Rank-1 update H ← H ± v*v^T with Cholesky factor update
 """
 
-from math import sqrt
+from std.math import sqrt
 from ..types import _max_one
 
 
@@ -78,7 +78,10 @@ fn chol_factor_inline[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
-](H: InlineArray[Scalar[DTYPE], M_SIZE], mut L: InlineArray[Scalar[DTYPE], M_SIZE],):
+](
+    H: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
+):
     """In-place Cholesky factorization: L*L^T = H (lower triangular), GPU-compatible.
 
     Same algorithm as chol_factor but operates on InlineArrays so it can be

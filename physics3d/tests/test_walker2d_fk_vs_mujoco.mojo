@@ -23,8 +23,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -36,11 +36,11 @@ from envs.walker2d.walker2d_xml import Walker2dModel
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = Walker2dModel.NQ          # 9
-comptime NV = Walker2dModel.NV          # 9
-comptime NBODY = Walker2dModel.NBODY    # 8
+comptime NQ = Walker2dModel.NQ  # 9
+comptime NV = Walker2dModel.NV  # 9
+comptime NBODY = Walker2dModel.NBODY  # 8
 comptime NJOINT = Walker2dModel.NJOINT  # 9
-comptime NGEOM = Walker2dModel.NGEOM    # 8
+comptime NGEOM = Walker2dModel.NGEOM  # 8
 comptime MAX_CONTACTS = Walker2dModel.MAX_CONTACTS  # 20
 
 # Tolerance for comparison (float64)
@@ -149,12 +149,16 @@ fn compare_fk(
         var mj_qz = Float64(py=mj_xquat_flat[b * 4 + 3])
 
         var diff_pos = (
-            abs(our_qx - mj_qx) + abs(our_qy - mj_qy)
-            + abs(our_qz - mj_qz) + abs(our_qw - mj_qw)
+            abs(our_qx - mj_qx)
+            + abs(our_qy - mj_qy)
+            + abs(our_qz - mj_qz)
+            + abs(our_qw - mj_qw)
         )
         var diff_neg = (
-            abs(our_qx + mj_qx) + abs(our_qy + mj_qy)
-            + abs(our_qz + mj_qz) + abs(our_qw + mj_qw)
+            abs(our_qx + mj_qx)
+            + abs(our_qy + mj_qy)
+            + abs(our_qz + mj_qz)
+            + abs(our_qw + mj_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
 
@@ -210,7 +214,7 @@ fn test_fk_large_rootx() raises:
     """FK with large horizontal displacement — torso moved 5m forward.
     Validates that translation doesn't accumulate floating-point errors."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 5.0   # rootx: 5m forward
+    qpos[0] = 5.0  # rootx: 5m forward
     qpos[1] = 1.25  # rootz: standing height
     compare_fk("Large rootx (5m)", qpos)
 
@@ -221,10 +225,10 @@ fn test_fk_bent_right_leg() raises:
     foot_joint (pos='-0.2 0 0.1') — the same structure that exposed
     the cdof anchor bug in Hopper."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = 1.25   # rootz
-    qpos[3] = -0.5   # thigh_joint (backward bend, axis=-y)
-    qpos[4] = 0.5    # leg_joint (forward flex)
-    qpos[5] = -0.2   # foot_joint
+    qpos[1] = 1.25  # rootz
+    qpos[3] = -0.5  # thigh_joint (backward bend, axis=-y)
+    qpos[4] = 0.5  # leg_joint (forward flex)
+    qpos[5] = -0.2  # foot_joint
     compare_fk("Right leg bent (thigh=-0.5, leg=0.5, foot=-0.2)", qpos)
 
 
@@ -232,15 +236,15 @@ fn test_fk_symmetric_gait() raises:
     """FK with both legs bent symmetrically — typical walking pose.
     Tests the full body tree with all joints active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0    # rootx: 1m forward
-    qpos[1] = 1.25   # rootz: standing height
-    qpos[2] = 0.1    # rooty: slight forward lean
-    qpos[3] = -0.5   # thigh_joint (right, backward)
-    qpos[4] = 0.5    # leg_joint (right, forward)
-    qpos[5] = -0.2   # foot_joint (right)
-    qpos[6] = -0.3   # thigh_left_joint (stepping forward)
-    qpos[7] = 0.3    # leg_left_joint
-    qpos[8] = -0.1   # foot_left_joint
+    qpos[0] = 1.0  # rootx: 1m forward
+    qpos[1] = 1.25  # rootz: standing height
+    qpos[2] = 0.1  # rooty: slight forward lean
+    qpos[3] = -0.5  # thigh_joint (right, backward)
+    qpos[4] = 0.5  # leg_joint (right, forward)
+    qpos[5] = -0.2  # foot_joint (right)
+    qpos[6] = -0.3  # thigh_left_joint (stepping forward)
+    qpos[7] = 0.3  # leg_left_joint
+    qpos[8] = -0.1  # foot_left_joint
     compare_fk("Symmetric gait pose (both legs bent)", qpos)
 
 
@@ -248,14 +252,16 @@ fn test_fk_extreme_joints() raises:
     """FK near joint limits: thighs at max backward bend, feet angled.
     Tests large rotations in the multi-level hinge chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = 1.25   # rootz
-    qpos[2] = -0.3   # rooty: lean back
-    qpos[3] = -2.0   # thigh_joint: near -150 deg limit (in radians: -2.0 ≈ -114 deg)
-    qpos[4] = 1.5    # leg_joint: bent far forward
-    qpos[5] = 0.7    # foot_joint: near +45 deg limit
-    qpos[6] = -2.0   # thigh_left_joint
-    qpos[7] = 1.5    # leg_left_joint
-    qpos[8] = 0.7    # foot_left_joint
+    qpos[1] = 1.25  # rootz
+    qpos[2] = -0.3  # rooty: lean back
+    qpos[
+        3
+    ] = -2.0  # thigh_joint: near -150 deg limit (in radians: -2.0 ≈ -114 deg)
+    qpos[4] = 1.5  # leg_joint: bent far forward
+    qpos[5] = 0.7  # foot_joint: near +45 deg limit
+    qpos[6] = -2.0  # thigh_left_joint
+    qpos[7] = 1.5  # leg_left_joint
+    qpos[8] = 0.7  # foot_left_joint
     compare_fk("Extreme joints (near limits)", qpos)
 
 

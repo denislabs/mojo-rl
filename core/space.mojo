@@ -1,4 +1,4 @@
-from random import random_si64
+from std.random import random_si64
 
 
 trait Space:
@@ -37,7 +37,11 @@ struct BoxSpace[dim: Int]:
     var low: SIMD[DType.float64, Self.dim]
     var high: SIMD[DType.float64, Self.dim]
 
-    fn __init__(out self, low: SIMD[DType.float64, Self.dim], high: SIMD[DType.float64, Self.dim]):
+    fn __init__(
+        out self,
+        low: SIMD[DType.float64, Self.dim],
+        high: SIMD[DType.float64, Self.dim],
+    ):
         self.low = low
         self.high = high
 

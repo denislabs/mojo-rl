@@ -23,8 +23,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
@@ -572,10 +572,12 @@ fn compare_pyramidal_solver(
     var D_vals_cmp = List[Scalar[DTYPE]](capacity=MR)
     for r_cmp in range(MAX_ROWS):
         if r_cmp < constraints.num_rows:
-            D_vals_cmp.append(primal_D(
-                constraints.rows[r_cmp].inv_K_imp,
-                constraints.rows[r_cmp].K,
-            ))
+            D_vals_cmp.append(
+                primal_D(
+                    constraints.rows[r_cmp].inv_K_imp,
+                    constraints.rows[r_cmp].K,
+                )
+            )
         else:
             D_vals_cmp.append(Scalar[DTYPE](0))
 

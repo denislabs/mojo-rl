@@ -4,9 +4,14 @@ CollisionSystem handles broad-phase and narrow-phase collision detection,
 generating contact manifolds for the constraint solver.
 """
 
-from ..constants import dtype, BODY_STATE_SIZE, SHAPE_MAX_SIZE, CONTACT_DATA_SIZE
+from ..constants import (
+    dtype,
+    BODY_STATE_SIZE,
+    SHAPE_MAX_SIZE,
+    CONTACT_DATA_SIZE,
+)
 from layout import LayoutTensor, Layout
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait CollisionSystem(Movable & ImplicitlyCopyable):
@@ -40,7 +45,9 @@ trait CollisionSystem(Movable & ImplicitlyCopyable):
     ](
         self,
         bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         shapes: LayoutTensor[
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin

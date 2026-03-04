@@ -6,7 +6,7 @@ orchestrating collision detection, constraint solving, and position updates.
 Both CPU and GPU execution paths are supported through the trait interface.
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..types import Model, Data, ConeType
 

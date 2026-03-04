@@ -4,7 +4,7 @@ Provides Quat struct for representing 3D rotations without gimbal lock.
 Convention: (w, x, y, z) where w is the scalar part.
 """
 
-from math import sqrt, cos, sin, acos, atan2, asin
+from std.math import sqrt, cos, sin, acos, atan2, asin
 
 
 from .vec3 import Vec3
@@ -269,7 +269,11 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # Conversion to Other Representations
     # =========================================================================
 
-    fn to_axis_angle(self) -> Tuple[Vec3[Self.DTYPE], Scalar[Self.DTYPE]] where Self.DTYPE.is_floating_point():
+    fn to_axis_angle(
+        self,
+    ) -> Tuple[
+        Vec3[Self.DTYPE], Scalar[Self.DTYPE]
+    ] where Self.DTYPE.is_floating_point():
         """Convert to axis-angle representation.
 
         Returns:
@@ -288,7 +292,9 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
 
         return (axis, angle)
 
-    fn to_euler_xyz(self) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    fn to_euler_xyz(
+        self,
+    ) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Convert to Euler angles (XYZ rotation order).
 
         Returns:
@@ -334,7 +340,9 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # Interpolation
     # =========================================================================
 
-    fn slerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn slerp(
+        self, other: Self, t: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Spherical linear interpolation.
 
         Interpolates smoothly between two rotations.
@@ -383,7 +391,9 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             self.z * s0 + other_adj.z * s1,
         )
 
-    fn nlerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn nlerp(
+        self, other: Self, t: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Normalized linear interpolation.
 
         Faster than slerp but not constant velocity.
@@ -474,13 +484,17 @@ fn quat_identity[DTYPE: DType]() -> Quat[DTYPE]:
 
 fn quat_from_axis_angle[
     DTYPE: DType
-](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[DTYPE] where DTYPE.is_floating_point():
+](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[
+    DTYPE
+] where DTYPE.is_floating_point():
     """Create quaternion from axis-angle."""
     return Quat.from_axis_angle(axis, angle)
 
 
 fn slerp[
     DTYPE: DType
-](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[DTYPE] where DTYPE.is_floating_point():
+](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[
+    DTYPE
+] where DTYPE.is_floating_point():
     """Spherical linear interpolation."""
     return a.slerp(b, t)

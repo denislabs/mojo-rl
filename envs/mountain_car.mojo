@@ -12,9 +12,9 @@ Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
-from math import cos, sin
-from random import random_float64
-from memory import alloc
+from std.math import cos, sin
+from std.random import random_float64
+from std.memory import alloc
 from core import (
     State,
     Action,
@@ -53,11 +53,11 @@ struct MountainCarState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, copy: Self):
+        self.index = copy.index
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.index = existing.index
+    fn __init__(out self, *, deinit take: Self):
+        self.index = take.index
 
     fn __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -69,11 +69,11 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, *, copy: Self):
+        self.direction = copy.direction
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.direction = existing.direction
+    fn __init__(out self, *, deinit take: Self):
+        self.direction = take.direction
 
     @staticmethod
     fn left() -> Self:

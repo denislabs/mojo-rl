@@ -16,7 +16,7 @@ Example (InvertedDoublePendulum tip):
 """
 
 from std.builtin.variadics import Variadic
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 from render import Color, Renderer3D
 from math3d import Vec3 as _Vec3G, Quat as _QuatG
 
@@ -75,9 +75,9 @@ struct Site[
 
     Parameters:
         body_idx: Body index the site is attached to.
-        pos_x: x-coordinate of site in body-local frame.
-        pos_y: y-coordinate of site in body-local frame.
-        pos_z: z-coordinate of site in body-local frame.
+        pos_x: X-coordinate of site in body-local frame.
+        pos_y: Y-coordinate of site in body-local frame.
+        pos_z: Z-coordinate of site in body-local frame.
         name: Human-readable name for debugging/rendering.
     """
 

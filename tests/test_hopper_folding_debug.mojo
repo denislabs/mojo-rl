@@ -1,5 +1,5 @@
 """Debug Hopper body folding: check body-body collisions and joint limits."""
-from random import seed
+from std.random import seed
 from envs.hopper import Hopper
 
 
@@ -11,9 +11,9 @@ fn main():
     # Apply extreme actions to cause folding
     var action = env.ActionType()
     # Push all joints to extremes
-    action[0] = 1.0   # thigh torque (200 Nm)
-    action[1] = 1.0   # leg torque (200 Nm)
-    action[2] = 1.0   # foot torque (200 Nm)
+    action[0] = 1.0  # thigh torque (200 Nm)
+    action[1] = 1.0  # leg torque (200 Nm)
+    action[2] = 1.0  # foot torque (200 Nm)
 
     print("=== Hopper folding debug ===")
     print("Joint limits:")
@@ -35,15 +35,28 @@ fn main():
         var leg_violated = q_leg < -2.618 or q_leg > 0.0
         var foot_violated = q_foot < -0.785 or q_foot > 0.785
 
-        if step < 30 or step % 20 == 0 or thigh_violated or leg_violated or foot_violated:
+        if (
+            step < 30
+            or step % 20 == 0
+            or thigh_violated
+            or leg_violated
+            or foot_violated
+        ):
             print(
-                "Step", step,
-                "rootz=", rootz,
-                "rooty=", rooty,
-                "q_thigh=", q_thigh,
-                "q_leg=", q_leg,
-                "q_foot=", q_foot,
-                "nc=", env.data.num_contacts,
+                "Step",
+                step,
+                "rootz=",
+                rootz,
+                "rooty=",
+                rooty,
+                "q_thigh=",
+                q_thigh,
+                "q_leg=",
+                q_leg,
+                "q_foot=",
+                q_foot,
+                "nc=",
+                env.data.num_contacts,
             )
             if thigh_violated:
                 print("  !!! THIGH LIMIT VIOLATED")
@@ -55,10 +68,16 @@ fn main():
             for c in range(env.data.num_contacts):
                 var ct = env.data.contacts[c]
                 print(
-                    "  c", c,
-                    "body_a=", ct.body_a,
-                    "body_b=", ct.body_b,
-                    "fn=", ct.force_n,
-                    "ft2=", ct.force_t2,
-                    "dist=", ct.dist,
+                    "  c",
+                    c,
+                    "body_a=",
+                    ct.body_a,
+                    "body_b=",
+                    ct.body_b,
+                    "fn=",
+                    ct.force_n,
+                    "ft2=",
+                    ct.force_t2,
+                    "dist=",
+                    ct.dist,
                 )

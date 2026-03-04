@@ -13,17 +13,17 @@ struct TaxiState(Copyable, ImplicitlyCopyable, Movable, State):
     var passenger_loc: Int  # 0-3 for locations R/G/Y/B, 4 = in taxi
     var destination: Int  # 0-3 for locations R/G/Y/B
 
-    fn __copyinit__(out self, existing: Self):
-        self.taxi_row = existing.taxi_row
-        self.taxi_col = existing.taxi_col
-        self.passenger_loc = existing.passenger_loc
-        self.destination = existing.destination
+    fn __init__(out self, *, copy: Self):
+        self.taxi_row = copy.taxi_row
+        self.taxi_col = copy.taxi_col
+        self.passenger_loc = copy.passenger_loc
+        self.destination = copy.destination
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.taxi_row = existing.taxi_row
-        self.taxi_col = existing.taxi_col
-        self.passenger_loc = existing.passenger_loc
-        self.destination = existing.destination
+    fn __init__(out self, *, deinit take: Self):
+        self.taxi_row = take.taxi_row
+        self.taxi_col = take.taxi_col
+        self.passenger_loc = take.passenger_loc
+        self.destination = take.destination
 
     fn __eq__(self, other: Self) -> Bool:
         return (
@@ -41,11 +41,11 @@ struct TaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action: Int
 
-    fn __copyinit__(out self, existing: Self):
-        self.action = existing.action
+    fn __init__(out self, *, copy: Self):
+        self.action = copy.action
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.action = existing.action
+    fn __init__(out self, *, deinit take: Self):
+        self.action = take.action
 
     @staticmethod
     fn south() -> Self:

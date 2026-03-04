@@ -8,8 +8,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
@@ -57,8 +57,22 @@ fn compare_bias_forces(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -123,21 +137,33 @@ fn compare_bias_forces(
         var ok = abs_err < ABS_TOL or rel_err < REL_TOL
         if not ok:
             print(
-                "  FAIL bias[", i, "]",
-                " ours=", our_val,
-                " mj=", mj_val,
-                " abs_err=", abs_err,
-                " rel_err=", rel_err,
+                "  FAIL bias[",
+                i,
+                "]",
+                " ours=",
+                our_val,
+                " mj=",
+                mj_val,
+                " abs_err=",
+                abs_err,
+                " rel_err=",
+                rel_err,
             )
             fail_count += 1
             all_pass = False
 
     if all_pass:
-        print("  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err
+        )
     else:
         print(
-            "  FAILED", fail_count, "elements  max_abs_err=", max_abs_err,
-            " max_rel_err=", max_rel_err,
+            "  FAILED",
+            fail_count,
+            "elements  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
         )
 
     # Print values for inspection
@@ -176,15 +202,15 @@ fn test_zero_qpos_zero_vel() raises:
 fn test_nonzero_joints_zero_vel() raises:
     """Bias with non-zero joints, zero velocity (gravity only)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # rootx
-    qpos[1] = 0.7   # rootz
-    qpos[2] = 0.3   # rooty
+    qpos[0] = 1.0  # rootx
+    qpos[1] = 0.7  # rootz
+    qpos[2] = 0.3  # rooty
     qpos[3] = -0.4  # bthigh
-    qpos[4] = 0.5   # bshin
+    qpos[4] = 0.5  # bshin
     qpos[5] = -0.2  # bfoot
-    qpos[6] = 0.6   # fthigh
+    qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
-    qpos[8] = 0.3   # ffoot
+    qpos[8] = 0.3  # ffoot
     var qvel = InlineArray[Float64, NV](fill=0.0)
     compare_bias_forces("Non-zero joints, zero vel", qpos, qvel)
 
@@ -192,16 +218,16 @@ fn test_nonzero_joints_zero_vel() raises:
 fn test_nonzero_vel() raises:
     """Bias with non-zero velocity (includes Coriolis)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = 0.7   # rootz
-    qpos[2] = 0.1   # rooty
+    qpos[1] = 0.7  # rootz
+    qpos[2] = 0.1  # rooty
     qpos[3] = -0.3  # bthigh
-    qpos[6] = 0.4   # fthigh
+    qpos[6] = 0.4  # fthigh
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 2.0   # rootx vel (running)
-    qvel[2] = 0.5   # rooty vel (pitching)
+    qvel[0] = 2.0  # rootx vel (running)
+    qvel[2] = 0.5  # rooty vel (pitching)
     qvel[3] = -1.0  # bthigh vel
-    qvel[4] = 0.8   # bshin vel
-    qvel[6] = 1.2   # fthigh vel
+    qvel[4] = 0.8  # bshin vel
+    qvel[6] = 1.2  # fthigh vel
     qvel[7] = -0.6  # fshin vel
     compare_bias_forces("Non-zero vel (gravity + Coriolis)", qpos, qvel)
 
@@ -211,17 +237,17 @@ fn test_extreme_vel() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
     qpos[3] = -0.52  # bthigh min
-    qpos[6] = -1.0   # fthigh min
+    qpos[6] = -1.0  # fthigh min
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 5.0    # fast running
-    qvel[1] = -2.0   # falling
-    qvel[2] = 3.0    # fast pitch
-    qvel[3] = -5.0   # bthigh fast
-    qvel[4] = 5.0    # bshin fast
-    qvel[5] = -3.0   # bfoot fast
-    qvel[6] = 5.0    # fthigh fast
-    qvel[7] = -5.0   # fshin fast
-    qvel[8] = 3.0    # ffoot fast
+    qvel[0] = 5.0  # fast running
+    qvel[1] = -2.0  # falling
+    qvel[2] = 3.0  # fast pitch
+    qvel[3] = -5.0  # bthigh fast
+    qvel[4] = 5.0  # bshin fast
+    qvel[5] = -3.0  # bfoot fast
+    qvel[6] = 5.0  # fthigh fast
+    qvel[7] = -5.0  # fshin fast
+    qvel[8] = 3.0  # ffoot fast
     compare_bias_forces("Extreme velocities", qpos, qvel)
 
 

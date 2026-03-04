@@ -11,8 +11,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
@@ -59,9 +59,21 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        HopperModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
@@ -77,17 +89,13 @@ fn compare_step(
         for i in range(NV):
             data.qfrc[i] = Scalar[DTYPE](0)
         HopperModel.apply_actions(data, action_list)
-        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
-            model, data
-        )
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
 
     # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
-    )
+    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC (matches HopperModel)
     mj_model.opt.solver = 2  # mjSOL_NEWTON
@@ -299,7 +307,8 @@ fn compare_step(
 
 fn test_ground_contact() raises:
     """Robot low enough to have ground contact (foot touching).
-    Hopper default: torso at 1.25, foot about 0.6m below. rootz=-0.8 pushes down."""
+    Hopper default: torso at 1.25, foot about 0.6m below. rootz=-0.8 pushes down.
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8  # rootz — pushes robot down from 1.25
     var qvel = InlineArray[Float64, NV](fill=0.0)

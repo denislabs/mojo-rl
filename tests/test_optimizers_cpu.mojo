@@ -8,8 +8,8 @@ Run with:
     pixi run mojo run tests/test_optimizers_cpu.mojo
 """
 
-from random import seed, random_float64
-from math import sqrt
+from std.random import seed, random_float64
+from std.math import sqrt
 
 from nn.constants import dtype
 from nn.model import Linear, ReLU, Tanh, seq

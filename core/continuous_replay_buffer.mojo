@@ -26,7 +26,7 @@ Usage:
     var batch = result[1]  # Contains .weight field for IS correction
 """
 
-from random import random_si64, random_float64
+from std.random import random_si64, random_float64
 from .sum_tree import SumTree
 
 

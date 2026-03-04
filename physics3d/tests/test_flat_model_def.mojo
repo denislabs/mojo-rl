@@ -18,7 +18,7 @@ Expected output:
   [Q3] Model setup via InlineArray loop completed, FK ran successfully
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 from physics3d.parser import ParsedModel, parse_xml
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics

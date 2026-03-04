@@ -5,7 +5,7 @@ and exporting them to CSV format for visualization with tools like matplotlib,
 pandas, or any spreadsheet application.
 """
 
-from math import sqrt
+from std.math import sqrt
 
 
 struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):

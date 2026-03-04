@@ -14,8 +14,8 @@ Actions: 0=nothing, 1=left engine, 2=main engine, 3=right engine
 """
 
 from envs.lunar_lander import LunarLanderEnv
-from random import random_float64, seed
-from time import sleep
+from std.random import random_float64, seed
+from std.time import sleep
 from render import Renderer2D
 
 

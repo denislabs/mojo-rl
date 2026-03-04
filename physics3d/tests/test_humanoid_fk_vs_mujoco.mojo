@@ -23,8 +23,8 @@ Run with:
 
 from testing import assert_true, TestSuite
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -36,11 +36,11 @@ from envs.humanoid.humanoid_xml import HumanoidModel
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = HumanoidModel.NQ          # 24 (7 free + 17 hinge)
-comptime NV = HumanoidModel.NV          # 23 (6 free + 17 hinge)
-comptime NBODY = HumanoidModel.NBODY    # 14
+comptime NQ = HumanoidModel.NQ  # 24 (7 free + 17 hinge)
+comptime NV = HumanoidModel.NV  # 23 (6 free + 17 hinge)
+comptime NBODY = HumanoidModel.NBODY  # 14
 comptime NJOINT = HumanoidModel.NJOINT  # 18 (1 free + 17 hinge)
-comptime NGEOM = HumanoidModel.NGEOM    # 18
+comptime NGEOM = HumanoidModel.NGEOM  # 18
 comptime MAX_CONTACTS = HumanoidModel.MAX_CONTACTS  # 50
 
 # Tolerance for comparison (float64).
@@ -159,12 +159,16 @@ fn compare_fk(
         var mj_qz = Float64(py=mj_xquat_flat[b * 4 + 3])
 
         var diff_pos = (
-            abs(our_qx - mj_qx) + abs(our_qy - mj_qy)
-            + abs(our_qz - mj_qz) + abs(our_qw - mj_qw)
+            abs(our_qx - mj_qx)
+            + abs(our_qy - mj_qy)
+            + abs(our_qz - mj_qz)
+            + abs(our_qw - mj_qw)
         )
         var diff_neg = (
-            abs(our_qx + mj_qx) + abs(our_qy + mj_qy)
-            + abs(our_qz + mj_qz) + abs(our_qw + mj_qw)
+            abs(our_qx + mj_qx)
+            + abs(our_qy + mj_qy)
+            + abs(our_qz + mj_qz)
+            + abs(our_qw + mj_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
 
@@ -234,8 +238,8 @@ fn test_fk_default_qpos() raises:
     This is the initial pose MuJoCo initializes to."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     # Free joint: identity quaternion at standing height
-    qpos[2] = 1.4   # z = 1.4m (torso height)
-    qpos[3] = 1.0   # qw = 1 (identity quaternion)
+    qpos[2] = 1.4  # z = 1.4m (torso height)
+    qpos[3] = 1.0  # qw = 1 (identity quaternion)
     compare_fk("Default standing pose (z=1.4, identity quat)", qpos)
 
 
@@ -245,7 +249,7 @@ fn test_fk_bent_knees() raises:
     left_knee bend the shins."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
-    qpos[3] = 1.0   # identity quat
+    qpos[3] = 1.0  # identity quat
     qpos[12] = -0.5  # right_hip_y: thigh forward
     qpos[13] = -1.0  # right_knee: bent (range -160 to -2, so -1.0 is ~-57 deg)
     qpos[16] = -0.5  # left_hip_y: thigh forward
@@ -258,13 +262,13 @@ fn test_fk_arms_extended() raises:
     The arm branches are independent of the leg branches."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
-    qpos[3] = 1.0   # identity quat
-    qpos[18] = 0.5   # right_shoulder1
-    qpos[19] = 0.5   # right_shoulder2
-    qpos[20] = 0.8   # right_elbow
-    qpos[21] = 0.5   # left_shoulder1
-    qpos[22] = 0.5   # left_shoulder2
-    qpos[23] = 0.8   # left_elbow
+    qpos[3] = 1.0  # identity quat
+    qpos[18] = 0.5  # right_shoulder1
+    qpos[19] = 0.5  # right_shoulder2
+    qpos[20] = 0.8  # right_elbow
+    qpos[21] = 0.5  # left_shoulder1
+    qpos[22] = 0.5  # left_shoulder2
+    qpos[23] = 0.8  # left_elbow
     compare_fk("Arms extended (shoulders=0.5, elbows=0.8)", qpos)
 
 
@@ -273,12 +277,12 @@ fn test_fk_rotated_torso() raises:
     Tests quaternion propagation through the dense body tree:
     all 13 child bodies must accumulate the root rotation correctly."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[0] = 1.0   # x translation
-    qpos[2] = 1.4   # z = standing height
+    qpos[0] = 1.0  # x translation
+    qpos[2] = 1.4  # z = standing height
     # ~30 deg rotation about z-axis: qw=cos(15°)=0.966, qz=sin(15°)=0.259
     qpos[3] = 0.9659  # qw
-    qpos[4] = 0.0     # qx
-    qpos[5] = 0.0     # qy
+    qpos[4] = 0.0  # qx
+    qpos[5] = 0.0  # qy
     qpos[6] = 0.2588  # qz
     compare_fk("Torso rotated 30 deg about z-axis", qpos)
 
@@ -288,8 +292,8 @@ fn test_fk_full_body_pose() raises:
     Exercises all body branches simultaneously."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
-    qpos[3] = 1.0   # identity quat
-    qpos[7] = 0.1   # abdomen_z
+    qpos[3] = 1.0  # identity quat
+    qpos[7] = 0.1  # abdomen_z
     qpos[8] = -0.1  # abdomen_y (slight lean)
     qpos[9] = 0.05  # abdomen_x
     qpos[10] = 0.1  # right_hip_x
@@ -298,12 +302,12 @@ fn test_fk_full_body_pose() raises:
     qpos[14] = -0.1  # left_hip_x
     qpos[16] = -0.3  # left_hip_y
     qpos[17] = -0.6  # left_knee
-    qpos[18] = 0.3   # right_shoulder1
+    qpos[18] = 0.3  # right_shoulder1
     qpos[19] = -0.2  # right_shoulder2
-    qpos[20] = 0.4   # right_elbow
+    qpos[20] = 0.4  # right_elbow
     qpos[21] = -0.3  # left_shoulder1
-    qpos[22] = 0.2   # left_shoulder2
-    qpos[23] = 0.4   # left_elbow
+    qpos[22] = 0.2  # left_shoulder2
+    qpos[23] = 0.4  # left_elbow
     compare_fk("Full body walking pose (all joints active)", qpos)
 
 

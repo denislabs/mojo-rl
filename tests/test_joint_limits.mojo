@@ -1,5 +1,5 @@
 """Test: check joint positions and limits with +1.0 actions."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 
 
@@ -21,7 +21,14 @@ fn main():
         _ = env.step(action)
         if step % 5 == 0 or step < 5:
             print("Step", step + 1)
-            print("  rootx=", env.data.qpos[0], "rootz=", env.data.qpos[1], "rooty=", env.data.qpos[2])
+            print(
+                "  rootx=",
+                env.data.qpos[0],
+                "rootz=",
+                env.data.qpos[1],
+                "rooty=",
+                env.data.qpos[2],
+            )
             print("  bthigh=", env.data.qpos[3], "[-0.52, 1.05]")
             print("  bshin=", env.data.qpos[4], "[-0.785, 0.785]")
             print("  bfoot=", env.data.qpos[5], "[-0.4, 0.785]")

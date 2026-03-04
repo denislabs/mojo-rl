@@ -646,20 +646,20 @@ struct PhysicsStateOwned[
         self.contact_counts = List[Scalar[dtype]](capacity=1)
         self.contact_counts.append(Scalar[dtype](0))
 
-    fn __copyinit__(out self, existing: Self):
+    fn __init__(out self, *, copy: Self):
         """Copy constructor."""
         # Explicitly copy Lists
         self.state = List[Scalar[dtype]](capacity=Self.STATE_SIZE)
-        for i in range(len(existing.state)):
-            self.state.append(existing.state[i])
+        for i in range(len(copy.state)):
+            self.state.append(copy.state[i])
         self.shapes = List[Scalar[dtype]](capacity=Self.SHAPES_SIZE)
-        for i in range(len(existing.shapes)):
-            self.shapes.append(existing.shapes[i])
+        for i in range(len(copy.shapes)):
+            self.shapes.append(copy.shapes[i])
         self.contacts = List[Scalar[dtype]](capacity=Self.CONTACTS_SIZE)
-        for i in range(len(existing.contacts)):
-            self.contacts.append(existing.contacts[i])
+        for i in range(len(copy.contacts)):
+            self.contacts.append(copy.contacts[i])
         self.contact_counts = List[Scalar[dtype]](capacity=1)
-        self.contact_counts.append(existing.contact_counts[0])
+        self.contact_counts.append(copy.contact_counts[0])
 
     fn __init__(out self, *, deinit take: Self):
         """Move constructor."""

@@ -23,8 +23,8 @@ Usage:
     var metrics = run_offpolicy_continuous_train(agent, env, num_episodes=500)
 """
 
-from math import exp
-from random import random_float64, seed
+from std.math import exp
+from std.randomndom import random_float64, seed
 
 from .metrics import TrainingMetrics
 from .env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
@@ -47,9 +47,7 @@ trait OffPolicyAgent:
         Continuous agents: List with action_dim elements = raw action values.
     """
 
-    fn select_action_list(
-        mut self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_action_list(mut self, obs: List[Float64]) -> List[Float64]:
         """Select an action given the current observation.
 
         Applies epsilon-greedy / noise internally.
@@ -109,9 +107,7 @@ trait OffPolicyAgent:
         """
         ...
 
-    fn select_greedy_action_list(
-        self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select action without exploration noise (for evaluation).
 
         DQN: pure argmax (epsilon=0). DDPG/TD3: actor forward, no Gaussian

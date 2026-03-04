@@ -1,6 +1,6 @@
 """Debug script to compare CPU vs GPU action/reward computation."""
 
-from random import seed
+from std.random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper, HopperConfig

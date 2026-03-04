@@ -33,12 +33,12 @@ Features:
 Reference: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
-from math import exp, log, sqrt
-from random import random_float64, seed
-from time import perf_counter_ns
-from gpu import thread_idx, block_idx, block_dim, barrier
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from gpu.memory import AddressSpace
+from std.math import exp, log, sqrt
+from std.random import random_float64, seed
+from std.time import perf_counter_ns
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
@@ -2337,7 +2337,7 @@ struct DeepPPOAgent[
                             and self.checkpoint_path != ""
                             and completed_episodes % self.checkpoint_every == 0
                         ):
-                            # Copy params and state from GPU to CPU
+                            # Copy params and state from std.gpu to CPU
                             self.actor.copy_params_from_device(
                                 ctx, actor_params_buf
                             )

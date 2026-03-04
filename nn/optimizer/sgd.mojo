@@ -5,8 +5,8 @@
 from ..constants import dtype, TPB
 from .optimizer import Optimizer
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct SGD[LR: Float64 = 0.01](Optimizer):
@@ -45,7 +45,8 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
         step_num: Int,
         lr_scale: Float64 = 1.0,
     ):
-        """SGD update: param -= lr * lr_scale * grad. State and step_num are unused."""
+        """SGD update: param -= lr * lr_scale * grad. State and step_num are unused.
+        """
         var lr = Scalar[dtype](Self.LR * lr_scale)
         for i in range(PARAM_SIZE):
             params[i] -= lr * grads[i]

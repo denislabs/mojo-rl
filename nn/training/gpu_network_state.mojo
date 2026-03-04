@@ -32,7 +32,7 @@ from .network_state import NetworkState
 from ..gpu import soft_update_kernel
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 
 struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](

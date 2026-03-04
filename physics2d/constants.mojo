@@ -146,7 +146,7 @@ comptime DEFAULT_SLOP: Float64 = 0.005  # Penetration allowance
 # Mathematical Constants
 # =============================================================================
 
-from math import pi
+from std.math import pi
 
 comptime PI: Float64 = pi
 comptime TWO_PI: Float64 = 2.0 * pi

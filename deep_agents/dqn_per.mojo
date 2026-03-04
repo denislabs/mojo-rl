@@ -33,8 +33,8 @@ Usage:
 Reference: Schaul et al., "Prioritized Experience Replay" (2015)
 """
 
-from math import exp
-from random import random_float64, seed
+from std.math import exp
+from std.randomndom import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
@@ -115,9 +115,9 @@ struct DQNPERAgent[
     var epsilon_decay: Float64
 
     # PER hyperparameters
-    var beta: Float64       # Current IS exponent (annealed to 1.0)
-    var beta_start: Float64 # Initial beta value
-    var beta_frames: Int    # Steps to anneal beta over
+    var beta: Float64  # Current IS exponent (annealed to 1.0)
+    var beta_start: Float64  # Initial beta value
+    var beta_frames: Int  # Steps to anneal beta over
 
     # Training state
     var total_steps: Int
@@ -227,7 +227,9 @@ struct DQNPERAgent[
         done: Bool,
     ):
         """Store transition in prioritized replay buffer with max priority."""
-        var action_arr = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](action))
+        var action_arr = InlineArray[Scalar[dtype], 1](
+            fill=Scalar[dtype](action)
+        )
         self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
         self.total_steps += 1
 
@@ -292,9 +294,9 @@ struct DQNPERAgent[
 
         # --- Phase 2: Compute TD targets ---
         var p_target = self.target_network.params_view()
-        var next_q_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
+        var next_q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
         var next_q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
         ](next_q_arr.unsafe_ptr())
@@ -314,7 +316,9 @@ struct DQNPERAgent[
                 Layout.row_major(Self.BATCH, Self.ACTIONS),
                 MutAnyOrigin,
             ](online_next_arr.unsafe_ptr())
-            Self.Q_Network.forward[Self.BATCH](next_obs_t, online_next_t, p_online)
+            Self.Q_Network.forward[Self.BATCH](
+                next_obs_t, online_next_t, p_online
+            )
             for b in range(Self.BATCH):
                 var best_action = 0
                 var best_online_q = online_next_arr[b * Self.ACTIONS]
@@ -356,14 +360,18 @@ struct DQNPERAgent[
             Layout.row_major(Self.BATCH, Self.Q_Model.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_arr.unsafe_ptr())
-        Self.Q_Network.forward_with_cache[Self.BATCH](obs_t, q_t, p_online, cache_t)
+        Self.Q_Network.forward_with_cache[Self.BATCH](
+            obs_t, q_t, p_online, cache_t
+        )
 
         # --- Phase 4: Compute weighted loss and gradients ---
         var loss: Float64 = 0.0
         var dq_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             fill=Scalar[dtype](0.0)
         )
-        var td_errors = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var td_errors = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
         for b in range(Self.BATCH):
             var action = Int(batch_act1[b])
@@ -393,7 +401,9 @@ struct DQNPERAgent[
         var g = self.q_network.grads_view()
 
         self.q_network.zero_grads()
-        Self.Q_Network.backward[Self.BATCH](dq_t, grad_in_t, p_online, cache_t, g)
+        Self.Q_Network.backward[Self.BATCH](
+            dq_t, grad_in_t, p_online, cache_t, g
+        )
         self.q_network.optimizer_step()
 
         # --- Phase 6: Update priorities ---
@@ -459,15 +469,23 @@ struct DQNPERAgent[
         )
 
         # Warmup
-        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var warmup_obs = InlineArray[Scalar[dtype], Self.OBS](
+            uninitialized=True
+        )
+        var warmup_next = InlineArray[Scalar[dtype], Self.OBS](
+            uninitialized=True
+        )
         fill_inline(env.reset_obs_list(), warmup_obs)
         var warmup_count = 0
         while warmup_count < warmup_steps:
-            var action = Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
+            var action = (
+                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
+            )
             var result = env.step_obs(action)
             fill_inline(result[0], warmup_next)
-            self.store_transition(warmup_obs, action, Float64(result[1]), warmup_next, result[2])
+            self.store_transition(
+                warmup_obs, action, Float64(result[1]), warmup_next, result[2]
+            )
             fill_inline(result[0], warmup_obs)
             warmup_count += 1
             if result[2]:
@@ -626,6 +644,7 @@ struct DQNPERAgent[
             write_metadata_section,
             save_checkpoint_file,
         )
+
         var content = write_checkpoint_header(
             "dqn_per",
             Self.Q_Model.PARAM_SIZE,
@@ -652,6 +671,7 @@ struct DQNPERAgent[
             read_metadata_section,
             get_metadata_value,
         )
+
         var content = read_checkpoint_file(filepath)
         self.q_network.read_sections(content, "online_")
         self.target_network.read_sections(content, "target_")

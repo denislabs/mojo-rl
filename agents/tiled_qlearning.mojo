@@ -28,7 +28,7 @@ Example usage:
     agent.update(tiles, action, reward, next_tiles, done)
 """
 
-from random import random_float64, random_si64
+from std.random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
 from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 
@@ -457,7 +457,12 @@ struct TiledSARSAAgent:
                 var next_action = self.select_action(next_tiles)
 
                 self.update(
-                    tiles, action, Float64(reward), next_tiles, next_action, done
+                    tiles,
+                    action,
+                    Float64(reward),
+                    next_tiles,
+                    next_action,
+                    done,
                 )
 
                 total_reward += Float64(reward)
@@ -734,7 +739,12 @@ struct TiledSARSALambdaAgent:
                 var next_action = self.select_action(next_tiles)
 
                 self.update(
-                    tiles, action, Float64(reward), next_tiles, next_action, done
+                    tiles,
+                    action,
+                    Float64(reward),
+                    next_tiles,
+                    next_action,
+                    done,
                 )
 
                 total_reward += Float64(reward)
@@ -819,7 +829,9 @@ struct TiledSARSALambdaAgent:
         return total_reward / Float64(num_episodes)
 
 
-fn _obs_to_f64[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
+fn _obs_to_f64[
+    DTYPE: DType
+](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
     var result = List[Scalar[DType.float64]](capacity=len(obs))
     for i in range(len(obs)):

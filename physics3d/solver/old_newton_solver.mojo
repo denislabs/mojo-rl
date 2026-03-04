@@ -36,9 +36,9 @@ Algorithm:
 Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
 """
 
-from math import sqrt
+from std.math import sqrt
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..traits.solver import ConstraintSolver

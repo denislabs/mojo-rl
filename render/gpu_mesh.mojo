@@ -5,7 +5,7 @@ All meshes are returned as MeshData (vertices + UInt16 indices)
 and are meant to be uploaded once at init time.
 """
 
-from math import sin, cos, sqrt
+from std.math import sin, cos, sqrt
 from .gpu_types import GPUVertex, MeshData
 
 
@@ -42,9 +42,7 @@ fn generate_sphere(segments: Int = 16, rings: Int = 12) -> MeshData:
             var u = Float32(i) / Float32(segments)
             var v = Float32(j) / Float32(rings)
 
-            mesh.vertices.append(
-                GPUVertex(x, y, z, x, y, z, u, v)
-            )
+            mesh.vertices.append(GPUVertex(x, y, z, x, y, z, u, v))
 
     # Generate indices
     for j in range(rings):
@@ -79,44 +77,68 @@ fn generate_box() -> MeshData:
     # +Z face (top)
     _add_box_face(
         mesh,
-        nx=0, ny=0, nz=1,
-        p0=(-0.5, -0.5, 0.5), p1=(0.5, -0.5, 0.5),
-        p2=(0.5, 0.5, 0.5), p3=(-0.5, 0.5, 0.5),
+        nx=0,
+        ny=0,
+        nz=1,
+        p0=(-0.5, -0.5, 0.5),
+        p1=(0.5, -0.5, 0.5),
+        p2=(0.5, 0.5, 0.5),
+        p3=(-0.5, 0.5, 0.5),
     )
     # -Z face (bottom)
     _add_box_face(
         mesh,
-        nx=0, ny=0, nz=-1,
-        p0=(-0.5, 0.5, -0.5), p1=(0.5, 0.5, -0.5),
-        p2=(0.5, -0.5, -0.5), p3=(-0.5, -0.5, -0.5),
+        nx=0,
+        ny=0,
+        nz=-1,
+        p0=(-0.5, 0.5, -0.5),
+        p1=(0.5, 0.5, -0.5),
+        p2=(0.5, -0.5, -0.5),
+        p3=(-0.5, -0.5, -0.5),
     )
     # +X face
     _add_box_face(
         mesh,
-        nx=1, ny=0, nz=0,
-        p0=(0.5, -0.5, -0.5), p1=(0.5, 0.5, -0.5),
-        p2=(0.5, 0.5, 0.5), p3=(0.5, -0.5, 0.5),
+        nx=1,
+        ny=0,
+        nz=0,
+        p0=(0.5, -0.5, -0.5),
+        p1=(0.5, 0.5, -0.5),
+        p2=(0.5, 0.5, 0.5),
+        p3=(0.5, -0.5, 0.5),
     )
     # -X face
     _add_box_face(
         mesh,
-        nx=-1, ny=0, nz=0,
-        p0=(-0.5, 0.5, -0.5), p1=(-0.5, -0.5, -0.5),
-        p2=(-0.5, -0.5, 0.5), p3=(-0.5, 0.5, 0.5),
+        nx=-1,
+        ny=0,
+        nz=0,
+        p0=(-0.5, 0.5, -0.5),
+        p1=(-0.5, -0.5, -0.5),
+        p2=(-0.5, -0.5, 0.5),
+        p3=(-0.5, 0.5, 0.5),
     )
     # +Y face
     _add_box_face(
         mesh,
-        nx=0, ny=1, nz=0,
-        p0=(0.5, 0.5, -0.5), p1=(-0.5, 0.5, -0.5),
-        p2=(-0.5, 0.5, 0.5), p3=(0.5, 0.5, 0.5),
+        nx=0,
+        ny=1,
+        nz=0,
+        p0=(0.5, 0.5, -0.5),
+        p1=(-0.5, 0.5, -0.5),
+        p2=(-0.5, 0.5, 0.5),
+        p3=(0.5, 0.5, 0.5),
     )
     # -Y face
     _add_box_face(
         mesh,
-        nx=0, ny=-1, nz=0,
-        p0=(-0.5, -0.5, -0.5), p1=(0.5, -0.5, -0.5),
-        p2=(0.5, -0.5, 0.5), p3=(-0.5, -0.5, 0.5),
+        nx=0,
+        ny=-1,
+        nz=0,
+        p0=(-0.5, -0.5, -0.5),
+        p1=(0.5, -0.5, -0.5),
+        p2=(0.5, -0.5, 0.5),
+        p3=(-0.5, -0.5, 0.5),
     )
 
     return mesh^
@@ -135,10 +157,26 @@ fn _add_box_face(
     """Add a single box face (4 vertices, 2 triangles) to mesh."""
     var base = UInt16(len(mesh.vertices))
 
-    mesh.vertices.append(GPUVertex(Float32(p0[0]), Float32(p0[1]), Float32(p0[2]), nx, ny, nz, 0, 0))
-    mesh.vertices.append(GPUVertex(Float32(p1[0]), Float32(p1[1]), Float32(p1[2]), nx, ny, nz, 1, 0))
-    mesh.vertices.append(GPUVertex(Float32(p2[0]), Float32(p2[1]), Float32(p2[2]), nx, ny, nz, 1, 1))
-    mesh.vertices.append(GPUVertex(Float32(p3[0]), Float32(p3[1]), Float32(p3[2]), nx, ny, nz, 0, 1))
+    mesh.vertices.append(
+        GPUVertex(
+            Float32(p0[0]), Float32(p0[1]), Float32(p0[2]), nx, ny, nz, 0, 0
+        )
+    )
+    mesh.vertices.append(
+        GPUVertex(
+            Float32(p1[0]), Float32(p1[1]), Float32(p1[2]), nx, ny, nz, 1, 0
+        )
+    )
+    mesh.vertices.append(
+        GPUVertex(
+            Float32(p2[0]), Float32(p2[1]), Float32(p2[2]), nx, ny, nz, 1, 1
+        )
+    )
+    mesh.vertices.append(
+        GPUVertex(
+            Float32(p3[0]), Float32(p3[1]), Float32(p3[2]), nx, ny, nz, 0, 1
+        )
+    )
 
     mesh.indices.append(base + 0)
     mesh.indices.append(base + 1)
@@ -173,9 +211,7 @@ fn generate_capsule(
 
     # --- Top hemisphere ---
     # Apex vertex
-    mesh.vertices.append(
-        GPUVertex(0, 0, half_height + radius, 0, 0, 1, 0.5, 0)
-    )
+    mesh.vertices.append(GPUVertex(0, 0, half_height + radius, 0, 0, 1, 0.5, 0))
 
     for j in range(1, hemi_rings + 1):
         var phi = Float32(j) * (pi * 0.5) / Float32(hemi_rings)
@@ -232,9 +268,15 @@ fn generate_capsule(
 
         mesh.vertices.append(
             GPUVertex(
-                radius * ct, radius * st, half_height,
-                ct, st, 0,
-                u, 0.5 - Float32(half_height) / Float32(2.0 * (half_height + radius)),
+                radius * ct,
+                radius * st,
+                half_height,
+                ct,
+                st,
+                0,
+                u,
+                0.5
+                - Float32(half_height) / Float32(2.0 * (half_height + radius)),
             )
         )
 
@@ -249,9 +291,15 @@ fn generate_capsule(
 
         mesh.vertices.append(
             GPUVertex(
-                radius * ct, radius * st, -half_height,
-                ct, st, 0,
-                u, 0.5 + Float32(half_height) / Float32(2.0 * (half_height + radius)),
+                radius * ct,
+                radius * st,
+                -half_height,
+                ct,
+                st,
+                0,
+                u,
+                0.5
+                + Float32(half_height) / Float32(2.0 * (half_height + radius)),
             )
         )
 
@@ -339,18 +387,10 @@ fn generate_ground(size: Float32 = 10.0) -> MeshData:
     var mesh = MeshData()
 
     # Vertices: corners of the ground plane
-    mesh.vertices.append(
-        GPUVertex(-size, -size, 0, 0, 0, 1, 0, 0)
-    )
-    mesh.vertices.append(
-        GPUVertex(size, -size, 0, 0, 0, 1, 1, 0)
-    )
-    mesh.vertices.append(
-        GPUVertex(size, size, 0, 0, 0, 1, 1, 1)
-    )
-    mesh.vertices.append(
-        GPUVertex(-size, size, 0, 0, 0, 1, 0, 1)
-    )
+    mesh.vertices.append(GPUVertex(-size, -size, 0, 0, 0, 1, 0, 0))
+    mesh.vertices.append(GPUVertex(size, -size, 0, 0, 0, 1, 1, 0))
+    mesh.vertices.append(GPUVertex(size, size, 0, 0, 0, 1, 1, 1))
+    mesh.vertices.append(GPUVertex(-size, size, 0, 0, 0, 1, 0, 1))
 
     # Two triangles
     mesh.indices.append(UInt16(0))

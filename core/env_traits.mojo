@@ -40,7 +40,7 @@ Algorithms specify requirements:
 from .env import Env
 from layout import LayoutTensor, Layout
 from nn import dtype
-from gpu import DeviceContext, DeviceBuffer
+from std.gpu import DeviceContext, DeviceBuffer
 
 
 # ============================================================================

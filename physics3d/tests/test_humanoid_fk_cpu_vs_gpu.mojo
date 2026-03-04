@@ -13,11 +13,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import (
@@ -41,13 +41,13 @@ from envs.humanoid.humanoid_xml import HumanoidModel
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = HumanoidModel.NQ          # 24 (7 free + 17 hinge)
-comptime NV = HumanoidModel.NV          # 23 (6 free + 17 hinge)
-comptime NBODY = HumanoidModel.NBODY    # 14 (worldbody + 13 bodies)
+comptime NQ = HumanoidModel.NQ  # 24 (7 free + 17 hinge)
+comptime NV = HumanoidModel.NV  # 23 (6 free + 17 hinge)
+comptime NBODY = HumanoidModel.NBODY  # 14 (worldbody + 13 bodies)
 comptime NJOINT = HumanoidModel.NJOINT  # 18 (1 free + 17 hinge)
-comptime NGEOM = HumanoidModel.NGEOM   # 18
+comptime NGEOM = HumanoidModel.NGEOM  # 18
 comptime MAX_CONTACTS = HumanoidModel.MAX_CONTACTS  # 50
-comptime NSITE = HumanoidModel.NSITE   # 0
+comptime NSITE = HumanoidModel.NSITE  # 0
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -75,14 +75,24 @@ fn fk_kernel[
     MODEL_SIZE: Int,
     BATCH: Int,
 ](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     if env >= BATCH:
         return
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
 
@@ -102,11 +112,21 @@ fn compare_fk(
 
     # === CPU FK ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HumanoidModel.MAX_EQUALITY, HumanoidModel.CONE_TYPE,
-        HumanoidModel.MAX_TENDON, HumanoidModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HumanoidModel.MAX_EQUALITY,
+        HumanoidModel.CONE_TYPE,
+        HumanoidModel.MAX_TENDON,
+        HumanoidModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HumanoidModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HumanoidModel.NSITE
+    ]()
     HumanoidModel.setup_model_and_data[DTYPE](model_cpu, data_cpu)
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -131,10 +151,21 @@ fn compare_fk(
     ](model_buf.unsafe_ptr())
 
     comptime kernel_fn = fk_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ]
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, grid_dim=(BATCH,), block_dim=(1,),
+        state_tensor,
+        model_tensor,
+        grid_dim=(BATCH,),
+        block_dim=(1,),
     )
     ctx.synchronize()
 
@@ -176,7 +207,9 @@ fn compare_fk(
         var gpu_px = Float64(state_host[xpos_off + b * 3 + 0])
         var gpu_py = Float64(state_host[xpos_off + b * 3 + 1])
         var gpu_pz = Float64(state_host[xpos_off + b * 3 + 2])
-        var pos_err = abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        var pos_err = (
+            abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        )
         if pos_err > POS_TOL:
             print("  FAIL xpos ", body_names[b], " err=", pos_err)
             print("    cpu:", cpu_px, cpu_py, cpu_pz)
@@ -194,12 +227,16 @@ fn compare_fk(
         var gpu_qz = Float64(state_host[xquat_off + b * 4 + 2])
         var gpu_qw = Float64(state_host[xquat_off + b * 4 + 3])
         var diff_pos = (
-            abs(cpu_qx - gpu_qx) + abs(cpu_qy - gpu_qy)
-            + abs(cpu_qz - gpu_qz) + abs(cpu_qw - gpu_qw)
+            abs(cpu_qx - gpu_qx)
+            + abs(cpu_qy - gpu_qy)
+            + abs(cpu_qz - gpu_qz)
+            + abs(cpu_qw - gpu_qw)
         )
         var diff_neg = (
-            abs(cpu_qx + gpu_qx) + abs(cpu_qy + gpu_qy)
-            + abs(cpu_qz + gpu_qz) + abs(cpu_qw + gpu_qw)
+            abs(cpu_qx + gpu_qx)
+            + abs(cpu_qy + gpu_qy)
+            + abs(cpu_qz + gpu_qz)
+            + abs(cpu_qw + gpu_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
         if quat_err > QUAT_TOL:
@@ -216,7 +253,11 @@ fn compare_fk(
         var gpu_xi_x = Float64(state_host[xipos_off + b * 3 + 0])
         var gpu_xi_y = Float64(state_host[xipos_off + b * 3 + 1])
         var gpu_xi_z = Float64(state_host[xipos_off + b * 3 + 2])
-        var xipos_err = abs(cpu_xi_x - gpu_xi_x) + abs(cpu_xi_y - gpu_xi_y) + abs(cpu_xi_z - gpu_xi_z)
+        var xipos_err = (
+            abs(cpu_xi_x - gpu_xi_x)
+            + abs(cpu_xi_y - gpu_xi_y)
+            + abs(cpu_xi_z - gpu_xi_z)
+        )
         if xipos_err > POS_TOL:
             print("  FAIL xipos", body_names[b], " err=", xipos_err)
             print("    cpu:", cpu_xi_x, cpu_xi_y, cpu_xi_z)
@@ -249,8 +290,8 @@ fn test_fk_humanoid() raises:
 
     # Config 1: default standing (torso at z=1.4, identity quaternion)
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
-    qpos1[2] = 1.4   # z (torso height)
-    qpos1[3] = 1.0   # qw (identity quaternion)
+    qpos1[2] = 1.4  # z (torso height)
+    qpos1[3] = 1.0  # qw (identity quaternion)
     compare_fk(ctx, "Default standing (z=1.4, identity quat)", qpos1, model_buf)
     print()
 
@@ -260,16 +301,18 @@ fn test_fk_humanoid() raises:
     qpos2[3] = 1.0
     qpos2[10] = -0.5  # right_knee
     qpos2[13] = -0.5  # left_knee
-    compare_fk(ctx, "Bent knees (right_knee=-0.5, left_knee=-0.5)", qpos2, model_buf)
+    compare_fk(
+        ctx, "Bent knees (right_knee=-0.5, left_knee=-0.5)", qpos2, model_buf
+    )
     print()
 
     # Config 3: arms extended
     var qpos3 = InlineArray[Float64, NQ](fill=0.0)
     qpos3[2] = 1.4
     qpos3[3] = 1.0
-    qpos3[14] = 0.8   # right_shoulder1
-    qpos3[15] = 0.3   # right_shoulder2
-    qpos3[17] = 0.8   # left_shoulder1
+    qpos3[14] = 0.8  # right_shoulder1
+    qpos3[15] = 0.3  # right_shoulder2
+    qpos3[17] = 0.8  # left_shoulder1
     qpos3[18] = -0.3  # left_shoulder2
     compare_fk(ctx, "Arms extended", qpos3, model_buf)
     print()
@@ -284,23 +327,23 @@ fn test_fk_humanoid() raises:
 
     # Config 5: full body pose
     var qpos5 = InlineArray[Float64, NQ](fill=0.0)
-    qpos5[0] = 0.5    # x
-    qpos5[1] = 0.2    # y
-    qpos5[2] = 1.4    # z
-    qpos5[3] = 0.99   # qw
-    qpos5[4] = 0.1    # qx
-    qpos5[5] = 0.05   # qy
-    qpos5[6] = 0.0    # qz
-    qpos5[7]  = 0.2   # abdomen_z
-    qpos5[8]  = 0.1   # abdomen_y
-    qpos5[9]  = -0.1  # abdomen_x
+    qpos5[0] = 0.5  # x
+    qpos5[1] = 0.2  # y
+    qpos5[2] = 1.4  # z
+    qpos5[3] = 0.99  # qw
+    qpos5[4] = 0.1  # qx
+    qpos5[5] = 0.05  # qy
+    qpos5[6] = 0.0  # qz
+    qpos5[7] = 0.2  # abdomen_z
+    qpos5[8] = 0.1  # abdomen_y
+    qpos5[9] = -0.1  # abdomen_x
     qpos5[10] = -0.3  # right_hip_x
-    qpos5[11] = 0.2   # right_hip_z
+    qpos5[11] = 0.2  # right_hip_z
     qpos5[12] = -0.5  # right_hip_y
     qpos5[13] = -0.8  # right_knee
-    qpos5[14] = 0.5   # right_shoulder1
-    qpos5[15] = 0.3   # right_shoulder2
-    qpos5[16] = 0.2   # right_elbow
+    qpos5[14] = 0.5  # right_shoulder1
+    qpos5[15] = 0.3  # right_shoulder2
+    qpos5[16] = 0.2  # right_elbow
     compare_fk(ctx, "Full body pose", qpos5, model_buf)
     print()
 

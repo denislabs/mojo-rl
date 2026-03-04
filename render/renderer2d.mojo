@@ -6,8 +6,8 @@ for maximum performance. Requires SDL3 to be installed (via pixi).
 Text rendering uses SDL3's built-in 8x8 debug text (no TTF dependency).
 """
 
-from math import cos, sin, pi
-from ffi import c_float, c_int
+from std.math import cos, sin, pi
+from std.ffi import c_float, c_int
 from .types import Color, SDL_Color, SDL_Point, SDL_Rect, SDLHandle
 from .transform import Vec2, Transform2D, Camera, RotatingCamera
 

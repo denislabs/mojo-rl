@@ -21,8 +21,8 @@ Example usage:
 """
 
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from .constants import (
     TILE_DATA_SIZE,
@@ -87,8 +87,14 @@ struct CarPhysicsKernel:
 
         # Full physics step with observation update
         CarDynamics.step_with_obs[
-            BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET,
-            WHEELS_OFFSET, CONTROLS_OFFSET, MAX_TILES
+            BATCH,
+            STATE_SIZE,
+            OBS_OFFSET,
+            OBS_DIM,
+            HULL_OFFSET,
+            WHEELS_OFFSET,
+            CONTROLS_OFFSET,
+            MAX_TILES,
         ](env, state, tiles, num_active_tiles, dt)
 
     # =========================================================================
@@ -151,8 +157,14 @@ struct CarPhysicsKernel:
             dt: Scalar[dtype],
         ):
             CarPhysicsKernel._step_kernel[
-                BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET,
-                WHEELS_OFFSET, CONTROLS_OFFSET, MAX_TILES
+                BATCH,
+                STATE_SIZE,
+                OBS_OFFSET,
+                OBS_DIM,
+                HULL_OFFSET,
+                WHEELS_OFFSET,
+                CONTROLS_OFFSET,
+                MAX_TILES,
             ](state, tiles, num_active_tiles, dt)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

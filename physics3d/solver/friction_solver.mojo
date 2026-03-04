@@ -31,7 +31,7 @@ Workspace layout (66*MC + 10*MC*NV per solver):
 """
 
 from layout import Layout, LayoutTensor
-from math import sqrt
+from std.math import sqrt
 from ..types import _max_one, ConeType
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,

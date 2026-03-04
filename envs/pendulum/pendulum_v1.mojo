@@ -11,9 +11,9 @@ Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
-from math import cos, sin, pi
-from random import random_float64
-from memory import alloc
+from std.math import cos, sin, pi
+from std.random import random_float64
+from std.memory import alloc
 from core import (
     State,
     Action,
@@ -267,6 +267,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         Args:
             action: PendulumAction (direction 0=left, 1=none, 2=right).
+            verbose: Whether to print verbose output.
 
         Returns:
             Tuple of (new_state, reward, done).
@@ -365,6 +366,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         Args:
             action: List with at least one element (torque in [-2.0, 2.0]).
+            verbose: Whether to print verbose output.
 
         Returns:
             Tuple of (observation as List, reward, done).
@@ -678,7 +680,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         Returns:
             Single integer state index.
         """
-        from math import atan2
+        from std.math import atan2
 
         # Recover angle from cos and sin
         var theta = atan2(obs[1], obs[0])
@@ -712,11 +714,11 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
 
         Args:
-            num_tilings: Number of tilings (default 8)
-            tiles_per_dim: Tiles per dimension (default 8)
+            num_tilings: Number of tilings (default 8).
+            tiles_per_dim: Tiles per dimension (default 8).
 
         Returns:
-            TileCoding[Self.dtype] configured for Pendulum observation space
+            TileCoding[Self.dtype] configured for Pendulum observation space.
         """
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)  # cos(θ)
@@ -748,10 +750,10 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
 
         Args:
-            degree: Maximum polynomial degree (keep low for 3D to avoid explosion)
+            degree: Maximum polynomial degree (keep low for 3D to avoid explosion).
 
         Returns:
-            PolynomialFeatures[Self.dtype] extractor configured for Pendulum with normalization
+            PolynomialFeatures[Self.dtype] extractor configured for Pendulum with normalization.
         """
         var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(θ)

@@ -45,7 +45,7 @@ from ..optimizer import Optimizer
 from ..constants import dtype
 
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
@@ -154,11 +154,13 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             cache: Cache from forward_with_cache [BATCH, CACHE_SIZE].
             grads: Gradient accumulator [PARAM_SIZE] (e.g. state.grads_view()).
         """
-        Self.MODEL.backward[BATCH](grad_output, grad_input, params, cache, grads)
+        Self.MODEL.backward[BATCH](
+            grad_output, grad_input, params, cache, grads
+        )
 
     # =========================================================================
     # GPU Forward / Backward
-    # All accept LayoutTensors over device memory (from GPUNetworkState views).
+    # All accept LayoutTensors over device memory (from std.gpuNetworkState views).
     # workspace_buf stays as DeviceBuffer (untyped, variable size).
     # =========================================================================
 

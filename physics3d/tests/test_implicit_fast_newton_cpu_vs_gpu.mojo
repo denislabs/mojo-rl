@@ -10,9 +10,9 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, ConeType
@@ -87,11 +87,21 @@ fn compare_step(
 
     # === CPU pipeline ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE,
-        HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
@@ -119,7 +129,9 @@ fn compare_step(
     for i in range(NV):
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_temp = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -260,7 +272,9 @@ fn test_free_fall_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -269,7 +283,19 @@ fn test_free_fall_1_step() raises:
     qpos[1] = 1.5
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Free fall (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -278,7 +304,9 @@ fn test_free_fall_with_actions_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -293,7 +321,19 @@ fn test_free_fall_with_actions_1_step() raises:
     act[3] = 0.5
     act[4] = -0.3
     act[5] = 0.1
-    compare_step("Free fall + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall + actions (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -302,7 +342,9 @@ fn test_free_fall_10_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -311,7 +353,19 @@ fn test_free_fall_10_steps() raises:
     qpos[1] = 1.5
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Free fall (10 steps)", qpos, qvel, act, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall (10 steps)",
+        qpos,
+        qvel,
+        act,
+        10,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -320,7 +374,9 @@ fn test_ground_contact_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -329,7 +385,19 @@ fn test_ground_contact_1_step() raises:
     qpos[1] = -0.2
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -338,7 +406,9 @@ fn test_ground_contact_with_actions_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -353,7 +423,19 @@ fn test_ground_contact_with_actions_1_step() raises:
     act[3] = 0.5
     act[4] = -0.3
     act[5] = 0.1
-    compare_step("Ground contact + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact + actions (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -362,7 +444,9 @@ fn test_ground_contact_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -371,7 +455,19 @@ fn test_ground_contact_5_steps() raises:
     qpos[1] = -0.2
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (5 steps)",
+        qpos,
+        qvel,
+        act,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -380,7 +476,9 @@ fn test_ground_contact_with_actions_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -395,7 +493,19 @@ fn test_ground_contact_with_actions_5_steps() raises:
     act[3] = 0.5
     act[4] = -0.3
     act[5] = 0.1
-    compare_step("Ground contact + actions (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact + actions (5 steps)",
+        qpos,
+        qvel,
+        act,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 

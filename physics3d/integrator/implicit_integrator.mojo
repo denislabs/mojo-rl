@@ -24,9 +24,9 @@ Reference: MuJoCo engine_forward.c:1117-1137 (implicit path)
 Reference: MuJoCo engine_derivative.c:596-705 (mjd_rne_vel)
 """
 
-from math import sqrt
-from gpu.host import DeviceContext, DeviceBuffer
-from gpu import thread_idx, block_idx, block_dim
+from std.math import sqrt
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one

@@ -8,8 +8,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs
-from collections import InlineArray
+from std.math import abs
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one
@@ -36,6 +36,7 @@ comptime IPOS_TOL: Float64 = 1e-6  # ipos (CoM offset) tolerance
 # HalfCheetah test
 # =============================================================================
 
+
 fn test_half_cheetah() raises:
     """Compare inertiafromgeom output for HalfCheetah against MuJoCo."""
     print("--- Test: HalfCheetah inertiafromgeom ---")
@@ -48,8 +49,22 @@ fn test_half_cheetah() raises:
     comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 
     # Build model with inertiafromgeom enabled
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var _data_hc = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var _data_hc = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, _data_hc)
 
     # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
@@ -68,7 +83,9 @@ fn test_half_cheetah() raises:
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
+    var xml_path = (
+        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
+    )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
 
     # Compare body mass, inertia, ipos
@@ -85,7 +102,16 @@ fn test_half_cheetah() raises:
         if mass_err > max_mass_err:
             max_mass_err = mass_err
         if mass_err > MASS_TOL:
-            print("  FAIL body", i, "mass: ours=", our_mass, "mj=", mj_mass, "err=", mass_err)
+            print(
+                "  FAIL body",
+                i,
+                "mass: ours=",
+                our_mass,
+                "mj=",
+                mj_mass,
+                "err=",
+                mass_err,
+            )
             all_pass = False
 
         # Inertia (3 principal moments)
@@ -96,7 +122,18 @@ fn test_half_cheetah() raises:
             if I_err > max_inertia_err:
                 max_inertia_err = I_err
             if I_err > INERTIA_TOL:
-                print("  FAIL body", i, "inertia[", k, "]: ours=", our_I, "mj=", mj_I, "err=", I_err)
+                print(
+                    "  FAIL body",
+                    i,
+                    "inertia[",
+                    k,
+                    "]: ours=",
+                    our_I,
+                    "mj=",
+                    mj_I,
+                    "err=",
+                    I_err,
+                )
                 all_pass = False
 
         # ipos (CoM offset from body origin)
@@ -107,17 +144,36 @@ fn test_half_cheetah() raises:
             if ipos_err > max_ipos_err:
                 max_ipos_err = ipos_err
             if ipos_err > IPOS_TOL:
-                print("  FAIL body", i, "ipos[", k, "]: ours=", our_ipos, "mj=", mj_ipos, "err=", ipos_err)
+                print(
+                    "  FAIL body",
+                    i,
+                    "ipos[",
+                    k,
+                    "]: ours=",
+                    our_ipos,
+                    "mj=",
+                    mj_ipos,
+                    "err=",
+                    ipos_err,
+                )
                 all_pass = False
 
     if all_pass:
-        print("  ALL OK  max_mass_err=", max_mass_err, " max_inertia_err=", max_inertia_err, " max_ipos_err=", max_ipos_err)
+        print(
+            "  ALL OK  max_mass_err=",
+            max_mass_err,
+            " max_inertia_err=",
+            max_inertia_err,
+            " max_ipos_err=",
+            max_ipos_err,
+        )
     assert_true(all_pass, "Inertia from geom mismatch for: HalfCheetah")
 
 
 # =============================================================================
 # Hopper test
 # =============================================================================
+
 
 fn test_hopper() raises:
     """Compare inertiafromgeom output for Hopper against MuJoCo."""
@@ -131,8 +187,22 @@ fn test_hopper() raises:
 
     # Build model with inertiafromgeom enabled
     comptime HOPPER_MAX_CONTACTS = 20
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, NGEOM, HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, HopperModel.NSITE]()
-    var _data_hopper = Data[DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, HopperModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        HOPPER_MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        HopperModel.NSITE,
+    ]()
+    var _data_hopper = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data[DTYPE](model, _data_hopper)
 
     # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
@@ -159,7 +229,16 @@ fn test_hopper() raises:
         if mass_err > max_mass_err:
             max_mass_err = mass_err
         if mass_err > MASS_TOL:
-            print("  FAIL body", i, "mass: ours=", our_mass, "mj=", mj_mass, "err=", mass_err)
+            print(
+                "  FAIL body",
+                i,
+                "mass: ours=",
+                our_mass,
+                "mj=",
+                mj_mass,
+                "err=",
+                mass_err,
+            )
             all_pass = False
 
         # Inertia (3 principal moments)
@@ -170,7 +249,18 @@ fn test_hopper() raises:
             if I_err > max_inertia_err:
                 max_inertia_err = I_err
             if I_err > INERTIA_TOL:
-                print("  FAIL body", i, "inertia[", k, "]: ours=", our_I, "mj=", mj_I, "err=", I_err)
+                print(
+                    "  FAIL body",
+                    i,
+                    "inertia[",
+                    k,
+                    "]: ours=",
+                    our_I,
+                    "mj=",
+                    mj_I,
+                    "err=",
+                    I_err,
+                )
                 all_pass = False
 
         # ipos (CoM offset from body origin)
@@ -181,11 +271,29 @@ fn test_hopper() raises:
             if ipos_err > max_ipos_err:
                 max_ipos_err = ipos_err
             if ipos_err > IPOS_TOL:
-                print("  FAIL body", i, "ipos[", k, "]: ours=", our_ipos, "mj=", mj_ipos, "err=", ipos_err)
+                print(
+                    "  FAIL body",
+                    i,
+                    "ipos[",
+                    k,
+                    "]: ours=",
+                    our_ipos,
+                    "mj=",
+                    mj_ipos,
+                    "err=",
+                    ipos_err,
+                )
                 all_pass = False
 
     if all_pass:
-        print("  ALL OK  max_mass_err=", max_mass_err, " max_inertia_err=", max_inertia_err, " max_ipos_err=", max_ipos_err)
+        print(
+            "  ALL OK  max_mass_err=",
+            max_mass_err,
+            " max_inertia_err=",
+            max_inertia_err,
+            " max_ipos_err=",
+            max_ipos_err,
+        )
     assert_true(all_pass, "Inertia from geom mismatch for: Hopper")
 
 

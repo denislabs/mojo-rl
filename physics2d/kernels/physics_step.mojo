@@ -38,8 +38,8 @@ Example usage:
 """
 
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,
@@ -96,7 +96,9 @@ struct PhysicsStepKernel:
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
         ],
         edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        joint_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
         contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
@@ -279,7 +281,9 @@ struct PhysicsStepKernel:
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             shapes: LayoutTensor[
-                dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
             ],
             edge_counts: LayoutTensor[
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -389,14 +393,24 @@ struct PhysicsStepKernelParallel:
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
         ],
         edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        joint_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
         contacts: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH,
+                NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE,
+                CONTACT_DATA_SIZE,
+            ),
             MutAnyOrigin,
         ],
         contact_flags: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
+            ),
+            MutAnyOrigin,
         ],
         gravity_x: Scalar[dtype],
         gravity_y: Scalar[dtype],
@@ -429,11 +443,20 @@ struct PhysicsStepKernelParallel:
         # Step 3: Velocity constraints with sparse contacts
         for _ in range(VEL_ITERATIONS):
             ImpulseSolver.solve_velocity_single_env_sparse[
-                BATCH, NUM_BODIES, TOTAL_CONTACT_SLOTS, STATE_SIZE, BODIES_OFFSET
+                BATCH,
+                NUM_BODIES,
+                TOTAL_CONTACT_SLOTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
             ](env, state, contacts, contact_flags, friction, restitution)
 
             RevoluteJointSolver.solve_velocity_single_env[
-                BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET,
+                BATCH,
+                NUM_BODIES,
+                MAX_JOINTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                JOINTS_OFFSET,
             ](env, state, n_joints, dt)
 
         # Step 4: Integrate positions
@@ -444,11 +467,20 @@ struct PhysicsStepKernelParallel:
         # Step 5: Position constraints with sparse contacts
         for _ in range(POS_ITERATIONS):
             ImpulseSolver.solve_position_single_env_sparse[
-                BATCH, NUM_BODIES, TOTAL_CONTACT_SLOTS, STATE_SIZE, BODIES_OFFSET
+                BATCH,
+                NUM_BODIES,
+                TOTAL_CONTACT_SLOTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
             ](env, state, contacts, contact_flags, baumgarte, slop)
 
             RevoluteJointSolver.solve_position_single_env[
-                BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET,
+                BATCH,
+                NUM_BODIES,
+                MAX_JOINTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                JOINTS_OFFSET,
             ](env, state, n_joints, baumgarte, slop)
 
     @staticmethod
@@ -530,12 +562,30 @@ struct PhysicsStepKernelParallel:
 
         @always_inline
         fn kernel_wrapper(
-            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-            shapes: LayoutTensor[dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin],
-            edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS, CONTACT_DATA_SIZE), MutAnyOrigin],
-            contact_flags: LayoutTensor[dtype, Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            shapes: LayoutTensor[
+                dtype,
+                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
+            ],
+            edge_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
+            joint_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS, CONTACT_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            contact_flags: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS),
+                MutAnyOrigin,
+            ],
             gravity_x: Scalar[dtype],
             gravity_y: Scalar[dtype],
             dt: Scalar[dtype],
@@ -545,17 +595,49 @@ struct PhysicsStepKernelParallel:
             slop: Scalar[dtype],
         ):
             PhysicsStepKernelParallel._step_kernel_parallel[
-                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS_PER_BODY_EDGE,
-                MAX_JOINTS, MAX_EDGES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET,
-                JOINTS_OFFSET, EDGES_OFFSET, VEL_ITERATIONS, POS_ITERATIONS,
+                BATCH,
+                NUM_BODIES,
+                NUM_SHAPES,
+                MAX_CONTACTS_PER_BODY_EDGE,
+                MAX_JOINTS,
+                MAX_EDGES,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                FORCES_OFFSET,
+                JOINTS_OFFSET,
+                EDGES_OFFSET,
+                VEL_ITERATIONS,
+                POS_ITERATIONS,
             ](
-                state, shapes, edge_counts, joint_counts, contacts, contact_flags,
-                gravity_x, gravity_y, dt, friction, restitution, baumgarte, slop,
+                state,
+                shapes,
+                edge_counts,
+                joint_counts,
+                contacts,
+                contact_flags,
+                gravity_x,
+                gravity_y,
+                dt,
+                friction,
+                restitution,
+                baumgarte,
+                slop,
             )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, shapes, edge_counts, joint_counts, contacts, contact_flags,
-            gravity_x, gravity_y, dt, friction, restitution, baumgarte, slop,
+            state,
+            shapes,
+            edge_counts,
+            joint_counts,
+            contacts,
+            contact_flags,
+            gravity_x,
+            gravity_y,
+            dt,
+            friction,
+            restitution,
+            baumgarte,
+            slop,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

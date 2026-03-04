@@ -3,7 +3,7 @@
 Provides unified geom-based contact detection and quaternion normalization.
 """
 
-from math import sqrt
+from std.math import sqrt
 from layout import LayoutTensor, Layout
 from ..types import (
     Model,
@@ -20,7 +20,13 @@ from ..kinematics.quat_math import (
     gpu_quat_normalize,
     gpu_quat_mul,
 )
-from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE, GEOM_CYLINDER
+from ..constants import (
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+    GEOM_PLANE,
+    GEOM_CYLINDER,
+)
 from ..gpu.constants import (
     BODY_IDX_PARENT,
     CONTACT_SIZE,
@@ -112,8 +118,8 @@ fn normalize_qpos_quaternions[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
-    NSITE,
+        MAX_TENDON,
+        NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
@@ -235,8 +241,8 @@ fn _geom_world_pos[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
-    NSITE,
+        MAX_TENDON,
+        NSITE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     g: Int,
@@ -313,8 +319,8 @@ fn detect_contacts[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
-    MAX_TENDON,
-    NSITE,
+        MAX_TENDON,
+        NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):
@@ -480,9 +486,16 @@ fn detect_contacts[
                 elif gj_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
                     var cp = cylinder_plane[DTYPE](
-                        pj_x, pj_y, pj_z,
-                        qj_x, qj_y, qj_z, qj_w,
-                        hlj, rj, ground_z,
+                        pj_x,
+                        pj_y,
+                        pj_z,
+                        qj_x,
+                        qj_y,
+                        qj_z,
+                        qj_w,
+                        hlj,
+                        rj,
+                        ground_z,
                     )
                     var dist = cp[0]
                     if (
@@ -603,9 +616,16 @@ fn detect_contacts[
                 elif gi_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
                     var cp = cylinder_plane[DTYPE](
-                        pi_x, pi_y, pi_z,
-                        qi_x, qi_y, qi_z, qi_w,
-                        hli, ri, ground_z,
+                        pi_x,
+                        pi_y,
+                        pi_z,
+                        qi_x,
+                        qi_y,
+                        qi_z,
+                        qi_w,
+                        hli,
+                        ri,
+                        ground_z,
                     )
                     var dist = cp[0]
                     if (
@@ -1286,7 +1306,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1 - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist1 - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1324,7 +1346,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2 - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist2 - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1344,9 +1368,16 @@ fn detect_contacts_gpu[
                 elif gj_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
                     var cp = cylinder_plane[DTYPE](
-                        pj_x, pj_y, pj_z,
-                        qj_x, qj_y, qj_z, qj_w,
-                        hlj, rj, ground_z,
+                        pj_x,
+                        pj_y,
+                        pj_z,
+                        qj_x,
+                        qj_y,
+                        qj_z,
+                        qj_w,
+                        hlj,
+                        rj,
+                        ground_z,
                     )
                     var dist = cp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
@@ -1363,7 +1394,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1395,7 +1428,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1445,7 +1480,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1 - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist1 - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1483,7 +1520,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2 - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist2 - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1503,9 +1542,16 @@ fn detect_contacts_gpu[
                 elif gi_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
                     var cp = cylinder_plane[DTYPE](
-                        pi_x, pi_y, pi_z,
-                        qi_x, qi_y, qi_z, qi_w,
-                        hli, ri, ground_z,
+                        pi_x,
+                        pi_y,
+                        pi_z,
+                        qi_x,
+                        qi_y,
+                        qi_z,
+                        qi_w,
+                        hli,
+                        ri,
+                        ground_z,
                     )
                     var dist = cp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
@@ -1522,7 +1568,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1554,7 +1602,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[env, c_off + CONTACT_IDX_DIST] = (
+                            dist - contact_margin
+                        )
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction

@@ -18,8 +18,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
@@ -74,8 +74,22 @@ fn compare_contacts(
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var model = Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
+    ]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data[DTYPE](model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -114,12 +128,28 @@ fn compare_contacts(
     for c in range(our_ncon):
         var ci = data.contacts[c]
         print(
-            "  Our[", c, "] body(",
-            ci.body_a, ",", ci.body_b,
-            ") pos(", Float64(ci.pos_x), ",", Float64(ci.pos_y), ",", Float64(ci.pos_z),
-            ") dist=", Float64(ci.dist),
-            " n(", Float64(ci.normal_x), ",", Float64(ci.normal_y), ",", Float64(ci.normal_z),
-            ") fric=", Float64(ci.friction),
+            "  Our[",
+            c,
+            "] body(",
+            ci.body_a,
+            ",",
+            ci.body_b,
+            ") pos(",
+            Float64(ci.pos_x),
+            ",",
+            Float64(ci.pos_y),
+            ",",
+            Float64(ci.pos_z),
+            ") dist=",
+            Float64(ci.dist),
+            " n(",
+            Float64(ci.normal_x),
+            ",",
+            Float64(ci.normal_y),
+            ",",
+            Float64(ci.normal_z),
+            ") fric=",
+            Float64(ci.friction),
         )
 
     # Print MuJoCo contacts
@@ -136,12 +166,31 @@ fn compare_contacts(
         var ny = Float64(py=mj_frame[1])
         var nz = Float64(py=mj_frame[2])
         print(
-            "  MJ [", c, "] body(",
-            body1, ",", body2,
-            ") geom(", geom1, ",", geom2,
-            ") pos(", Float64(py=mj_pos[0]), ",", Float64(py=mj_pos[1]), ",", Float64(py=mj_pos[2]),
-            ") dist=", mj_dist,
-            " n(", nx, ",", ny, ",", nz, ")",
+            "  MJ [",
+            c,
+            "] body(",
+            body1,
+            ",",
+            body2,
+            ") geom(",
+            geom1,
+            ",",
+            geom2,
+            ") pos(",
+            Float64(py=mj_pos[0]),
+            ",",
+            Float64(py=mj_pos[1]),
+            ",",
+            Float64(py=mj_pos[2]),
+            ") dist=",
+            mj_dist,
+            " n(",
+            nx,
+            ",",
+            ny,
+            ",",
+            nz,
+            ")",
         )
 
     # === Compare ===
@@ -149,13 +198,17 @@ fn compare_contacts(
 
     # 1. Check contact count
     if our_ncon != mj_ncon:
-        print("  FAIL: contact count mismatch! ours=", our_ncon, " mj=", mj_ncon)
+        print(
+            "  FAIL: contact count mismatch! ours=", our_ncon, " mj=", mj_ncon
+        )
         # Don't return False yet — continue to show details for debugging
         all_pass = False
 
     # 2. Match contacts by body pair
     # For each MuJoCo contact, find the closest matching contact in ours
-    var matched = InlineArray[Int, MAX_CONTACTS](fill=-1)  # our idx matched to each mj contact
+    var matched = InlineArray[Int, MAX_CONTACTS](
+        fill=-1
+    )  # our idx matched to each mj contact
 
     for mc in range(mj_ncon):
         var mj_pos = mj_data.contact[mc].pos.flatten().tolist()
@@ -206,8 +259,13 @@ fn compare_contacts(
 
         if best_idx < 0:
             print(
-                "  FAIL: no matching contact for MJ[", mc, "] body(",
-                mj_body1, ",", mj_body2, ")",
+                "  FAIL: no matching contact for MJ[",
+                mc,
+                "] body(",
+                mj_body1,
+                ",",
+                mj_body2,
+                ")",
             )
             all_pass = False
             continue
@@ -219,9 +277,23 @@ fn compare_contacts(
         var pos_err = best_pos_err
         if pos_err > POS_TOL:
             print(
-                "  FAIL pos[", mc, "] err=", pos_err,
-                " ours=(", Float64(ci.pos_x), ",", Float64(ci.pos_y), ",", Float64(ci.pos_z),
-                ") mj=(", mj_px, ",", mj_py, ",", mj_pz, ")",
+                "  FAIL pos[",
+                mc,
+                "] err=",
+                pos_err,
+                " ours=(",
+                Float64(ci.pos_x),
+                ",",
+                Float64(ci.pos_y),
+                ",",
+                Float64(ci.pos_z),
+                ") mj=(",
+                mj_px,
+                ",",
+                mj_py,
+                ",",
+                mj_pz,
+                ")",
             )
             all_pass = False
 
@@ -232,9 +304,23 @@ fn compare_contacts(
         var dot = our_nx * mj_nx + our_ny * mj_ny + our_nz * mj_nz
         if dot < NORMAL_DOT_MIN:
             print(
-                "  FAIL normal[", mc, "] dot=", dot,
-                " ours=(", our_nx, ",", our_ny, ",", our_nz,
-                ") mj=(", mj_nx, ",", mj_ny, ",", mj_nz, ")",
+                "  FAIL normal[",
+                mc,
+                "] dot=",
+                dot,
+                " ours=(",
+                our_nx,
+                ",",
+                our_ny,
+                ",",
+                our_nz,
+                ") mj=(",
+                mj_nx,
+                ",",
+                mj_ny,
+                ",",
+                mj_nz,
+                ")",
             )
             all_pass = False
 
@@ -242,8 +328,14 @@ fn compare_contacts(
         var dist_err = abs(Float64(ci.dist) - mj_dist)
         if dist_err > DIST_TOL:
             print(
-                "  FAIL dist[", mc, "] err=", dist_err,
-                " ours=", Float64(ci.dist), " mj=", mj_dist,
+                "  FAIL dist[",
+                mc,
+                "] err=",
+                dist_err,
+                " ours=",
+                Float64(ci.dist),
+                " mj=",
+                mj_dist,
             )
             all_pass = False
 
@@ -268,7 +360,8 @@ fn test_high_pose() raises:
 
 
 fn test_default_pose() raises:
-    """Default pose (rootz=0.7, which is body_pos offset) — may or may not contact."""
+    """Default pose (rootz=0.7, which is body_pos offset) — may or may not contact.
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz = MuJoCo default
     compare_contacts("Default pose (rootz=0.7)", qpos)
@@ -291,11 +384,11 @@ fn test_very_low_pose() raises:
 fn test_bent_legs() raises:
     """Bent legs with non-default joint angles — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.3   # rootz low enough for contact
-    qpos[3] = -0.5   # bthigh bent
-    qpos[4] = 0.8    # bshin extended
-    qpos[6] = 0.5    # fthigh bent
-    qpos[7] = -0.8   # fshin extended
+    qpos[1] = -0.3  # rootz low enough for contact
+    qpos[3] = -0.5  # bthigh bent
+    qpos[4] = 0.8  # bshin extended
+    qpos[6] = 0.5  # fthigh bent
+    qpos[7] = -0.8  # fshin extended
     compare_contacts("Bent legs (various joint angles)", qpos)
 
 
@@ -303,7 +396,7 @@ fn test_tilted_body() raises:
     """Tilted body (rooty rotation) — asymmetric contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz slightly low
-    qpos[2] = 0.3   # rooty tilted forward
+    qpos[2] = 0.3  # rooty tilted forward
     compare_contacts("Tilted body (rooty=0.3)", qpos)
 
 

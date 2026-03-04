@@ -34,6 +34,73 @@ from .offpolicy_train import OffPolicyAgent
 
 
 fn run_offpolicy_continuous_eval[
+    E: BoxContinuousActionEnv, A: OffPolicyAgent
+](
+    agent: A,
+    mut env: E,
+    num_episodes: Int = 10,
+    max_steps: Int = 1000,
+    verbose: Bool = False,
+    algorithm_name: String = "Eval",
+    environment_name: String = "Environment",
+) -> TrainingMetrics:
+    """Evaluate an off-policy continuous-action agent (no render support).
+
+    Parameters:
+        E: Environment type implementing BoxContinuousActionEnv.
+        A: Agent type implementing OffPolicyAgent.
+    """
+    var metrics = TrainingMetrics(
+        algorithm_name=algorithm_name,
+        environment_name=environment_name,
+    )
+
+    for episode in range(num_episodes):
+        var obs_raw = env.reset_obs_list()
+        var obs = List[Float64]()
+        for i in range(len(obs_raw)):
+            obs.append(Float64(obs_raw[i]))
+
+        var episode_reward: Float64 = 0.0
+        var episode_steps = 0
+
+        for _ in range(max_steps):
+            var action = agent.select_greedy_action_list(obs)
+            var result = env.step_continuous_vec(action)
+            var next_obs = List[Float64]()
+            for i in range(len(result[0])):
+                next_obs.append(Float64(result[0][i]))
+            var reward = Float64(result[1])
+            var done = result[2]
+
+            episode_reward += reward
+            episode_steps += 1
+            obs = next_obs^
+
+            if done:
+                break
+
+        metrics.log_episode(
+            episode,
+            Scalar[DType.float64](episode_reward),
+            episode_steps,
+            0.0,
+        )
+
+        if verbose:
+            print(
+                "Eval Episode",
+                episode + 1,
+                "| Reward:",
+                String(episode_reward)[:10],
+                "| Steps:",
+                episode_steps,
+            )
+
+    return metrics^
+
+
+fn run_offpolicy_continuous_eval[
     E: BoxContinuousActionEnv & RenderableEnv, A: OffPolicyAgent
 ](
     agent: A,

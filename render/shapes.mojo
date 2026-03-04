@@ -4,7 +4,7 @@ Provides factory functions for creating vertex lists for common shapes
 used in RL environment visualization (rectangles, polygons, arrows, etc.).
 """
 
-from math import cos, sin, pi
+from std.math import cos, sin, pi
 from .transform import Vec2
 
 
@@ -423,7 +423,7 @@ fn make_cross(size: Float64, thickness: Float64) -> List[Vec2]:
 
 
 fn make_terrain_line(
-    func: fn (Float64) -> Float64,
+    func: fn(Float64) -> Float64,
     x_min: Float64,
     x_max: Float64,
     num_points: Int,

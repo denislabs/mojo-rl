@@ -6,7 +6,7 @@ to draw all visible geoms automatically. Eliminates per-environment renderer boi
 Supports all geom types: capsule, sphere, box, and plane (ground).
 """
 
-from collections import InlineArray
+from std.collections import InlineArray
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render import Renderer3D, Camera3D, Color
 from core import EnvRenderer3D

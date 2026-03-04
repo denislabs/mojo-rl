@@ -13,8 +13,8 @@ Run with:
 """
 
 from testing import assert_true
-from math import sqrt, sin, cos, pi
-from gpu.host import DeviceContext, DeviceBuffer
+from std.math import sqrt, sin, cos, pi
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
@@ -280,14 +280,21 @@ fn test_pendulum_gpu() raises:
             print("  PERIOD TEST: PASSED (error < 5%)")
         else:
             print("  PERIOD TEST: FAILED (error >= 5%)")
-        assert_true(period_error_pct < 5.0, "Period error too large: " + String(period_error_pct) + "% >= 5%")
+        assert_true(
+            period_error_pct < 5.0,
+            "Period error too large: " + String(period_error_pct) + "% >= 5%",
+        )
     else:
         print(
             "  PERIOD TEST: FAILED (not enough zero crossings:",
             zero_crossings,
             ")",
         )
-        assert_true(False, "Not enough zero crossings for period measurement: " + String(zero_crossings))
+        assert_true(
+            False,
+            "Not enough zero crossings for period measurement: "
+            + String(zero_crossings),
+        )
 
     print()
 
@@ -301,7 +308,10 @@ fn test_pendulum_gpu() raises:
         print("  ENERGY TEST: PASSED (drift < 10%)")
     else:
         print("  ENERGY TEST: FAILED (drift >= 10%)")
-    assert_true(energy_drift_pct < 10.0, "Energy drift too large: " + String(energy_drift_pct) + "% >= 10%")
+    assert_true(
+        energy_drift_pct < 10.0,
+        "Energy drift too large: " + String(energy_drift_pct) + "% >= 10%",
+    )
 
     print()
     print("=" * 60)

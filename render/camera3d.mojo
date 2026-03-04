@@ -3,7 +3,7 @@
 Provides view and projection matrices for rendering 3D scenes.
 """
 
-from math import sqrt, sin, cos, tan
+from std.math import sqrt, sin, cos, tan
 from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic
 
 # Type alias for Vec3 with float64 precision (used throughout render)
@@ -249,14 +249,14 @@ struct Camera3D(Copyable, Movable):
     @staticmethod
     fn _atan2(y: Float64, x: Float64) -> Float64:
         """Compute atan2(y, x)."""
-        from math import atan2
+        from std.math import atan2
 
         return atan2(y, x)
 
     @staticmethod
     fn _acos(x: Float64) -> Float64:
         """Compute acos(x) with clamping."""
-        from math import acos
+        from std.math import acos
 
         var clamped = x
         if clamped > 1.0:

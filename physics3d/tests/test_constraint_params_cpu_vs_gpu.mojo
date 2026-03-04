@@ -12,11 +12,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs, sqrt, pow
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs, sqrt, pow
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
@@ -120,8 +120,13 @@ comptime BATCH = 1
 comptime MC = _max_one[MAX_CONTACTS]()
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM,
-    HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+    NBODY,
+    NJOINT,
+    NV,
+    NGEOM,
+    HalfCheetahModel.MAX_EQUALITY,
+    HalfCheetahModel.MAX_TENDON,
+    HalfCheetahModel.NSITE,
 ]()
 
 # Workspace layout: [integrator_temps | M_inv(NV*NV) | solver_workspace]
@@ -189,38 +194,84 @@ fn constraint_params_kernel[
 
     # 1. Forward kinematics
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 2. Body velocities
     compute_body_velocities_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 3. Detect contacts
     detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        NGEOM,
     ](env, state, model)
 
     # 4. Compute cdof
     compute_cdof_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 5. Composite inertia
     compute_composite_inertia_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 6. Mass matrix (CRBA)
     compute_mass_matrix_full_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 6b. Add armature only (Euler: M_solver = M + armature)
@@ -245,14 +296,20 @@ fn constraint_params_kernel[
     ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
     # 8. Compute M_inv from LDL
-    compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-        env, workspace
-    )
+    compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
     # 9. Bias forces
     compute_bias_forces_rne_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ](env, state, model, workspace)
 
     # 10. f_net = qfrc - bias - damping*qvel - stiffness*(qpos-springref)
@@ -296,9 +353,7 @@ fn constraint_params_kernel[
                     )
                     workspace[env, fnet_idx + dof_adr + d] = cur - damp_val * v
             else:
-                var v = rebind[Scalar[DTYPE]](
-                    state[env, qvel_off + dof_adr]
-                )
+                var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
                 var cur = rebind[Scalar[DTYPE]](
                     workspace[env, fnet_idx + dof_adr]
                 )
@@ -345,24 +400,18 @@ fn constraint_params_kernel[
                         qp - sref
                     )
             else:
-                var qp = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr]
-                )
+                var qp = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
                 var cur = rebind[Scalar[DTYPE]](
                     workspace[env, fnet_idx + dof_adr]
                 )
                 workspace[env, fnet_idx + dof_adr] = cur - stiff * (qp - sref)
 
     # 11. LDL solve -> qacc0
-    ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-        env, workspace
-    )
+    ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
     # 12. Copy qacc0 to qacc_constrained (needed by precompute_contact_normal_gpu)
     for i in range(NV):
-        var qacc_val = rebind[Scalar[DTYPE]](
-            workspace[env, qacc_ws_idx + i]
-        )
+        var qacc_val = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
         workspace[env, qacc_constrained_idx + i] = qacc_val
 
     # 13. Read contact count and solref/solimp
@@ -400,29 +449,54 @@ fn constraint_params_kernel[
         si_width = Scalar[DTYPE](1e-6)
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
-    var K_spring = Scalar[DTYPE](1.0) / (
-        sr_tc * sr_tc * si_dmax * si_dmax
-    )
+    var K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
     var B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
     # 14. Init common normal workspace for all contact slots
     for c in range(MC):
         init_common_normal_workspace_gpu[
-            DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+            DTYPE,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            WS_SIZE,
+            BATCH,
         ](env, c, workspace)
 
     # 15. Precompute contact normals
     for c in range(nc):
         precompute_contact_normal_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
             HalfCheetahModel.MAX_EQUALITY,
-            COMPUTE_RHS=False, RHS_IDX=0,
-            MAX_TENDON=HalfCheetahModel.MAX_TENDON,
-            NSITE=HalfCheetahModel.NSITE,
+            COMPUTE_RHS=False,
+            RHS_IDX=0,
+            MAX_TENDON = HalfCheetahModel.MAX_TENDON,
+            NSITE = HalfCheetahModel.NSITE,
         ](
-            env, c, nc, state, model, workspace,
-            K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint, si_power,
+            env,
+            c,
+            nc,
+            state,
+            model,
+            workspace,
+            K_spring,
+            B_damp,
+            si_dmin,
+            si_dmax,
+            si_width,
+            si_midpoint,
+            si_power,
         )
 
     # 16. Read results into result buffer
@@ -454,9 +528,21 @@ fn run_constraint_params_test(
 
     # === Create CPU model ===
     var model_cpu = Model[
-        CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        CPU_DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data_ref_cpu = Data[CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_ref_cpu = Data[
+        CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref_cpu)
 
     # GPU model buffer
@@ -483,8 +569,17 @@ fn run_constraint_params_test(
     )
 
     comptime kernel_fn = constraint_params_kernel[
-        GPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, TOTAL_WS_SIZE, RESULT_PER_CONFIG,
+        GPU_DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        TOTAL_WS_SIZE,
+        RESULT_PER_CONFIG,
     ]
 
     var state_tensor = LayoutTensor[
@@ -501,7 +596,9 @@ fn run_constraint_params_test(
     ](result_buf.unsafe_ptr())
 
     # === CPU pipeline ===
-    var data_cpu = Data[CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[CPU_DTYPE](test_qpos[i])
     for i in range(NV):
@@ -564,10 +661,14 @@ fn run_constraint_params_test(
     var cpu_ncon = data_cpu.num_contacts
     var cpu_nnorm = constraints.num_normals
     print(
-        "  CPU: contacts=", cpu_ncon,
-        " normal_rows=", cpu_nnorm,
-        " friction_rows=", constraints.num_friction,
-        " limit_rows=", constraints.num_limits,
+        "  CPU: contacts=",
+        cpu_ncon,
+        " normal_rows=",
+        cpu_nnorm,
+        " friction_rows=",
+        constraints.num_friction,
+        " limit_rows=",
+        constraints.num_limits,
     )
 
     # === GPU pipeline ===
@@ -590,7 +691,10 @@ fn run_constraint_params_test(
     ctx.synchronize()
 
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, ws_tensor, result_tensor,
+        state_tensor,
+        model_tensor,
+        ws_tensor,
+        result_tensor,
         grid_dim=(BATCH,),
         block_dim=(1,),
     )
@@ -629,24 +733,43 @@ fn run_constraint_params_test(
         si_width = Scalar[CPU_DTYPE](1e-6)
     if si_dmax < Scalar[CPU_DTYPE](1e-4):
         si_dmax = Scalar[CPU_DTYPE](1e-4)
-    var K_spring_cpu = Scalar[CPU_DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
+    var K_spring_cpu = Scalar[CPU_DTYPE](1.0) / (
+        sr_tc * sr_tc * si_dmax * si_dmax
+    )
     var B_damp_cpu = Scalar[CPU_DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
     for c in range(compare_count):
         var ci = data_cpu.contacts[c]
 
         # Compute J_n directly (bypasses pyramidal edge rows in constraints.rows)
-        var J_n_cpu = InlineArray[Scalar[CPU_DTYPE], V_SIZE](fill=Scalar[CPU_DTYPE](0))
+        var J_n_cpu = InlineArray[Scalar[CPU_DTYPE], V_SIZE](
+            fill=Scalar[CPU_DTYPE](0)
+        )
         compute_contact_jacobian_row[
-            CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE,
-            NGEOM, HalfCheetahModel.MAX_EQUALITY,
-            HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON,
+            CPU_DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            V_SIZE,
+            NGEOM,
+            HalfCheetahModel.MAX_EQUALITY,
+            HalfCheetahModel.CONE_TYPE,
+            HalfCheetahModel.MAX_TENDON,
             HalfCheetahModel.NSITE,
         ](
-            model_cpu, data_cpu, cdof,
-            ci.body_a, ci.body_b,
-            ci.pos_x, ci.pos_y, ci.pos_z,
-            ci.normal_x, ci.normal_y, ci.normal_z,
+            model_cpu,
+            data_cpu,
+            cdof,
+            ci.body_a,
+            ci.body_b,
+            ci.pos_x,
+            ci.pos_y,
+            ci.pos_z,
+            ci.normal_x,
+            ci.normal_y,
+            ci.normal_z,
             J_n_cpu,
         )
 
@@ -726,7 +849,19 @@ fn run_constraint_params_test(
             max_rel_err = rel_err_K
         var ok_K = abs_err_K < ABS_TOL or rel_err_K < REL_TOL
         if not ok_K:
-            print("  FAIL K_n[", c, "]", " cpu=", cpu_K, " gpu=", gpu_K, " abs=", abs_err_K, " rel=", rel_err_K)
+            print(
+                "  FAIL K_n[",
+                c,
+                "]",
+                " cpu=",
+                cpu_K,
+                " gpu=",
+                gpu_K,
+                " abs=",
+                abs_err_K,
+                " rel=",
+                rel_err_K,
+            )
             fail_count += 1
             all_pass = False
 
@@ -741,7 +876,19 @@ fn run_constraint_params_test(
             max_rel_err = rel_err_b
         var ok_b = abs_err_b < ABS_TOL or rel_err_b < REL_TOL
         if not ok_b:
-            print("  FAIL bias[", c, "]", " cpu=", cpu_bias, " gpu=", gpu_bias, " abs=", abs_err_b, " rel=", rel_err_b)
+            print(
+                "  FAIL bias[",
+                c,
+                "]",
+                " cpu=",
+                cpu_bias,
+                " gpu=",
+                gpu_bias,
+                " abs=",
+                abs_err_b,
+                " rel=",
+                rel_err_b,
+            )
             fail_count += 1
             all_pass = False
 
@@ -756,21 +903,52 @@ fn run_constraint_params_test(
             max_rel_err = rel_err_i
         var ok_i = abs_err_i < ABS_TOL or rel_err_i < REL_TOL
         if not ok_i:
-            print("  FAIL inv_K_imp[", c, "]", " cpu=", cpu_inv_K_imp, " gpu=", gpu_inv_K_imp, " abs=", abs_err_i, " rel=", rel_err_i)
+            print(
+                "  FAIL inv_K_imp[",
+                c,
+                "]",
+                " cpu=",
+                cpu_inv_K_imp,
+                " gpu=",
+                gpu_inv_K_imp,
+                " abs=",
+                abs_err_i,
+                " rel=",
+                rel_err_i,
+            )
             fail_count += 1
             all_pass = False
 
         print(
-            "  Contact", c, ":"
-            " K cpu=", cpu_K, " gpu=", gpu_K,
-            " | bias cpu=", cpu_bias, " gpu=", gpu_bias,
-            " | inv_K_imp cpu=", cpu_inv_K_imp, " gpu=", gpu_inv_K_imp,
+            "  Contact",
+            c,
+            ": K cpu=",
+            cpu_K,
+            " gpu=",
+            gpu_K,
+            " | bias cpu=",
+            cpu_bias,
+            " gpu=",
+            gpu_bias,
+            " | inv_K_imp cpu=",
+            cpu_inv_K_imp,
+            " gpu=",
+            gpu_inv_K_imp,
         )
 
     if all_pass:
-        print("  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  ALL OK  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err
+        )
     else:
-        print("  FAILED", fail_count, "checks  max_abs_err=", max_abs_err, " max_rel_err=", max_rel_err)
+        print(
+            "  FAILED",
+            fail_count,
+            "checks  max_abs_err=",
+            max_abs_err,
+            " max_rel_err=",
+            max_rel_err,
+        )
     print()
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 

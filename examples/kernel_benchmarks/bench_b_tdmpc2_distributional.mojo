@@ -10,7 +10,7 @@ Run:
     pixi run -e apple mojo build examples/kernel_benchmarks/bench_b_tdmpc2_distributional.mojo -o /tmp/bench_b
 """
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from nn.constants import dtype, TPB
 from deep_agents.tdmpc2.kernels import (

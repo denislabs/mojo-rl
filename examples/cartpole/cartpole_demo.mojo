@@ -6,7 +6,7 @@ training function, then visualizes the trained agent.
 
 from envs import CartPoleEnv, CartPoleAction
 from agents.qlearning import QLearningAgent
-from random import seed
+from std.random import seed
 
 
 fn main() raises:

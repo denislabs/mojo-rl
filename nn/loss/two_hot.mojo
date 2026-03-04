@@ -15,13 +15,13 @@ The scalar value is decoded from logits as:
 Typical values: num_bins=101, v_min=-10.0, v_max=10.0
 """
 
-from math import exp, log
+from std.math import exp, log
 from ..constants import dtype
 
 
-fn compute_bins[NUM_BINS: Int](
-    v_min: Float32, v_max: Float32
-) -> InlineArray[Float32, NUM_BINS]:
+fn compute_bins[
+    NUM_BINS: Int
+](v_min: Float32, v_max: Float32) -> InlineArray[Float32, NUM_BINS]:
     """Compute evenly spaced bin values for distributional RL.
 
     Args:
@@ -41,7 +41,9 @@ fn compute_bins[NUM_BINS: Int](
     return bins^
 
 
-fn two_hot_encode[NUM_BINS: Int](
+fn two_hot_encode[
+    NUM_BINS: Int
+](
     x: Float32,
     bins: InlineArray[Float32, NUM_BINS],
     mut target: InlineArray[Float32, NUM_BINS],
@@ -95,7 +97,9 @@ fn two_hot_encode[NUM_BINS: Int](
     target[k + 1] = lower_weight
 
 
-fn two_hot_encode_batch[BATCH: Int, NUM_BINS: Int](
+fn two_hot_encode_batch[
+    BATCH: Int, NUM_BINS: Int
+](
     values: InlineArray[Float32, BATCH],
     bins: InlineArray[Float32, NUM_BINS],
     mut targets: InlineArray[Float32, BATCH * NUM_BINS],
@@ -143,7 +147,9 @@ fn two_hot_encode_batch[BATCH: Int, NUM_BINS: Int](
         targets[base + k + 1] = Float32(1.0) - upper_weight
 
 
-fn decode_value[NUM_BINS: Int](
+fn decode_value[
+    NUM_BINS: Int
+](
     logits: InlineArray[Float32, NUM_BINS],
     bins: InlineArray[Float32, NUM_BINS],
 ) -> Float32:
@@ -174,7 +180,9 @@ fn decode_value[NUM_BINS: Int](
     return value
 
 
-fn decode_value_batch[BATCH: Int, NUM_BINS: Int](
+fn decode_value_batch[
+    BATCH: Int, NUM_BINS: Int
+](
     logits: InlineArray[Float32, BATCH * NUM_BINS],
     bins: InlineArray[Float32, NUM_BINS],
     mut values: InlineArray[Float32, BATCH],

@@ -11,7 +11,7 @@ Key differences from uniform replay:
 Reference: Schaul et al., "Prioritized Experience Replay" (2015)
 """
 
-from random import random_si64, random_float64
+from std.random import random_si64, random_float64
 from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics, RenderableEnv
 from core.replay_buffer import PrioritizedReplayBuffer, PrioritizedTransition

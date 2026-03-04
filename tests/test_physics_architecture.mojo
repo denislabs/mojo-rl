@@ -4,7 +4,7 @@ This test verifies that the new GPU-compatible architecture produces identical
 results to the original PhysicsWorld API.
 """
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from physics2d import (
     dtype,

@@ -10,10 +10,10 @@ Run with:
     pixi run -e nvidia mojo run test_dqn_gpu.mojo   # NVIDIA GPU
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.dqn import DQNAgent
 from envs import CartPoleEnv

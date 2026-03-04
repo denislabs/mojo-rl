@@ -15,9 +15,9 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, ConeType
@@ -56,7 +56,9 @@ comptime BATCH = 1
 comptime NSITE = HalfCheetahModel.NSITE
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
-comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+comptime WS_SIZE = integrator_workspace_size[
+    NV, NBODY
+]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
 # Tolerances (float32, GPU coupled PGS vs CPU primal Newton — different solver algorithms)
 comptime QPOS_ABS_TOL: Float64 = 3e-2
@@ -87,11 +89,21 @@ fn compare_step(
 
     # === CPU pipeline (PYRAMIDAL) ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HalfCheetahModel.MAX_EQUALITY, ConeType.PYRAMIDAL,
-        HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        ConeType.PYRAMIDAL,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
@@ -110,7 +122,7 @@ fn compare_step(
             data_cpu.qfrc[i] = Scalar[DTYPE](0)
         HalfCheetahModel.apply_actions(data_cpu, action_list)
         EulerIntegrator[SOLVER=NewtonSolver].step[
-            NGEOM=NGEOM, CONE_TYPE=ConeType.PYRAMIDAL
+            NGEOM=NGEOM, CONE_TYPE = ConeType.PYRAMIDAL
         ](model_cpu, data_cpu)
 
     # === GPU pipeline (PYRAMIDAL) ===
@@ -123,7 +135,9 @@ fn compare_step(
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
     # Apply actions to get qfrc
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data_temp = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -150,10 +164,20 @@ fn compare_step(
             ctx.synchronize()
 
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
-            NGEOM=NGEOM, CONE_TYPE=ConeType.PYRAMIDAL,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM=NGEOM,
+            CONE_TYPE = ConeType.PYRAMIDAL,
         ](
-            ctx, state_buf, model_buf, workspace_buf,
+            ctx,
+            state_buf,
+            model_buf,
+            workspace_buf,
         )
         ctx.synchronize()
 
@@ -185,9 +209,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " cpu=", cpu_val, " gpu=", gpu_val,
-                    " abs=", abs_err, " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -216,9 +248,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " cpu=", cpu_val, " gpu=", gpu_val,
-                    " abs=", abs_err, " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -226,15 +266,32 @@ fn compare_step(
     var all_pass = qpos_pass and qvel_pass
     if all_pass:
         print(
-            "  ALL OK  qpos(abs=", qpos_max_abs, " rel=", qpos_max_rel,
-            ") qvel(abs=", qvel_max_abs, " rel=", qvel_max_rel, ")",
+            "  ALL OK  qpos(abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ") qvel(abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (abs=", qpos_max_abs,
-            " rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (abs=", qvel_max_abs,
-            " rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print values
@@ -264,7 +321,9 @@ fn test_ground_contact_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -273,7 +332,19 @@ fn test_ground_contact_1_step() raises:
     qpos[1] = -0.2  # rootz low => contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -282,7 +353,9 @@ fn test_ground_contact_with_actions_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -291,13 +364,25 @@ fn test_ground_contact_with_actions_1_step() raises:
     qpos[1] = -0.2  # rootz low => contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act[0] = 0.5   # bthigh
+    act[0] = 0.5  # bthigh
     act[1] = -0.3  # bshin
-    act[2] = 0.2   # bfoot
-    act[3] = 0.5   # fthigh
+    act[2] = 0.2  # bfoot
+    act[3] = 0.5  # fthigh
     act[4] = -0.3  # fshin
-    act[5] = 0.1   # ffoot
-    compare_step("Ground contact + actions (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    act[5] = 0.1  # ffoot
+    compare_step(
+        "Ground contact + actions (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -306,7 +391,9 @@ fn test_deep_penetration_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -315,7 +402,19 @@ fn test_deep_penetration_1_step() raises:
     qpos[1] = -0.5  # very low => many contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Deep penetration (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Deep penetration (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -324,7 +423,9 @@ fn test_moving_with_contacts_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -332,17 +433,29 @@ fn test_moving_with_contacts_1_step() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz low => contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 1.0   # rootx vel
+    qvel[0] = 1.0  # rootx vel
     qvel[1] = -1.0  # rootz vel (falling)
     qvel[2] = -0.5  # rooty vel
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act[0] = 0.5   # bthigh
+    act[0] = 0.5  # bthigh
     act[1] = -0.3  # bshin
-    act[2] = 0.2   # bfoot
-    act[3] = 0.5   # fthigh
+    act[2] = 0.2  # bfoot
+    act[3] = 0.5  # fthigh
     act[4] = -0.3  # fshin
-    act[5] = 0.1   # ffoot
-    compare_step("Moving + contacts (1 step)", qpos, qvel, act, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    act[5] = 0.1  # ffoot
+    compare_step(
+        "Moving + contacts (1 step)",
+        qpos,
+        qvel,
+        act,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -351,7 +464,9 @@ fn test_ground_contact_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -360,7 +475,19 @@ fn test_ground_contact_5_steps() raises:
     qpos[1] = -0.2  # rootz low => contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (5 steps)",
+        qpos,
+        qvel,
+        act,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -369,7 +496,9 @@ fn test_ground_contact_with_actions_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -378,13 +507,25 @@ fn test_ground_contact_with_actions_5_steps() raises:
     qpos[1] = -0.2  # rootz low => contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var act = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act[0] = 0.5   # bthigh
+    act[0] = 0.5  # bthigh
     act[1] = -0.3  # bshin
-    act[2] = 0.2   # bfoot
-    act[3] = 0.5   # fthigh
+    act[2] = 0.2  # bfoot
+    act[3] = 0.5  # fthigh
     act[4] = -0.3  # fshin
-    act[5] = 0.1   # ffoot
-    compare_step("Ground contact + actions (5 steps)", qpos, qvel, act, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    act[5] = 0.1  # ffoot
+    compare_step(
+        "Ground contact + actions (5 steps)",
+        qpos,
+        qvel,
+        act,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 

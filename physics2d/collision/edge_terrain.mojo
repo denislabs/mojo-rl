@@ -8,10 +8,10 @@ This collision system handles:
 Perfect for LunarLander with varying terrain heights.
 """
 
-from math import cos, sin, sqrt
+from std.math import cos, sin, sqrt
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 from ..traits.collision import CollisionSystem
 
 from ..constants import (
@@ -81,10 +81,10 @@ struct EdgeTerrainCollision(CollisionSystem):
         for _ in range(num_envs):
             self.edge_counts.append(0)
 
-    fn __copyinit__(out self, other: EdgeTerrainCollision):
+    fn __init__(out self, *, copy: Self):
         self.edges = List[Scalar[dtype]]()
         self.edge_counts = List[Int]()
-        self.num_envs = other.num_envs
+        self.num_envs = copy.num_envs
         for i in range(other.num_envs * MAX_TERRAIN_EDGES * 6):
             self.edges.append(other.edges[i])
         for i in range(other.num_envs):
@@ -454,11 +454,19 @@ struct EdgeTerrainCollision(CollisionSystem):
         ],
         contacts: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH,
+                NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE,
+                CONTACT_DATA_SIZE,
+            ),
             MutAnyOrigin,
         ],
         contact_flags: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
+            ),
+            MutAnyOrigin,
         ],
     ):
         """Detect collisions for a single (body, edge) pair.
@@ -469,7 +477,9 @@ struct EdgeTerrainCollision(CollisionSystem):
         This allows fully parallel execution over (env × body × edge).
         contact_flags[slot] = 1 if valid contact, 0 otherwise.
         """
-        var slot_base = (body_idx * MAX_EDGES + edge_idx) * MAX_CONTACTS_PER_BODY_EDGE
+        var slot_base = (
+            body_idx * MAX_EDGES + edge_idx
+        ) * MAX_CONTACTS_PER_BODY_EDGE
         var count = 0
 
         var body_off = BODIES_OFFSET + body_idx * BODY_STATE_SIZE
@@ -520,10 +530,14 @@ struct EdgeTerrainCollision(CollisionSystem):
                 var world_x = body_x + local_x * cos_a - local_y * sin_a
                 var world_y = body_y + local_x * sin_a + local_y * cos_a
 
-                if world_x < x_min - Scalar[dtype](0.1) or world_x > x_max + Scalar[dtype](0.1):
+                if world_x < x_min - Scalar[dtype](
+                    0.1
+                ) or world_x > x_max + Scalar[dtype](0.1):
                     continue
 
-                var t = ((world_x - e_x0) * edge_dx + (world_y - e_y0) * edge_dy) / edge_len_sq
+                var t = (
+                    (world_x - e_x0) * edge_dx + (world_y - e_y0) * edge_dy
+                ) / edge_len_sq
                 if t < Scalar[dtype](0):
                     t = Scalar[dtype](0)
                 if t > Scalar[dtype](1):
@@ -538,15 +552,21 @@ struct EdgeTerrainCollision(CollisionSystem):
 
                 if penetration > Scalar[dtype](0):
                     var slot = slot_base + count
-                    contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                    contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](
+                        body_idx
+                    )
                     contacts[env, slot, CONTACT_BODY_B] = Scalar[dtype](-1)
                     contacts[env, slot, CONTACT_POINT_X] = world_x
                     contacts[env, slot, CONTACT_POINT_Y] = world_y
                     contacts[env, slot, CONTACT_NORMAL_X] = e_nx
                     contacts[env, slot, CONTACT_NORMAL_Y] = e_ny
                     contacts[env, slot, CONTACT_DEPTH] = penetration
-                    contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                    contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                    contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](
+                        0
+                    )
+                    contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
                     contact_flags[env, slot] = Scalar[dtype](1)
                     count += 1
 
@@ -555,10 +575,17 @@ struct EdgeTerrainCollision(CollisionSystem):
             var center_offset_x = shapes[shape_idx, 2]
             var center_offset_y = shapes[shape_idx, 3]
 
-            var center_world_x = body_x + center_offset_x * cos_a - center_offset_y * sin_a
-            var center_world_y = body_y + center_offset_x * sin_a + center_offset_y * cos_a
+            var center_world_x = (
+                body_x + center_offset_x * cos_a - center_offset_y * sin_a
+            )
+            var center_world_y = (
+                body_y + center_offset_x * sin_a + center_offset_y * cos_a
+            )
 
-            var t = ((center_world_x - e_x0) * edge_dx + (center_world_y - e_y0) * edge_dy) / edge_len_sq
+            var t = (
+                (center_world_x - e_x0) * edge_dx
+                + (center_world_y - e_y0) * edge_dy
+            ) / edge_len_sq
             if t < Scalar[dtype](0):
                 t = Scalar[dtype](0)
             if t > Scalar[dtype](1):
@@ -577,17 +604,27 @@ struct EdgeTerrainCollision(CollisionSystem):
                 var contact_nx = rebind[Scalar[dtype]](e_nx)
                 var contact_ny = rebind[Scalar[dtype]](e_ny)
                 if dist > Scalar[dtype](1e-6):
-                    contact_nx = rebind[Scalar[dtype]](dist_x) / rebind[Scalar[dtype]](dist)
-                    contact_ny = rebind[Scalar[dtype]](dist_y) / rebind[Scalar[dtype]](dist)
+                    contact_nx = rebind[Scalar[dtype]](dist_x) / rebind[
+                        Scalar[dtype]
+                    ](dist)
+                    contact_ny = rebind[Scalar[dtype]](dist_y) / rebind[
+                        Scalar[dtype]
+                    ](dist)
 
                 var slot = slot_base
                 contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](body_idx)
                 contacts[env, slot, CONTACT_BODY_B] = Scalar[dtype](-1)
-                contacts[env, slot, CONTACT_POINT_X] = rebind[Scalar[dtype]](closest_x)
-                contacts[env, slot, CONTACT_POINT_Y] = rebind[Scalar[dtype]](closest_y)
+                contacts[env, slot, CONTACT_POINT_X] = rebind[Scalar[dtype]](
+                    closest_x
+                )
+                contacts[env, slot, CONTACT_POINT_Y] = rebind[Scalar[dtype]](
+                    closest_y
+                )
                 contacts[env, slot, CONTACT_NORMAL_X] = contact_nx
                 contacts[env, slot, CONTACT_NORMAL_Y] = contact_ny
-                contacts[env, slot, CONTACT_DEPTH] = rebind[Scalar[dtype]](penetration)
+                contacts[env, slot, CONTACT_DEPTH] = rebind[Scalar[dtype]](
+                    penetration
+                )
                 contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
                 contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
                 contact_flags[env, slot] = Scalar[dtype](1)
@@ -621,7 +658,9 @@ struct EdgeTerrainCollision(CollisionSystem):
         n_edges: Int,
         contacts: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
+            ),
             MutAnyOrigin,
         ],
         body_contact_counts: LayoutTensor[
@@ -680,7 +719,9 @@ struct EdgeTerrainCollision(CollisionSystem):
                         x_min = e_x1
                         x_max = e_x0
 
-                    if world_x < x_min - Scalar[dtype](0.1) or world_x > x_max + Scalar[dtype](0.1):
+                    if world_x < x_min - Scalar[dtype](
+                        0.1
+                    ) or world_x > x_max + Scalar[dtype](0.1):
                         continue
 
                     var edge_dx = e_x1 - e_x0
@@ -690,7 +731,9 @@ struct EdgeTerrainCollision(CollisionSystem):
                     if edge_len_sq < Scalar[dtype](1e-6):
                         continue
 
-                    var t = ((world_x - e_x0) * edge_dx + (world_y - e_y0) * edge_dy) / edge_len_sq
+                    var t = (
+                        (world_x - e_x0) * edge_dx + (world_y - e_y0) * edge_dy
+                    ) / edge_len_sq
                     if t < Scalar[dtype](0):
                         t = Scalar[dtype](0)
                     if t > Scalar[dtype](1):
@@ -703,17 +746,26 @@ struct EdgeTerrainCollision(CollisionSystem):
                     var dist_y = world_y - closest_y
                     var penetration = -(dist_x * e_nx + dist_y * e_ny)
 
-                    if penetration > Scalar[dtype](0) and count < MAX_CONTACTS_PER_BODY:
+                    if (
+                        penetration > Scalar[dtype](0)
+                        and count < MAX_CONTACTS_PER_BODY
+                    ):
                         var slot = contact_base + count
-                        contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                        contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
                         contacts[env, slot, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, slot, CONTACT_POINT_X] = world_x
                         contacts[env, slot, CONTACT_POINT_Y] = world_y
                         contacts[env, slot, CONTACT_NORMAL_X] = e_nx
                         contacts[env, slot, CONTACT_NORMAL_Y] = e_ny
                         contacts[env, slot, CONTACT_DEPTH] = penetration
-                        contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                        contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                        contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
         elif shape_type == SHAPE_CIRCLE:
@@ -721,8 +773,12 @@ struct EdgeTerrainCollision(CollisionSystem):
             var center_offset_x = shapes[shape_idx, 2]
             var center_offset_y = shapes[shape_idx, 3]
 
-            var center_world_x = body_x + center_offset_x * cos_a - center_offset_y * sin_a
-            var center_world_y = body_y + center_offset_x * sin_a + center_offset_y * cos_a
+            var center_world_x = (
+                body_x + center_offset_x * cos_a - center_offset_y * sin_a
+            )
+            var center_world_y = (
+                body_y + center_offset_x * sin_a + center_offset_y * cos_a
+            )
 
             for edge_idx in range(MAX_EDGES):
                 if edge_idx >= n_edges:
@@ -743,7 +799,10 @@ struct EdgeTerrainCollision(CollisionSystem):
                 if edge_len_sq < Scalar[dtype](1e-6):
                     continue
 
-                var t = ((center_world_x - e_x0) * edge_dx + (center_world_y - e_y0) * edge_dy) / edge_len_sq
+                var t = (
+                    (center_world_x - e_x0) * edge_dx
+                    + (center_world_y - e_y0) * edge_dy
+                ) / edge_len_sq
                 if t < Scalar[dtype](0):
                     t = Scalar[dtype](0)
                 if t > Scalar[dtype](1):
@@ -758,23 +817,42 @@ struct EdgeTerrainCollision(CollisionSystem):
 
                 var penetration = radius - dist
 
-                if penetration > Scalar[dtype](0) and count < MAX_CONTACTS_PER_BODY:
+                if (
+                    penetration > Scalar[dtype](0)
+                    and count < MAX_CONTACTS_PER_BODY
+                ):
                     var contact_nx = rebind[Scalar[dtype]](e_nx)
                     var contact_ny = rebind[Scalar[dtype]](e_ny)
                     if dist > Scalar[dtype](1e-6):
-                        contact_nx = rebind[Scalar[dtype]](dist_x) / rebind[Scalar[dtype]](dist)
-                        contact_ny = rebind[Scalar[dtype]](dist_y) / rebind[Scalar[dtype]](dist)
+                        contact_nx = rebind[Scalar[dtype]](dist_x) / rebind[
+                            Scalar[dtype]
+                        ](dist)
+                        contact_ny = rebind[Scalar[dtype]](dist_y) / rebind[
+                            Scalar[dtype]
+                        ](dist)
 
                     var slot = contact_base + count
-                    contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                    contacts[env, slot, CONTACT_BODY_A] = Scalar[dtype](
+                        body_idx
+                    )
                     contacts[env, slot, CONTACT_BODY_B] = Scalar[dtype](-1)
-                    contacts[env, slot, CONTACT_POINT_X] = rebind[Scalar[dtype]](closest_x)
-                    contacts[env, slot, CONTACT_POINT_Y] = rebind[Scalar[dtype]](closest_y)
+                    contacts[env, slot, CONTACT_POINT_X] = rebind[
+                        Scalar[dtype]
+                    ](closest_x)
+                    contacts[env, slot, CONTACT_POINT_Y] = rebind[
+                        Scalar[dtype]
+                    ](closest_y)
                     contacts[env, slot, CONTACT_NORMAL_X] = contact_nx
                     contacts[env, slot, CONTACT_NORMAL_Y] = contact_ny
-                    contacts[env, slot, CONTACT_DEPTH] = rebind[Scalar[dtype]](penetration)
-                    contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                    contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                    contacts[env, slot, CONTACT_DEPTH] = rebind[Scalar[dtype]](
+                        penetration
+                    )
+                    contacts[env, slot, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](
+                        0
+                    )
+                    contacts[env, slot, CONTACT_TANGENT_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
                     count += 1
 
         body_contact_counts[env, body_idx] = Scalar[dtype](count)
@@ -962,26 +1040,21 @@ struct EdgeTerrainCollision(CollisionSystem):
 
                     var penetration = radius - dist
 
-                    if (
-                        penetration > Scalar[dtype](0)
-                        and count < MAX_CONTACTS
-                    ):
+                    if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
                         var contact_nx = rebind[Scalar[dtype]](e_nx)
                         var contact_ny = rebind[Scalar[dtype]](e_ny)
                         if dist > Scalar[dtype](1e-6):
-                            contact_nx = rebind[Scalar[dtype]](
-                                dist_x
-                            ) / rebind[Scalar[dtype]](dist)
-                            contact_ny = rebind[Scalar[dtype]](
-                                dist_y
-                            ) / rebind[Scalar[dtype]](dist)
+                            contact_nx = rebind[Scalar[dtype]](dist_x) / rebind[
+                                Scalar[dtype]
+                            ](dist)
+                            contact_ny = rebind[Scalar[dtype]](dist_y) / rebind[
+                                Scalar[dtype]
+                            ](dist)
 
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[
-                            dtype
-                        ](body_idx)
-                        contacts[env, count, CONTACT_BODY_B] = Scalar[
-                            dtype
-                        ](-1)
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
+                        contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, count, CONTACT_POINT_X] = rebind[
                             Scalar[dtype]
                         ](closest_x)
@@ -993,12 +1066,12 @@ struct EdgeTerrainCollision(CollisionSystem):
                         contacts[env, count, CONTACT_DEPTH] = rebind[
                             Scalar[dtype]
                         ](penetration)
-                        contacts[
-                            env, count, CONTACT_NORMAL_IMPULSE
-                        ] = Scalar[dtype](0)
-                        contacts[
-                            env, count, CONTACT_TANGENT_IMPULSE
-                        ] = Scalar[dtype](0)
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
         contact_counts[env] = Scalar[dtype](count)
@@ -1159,7 +1232,9 @@ struct EdgeTerrainCollision(CollisionSystem):
         edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         contacts: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
+            ),
             MutAnyOrigin,
         ],
         body_contact_counts: LayoutTensor[
@@ -1240,7 +1315,9 @@ struct EdgeTerrainCollision(CollisionSystem):
         ](edge_counts_buf.unsafe_ptr())
         var contacts = LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
+            ),
             MutAnyOrigin,
         ](contacts_buf.unsafe_ptr())
         var body_contact_counts = LayoutTensor[
@@ -1269,7 +1346,9 @@ struct EdgeTerrainCollision(CollisionSystem):
             ],
             contacts: LayoutTensor[
                 dtype,
-                Layout.row_major(BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE),
+                Layout.row_major(
+                    BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
+                ),
                 MutAnyOrigin,
             ],
             body_contact_counts: LayoutTensor[
@@ -1324,11 +1403,19 @@ struct EdgeTerrainCollision(CollisionSystem):
         edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         contacts: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE, CONTACT_DATA_SIZE),
+            Layout.row_major(
+                BATCH,
+                NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE,
+                CONTACT_DATA_SIZE,
+            ),
             MutAnyOrigin,
         ],
         contact_flags: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
+            ),
+            MutAnyOrigin,
         ],
     ):
         """Fully parallel GPU kernel for collision detection using 3D indexing.
@@ -1351,7 +1438,9 @@ struct EdgeTerrainCollision(CollisionSystem):
         var n_edges = Int(edge_counts[env])
         if edge_idx >= n_edges:
             # Mark slots as invalid
-            var slot_base = (body_idx * MAX_EDGES + edge_idx) * MAX_CONTACTS_PER_BODY_EDGE
+            var slot_base = (
+                body_idx * MAX_EDGES + edge_idx
+            ) * MAX_CONTACTS_PER_BODY_EDGE
             for i in range(MAX_CONTACTS_PER_BODY_EDGE):
                 contact_flags[env, slot_base + i] = Scalar[dtype](0)
             return
@@ -1423,9 +1512,9 @@ struct EdgeTerrainCollision(CollisionSystem):
 
         # 3D grid: X=envs, Y=bodies, Z=edges
         # Choose block sizes to fit hardware limits (typically 1024 threads/block max)
-        comptime BLOCK_X = 8   # Envs per block
+        comptime BLOCK_X = 8  # Envs per block
         comptime BLOCK_Y = NUM_BODIES  # All bodies in one block dimension
-        comptime BLOCK_Z = 8   # Edges per block (adjust based on MAX_EDGES)
+        comptime BLOCK_Z = 8  # Edges per block (adjust based on MAX_EDGES)
 
         comptime GRID_X = (BATCH + BLOCK_X - 1) // BLOCK_X
         comptime GRID_Y = 1  # All bodies fit in block

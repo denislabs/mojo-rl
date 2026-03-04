@@ -20,7 +20,7 @@ Example usage:
     var probs = softmax_inline(logits)
 """
 
-from math import exp
+from std.math import exp
 
 
 fn softmax(logits: List[Float64]) -> List[Float64]:
@@ -163,7 +163,7 @@ fn log_softmax(logits: List[Float64]) -> List[Float64]:
 
 fn log(x: Float64) -> Float64:
     """Natural logarithm (wrapper for math.log)."""
-    from math import log as math_log
+    from std.math import log as math_log
 
     return math_log(x)
 
@@ -181,7 +181,7 @@ fn sample_from_probs(probs: List[Float64]) -> Int:
         var probs = softmax(logits)
         var action = sample_from_probs(probs)
     """
-    from random import random_float64
+    from std.random import random_float64
 
     var rand = random_float64()
     var cumsum: Float64 = 0.0
@@ -210,7 +210,7 @@ fn sample_from_probs_inline[
         dtype: Data type of the probabilities.
         N: Number of actions.
     """
-    from random import random_float64
+    from std.random import random_float64
 
     var rand = Scalar[dtype](random_float64())
     var cumsum = Scalar[dtype](0.0)

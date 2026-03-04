@@ -15,7 +15,7 @@ Track tiles are stored as:
 Where vertices are in CCW order around the quad.
 """
 
-from math import sqrt
+from std.math import sqrt
 from layout import LayoutTensor, Layout
 
 from .constants import (
@@ -105,8 +105,12 @@ struct TileCollision:
         var c3 = (v0x - v3x) * (py - v3y) - (v0y - v3y) * (px - v3x)
 
         # Inside if all same sign (all positive or all negative)
-        var all_positive = c0 >= zero and c1 >= zero and c2 >= zero and c3 >= zero
-        var all_negative = c0 <= zero and c1 <= zero and c2 <= zero and c3 <= zero
+        var all_positive = (
+            c0 >= zero and c1 >= zero and c2 >= zero and c3 >= zero
+        )
+        var all_negative = (
+            c0 <= zero and c1 <= zero and c2 <= zero and c3 <= zero
+        )
 
         return all_positive or all_negative
 
@@ -224,7 +228,7 @@ struct TileCollision:
         Returns:
             Array of friction limits [FL, FR, RL, RR].
         """
-        from math import cos, sin
+        from std.math import cos, sin
 
         var cos_a = cos(hull_angle)
         var sin_a = sin(hull_angle)
@@ -363,7 +367,9 @@ struct TileCollision:
             if TileCollision.point_in_quad(
                 x, y, v0x, v0y, v1x, v1y, v2x, v2y, v3x, v3y
             ):
-                return rebind[Scalar[dtype]](states[env, tile_off + TILE_FRICTION])
+                return rebind[Scalar[dtype]](
+                    states[env, tile_off + TILE_FRICTION]
+                )
 
         return Scalar[dtype](GRASS_FRICTION)
 

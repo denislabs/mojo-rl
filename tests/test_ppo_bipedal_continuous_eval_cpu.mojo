@@ -7,9 +7,9 @@ Run with:
     pixi run mojo run tests/test_ppo_bipedal_continuous_eval_cpu.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
-from memory import UnsafePointer
+from std.random import seed
+from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.bipedal_walker import BipedalWalker, BWConstants

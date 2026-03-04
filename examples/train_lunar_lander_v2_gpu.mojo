@@ -8,11 +8,11 @@ Usage:
     pixi run -e apple mojo run examples/train_lunar_lander_v2_gpu.mojo
 """
 
-from time import perf_counter_ns
-from random import seed, random_float64
-from math import exp, sqrt
+from std.time import perf_counter_ns
+from std.random import seed, random_float64
+from std.math import exp, sqrt
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from envs.lunar_lander import LunarLander

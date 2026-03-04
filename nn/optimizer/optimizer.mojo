@@ -4,7 +4,7 @@
 
 from ..constants import dtype
 from layout import Layout, LayoutTensor
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait Optimizer(Movable & ImplicitlyCopyable):

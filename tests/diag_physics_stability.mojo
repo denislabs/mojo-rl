@@ -4,7 +4,7 @@ Tests if the physics diverges under extreme (but constant) action inputs,
 to distinguish between a physics bug and a policy mismatch issue.
 """
 
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,

@@ -28,8 +28,8 @@ References:
 - Sutton & Barto, Chapter 10: "On-policy Control with Approximation"
 """
 
-from math import sqrt
-from random import random_float64
+from std.math import sqrt
+from std.random import random_float64
 
 
 trait FeatureExtractor:
@@ -540,7 +540,7 @@ struct RBFFeatures[dtype: DType](FeatureExtractor):
         # For x < 0 (which is always the case for RBF), we can use
         # exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
         # But for better accuracy, we'll use the math module
-        from math import exp
+        from std.math import exp
 
         return exp(x)
 

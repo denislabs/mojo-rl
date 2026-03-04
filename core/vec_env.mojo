@@ -14,7 +14,7 @@ Performance notes:
 - Uses comptime for compile-time loop unrolling
 """
 
-from random import random_float64
+from std.random import random_float64
 
 
 # ============================================================================

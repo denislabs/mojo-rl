@@ -8,9 +8,9 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, ConeType
@@ -93,7 +93,9 @@ fn compare_step(
         HopperModel.MAX_TENDON,
         HopperModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.setup_model_and_data(model_cpu, data_cpu)
 
     for i in range(NQ):
@@ -121,7 +123,9 @@ fn compare_step(
     for i in range(NV):
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE]()
+    var data_temp = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE
+    ]()
     HopperModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -303,7 +307,9 @@ fn test_ground_contact_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -312,7 +318,19 @@ fn test_ground_contact_1_step() raises:
     qpos1[1] = -0.8  # rootz low => contacts
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (1 step)", qpos1, qvel1, act1, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (1 step)",
+        qpos1,
+        qvel1,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -321,7 +339,9 @@ fn test_ground_contact_with_actions_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -333,7 +353,19 @@ fn test_ground_contact_with_actions_1_step() raises:
     act2[0] = 0.5  # thigh
     act2[1] = -0.3  # leg
     act2[2] = 0.2  # foot
-    compare_step("Ground contact + actions (1 step)", qpos1, qvel1, act2, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact + actions (1 step)",
+        qpos1,
+        qvel1,
+        act2,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -342,7 +374,9 @@ fn test_deep_penetration_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -351,7 +385,19 @@ fn test_deep_penetration_1_step() raises:
     qpos3[1] = -1.1  # very low
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Deep penetration (1 step)", qpos3, qvel1, act1, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Deep penetration (1 step)",
+        qpos3,
+        qvel1,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -360,7 +406,9 @@ fn test_moving_with_contacts_1_step() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -375,7 +423,19 @@ fn test_moving_with_contacts_1_step() raises:
     act2[0] = 0.5  # thigh
     act2[1] = -0.3  # leg
     act2[2] = 0.2  # foot
-    compare_step("Moving + contacts (1 step)", qpos1, qvel4, act2, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Moving + contacts (1 step)",
+        qpos1,
+        qvel4,
+        act2,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -384,7 +444,9 @@ fn test_ground_contact_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -393,7 +455,19 @@ fn test_ground_contact_5_steps() raises:
     qpos1[1] = -0.8  # rootz low => contacts
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Ground contact (5 steps)", qpos1, qvel1, act1, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact (5 steps)",
+        qpos1,
+        qvel1,
+        act1,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
@@ -402,7 +476,9 @@ fn test_ground_contact_with_actions_5_steps() raises:
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -414,7 +490,19 @@ fn test_ground_contact_with_actions_5_steps() raises:
     act2[0] = 0.5  # thigh
     act2[1] = -0.3  # leg
     act2[2] = 0.2  # foot
-    compare_step("Ground contact + actions (5 steps)", qpos1, qvel1, act2, 5, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Ground contact + actions (5 steps)",
+        qpos1,
+        qvel1,
+        act2,
+        5,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 

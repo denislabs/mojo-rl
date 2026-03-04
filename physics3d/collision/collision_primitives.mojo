@@ -14,7 +14,7 @@ Phase 8: Added capsule primitives (capsule-plane, capsule-sphere, capsule-capsul
 Phase 9: Added box primitives (box-plane, box-sphere, box-capsule, box-box).
 """
 
-from math import sqrt
+from std.math import sqrt
 
 
 # =============================================================================
@@ -882,8 +882,8 @@ fn cylinder_sphere[
     elif t_clamped > cyl_half_len:
         t_clamped = cyl_half_len
 
-    var on_side = (t >= -cyl_half_len and t <= cyl_half_len)
-    var inside_radius = (rad_dist <= cyl_radius)
+    var on_side = t >= -cyl_half_len and t <= cyl_half_len
+    var inside_radius = rad_dist <= cyl_radius
 
     var dist: Scalar[DTYPE]
     var cx: Scalar[DTYPE]
@@ -1027,7 +1027,9 @@ fn _check_vertex[
     var lx = sx * half_x
     var ly = sy * half_y
     var lz = sz * half_z
-    var rotated = rotate_vector_by_quat(lx, ly, lz, box_qx, box_qy, box_qz, box_qw)
+    var rotated = rotate_vector_by_quat(
+        lx, ly, lz, box_qx, box_qy, box_qz, box_qw
+    )
     var vx = box_x + rotated[0]
     var vy = box_y + rotated[1]
     var vz = box_z + rotated[2]
@@ -1079,22 +1081,150 @@ fn box_plane[
     var NEG = Scalar[DTYPE](-1.0)
     var POS = Scalar[DTYPE](1.0)
 
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, NEG, NEG, NEG, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, NEG, NEG, POS, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, NEG, POS, NEG, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, NEG, POS, POS, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, POS, NEG, NEG, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, POS, NEG, POS, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, POS, POS, NEG, min_z, lowest_x, lowest_y)
-    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
-                  half_x, half_y, half_z, POS, POS, POS, min_z, lowest_x, lowest_y)
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        NEG,
+        NEG,
+        NEG,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        NEG,
+        NEG,
+        POS,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        NEG,
+        POS,
+        NEG,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        NEG,
+        POS,
+        POS,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        POS,
+        NEG,
+        NEG,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        POS,
+        NEG,
+        POS,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        POS,
+        POS,
+        NEG,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
+    _check_vertex(
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        POS,
+        POS,
+        POS,
+        min_z,
+        lowest_x,
+        lowest_y,
+    )
 
     # Signed distance from lowest vertex to ground
     var dist = min_z - ground_z
@@ -1211,21 +1341,27 @@ fn box_sphere[
 
         if face_dist_x <= face_dist_y and face_dist_x <= face_dist_z:
             # X face is closest
-            nx_local = Scalar[DTYPE](1.0) if local_x >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            nx_local = Scalar[DTYPE](1.0) if local_x >= Scalar[DTYPE](
+                0
+            ) else Scalar[DTYPE](-1.0)
             ny_local = Scalar[DTYPE](0.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_x - sph_radius
         elif face_dist_y <= face_dist_z:
             # Y face is closest
             nx_local = Scalar[DTYPE](0.0)
-            ny_local = Scalar[DTYPE](1.0) if local_y >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            ny_local = Scalar[DTYPE](1.0) if local_y >= Scalar[DTYPE](
+                0
+            ) else Scalar[DTYPE](-1.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_y - sph_radius
         else:
             # Z face is closest
             nx_local = Scalar[DTYPE](0.0)
             ny_local = Scalar[DTYPE](0.0)
-            nz_local = Scalar[DTYPE](1.0) if local_z >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            nz_local = Scalar[DTYPE](1.0) if local_z >= Scalar[DTYPE](
+                0
+            ) else Scalar[DTYPE](-1.0)
             dist = -face_dist_z - sph_radius
 
     # Transform normal back to world frame
@@ -1348,7 +1484,10 @@ fn box_capsule[
     var t: Scalar[DTYPE]
 
     if seg_len_sq > Scalar[DTYPE](1e-10):
-        t = -(local1[0] * seg_dx + local1[1] * seg_dy + local1[2] * seg_dz) / seg_len_sq
+        t = (
+            -(local1[0] * seg_dx + local1[1] * seg_dy + local1[2] * seg_dz)
+            / seg_len_sq
+        )
         if t < Scalar[DTYPE](0.0):
             t = Scalar[DTYPE](0.0)
         elif t > Scalar[DTYPE](1.0):
@@ -1363,7 +1502,13 @@ fn box_capsule[
 
     # Transform back to world frame for box-sphere test
     var closest_world = rotate_vector_by_quat(
-        closest_seg_x, closest_seg_y, closest_seg_z, box_qx, box_qy, box_qz, box_qw
+        closest_seg_x,
+        closest_seg_y,
+        closest_seg_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
     )
     var closest_x = box_x + closest_world[0]
     var closest_y = box_y + closest_world[1]
@@ -1371,10 +1516,19 @@ fn box_capsule[
 
     # Now treat as box-sphere collision
     return box_sphere(
-        box_x, box_y, box_z,
-        box_qx, box_qy, box_qz, box_qw,
-        half_x, half_y, half_z,
-        closest_x, closest_y, closest_z,
+        box_x,
+        box_y,
+        box_z,
+        box_qx,
+        box_qy,
+        box_qz,
+        box_qw,
+        half_x,
+        half_y,
+        half_z,
+        closest_x,
+        closest_y,
+        closest_z,
         cap_radius,
     )
 
@@ -1384,13 +1538,23 @@ fn _project_box_onto_axis[
     DTYPE: DType
 ](
     # Box rotation matrix columns (already computed)
-    r0_x: Scalar[DTYPE], r0_y: Scalar[DTYPE], r0_z: Scalar[DTYPE],
-    r1_x: Scalar[DTYPE], r1_y: Scalar[DTYPE], r1_z: Scalar[DTYPE],
-    r2_x: Scalar[DTYPE], r2_y: Scalar[DTYPE], r2_z: Scalar[DTYPE],
+    r0_x: Scalar[DTYPE],
+    r0_y: Scalar[DTYPE],
+    r0_z: Scalar[DTYPE],
+    r1_x: Scalar[DTYPE],
+    r1_y: Scalar[DTYPE],
+    r1_z: Scalar[DTYPE],
+    r2_x: Scalar[DTYPE],
+    r2_y: Scalar[DTYPE],
+    r2_z: Scalar[DTYPE],
     # Box half-extents
-    hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
+    hx: Scalar[DTYPE],
+    hy: Scalar[DTYPE],
+    hz: Scalar[DTYPE],
     # Axis to project onto
-    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     """Project a box onto an axis and return the half-width of the projection.
 
@@ -1398,9 +1562,9 @@ fn _project_box_onto_axis[
     where r0, r1, r2 are the box's rotation matrix columns.
     """
     return (
-        abs(r0_x * ax + r0_y * ay + r0_z * az) * hx +
-        abs(r1_x * ax + r1_y * ay + r1_z * az) * hy +
-        abs(r2_x * ax + r2_y * ay + r2_z * az) * hz
+        abs(r0_x * ax + r0_y * ay + r0_z * az) * hx
+        + abs(r1_x * ax + r1_y * ay + r1_z * az) * hy
+        + abs(r2_x * ax + r2_y * ay + r2_z * az) * hz
     )
 
 
@@ -1416,15 +1580,31 @@ fn _test_sat_axis[
     t_y: Scalar[DTYPE],
     t_z: Scalar[DTYPE],
     # Box A rotation columns
-    a0_x: Scalar[DTYPE], a0_y: Scalar[DTYPE], a0_z: Scalar[DTYPE],
-    a1_x: Scalar[DTYPE], a1_y: Scalar[DTYPE], a1_z: Scalar[DTYPE],
-    a2_x: Scalar[DTYPE], a2_y: Scalar[DTYPE], a2_z: Scalar[DTYPE],
-    a_hx: Scalar[DTYPE], a_hy: Scalar[DTYPE], a_hz: Scalar[DTYPE],
+    a0_x: Scalar[DTYPE],
+    a0_y: Scalar[DTYPE],
+    a0_z: Scalar[DTYPE],
+    a1_x: Scalar[DTYPE],
+    a1_y: Scalar[DTYPE],
+    a1_z: Scalar[DTYPE],
+    a2_x: Scalar[DTYPE],
+    a2_y: Scalar[DTYPE],
+    a2_z: Scalar[DTYPE],
+    a_hx: Scalar[DTYPE],
+    a_hy: Scalar[DTYPE],
+    a_hz: Scalar[DTYPE],
     # Box B rotation columns
-    b0_x: Scalar[DTYPE], b0_y: Scalar[DTYPE], b0_z: Scalar[DTYPE],
-    b1_x: Scalar[DTYPE], b1_y: Scalar[DTYPE], b1_z: Scalar[DTYPE],
-    b2_x: Scalar[DTYPE], b2_y: Scalar[DTYPE], b2_z: Scalar[DTYPE],
-    b_hx: Scalar[DTYPE], b_hy: Scalar[DTYPE], b_hz: Scalar[DTYPE],
+    b0_x: Scalar[DTYPE],
+    b0_y: Scalar[DTYPE],
+    b0_z: Scalar[DTYPE],
+    b1_x: Scalar[DTYPE],
+    b1_y: Scalar[DTYPE],
+    b1_z: Scalar[DTYPE],
+    b2_x: Scalar[DTYPE],
+    b2_y: Scalar[DTYPE],
+    b2_z: Scalar[DTYPE],
+    b_hx: Scalar[DTYPE],
+    b_hy: Scalar[DTYPE],
+    b_hz: Scalar[DTYPE],
     # Output references
     mut min_pen: Scalar[DTYPE],
     mut best_nx: Scalar[DTYPE],
@@ -1448,12 +1628,38 @@ fn _test_sat_axis[
 
     # Project both boxes onto axis
     var proj_a = _project_box_onto_axis(
-        a0_x, a0_y, a0_z, a1_x, a1_y, a1_z, a2_x, a2_y, a2_z,
-        a_hx, a_hy, a_hz, ax, ay, az,
+        a0_x,
+        a0_y,
+        a0_z,
+        a1_x,
+        a1_y,
+        a1_z,
+        a2_x,
+        a2_y,
+        a2_z,
+        a_hx,
+        a_hy,
+        a_hz,
+        ax,
+        ay,
+        az,
     )
     var proj_b = _project_box_onto_axis(
-        b0_x, b0_y, b0_z, b1_x, b1_y, b1_z, b2_x, b2_y, b2_z,
-        b_hx, b_hy, b_hz, ax, ay, az,
+        b0_x,
+        b0_y,
+        b0_z,
+        b1_x,
+        b1_y,
+        b1_z,
+        b2_x,
+        b2_y,
+        b2_z,
+        b_hx,
+        b_hy,
+        b_hz,
+        ax,
+        ay,
+        az,
     )
 
     # Gap = |center_dist| - (proj_a + proj_b)
@@ -1528,14 +1734,62 @@ fn box_box[
         - normal: Unit vector pointing from A to B along minimum penetration axis.
     """
     # Compute rotation matrix columns for box A (local axes in world frame)
-    var a0 = rotate_vector_by_quat(Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), a_qx, a_qy, a_qz, a_qw)
-    var a1 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), a_qx, a_qy, a_qz, a_qw)
-    var a2 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), a_qx, a_qy, a_qz, a_qw)
+    var a0 = rotate_vector_by_quat(
+        Scalar[DTYPE](1),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        a_qx,
+        a_qy,
+        a_qz,
+        a_qw,
+    )
+    var a1 = rotate_vector_by_quat(
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
+        Scalar[DTYPE](0),
+        a_qx,
+        a_qy,
+        a_qz,
+        a_qw,
+    )
+    var a2 = rotate_vector_by_quat(
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
+        a_qx,
+        a_qy,
+        a_qz,
+        a_qw,
+    )
 
     # Compute rotation matrix columns for box B
-    var b0 = rotate_vector_by_quat(Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), b_qx, b_qy, b_qz, b_qw)
-    var b1 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), b_qx, b_qy, b_qz, b_qw)
-    var b2 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), b_qx, b_qy, b_qz, b_qw)
+    var b0 = rotate_vector_by_quat(
+        Scalar[DTYPE](1),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        b_qx,
+        b_qy,
+        b_qz,
+        b_qw,
+    )
+    var b1 = rotate_vector_by_quat(
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
+        Scalar[DTYPE](0),
+        b_qx,
+        b_qy,
+        b_qz,
+        b_qw,
+    )
+    var b2 = rotate_vector_by_quat(
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
+        b_qx,
+        b_qy,
+        b_qz,
+        b_qw,
+    )
 
     # Vector from A center to B center
     var t_x = b_x - a_x
@@ -1549,42 +1803,242 @@ fn box_box[
     var best_nz = Scalar[DTYPE](1.0)
 
     # Separated result for early exit
-    var SEPARATED = (Scalar[DTYPE](1.0), a_x, a_y, a_z, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+    var SEPARATED = (
+        Scalar[DTYPE](1.0),
+        a_x,
+        a_y,
+        a_z,
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
+    )
 
     # Test 15 axes
 
     # Box A face normals (3 axes)
-    if _test_sat_axis(a0[0], a0[1], a0[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        a0[0],
+        a0[1],
+        a0[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
-    if _test_sat_axis(a1[0], a1[1], a1[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        a1[0],
+        a1[1],
+        a1[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
-    if _test_sat_axis(a2[0], a2[1], a2[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        a2[0],
+        a2[1],
+        a2[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # Box B face normals (3 axes)
-    if _test_sat_axis(b0[0], b0[1], b0[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        b0[0],
+        b0[1],
+        b0[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
-    if _test_sat_axis(b1[0], b1[1], b1[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        b1[0],
+        b1[1],
+        b1[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
-    if _test_sat_axis(b2[0], b2[1], b2[2], t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        b2[0],
+        b2[1],
+        b2[2],
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # Edge-edge cross products (9 axes)
@@ -1592,90 +2046,378 @@ fn box_box[
     var c_x = a0[1] * b0[2] - a0[2] * b0[1]
     var c_y = a0[2] * b0[0] - a0[0] * b0[2]
     var c_z = a0[0] * b0[1] - a0[1] * b0[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A0 x B1
     c_x = a0[1] * b1[2] - a0[2] * b1[1]
     c_y = a0[2] * b1[0] - a0[0] * b1[2]
     c_z = a0[0] * b1[1] - a0[1] * b1[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A0 x B2
     c_x = a0[1] * b2[2] - a0[2] * b2[1]
     c_y = a0[2] * b2[0] - a0[0] * b2[2]
     c_z = a0[0] * b2[1] - a0[1] * b2[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A1 x B0
     c_x = a1[1] * b0[2] - a1[2] * b0[1]
     c_y = a1[2] * b0[0] - a1[0] * b0[2]
     c_z = a1[0] * b0[1] - a1[1] * b0[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A1 x B1
     c_x = a1[1] * b1[2] - a1[2] * b1[1]
     c_y = a1[2] * b1[0] - a1[0] * b1[2]
     c_z = a1[0] * b1[1] - a1[1] * b1[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A1 x B2
     c_x = a1[1] * b2[2] - a1[2] * b2[1]
     c_y = a1[2] * b2[0] - a1[0] * b2[2]
     c_z = a1[0] * b2[1] - a1[1] * b2[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A2 x B0
     c_x = a2[1] * b0[2] - a2[2] * b0[1]
     c_y = a2[2] * b0[0] - a2[0] * b0[2]
     c_z = a2[0] * b0[1] - a2[1] * b0[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A2 x B1
     c_x = a2[1] * b1[2] - a2[2] * b1[1]
     c_y = a2[2] * b1[0] - a2[0] * b1[2]
     c_z = a2[0] * b1[1] - a2[1] * b1[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # A2 x B2
     c_x = a2[1] * b2[2] - a2[2] * b2[1]
     c_y = a2[2] * b2[0] - a2[0] * b2[2]
     c_z = a2[0] * b2[1] - a2[1] * b2[0]
-    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
-            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
-            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
-            min_pen, best_nx, best_ny, best_nz):
+    if _test_sat_axis(
+        c_x,
+        c_y,
+        c_z,
+        t_x,
+        t_y,
+        t_z,
+        a0[0],
+        a0[1],
+        a0[2],
+        a1[0],
+        a1[1],
+        a1[2],
+        a2[0],
+        a2[1],
+        a2[2],
+        a_hx,
+        a_hy,
+        a_hz,
+        b0[0],
+        b0[1],
+        b0[2],
+        b1[0],
+        b1[1],
+        b1[2],
+        b2[0],
+        b2[1],
+        b2[2],
+        b_hx,
+        b_hy,
+        b_hz,
+        min_pen,
+        best_nx,
+        best_ny,
+        best_nz,
+    ):
         return SEPARATED
 
     # No separating axis found - boxes are colliding

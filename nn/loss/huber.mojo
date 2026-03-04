@@ -5,10 +5,10 @@
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.primitives import block
-from gpu.host import DeviceContext, DeviceBuffer
-from math import abs
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.math import abs
 
 
 struct HuberLoss[delta: Float64 = 1.0](LossFunction):
@@ -38,8 +38,12 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ) -> Float64:
         """Huber Loss forward pass."""
         comptime SIZE = BATCH * OUT_DIM
@@ -48,9 +52,9 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         var half_delta_sq = 0.5 * d * d
         for row in range(BATCH):
             for col in range(OUT_DIM):
-                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
-                    rebind[Scalar[dtype]](target[row, col])
-                )
+                var diff = Float64(
+                    rebind[Scalar[dtype]](output[row, col])
+                ) - Float64(rebind[Scalar[dtype]](target[row, col]))
                 var abs_diff = abs(diff)
                 if abs_diff <= d:
                     loss += 0.5 * diff * diff
@@ -63,9 +67,15 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         BATCH: Int,
         OUT_DIM: Int,
     ](
-        output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        target: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut grad: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        target: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
+        mut grad: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ],
     ):
         """Huber Loss backward pass: gradient dL/dy."""
         comptime SIZE = BATCH * OUT_DIM
@@ -73,9 +83,9 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         var inv_n = 1.0 / Float64(SIZE)
         for row in range(BATCH):
             for col in range(OUT_DIM):
-                var diff = Float64(rebind[Scalar[dtype]](output[row, col])) - Float64(
-                    rebind[Scalar[dtype]](target[row, col])
-                )
+                var diff = Float64(
+                    rebind[Scalar[dtype]](output[row, col])
+                ) - Float64(rebind[Scalar[dtype]](target[row, col]))
                 var abs_diff = abs(diff)
                 if abs_diff <= d:
                     grad[row, col] = Scalar[dtype](diff * inv_n)

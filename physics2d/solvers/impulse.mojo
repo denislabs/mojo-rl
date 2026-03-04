@@ -10,8 +10,8 @@ Matches Box2D's constraint solving approach for compatibility.
 """
 
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 from ..constants import (
@@ -699,9 +699,15 @@ struct ImpulseSolver(ConstraintSolver):
                 pos_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_Y])
                 vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
                 vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
-                omega_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_OMEGA])
-                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
-                inv_inertia_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_INERTIA])
+                omega_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_OMEGA]
+                )
+                inv_mass_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_INV_MASS]
+                )
+                inv_inertia_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_INV_INERTIA]
+                )
 
             var ra_x = point_x - pos_a_x
             var ra_y = point_y - pos_a_y
@@ -725,7 +731,9 @@ struct ImpulseSolver(ConstraintSolver):
                 k = k + inv_inertia_a * ra_cross_n * ra_cross_n
                 k = k + inv_inertia_b * rb_cross_n * rb_cross_n
 
-                var j_normal = -(Scalar[dtype](1) + restitution) * vel_normal / k
+                var j_normal = (
+                    -(Scalar[dtype](1) + restitution) * vel_normal / k
+                )
 
                 var old_impulse = contacts[env, c, CONTACT_NORMAL_IMPULSE]
                 var new_impulse = old_impulse + j_normal
@@ -737,23 +745,45 @@ struct ImpulseSolver(ConstraintSolver):
                 var impulse_x = j_normal * normal_x
                 var impulse_y = j_normal * normal_y
 
-                state[env, body_a_off + IDX_VX] = vel_a_x + impulse_x * inv_mass_a
-                state[env, body_a_off + IDX_VY] = vel_a_y + impulse_y * inv_mass_a
-                state[env, body_a_off + IDX_OMEGA] = omega_a + (ra_x * impulse_y - ra_y * impulse_x) * inv_inertia_a
+                state[env, body_a_off + IDX_VX] = (
+                    vel_a_x + impulse_x * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VY] = (
+                    vel_a_y + impulse_y * inv_mass_a
+                )
+                state[env, body_a_off + IDX_OMEGA] = (
+                    omega_a
+                    + (ra_x * impulse_y - ra_y * impulse_x) * inv_inertia_a
+                )
 
                 if body_b_idx >= 0:
-                    state[env, body_b_off + IDX_VX] = vel_b_x - impulse_x * inv_mass_b
-                    state[env, body_b_off + IDX_VY] = vel_b_y - impulse_y * inv_mass_b
-                    state[env, body_b_off + IDX_OMEGA] = omega_b - (rb_x * impulse_y - rb_y * impulse_x) * inv_inertia_b
+                    state[env, body_b_off + IDX_VX] = (
+                        vel_b_x - impulse_x * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VY] = (
+                        vel_b_y - impulse_y * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_OMEGA] = (
+                        omega_b
+                        - (rb_x * impulse_y - rb_y * impulse_x) * inv_inertia_b
+                    )
 
                 # Update velocities for friction
                 vel_a_x = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VX])
                 vel_a_y = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VY])
-                omega_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_OMEGA])
+                omega_a = rebind[Scalar[dtype]](
+                    state[env, body_a_off + IDX_OMEGA]
+                )
                 if body_b_idx >= 0:
-                    vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
-                    vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
-                    omega_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_OMEGA])
+                    vel_b_x = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_VX]
+                    )
+                    vel_b_y = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_VY]
+                    )
+                    omega_b = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_OMEGA]
+                    )
 
                 # Friction
                 vel_at_a_x = vel_a_x - omega_a * ra_y
@@ -775,7 +805,9 @@ struct ImpulseSolver(ConstraintSolver):
 
                 var j_tangent = -vel_tangent / k_t
 
-                var max_friction = friction * contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                var max_friction = (
+                    friction * contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                )
                 var old_tangent = contacts[env, c, CONTACT_TANGENT_IMPULSE]
                 var new_tangent = old_tangent + j_tangent
                 if new_tangent > max_friction:
@@ -788,14 +820,31 @@ struct ImpulseSolver(ConstraintSolver):
                 var friction_x = j_tangent * tangent_x
                 var friction_y = j_tangent * tangent_y
 
-                state[env, body_a_off + IDX_VX] = state[env, body_a_off + IDX_VX] + friction_x * inv_mass_a
-                state[env, body_a_off + IDX_VY] = state[env, body_a_off + IDX_VY] + friction_y * inv_mass_a
-                state[env, body_a_off + IDX_OMEGA] = state[env, body_a_off + IDX_OMEGA] + (ra_x * friction_y - ra_y * friction_x) * inv_inertia_a
+                state[env, body_a_off + IDX_VX] = (
+                    state[env, body_a_off + IDX_VX] + friction_x * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VY] = (
+                    state[env, body_a_off + IDX_VY] + friction_y * inv_mass_a
+                )
+                state[env, body_a_off + IDX_OMEGA] = (
+                    state[env, body_a_off + IDX_OMEGA]
+                    + (ra_x * friction_y - ra_y * friction_x) * inv_inertia_a
+                )
 
                 if body_b_idx >= 0:
-                    state[env, body_b_off + IDX_VX] = state[env, body_b_off + IDX_VX] - friction_x * inv_mass_b
-                    state[env, body_b_off + IDX_VY] = state[env, body_b_off + IDX_VY] - friction_y * inv_mass_b
-                    state[env, body_b_off + IDX_OMEGA] = state[env, body_b_off + IDX_OMEGA] - (rb_x * friction_y - rb_y * friction_x) * inv_inertia_b
+                    state[env, body_b_off + IDX_VX] = (
+                        state[env, body_b_off + IDX_VX]
+                        - friction_x * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VY] = (
+                        state[env, body_b_off + IDX_VY]
+                        - friction_y * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_OMEGA] = (
+                        state[env, body_b_off + IDX_OMEGA]
+                        - (rb_x * friction_y - rb_y * friction_x)
+                        * inv_inertia_b
+                    )
 
     @always_inline
     @staticmethod
@@ -823,7 +872,8 @@ struct ImpulseSolver(ConstraintSolver):
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
     ):
-        """Solve position constraints for sparse contacts with validity flags."""
+        """Solve position constraints for sparse contacts with validity flags.
+        """
         for c in range(TOTAL_CONTACT_SLOTS):
             # Skip invalid contacts
             if contact_flags[env, c] == Scalar[dtype](0):
@@ -844,12 +894,16 @@ struct ImpulseSolver(ConstraintSolver):
 
             correction = baumgarte * correction
 
-            var inv_mass_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_INV_MASS])
+            var inv_mass_a = rebind[Scalar[dtype]](
+                state[env, body_a_off + IDX_INV_MASS]
+            )
             var inv_mass_b = Scalar[dtype](0)
             var body_b_off = 0
             if body_b_idx >= 0:
                 body_b_off = BODIES_OFFSET + body_b_idx * BODY_STATE_SIZE
-                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
+                inv_mass_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_INV_MASS]
+                )
 
             var total_inv_mass = inv_mass_a + inv_mass_b
             if total_inv_mass == Scalar[dtype](0):
@@ -858,12 +912,20 @@ struct ImpulseSolver(ConstraintSolver):
             var correction_a = correction * inv_mass_a / total_inv_mass
             var correction_b = correction * inv_mass_b / total_inv_mass
 
-            state[env, body_a_off + IDX_X] = state[env, body_a_off + IDX_X] + normal_x * correction_a
-            state[env, body_a_off + IDX_Y] = state[env, body_a_off + IDX_Y] + normal_y * correction_a
+            state[env, body_a_off + IDX_X] = (
+                state[env, body_a_off + IDX_X] + normal_x * correction_a
+            )
+            state[env, body_a_off + IDX_Y] = (
+                state[env, body_a_off + IDX_Y] + normal_y * correction_a
+            )
 
             if body_b_idx >= 0:
-                state[env, body_b_off + IDX_X] = state[env, body_b_off + IDX_X] - normal_x * correction_b
-                state[env, body_b_off + IDX_Y] = state[env, body_b_off + IDX_Y] - normal_y * correction_b
+                state[env, body_b_off + IDX_X] = (
+                    state[env, body_b_off + IDX_X] - normal_x * correction_b
+                )
+                state[env, body_b_off + IDX_Y] = (
+                    state[env, body_b_off + IDX_Y] - normal_y * correction_b
+                )
 
     @always_inline
     @staticmethod

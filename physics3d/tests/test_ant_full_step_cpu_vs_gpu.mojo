@@ -14,9 +14,9 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, ConeType
@@ -42,20 +42,22 @@ from envs.ant.ant_config import AntConfig
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = AntModel.NQ          # 15
-comptime NV = AntModel.NV          # 14
-comptime NBODY = AntModel.NBODY    # 14
+comptime NQ = AntModel.NQ  # 15
+comptime NV = AntModel.NV  # 14
+comptime NBODY = AntModel.NBODY  # 14
 comptime NJOINT = AntModel.NJOINT  # 9
-comptime NGEOM = AntModel.NGEOM   # 15
+comptime NGEOM = AntModel.NGEOM  # 15
 comptime MAX_CONTACTS = AntModel.MAX_CONTACTS  # 40
-comptime ACTION_DIM = AntConfig.ACTION_DIM     # 8
-comptime NSITE = AntModel.NSITE   # 0
+comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
+comptime NSITE = AntModel.NSITE  # 0
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime SOLVER_WS = NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
-comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
+comptime WS_SIZE = integrator_workspace_size[
+    NV, NBODY
+]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
 
 # Tolerances (float32, RK4 4th-order)
 comptime QPOS_ABS_TOL: Float64 = 3e-2
@@ -82,16 +84,27 @@ fn compare_step(
     mut workspace_buf: DeviceBuffer[DTYPE],
     mut ws_host: HostBuffer[DTYPE],
 ) raises:
-    """Run num_steps RK4 physics steps on CPU and GPU, compare final qpos/qvel."""
+    """Run num_steps RK4 physics steps on CPU and GPU, compare final qpos/qvel.
+    """
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
     # === CPU pipeline ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        AntModel.MAX_EQUALITY, AntModel.CONE_TYPE,
-        AntModel.MAX_TENDON, AntModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        AntModel.MAX_EQUALITY,
+        AntModel.CONE_TYPE,
+        AntModel.MAX_TENDON,
+        AntModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE
+    ]()
     AntModel.setup_model_and_data(model_cpu, data_cpu)
 
     for i in range(NQ):
@@ -107,7 +120,9 @@ fn compare_step(
         for i in range(NV):
             data_cpu.qfrc[i] = Scalar[DTYPE](0)
         AntModel.apply_actions(data_cpu, action_list)
-        RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model_cpu, data_cpu)
+        RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
+            model_cpu, data_cpu
+        )
 
     # === GPU pipeline ===
     var model_buf_local = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
@@ -121,7 +136,9 @@ fn compare_step(
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
     # Apply actions to get qfrc
-    var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE]()
+    var data_temp = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE
+    ]()
     AntModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
@@ -146,8 +163,15 @@ fn compare_step(
             ctx.synchronize()
 
         RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
-            NGEOM=0, CONE_TYPE=AntModel.CONE_TYPE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM=0,
+            CONE_TYPE = AntModel.CONE_TYPE,
         ](ctx, state_buf, model_buf_local, workspace_buf)
         ctx.synchronize()
 
@@ -175,7 +199,18 @@ fn compare_step(
         var ok = abs_err < QPOS_ABS_TOL or rel_err < QPOS_REL_TOL
         if not ok:
             if qpos_fails < 5:
-                print("  FAIL qpos[", i, "] cpu=", cpu_val, " gpu=", gpu_val, " abs=", abs_err, " rel=", rel_err)
+                print(
+                    "  FAIL qpos[",
+                    i,
+                    "] cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
+                )
             qpos_fails += 1
             qpos_pass = False
 
@@ -200,16 +235,51 @@ fn compare_step(
         var ok = abs_err < QVEL_ABS_TOL or rel_err < QVEL_REL_TOL
         if not ok:
             if qvel_fails < 5:
-                print("  FAIL qvel[", i, "] cpu=", cpu_val, " gpu=", gpu_val, " abs=", abs_err, " rel=", rel_err)
+                print(
+                    "  FAIL qvel[",
+                    i,
+                    "] cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
+                )
             qvel_fails += 1
             qvel_pass = False
 
     var all_pass = qpos_pass and qvel_pass
     if all_pass:
-        print("  ALL OK  qpos(abs=", qpos_max_abs, " rel=", qpos_max_rel, ") qvel(abs=", qvel_max_abs, " rel=", qvel_max_rel, ")")
+        print(
+            "  ALL OK  qpos(abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ") qvel(abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
+        )
     else:
-        print("  FAILED  qpos:", qpos_fails, "fails (abs=", qpos_max_abs, " rel=", qpos_max_rel, ")",
-              " qvel:", qvel_fails, "fails (abs=", qvel_max_abs, " rel=", qvel_max_rel, ")")
+        print(
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
+        )
 
     print("  CPU qpos:", end="")
     for i in range(NQ):
@@ -231,7 +301,9 @@ fn compare_step(
 
 fn test_free_fall_1_step() raises:
     var ctx = DeviceContext()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -243,13 +315,27 @@ fn test_free_fall_1_step() raises:
     qpos1[3] = 1.0  # qw (identity)
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Free fall (z=2.0, 1 step)", qpos1, qvel1, act1, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall (z=2.0, 1 step)",
+        qpos1,
+        qvel1,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
 fn test_free_fall_with_actions_1_step() raises:
     var ctx = DeviceContext()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -260,21 +346,35 @@ fn test_free_fall_with_actions_1_step() raises:
     qpos2[3] = 1.0  # qw identity
     var qvel2 = InlineArray[Float64, NV](fill=0.0)
     var act2 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act2[0] = 0.5   # hip_1
+    act2[0] = 0.5  # hip_1
     act2[1] = -0.3  # ankle_1
-    act2[2] = 0.5   # hip_2
+    act2[2] = 0.5  # hip_2
     act2[3] = -0.3  # ankle_2
-    act2[4] = 0.5   # hip_3
+    act2[4] = 0.5  # hip_3
     act2[5] = -0.3  # ankle_3
-    act2[6] = 0.5   # hip_4
+    act2[6] = 0.5  # hip_4
     act2[7] = -0.3  # ankle_4
-    compare_step("Free fall + actions (z=2.0, 1 step)", qpos2, qvel2, act2, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall + actions (z=2.0, 1 step)",
+        qpos2,
+        qvel2,
+        act2,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
 fn test_default_pose_no_contact_1_step() raises:
     var ctx = DeviceContext()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -282,16 +382,16 @@ fn test_default_pose_no_contact_1_step() raises:
 
     # Default init_qpos from XML — but raised to z=2.0 to avoid contacts
     var qpos3 = InlineArray[Float64, NQ](fill=0.0)
-    qpos3[0]  = 0.0
-    qpos3[1]  = 0.0
-    qpos3[2]  = 2.0   # raised to avoid contacts
-    qpos3[3]  = 1.0
-    qpos3[4]  = 0.0
-    qpos3[5]  = 0.0
-    qpos3[6]  = 0.0
-    qpos3[7]  = 0.0
-    qpos3[8]  = 1.0
-    qpos3[9]  = 0.0
+    qpos3[0] = 0.0
+    qpos3[1] = 0.0
+    qpos3[2] = 2.0  # raised to avoid contacts
+    qpos3[3] = 1.0
+    qpos3[4] = 0.0
+    qpos3[5] = 0.0
+    qpos3[6] = 0.0
+    qpos3[7] = 0.0
+    qpos3[8] = 1.0
+    qpos3[9] = 0.0
     qpos3[10] = -1.0
     qpos3[11] = 0.0
     qpos3[12] = -1.0
@@ -299,13 +399,27 @@ fn test_default_pose_no_contact_1_step() raises:
     qpos3[14] = 1.0
     var qvel3 = InlineArray[Float64, NV](fill=0.0)
     var act3 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Default joint angles + raised (1 step)", qpos3, qvel3, act3, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Default joint angles + raised (1 step)",
+        qpos3,
+        qvel3,
+        act3,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
 fn test_moving_1_step() raises:
     var ctx = DeviceContext()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -314,27 +428,41 @@ fn test_moving_1_step() raises:
     var qpos4 = InlineArray[Float64, NQ](fill=0.0)
     qpos4[0] = 0.5
     qpos4[1] = 0.3
-    qpos4[2] = 2.0   # raised
-    qpos4[3] = 0.924 # qw = cos(22.5°) — ~45° yaw rotation
-    qpos4[6] = 0.383 # qz = sin(22.5°)
+    qpos4[2] = 2.0  # raised
+    qpos4[3] = 0.924  # qw = cos(22.5°) — ~45° yaw rotation
+    qpos4[6] = 0.383  # qz = sin(22.5°)
     qpos4[7] = 0.3
     qpos4[10] = -0.3
     var qvel4 = InlineArray[Float64, NV](fill=0.0)
-    qvel4[0] = 2.0   # x velocity
-    qvel4[1] = 0.5   # y velocity
+    qvel4[0] = 2.0  # x velocity
+    qvel4[1] = 0.5  # y velocity
     qvel4[2] = -1.0  # z velocity
-    qvel4[3] = 0.5   # wx
-    qvel4[4] = 0.3   # wy
+    qvel4[3] = 0.5  # wx
+    qvel4[4] = 0.3  # wy
     var act4 = InlineArray[Float64, ACTION_DIM](fill=0.0)
     act4[0] = 0.8
     act4[4] = 0.8
-    compare_step("Moving + actions (1 step)", qpos4, qvel4, act4, 1, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Moving + actions (1 step)",
+        qpos4,
+        qvel4,
+        act4,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 
 fn test_free_fall_10_steps() raises:
     var ctx = DeviceContext()
-    var state_host = create_state_buffer[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH](ctx)
+    var state_host = create_state_buffer[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
+    ](ctx)
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
     var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
@@ -349,7 +477,19 @@ fn test_free_fall_10_steps() raises:
     act5[2] = 0.3
     act5[4] = 0.3
     act5[6] = 0.3
-    compare_step("Free fall + actions (10 steps)", qpos5, qvel5, act5, 10, ctx, model_buf, state_host, state_buf, workspace_buf, ws_host)
+    compare_step(
+        "Free fall + actions (10 steps)",
+        qpos5,
+        qvel5,
+        act5,
+        10,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
+    )
     print()
 
 

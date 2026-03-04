@@ -15,12 +15,12 @@ Run with:
     pixi run -e apple mojo run examples/benchmark_vec_env.mojo
 """
 
-from time import perf_counter_ns
-from math import cos, sin
-from random import random_float64, seed
+from std.time import perf_counter_ns
+from std.math import cos, sin
+from std.random import random_float64, seed
 
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 
@@ -428,7 +428,7 @@ fn benchmark_gpu_no_transfer[
 ](ctx: DeviceContext, num_steps: Int) raises -> Float64:
     """Benchmark GPU vectorized CartPole WITHOUT per-step CPU-GPU transfers.
 
-    This represents the best-case scenario where actions come from GPU (e.g., from
+    This represents the best-case scenario where actions come from std.gpu (e.g., from
     a neural network forward pass) and random numbers are pre-generated.
     """
     comptime dtype = DType.float32
@@ -667,7 +667,7 @@ def main():
         print()
         print("=" * 70)
         print("Key insight: GPU wins when:")
-        print("  1. Actions come from GPU (neural network forward pass)")
+        print("  1. Actions come from std.gpu (neural network forward pass)")
         print("  2. Random numbers generated on GPU (or pre-batched)")
         print("  3. Enough parallel envs to amortize kernel launch overhead")
         print("=" * 70)

@@ -8,10 +8,10 @@ Run with:
     pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gap_growth.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.half_cheetah import (

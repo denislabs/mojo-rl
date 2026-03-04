@@ -4,7 +4,7 @@ Provides Vec3 struct with common operations for 3D math.
 Uses SIMD[float64, 4] backing for efficient computation.
 """
 
-from math import sqrt, cos, sin
+from std.math import sqrt, cos, sin
 
 
 @fieldwise_init
@@ -169,7 +169,9 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         if len > 1e-10:
             self /= len
 
-    fn distance_to(self, other: Self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    fn distance_to(
+        self, other: Self
+    ) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Distance to another point."""
         return (self - other).length()
 
@@ -209,7 +211,9 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         """Component-wise clamp between min and max."""
         return self.max(min_val).min(max_val)
 
-    fn clamp_length(self, max_length: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn clamp_length(
+        self, max_length: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Clamp vector to maximum length."""
         var len_sq = self.length_squared()
         if len_sq > max_length * max_length:
@@ -276,7 +280,9 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # Rotation
     # =========================================================================
 
-    fn rotated_x(self, angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotated_x(
+        self, angle: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around X axis.
 
         Args:
@@ -293,7 +299,9 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             self.y * s + self.z * c,
         )
 
-    fn rotated_y(self, angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotated_y(
+        self, angle: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around Y axis.
 
         Args:
@@ -310,7 +318,9 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             -self.x * s + self.z * c,
         )
 
-    fn rotated_z(self, angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotated_z(
+        self, angle: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around Z axis.
 
         Args:
@@ -397,17 +407,25 @@ fn cross[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Vec3[DTYPE]:
     return a.cross(b)
 
 
-fn normalize[DTYPE: DType](v: Vec3[DTYPE]) -> Vec3[DTYPE] where DTYPE.is_floating_point():
+fn normalize[
+    DTYPE: DType
+](v: Vec3[DTYPE]) -> Vec3[DTYPE] where DTYPE.is_floating_point():
     """Return normalized vector."""
     return v.normalized()
 
 
-fn length[DTYPE: DType](v: Vec3[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+fn length[
+    DTYPE: DType
+](v: Vec3[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
     """Return vector length."""
     return v.length()
 
 
-fn distance[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+fn distance[
+    DTYPE: DType
+](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Scalar[
+    DTYPE
+] where DTYPE.is_floating_point():
     """Distance between two points."""
     return a.distance_to(b)
 

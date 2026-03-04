@@ -1,6 +1,6 @@
 """HumanoidStandup environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -175,7 +175,9 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
         meta_offset: Int,
     ):
         # Save free joint x position (unused for uph reward)
-        comptime QPOS_OFF = qpos_offset[HumanoidStandupModel.NQ, HumanoidStandupModel.NV]()
+        comptime QPOS_OFF = qpos_offset[
+            HumanoidStandupModel.NQ, HumanoidStandupModel.NV
+        ]()
         states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
     # === GPU inline: Reward + termination ===
@@ -246,8 +248,12 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     ):
         # Free joint: torso starts at z=0.105 (lying on back, pos="0 0 .105" in MJCF)
         # qpos[0:3] = translation (x, y, z), qpos[3:7] = quaternion (w, x, y, z)
-        states[env, qpos_off + 2] = rebind[Scalar[DTYPE]](states[env, qpos_off + 2]) + Scalar[DTYPE](0.105)
-        states[env, qpos_off + 3] = rebind[Scalar[DTYPE]](states[env, qpos_off + 3]) + Scalar[DTYPE](1.0)
+        states[env, qpos_off + 2] = rebind[Scalar[DTYPE]](
+            states[env, qpos_off + 2]
+        ) + Scalar[DTYPE](0.105)
+        states[env, qpos_off + 3] = rebind[Scalar[DTYPE]](
+            states[env, qpos_off + 3]
+        ) + Scalar[DTYPE](1.0)
 
     # === GPU inline: Custom obs extraction (none — use model default 45D obs) ===
     @always_inline

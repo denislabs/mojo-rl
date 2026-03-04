@@ -3,7 +3,7 @@
 # +--------------------------------------------------------------------------+ #
 
 """SDL3 Bindings in Mojo"""
-from memory import UnsafePointer
+from std.memory import UnsafePointer
 from .sdl_audio import *
 from .sdl_blendmode import *
 from .sdl_camera import *
@@ -44,7 +44,7 @@ comptime Ptr = UnsafePointer
 
 
 from sys import CompilationTarget, is_little_endian, is_big_endian
-from ffi import (
+from std.ffi import (
     _Global,
     OwnedDLHandle,
     _get_dylib_function,

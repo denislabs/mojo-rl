@@ -6,8 +6,8 @@ Requires SDL2: brew install sdl2 sdl2_ttf
 """
 
 from envs import AcrobotEnv
-from random import random_float64
-from time import sleep
+from std.random import random_float64
+from std.time import sleep
 from render import Renderer2D
 
 

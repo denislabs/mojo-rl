@@ -16,9 +16,9 @@ Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
-from math import cos, sin
-from random import random_float64
-from memory import alloc
+from std.math import cos, sin
+from std.random import random_float64
+from std.memory import alloc
 from core import (
     State,
     Action,
@@ -43,8 +43,8 @@ from render import (
 )
 from nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
-from gpu import block_dim, block_idx, thread_idx
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 # =============================================================================
 # Physics Constants (shared by CPU and GPU)

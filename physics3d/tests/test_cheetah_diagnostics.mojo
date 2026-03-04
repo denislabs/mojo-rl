@@ -8,7 +8,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_cheetah_diagnostics.mojo
 """
 
-from math import sqrt, pi, abs
+from std.math import sqrt, pi, abs
 
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel

@@ -7,9 +7,9 @@ To run:
     pixi run -e apple mojo run examples/trig_gpu_test.mojo
 """
 
-from math import sin, cos, sqrt
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.math import sin, cos, sqrt
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 

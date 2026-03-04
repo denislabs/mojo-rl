@@ -33,9 +33,9 @@ Kernels provided:
 """
 
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from math import exp, log, sqrt, cos, tanh
-from random.philox import Random as PhiloxRandom
+from std.gpu import thread_idx, block_idx, block_dim
+from std.math import exp, log, sqrt, cos, tanh
+from std.random.philox import Random as PhiloxRandom
 
 
 # =============================================================================
@@ -360,7 +360,7 @@ fn tdmpc2_consistency_loss_grad_kernel[
         z_pred: Predicted next latent state [BATCH, LATENT].
         z_target: Target next latent state (stop-grad) [BATCH, LATENT].
         grad_z_pred: Gradient accumulation buffer [BATCH, LATENT].
-        rho_weight: rho^t temporal decay weight.
+        rho_weight: Rho^t temporal decay weight.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -402,7 +402,7 @@ fn tdmpc2_two_hot_loss_grad_kernel[
         logits: Network output logits [BATCH, BINS].
         target_dist: Two-hot encoded target distribution [BATCH, BINS].
         grad_logits: Gradient accumulation buffer [BATCH, BINS].
-        rho_weight: rho^t temporal decay weight.
+        rho_weight: Rho^t temporal decay weight.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -447,7 +447,7 @@ fn tdmpc2_bce_loss_grad_kernel[
         probs: Predicted termination probabilities [BATCH] (sigmoid output).
         dones: True done flags [BATCH] (1.0 = done, 0.0 = not done).
         grad_probs: Gradient accumulation buffer [BATCH].
-        rho_weight: rho^t temporal decay weight.
+        rho_weight: Rho^t temporal decay weight.
     """
     comptime EPS: Scalar[dtype] = 1e-7
 
@@ -630,7 +630,7 @@ fn tdmpc2_policy_grad_kernel[
         pi_out: Policy network output [BATCH, ACTION_DIM * 2] (mean | log_std).
         q_values: Q-values for the actions [BATCH].
         grad_pi_out: Gradient accumulation buffer [BATCH, ACTION_DIM * 2].
-        rho_weight: rho^t temporal decay weight.
+        rho_weight: Rho^t temporal decay weight.
         entropy_coef: Entropy regularization coefficient.
     """
     comptime LOG_STD_MIN: Scalar[dtype] = -5.0

@@ -3,7 +3,7 @@
 Observation state for the GPU-enabled Pendulum environment.
 """
 
-from math import cos, sin
+from std.math import cos, sin
 
 from core import State
 from layout import Layout, LayoutTensor
@@ -84,7 +84,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         ],
         env: Int,
     ) -> PendulumV2State[Self.DTYPE]:
-        """Create state from GPU buffer by reading theta and computing observation.
+        """Create state from std.gpu buffer by reading theta and computing observation.
 
         Args:
             state: GPU state buffer with shape [BATCH, STATE_SIZE].

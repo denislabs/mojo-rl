@@ -21,8 +21,8 @@ Run with:
 """
 
 from python import Python, PythonObject
-from math import abs, sqrt
-from collections import InlineArray
+from std.math import abs, sqrt
+from std.collections import InlineArray
 from testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data, _max_one, ConeType
@@ -39,7 +39,10 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
 )
 from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
+from physics3d.constraints.constraint_builder import (
+    build_constraints,
+    writeback_forces,
+)
 from physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -130,12 +133,23 @@ fn compare_vector(
 
     if all_ok:
         print(
-            "  ", label, " ALL OK  max_abs=", max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " ALL OK  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     else:
         print(
-            "  ", label, " FAILED", fail_count, " elements  max_abs=",
-            max_abs, " max_rel=", max_rel,
+            "  ",
+            label,
+            " FAILED",
+            fail_count,
+            " elements  max_abs=",
+            max_abs,
+            " max_rel=",
+            max_rel,
         )
     return all_ok
 
@@ -156,13 +170,29 @@ fn compare_scalar(
     var ok = abs_err < abs_tol or rel_err < rel_tol
     if ok:
         print(
-            "    OK  ", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    OK  ",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     else:
         print(
-            "    FAIL", label, " ours=", our_val, " mj=", mj_val,
-            " abs=", abs_err, " rel=", rel_err,
+            "    FAIL",
+            label,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
     return ok
 
@@ -178,14 +208,27 @@ fn compare_solver_forces(
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
 ) raises:
-    """Run full pipeline + PGS solver in both engines, compare forces and qacc."""
+    """Run full pipeline + PGS solver in both engines, compare forces and qacc.
+    """
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.CONE_TYPE, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.CONE_TYPE,
+        HalfCheetahModel.MAX_TENDON,
+        HalfCheetahModel.NSITE,
     ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE]()
+    var data = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
+    ]()
     HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
@@ -326,7 +369,7 @@ fn compare_solver_forces(
     # 10. Build constraints
     # PGS is dual — it does NOT use M_hat or qfrc_smooth
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
+    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
         model, data, cdof, M_inv, dt, constraints
     )
 
@@ -335,13 +378,21 @@ fn compare_solver_forces(
     var our_nfric = constraints.num_friction
     var our_nlim = constraints.num_limits
     print(
-        "  Our: contacts=", our_ncon,
-        " rows=", constraints.num_rows,
-        " (N:", our_nnorm, " F:", our_nfric, " L:", our_nlim, ")",
+        "  Our: contacts=",
+        our_ncon,
+        " rows=",
+        constraints.num_rows,
+        " (N:",
+        our_nnorm,
+        " F:",
+        our_nfric,
+        " L:",
+        our_nlim,
+        ")",
     )
 
     # 11. Solve constraints with PGSSolver (modifies qacc in-place)
-    PGSSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
+    PGSSolver.solve[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -364,7 +415,9 @@ fn compare_solver_forces(
     for c in range(Int(data.num_contacts)):
         var total_c: Float64 = 0.0
         for e in range(ROWS_PER_CON):
-            total_c += Float64(constraints.rows[c * ROWS_PER_CON + e].lambda_val)
+            total_c += Float64(
+                constraints.rows[c * ROWS_PER_CON + e].lambda_val
+            )
         our_normal_forces[c] = total_c
         our_total_normal += total_c
 
@@ -377,9 +430,9 @@ fn compare_solver_forces(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our solver: pyramidal cone, PGS solver, Euler integrator
-    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel)
-    mj_model.opt.solver = 0     # PGS
-    mj_model.opt.integrator = 0 # Euler
+    mj_model.opt.cone = 0  # pyramidal (matches HalfCheetahModel)
+    mj_model.opt.solver = 0  # PGS
+    mj_model.opt.integrator = 0  # Euler
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -471,8 +524,11 @@ fn compare_solver_forces(
     print()
     print("  --- Comparison 3: Total normal force ---")
     if not compare_scalar(
-        "total_normal", our_total_normal, mj_total_normal,
-        TOTAL_FORCE_ABS_TOL, TOTAL_FORCE_REL_TOL,
+        "total_normal",
+        our_total_normal,
+        mj_total_normal,
+        TOTAL_FORCE_ABS_TOL,
+        TOTAL_FORCE_REL_TOL,
     ):
         all_pass = False
 
@@ -489,10 +545,18 @@ fn compare_solver_forces(
         var ok = abs_err < PER_CONTACT_ABS_TOL or rel_err < PER_CONTACT_REL_TOL
         var status = "OK  " if ok else "FAIL"
         print(
-            "    [", status, "] contact", c,
-            " ours=", our_normal_forces[c],
-            " mj=", mj_normal_forces[c],
-            " abs=", abs_err, " rel=", rel_err,
+            "    [",
+            status,
+            "] contact",
+            c,
+            " ours=",
+            our_normal_forces[c],
+            " mj=",
+            mj_normal_forces[c],
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
 
     # 5. Per-row forces (informational)
@@ -512,8 +576,12 @@ fn compare_solver_forces(
         else:
             ctype_str = "? "
         print(
-            "    our[", r, "] type=", ctype_str,
-            " lambda=", Float64(constraints.rows[r].lambda_val),
+            "    our[",
+            r,
+            "] type=",
+            ctype_str,
+            " lambda=",
+            Float64(constraints.rows[r].lambda_val),
         )
 
     for r in range(mj_nefc):
@@ -526,8 +594,12 @@ fn compare_solver_forces(
         else:
             tstr = String(t)
         print(
-            "    mj [", r, "] type=", tstr,
-            " force=", Float64(py=mj_efc_force_flat[r]),
+            "    mj [",
+            r,
+            "] type=",
+            tstr,
+            " force=",
+            Float64(py=mj_efc_force_flat[r]),
         )
 
     print()

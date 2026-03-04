@@ -1,6 +1,6 @@
 """Swimmer environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -108,7 +108,9 @@ struct SwimmerConfig(Phyics3dEnvConfig):
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
-        var forward_reward = Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        var forward_reward = (
+            Scalar[DTYPE](Self.FORWARD_REWARD_WEIGHT) * x_velocity
+        )
 
         # Control cost
         var ctrl_cost = Scalar[DTYPE](0.0)

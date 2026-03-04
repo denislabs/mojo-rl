@@ -1,5 +1,5 @@
 """Test: settle robot first, then apply actions."""
-from random import seed
+from std.random import seed
 from envs.half_cheetah import HalfCheetah
 
 
@@ -18,14 +18,20 @@ fn main():
 
     print("=== After settling (100 zero-action steps) ===")
     print(
-        "rootx=", env.data.qpos[0],
-        "rootz=", env.data.qpos[1],
-        "rooty=", env.data.qpos[2],
+        "rootx=",
+        env.data.qpos[0],
+        "rootz=",
+        env.data.qpos[1],
+        "rooty=",
+        env.data.qpos[2],
     )
     print(
-        "vx=", env.data.qvel[0],
-        "vz=", env.data.qvel[1],
-        "vy=", env.data.qvel[2],
+        "vx=",
+        env.data.qvel[0],
+        "vz=",
+        env.data.qvel[1],
+        "vy=",
+        env.data.qvel[2],
     )
     print("nc=", env.data.num_contacts)
     print()
@@ -40,10 +46,16 @@ fn main():
         _ = env.step(action)
         if step < 10 or step % 10 == 0:
             print(
-                "Step", step + 1,
-                "rootx=", env.data.qpos[0],
-                "rootz=", env.data.qpos[1],
-                "vx=", env.data.qvel[0],
-                "vz=", env.data.qvel[1],
-                "nc=", env.data.num_contacts,
+                "Step",
+                step + 1,
+                "rootx=",
+                env.data.qpos[0],
+                "rootz=",
+                env.data.qpos[1],
+                "vx=",
+                env.data.qvel[0],
+                "vz=",
+                env.data.qvel[1],
+                "nc=",
+                env.data.num_contacts,
             )

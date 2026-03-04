@@ -24,12 +24,12 @@ converge early (max |Δλ| < ISLAND_CONVERGE_EPS) are frozen and skipped in
 subsequent PGS iterations, reducing total work for multi-body scenes.
 """
 
-from math import sqrt, abs
+from std.math import sqrt, abs
 from layout import (
     Layout,
     LayoutTensor,
 )
-from gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, ConeType, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..constraints.constraint_data import ConstraintData
@@ -42,7 +42,7 @@ from .pgs_solver import PGSSolver
 from .qcqp import qcqp2, qcqp3, qcqp5, mj_qcqp2, mj_qcqp3, mj_qcqp5, cost_change
 from .island_solver import solve_with_islands, ISLAND_CONVERGE_EPS
 from .island_detection import MAX_ISLANDS
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 from ..gpu.constants import (
     contacts_offset,
     metadata_offset,

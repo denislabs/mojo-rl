@@ -1,7 +1,7 @@
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim, barrier
-from math import exp, log, sqrt, cos
-from random.philox import Random as PhiloxRandom
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.math import exp, log, sqrt, cos
+from std.random.philox import Random as PhiloxRandom
 
 # =============================================================================
 # GPU Kernels for Continuous PPO Operations

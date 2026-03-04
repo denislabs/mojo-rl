@@ -3,7 +3,7 @@
 This module defines the state representation for the GPU-enabled CarRacing environment.
 """
 
-from math import sqrt, pi
+from std.math import sqrt, pi
 
 from core import State
 
@@ -139,7 +139,7 @@ struct CarRacingState[DTYPE: DType](
         ],
         env: Int,
     ) -> CarRacingState[Self.DTYPE]:
-        """Create state from GPU buffer."""
+        """Create state from std.gpu buffer."""
         from layout import Layout, LayoutTensor
 
         var result = CarRacingState[Self.DTYPE]()

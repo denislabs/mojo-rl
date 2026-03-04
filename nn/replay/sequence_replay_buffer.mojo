@@ -13,7 +13,7 @@ Interface:
     dones[BATCH * H],                       -- done flags
 """
 
-from random import random_float64
+from std.random import random_float64
 
 
 struct SequenceReplayBuffer[

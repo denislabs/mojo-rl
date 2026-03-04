@@ -1,6 +1,6 @@
 """InvertedPendulum environment configuration for generic Phyics3dEnv."""
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
@@ -26,7 +26,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     ]()
 
     # Termination bounds
-    comptime MAX_CART_POS = 1.0   # slider range is ±1
+    comptime MAX_CART_POS = 1.0  # slider range is ±1
     comptime MAX_POLE_ANGLE = 0.2  # radians (~11.5 deg)
 
     # === CPU: Integrator step ===

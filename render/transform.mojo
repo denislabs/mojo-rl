@@ -4,7 +4,7 @@ Provides Transform2D for object positioning/rotation and Camera for
 viewport management with world-to-screen coordinate conversion.
 """
 
-from math import cos, sin
+from std.math import cos, sin
 from .types import SDL_Point
 
 

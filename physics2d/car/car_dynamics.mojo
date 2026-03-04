@@ -13,7 +13,7 @@ This matches the physics model in Gymnasium's car_dynamics.py.
 Reference: gymnasium/envs/box2d/car_dynamics.py
 """
 
-from math import cos, sin, sqrt, pi
+from std.math import cos, sin, sqrt, pi
 from layout import LayoutTensor, Layout
 
 from .constants import (

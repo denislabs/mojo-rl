@@ -13,11 +13,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import (
@@ -41,13 +41,13 @@ from envs.ant.ant_xml import AntModel
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = AntModel.NQ          # 15 (7 free-joint + 8 hinge)
-comptime NV = AntModel.NV          # 14 (6 free-joint + 8 hinge)
-comptime NBODY = AntModel.NBODY    # 14 (worldbody + torso + 4 legs × 3 bodies)
+comptime NQ = AntModel.NQ  # 15 (7 free-joint + 8 hinge)
+comptime NV = AntModel.NV  # 14 (6 free-joint + 8 hinge)
+comptime NBODY = AntModel.NBODY  # 14 (worldbody + torso + 4 legs × 3 bodies)
 comptime NJOINT = AntModel.NJOINT  # 9 (1 free + 8 hinge)
-comptime NGEOM = AntModel.NGEOM   # 15
+comptime NGEOM = AntModel.NGEOM  # 15
 comptime MAX_CONTACTS = AntModel.MAX_CONTACTS  # 40
-comptime NSITE = AntModel.NSITE   # 0
+comptime NSITE = AntModel.NSITE  # 0
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -74,14 +74,24 @@ fn fk_kernel[
     MODEL_SIZE: Int,
     BATCH: Int,
 ](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     if env >= BATCH:
         return
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
 
@@ -101,11 +111,21 @@ fn compare_fk(
 
     # === CPU FK ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        AntModel.MAX_EQUALITY, AntModel.CONE_TYPE,
-        AntModel.MAX_TENDON, AntModel.NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        AntModel.MAX_EQUALITY,
+        AntModel.CONE_TYPE,
+        AntModel.MAX_TENDON,
+        AntModel.NSITE,
     ]()
-    var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE]()
+    var data_cpu = Data[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, AntModel.NSITE
+    ]()
     AntModel.setup_model_and_data[DTYPE](model_cpu, data_cpu)
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](qpos_values[i])
@@ -130,10 +150,21 @@ fn compare_fk(
     ](model_buf.unsafe_ptr())
 
     comptime kernel_fn = fk_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ]
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, grid_dim=(BATCH,), block_dim=(1,),
+        state_tensor,
+        model_tensor,
+        grid_dim=(BATCH,),
+        block_dim=(1,),
     )
     ctx.synchronize()
 
@@ -175,7 +206,9 @@ fn compare_fk(
         var gpu_px = Float64(state_host[xpos_off + b * 3 + 0])
         var gpu_py = Float64(state_host[xpos_off + b * 3 + 1])
         var gpu_pz = Float64(state_host[xpos_off + b * 3 + 2])
-        var pos_err = abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        var pos_err = (
+            abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        )
         if pos_err > POS_TOL:
             print("  FAIL xpos ", body_names[b], " err=", pos_err)
             print("    cpu:", cpu_px, cpu_py, cpu_pz)
@@ -193,12 +226,16 @@ fn compare_fk(
         var gpu_qz = Float64(state_host[xquat_off + b * 4 + 2])
         var gpu_qw = Float64(state_host[xquat_off + b * 4 + 3])
         var diff_pos = (
-            abs(cpu_qx - gpu_qx) + abs(cpu_qy - gpu_qy)
-            + abs(cpu_qz - gpu_qz) + abs(cpu_qw - gpu_qw)
+            abs(cpu_qx - gpu_qx)
+            + abs(cpu_qy - gpu_qy)
+            + abs(cpu_qz - gpu_qz)
+            + abs(cpu_qw - gpu_qw)
         )
         var diff_neg = (
-            abs(cpu_qx + gpu_qx) + abs(cpu_qy + gpu_qy)
-            + abs(cpu_qz + gpu_qz) + abs(cpu_qw + gpu_qw)
+            abs(cpu_qx + gpu_qx)
+            + abs(cpu_qy + gpu_qy)
+            + abs(cpu_qz + gpu_qz)
+            + abs(cpu_qw + gpu_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
         if quat_err > QUAT_TOL:
@@ -215,7 +252,11 @@ fn compare_fk(
         var gpu_xi_x = Float64(state_host[xipos_off + b * 3 + 0])
         var gpu_xi_y = Float64(state_host[xipos_off + b * 3 + 1])
         var gpu_xi_z = Float64(state_host[xipos_off + b * 3 + 2])
-        var xipos_err = abs(cpu_xi_x - gpu_xi_x) + abs(cpu_xi_y - gpu_xi_y) + abs(cpu_xi_z - gpu_xi_z)
+        var xipos_err = (
+            abs(cpu_xi_x - gpu_xi_x)
+            + abs(cpu_xi_y - gpu_xi_y)
+            + abs(cpu_xi_z - gpu_xi_z)
+        )
         if xipos_err > POS_TOL:
             print("  FAIL xipos", body_names[b], " err=", xipos_err)
             print("    cpu:", cpu_xi_x, cpu_xi_y, cpu_xi_z)
@@ -249,27 +290,29 @@ fn test_fk_ant() raises:
     # Config 1: default init_qpos from XML
     # [0, 0, 0.55, 1, 0, 0, 0, 0, 1, 0, -1, 0, -1, 0, 1]
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
-    qpos1[2] = 0.55   # z (torso above ground)
-    qpos1[3] = 1.0    # qw (identity quaternion)
-    qpos1[7] = 0.0    # qx
-    qpos1[8] = 1.0    # hip_1 (from init_qpos: 0)
+    qpos1[2] = 0.55  # z (torso above ground)
+    qpos1[3] = 1.0  # qw (identity quaternion)
+    qpos1[7] = 0.0  # qx
+    qpos1[8] = 1.0  # hip_1 (from init_qpos: 0)
     # Use exact init_qpos values
-    qpos1[0]  = 0.0
-    qpos1[1]  = 0.0
-    qpos1[2]  = 0.55
-    qpos1[3]  = 1.0
-    qpos1[4]  = 0.0
-    qpos1[5]  = 0.0
-    qpos1[6]  = 0.0
-    qpos1[7]  = 0.0
-    qpos1[8]  = 1.0
-    qpos1[9]  = 0.0
+    qpos1[0] = 0.0
+    qpos1[1] = 0.0
+    qpos1[2] = 0.55
+    qpos1[3] = 1.0
+    qpos1[4] = 0.0
+    qpos1[5] = 0.0
+    qpos1[6] = 0.0
+    qpos1[7] = 0.0
+    qpos1[8] = 1.0
+    qpos1[9] = 0.0
     qpos1[10] = -1.0
     qpos1[11] = 0.0
     qpos1[12] = -1.0
     qpos1[13] = 0.0
     qpos1[14] = 1.0
-    compare_fk(ctx, "Default init_qpos (z=0.55, identity quat)", qpos1, model_buf)
+    compare_fk(
+        ctx, "Default init_qpos (z=0.55, identity quat)", qpos1, model_buf
+    )
     print()
 
     # Config 2: raised torso, identity quaternion, all joints = 0
@@ -281,17 +324,17 @@ fn test_fk_ant() raises:
 
     # Config 3: nonzero joint angles
     var qpos3 = InlineArray[Float64, NQ](fill=0.0)
-    qpos3[0] = 1.0   # x
-    qpos3[1] = 0.5   # y
+    qpos3[0] = 1.0  # x
+    qpos3[1] = 0.5  # y
     qpos3[2] = 0.55  # z
-    qpos3[3] = 1.0   # qw
-    qpos3[7] = 0.3   # hip_1
-    qpos3[8] = 0.5   # ankle_1
+    qpos3[3] = 1.0  # qw
+    qpos3[7] = 0.3  # hip_1
+    qpos3[8] = 0.5  # ankle_1
     qpos3[9] = -0.3  # hip_2
     qpos3[10] = 0.5  # ankle_2
     qpos3[11] = 0.2  # hip_3
-    qpos3[12] = -0.4 # ankle_3
-    qpos3[13] = -0.2 # hip_4
+    qpos3[12] = -0.4  # ankle_3
+    qpos3[13] = -0.2  # hip_4
     qpos3[14] = 0.4  # ankle_4
     compare_fk(ctx, "Nonzero joint angles", qpos3, model_buf)
     print()
@@ -300,22 +343,22 @@ fn test_fk_ant() raises:
     var qpos4 = InlineArray[Float64, NQ](fill=0.0)
     qpos4[2] = 0.55
     qpos4[3] = 0.866  # qw = cos(30°)
-    qpos4[6] = 0.5    # qz = sin(30°) — rotation about z-axis
+    qpos4[6] = 0.5  # qz = sin(30°) — rotation about z-axis
     compare_fk(ctx, "Rotated torso (30 deg around z)", qpos4, model_buf)
     print()
 
     # Config 5: extreme joint angles (at limits: hip ±30°, ankle 30–70°)
     var qpos5 = InlineArray[Float64, NQ](fill=0.0)
     qpos5[2] = 0.55
-    qpos5[3] = 1.0    # qw identity
-    qpos5[7]  = 0.52   # hip_1 max ~30° = 0.52 rad
-    qpos5[8]  = 1.22   # ankle_1 max 70° = 1.22 rad
-    qpos5[9]  = -0.52  # hip_2 min
+    qpos5[3] = 1.0  # qw identity
+    qpos5[7] = 0.52  # hip_1 max ~30° = 0.52 rad
+    qpos5[8] = 1.22  # ankle_1 max 70° = 1.22 rad
+    qpos5[9] = -0.52  # hip_2 min
     qpos5[10] = -0.52  # ankle_2 min -30°
-    qpos5[11] = 0.52   # hip_3
+    qpos5[11] = 0.52  # hip_3
     qpos5[12] = -0.52  # ankle_3
     qpos5[13] = -0.52  # hip_4
-    qpos5[14] = 1.22   # ankle_4 max
+    qpos5[14] = 1.22  # ankle_4 max
     compare_fk(ctx, "Extreme joint angles (at limits)", qpos5, model_buf)
     print()
 

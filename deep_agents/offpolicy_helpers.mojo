@@ -21,7 +21,7 @@ Usage in DDPG/TD3 (inside the struct methods):
         )
 """
 
-from random import random_float64
+from std.random import random_float64
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype
@@ -70,7 +70,9 @@ fn deterministic_select_action[
     var obs_t = LayoutTensor[
         dtype, Layout.row_major(1, ActorModel.IN_DIM), MutAnyOrigin
     ](obs_arr.unsafe_ptr())
-    var act_arr = InlineArray[Scalar[dtype], ActorModel.OUT_DIM](uninitialized=True)
+    var act_arr = InlineArray[Scalar[dtype], ActorModel.OUT_DIM](
+        uninitialized=True
+    )
     var act_t = LayoutTensor[
         dtype, Layout.row_major(1, ActorModel.OUT_DIM), MutAnyOrigin
     ](act_arr.unsafe_ptr())
@@ -125,7 +127,9 @@ fn greedy_continuous_action[
     var obs_t = LayoutTensor[
         dtype, Layout.row_major(1, ActorModel.IN_DIM), MutAnyOrigin
     ](obs_arr.unsafe_ptr())
-    var act_arr = InlineArray[Scalar[dtype], ActorModel.OUT_DIM](uninitialized=True)
+    var act_arr = InlineArray[Scalar[dtype], ActorModel.OUT_DIM](
+        uninitialized=True
+    )
     var act_t = LayoutTensor[
         dtype, Layout.row_major(1, ActorModel.OUT_DIM), MutAnyOrigin
     ](act_arr.unsafe_ptr())

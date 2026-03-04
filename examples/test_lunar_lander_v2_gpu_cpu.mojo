@@ -7,8 +7,8 @@ Usage:
     pixi run mojo run examples/test_lunar_lander_v2_gpu_cpu.mojo
 """
 
-from time import perf_counter_ns
-from random import seed
+from std.time import perf_counter_ns
+from std.random import seed
 
 from layout import Layout, LayoutTensor
 

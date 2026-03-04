@@ -1,8 +1,8 @@
 from ..constants import dtype
 from .model import Model
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.builtin.variadics import Variadic
 
 # =============================================================================
@@ -538,7 +538,9 @@ struct Sequential[*LAYERS: Model](Model):
                     var out_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            Layout.row_major(
+                                BATCH, Self.model_types[i].OUT_DIM
+                            ),
                             MutAnyOrigin,
                         ]
                     ](output)
@@ -647,7 +649,9 @@ struct Sequential[*LAYERS: Model](Model):
                     var out_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            Layout.row_major(
+                                BATCH, Self.model_types[i].OUT_DIM
+                            ),
                             MutAnyOrigin,
                         ]
                     ](output)
@@ -773,7 +777,9 @@ struct Sequential[*LAYERS: Model](Model):
                     var go_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                            Layout.row_major(
+                                BATCH, Self.model_types[i].OUT_DIM
+                            ),
                             MutAnyOrigin,
                         ]
                     ](grad_output)

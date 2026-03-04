@@ -4,9 +4,9 @@ Run with:
     pixi run -e apple mojo run tests/test_hopper_truncation.mojo
 """
 
-from random import seed
+from std.random import seed
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from envs.hopper import Hopper

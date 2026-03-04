@@ -16,9 +16,9 @@ Features:
 This demo runs multiple environments in parallel on the GPU.
 """
 
-from gpu.host import DeviceContext, DeviceBuffer
-from random import random_float64, seed
-from time import perf_counter
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random import random_float64, seed
+from std.time import perf_counter
 
 from envs.bipedal_walker import BipedalWalker, BWConstants
 from physics2d import dtype
@@ -108,7 +108,7 @@ fn main() raises:
     ctx.synchronize()
     var step_time = perf_counter() - start
     var total_steps = num_steps * BATCH_SIZE
-    var steps_per_sec = total_steps / step_time
+    var steps_per_sec = Float64(total_steps) / step_time
 
     print("Step time:", step_time * 1000, "ms")
     print("Total env steps:", total_steps)

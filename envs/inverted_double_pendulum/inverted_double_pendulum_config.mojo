@@ -1,7 +1,7 @@
 """InvertedDoublePendulum environment configuration for generic Phyics3dEnv."""
 
-from math import sin, cos
-from gpu.host import DeviceContext, DeviceBuffer
+from std.math import sin, cos
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data

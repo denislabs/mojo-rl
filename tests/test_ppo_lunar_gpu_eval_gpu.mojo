@@ -7,10 +7,10 @@ Run with:
     pixi run -e apple mojo run tests/test_ppo_lunar_gpu_eval_gpu.mojo
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOAgent
@@ -82,11 +82,17 @@ fn main() raises:
         # GPU Evaluation
         # =====================================================================
 
-        print("Running GPU evaluation with " + String(EVAL_ENVS) + " parallel environments...")
+        print(
+            "Running GPU evaluation with "
+            + String(EVAL_ENVS)
+            + " parallel environments..."
+        )
         print("-" * 70)
 
         # Allocate GPU buffers for evaluation
-        var states_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS * OBS_DIM)
+        var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
+            EVAL_ENVS * OBS_DIM
+        )
         var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
         var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
         var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
@@ -128,7 +134,9 @@ fn main() raises:
 
             # Select actions using agent (greedy)
             for env_idx in range(EVAL_ENVS):
-                var obs = InlineArray[Scalar[gpu_dtype], OBS_DIM](uninitialized=True)
+                var obs = InlineArray[Scalar[gpu_dtype], OBS_DIM](
+                    uninitialized=True
+                )
                 for j in range(OBS_DIM):
                     obs[j] = host_states[env_idx * OBS_DIM + j]
 
@@ -168,7 +176,13 @@ fn main() raises:
                 break
 
             if step % 100 == 0:
-                print("  Step " + String(step) + ": " + String(completed_episodes) + " episodes completed")
+                print(
+                    "  Step "
+                    + String(step)
+                    + ": "
+                    + String(completed_episodes)
+                    + " episodes completed"
+                )
 
         var end_time = perf_counter_ns()
         var elapsed_s = Float64(end_time - start_time) / 1e9
@@ -187,7 +201,9 @@ fn main() raises:
                 max_reward = r
 
         var num_episodes = len(episode_rewards)
-        var avg_reward = total_reward / Float64(num_episodes) if num_episodes > 0 else 0.0
+        var avg_reward = (
+            total_reward / Float64(num_episodes) if num_episodes > 0 else 0.0
+        )
 
         print()
         print("-" * 70)
@@ -212,9 +228,14 @@ fn main() raises:
         print()
         if avg_reward > 0 and num_episodes > 0:
             print("CONCLUSION: Physics mismatch confirmed!")
-            print("  The model works on GPU but fails on CPU due to different physics.")
+            print(
+                "  The model works on GPU but fails on CPU due to different"
+                " physics."
+            )
         elif avg_reward < -100:
-            print("CONCLUSION: Model may need more training or checkpoint issue.")
+            print(
+                "CONCLUSION: Model may need more training or checkpoint issue."
+            )
 
     print()
     print(">>> GPU Evaluation completed <<<")

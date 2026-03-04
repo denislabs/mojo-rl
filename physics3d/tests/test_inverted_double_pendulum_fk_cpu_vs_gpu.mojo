@@ -12,11 +12,11 @@ Run with:
 """
 
 from testing import assert_true
-from math import abs
-from collections import InlineArray
-from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.math import abs
+from std.collections import InlineArray
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
-from gpu import block_idx
+from std.gpu import block_idx
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import (
@@ -42,13 +42,13 @@ from envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = InvertedDoublePendulumModel.NQ          # 3
-comptime NV = InvertedDoublePendulumModel.NV          # 3
-comptime NBODY = InvertedDoublePendulumModel.NBODY    # 4 (worldbody + cart + pole + pole2)
+comptime NQ = InvertedDoublePendulumModel.NQ  # 3
+comptime NV = InvertedDoublePendulumModel.NV  # 3
+comptime NBODY = InvertedDoublePendulumModel.NBODY  # 4 (worldbody + cart + pole + pole2)
 comptime NJOINT = InvertedDoublePendulumModel.NJOINT  # 3
-comptime NGEOM = InvertedDoublePendulumModel.NGEOM    # 5
+comptime NGEOM = InvertedDoublePendulumModel.NGEOM  # 5
 comptime MAX_CONTACTS = InvertedDoublePendulumModel.MAX_CONTACTS  # 5
-comptime NSITE = InvertedDoublePendulumModel.NSITE    # 1 ("tip")
+comptime NSITE = InvertedDoublePendulumModel.NSITE  # 1 ("tip")
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -75,14 +75,24 @@ fn fk_kernel[
     MODEL_SIZE: Int,
     BATCH: Int,
 ](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     if env >= BATCH:
         return
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
 
@@ -102,14 +112,26 @@ fn compare_fk(
 
     # === CPU FK ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
         InvertedDoublePendulumModel.MAX_EQUALITY,
         InvertedDoublePendulumModel.CONE_TYPE,
         InvertedDoublePendulumModel.MAX_TENDON,
         InvertedDoublePendulumModel.NSITE,
     ]()
     var data_cpu = Data[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, InvertedDoublePendulumModel.NSITE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        InvertedDoublePendulumModel.NSITE,
     ]()
     InvertedDoublePendulumModel.setup_model_and_data[DTYPE](model_cpu, data_cpu)
     for i in range(NQ):
@@ -135,10 +157,21 @@ fn compare_fk(
     ](model_buf.unsafe_ptr())
 
     comptime kernel_fn = fk_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ]
     ctx.enqueue_function[kernel_fn, kernel_fn](
-        state_tensor, model_tensor, grid_dim=(BATCH,), block_dim=(1,),
+        state_tensor,
+        model_tensor,
+        grid_dim=(BATCH,),
+        block_dim=(1,),
     )
     ctx.synchronize()
 
@@ -165,7 +198,9 @@ fn compare_fk(
         var gpu_px = Float64(state_host[xpos_off + b * 3 + 0])
         var gpu_py = Float64(state_host[xpos_off + b * 3 + 1])
         var gpu_pz = Float64(state_host[xpos_off + b * 3 + 2])
-        var pos_err = abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        var pos_err = (
+            abs(cpu_px - gpu_px) + abs(cpu_py - gpu_py) + abs(cpu_pz - gpu_pz)
+        )
         if pos_err > POS_TOL:
             print("  FAIL xpos ", body_names[b], " err=", pos_err)
             print("    cpu:", cpu_px, cpu_py, cpu_pz)
@@ -183,12 +218,16 @@ fn compare_fk(
         var gpu_qz = Float64(state_host[xquat_off + b * 4 + 2])
         var gpu_qw = Float64(state_host[xquat_off + b * 4 + 3])
         var diff_pos = (
-            abs(cpu_qx - gpu_qx) + abs(cpu_qy - gpu_qy)
-            + abs(cpu_qz - gpu_qz) + abs(cpu_qw - gpu_qw)
+            abs(cpu_qx - gpu_qx)
+            + abs(cpu_qy - gpu_qy)
+            + abs(cpu_qz - gpu_qz)
+            + abs(cpu_qw - gpu_qw)
         )
         var diff_neg = (
-            abs(cpu_qx + gpu_qx) + abs(cpu_qy + gpu_qy)
-            + abs(cpu_qz + gpu_qz) + abs(cpu_qw + gpu_qw)
+            abs(cpu_qx + gpu_qx)
+            + abs(cpu_qy + gpu_qy)
+            + abs(cpu_qz + gpu_qz)
+            + abs(cpu_qw + gpu_qw)
         )
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
         if quat_err > QUAT_TOL:
@@ -205,7 +244,11 @@ fn compare_fk(
         var gpu_xi_x = Float64(state_host[xipos_off + b * 3 + 0])
         var gpu_xi_y = Float64(state_host[xipos_off + b * 3 + 1])
         var gpu_xi_z = Float64(state_host[xipos_off + b * 3 + 2])
-        var xipos_err = abs(cpu_xi_x - gpu_xi_x) + abs(cpu_xi_y - gpu_xi_y) + abs(cpu_xi_z - gpu_xi_z)
+        var xipos_err = (
+            abs(cpu_xi_x - gpu_xi_x)
+            + abs(cpu_xi_y - gpu_xi_y)
+            + abs(cpu_xi_z - gpu_xi_z)
+        )
         if xipos_err > POS_TOL:
             print("  FAIL xipos", body_names[b], " err=", xipos_err)
             print("    cpu:", cpu_xi_x, cpu_xi_y, cpu_xi_z)
@@ -255,7 +298,7 @@ fn test_fk_idp() raises:
 
     # Config 4: both hinges deflected
     var qpos4 = InlineArray[Float64, NQ](fill=0.0)
-    qpos4[1] = 0.5   # hinge
+    qpos4[1] = 0.5  # hinge
     qpos4[2] = -0.3  # hinge2
     compare_fk(ctx, "Both hinges deflected (q1=0.5, q2=-0.3)", qpos4, model_buf)
     print()
@@ -263,8 +306,8 @@ fn test_fk_idp() raises:
     # Config 5: large tilt
     var qpos5 = InlineArray[Float64, NQ](fill=0.0)
     qpos5[0] = -1.5  # cart displaced
-    qpos5[1] = 1.0   # hinge (large tilt)
-    qpos5[2] = 0.5   # hinge2
+    qpos5[1] = 1.0  # hinge (large tilt)
+    qpos5[2] = 0.5  # hinge2
     compare_fk(ctx, "Large tilt (cart=-1.5, q1=1.0, q2=0.5)", qpos5, model_buf)
     print()
 

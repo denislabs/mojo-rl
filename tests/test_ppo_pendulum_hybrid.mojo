@@ -16,10 +16,10 @@ Run with:
     pixi run -e nvidia mojo run tests/test_ppo_pendulum_hybrid.mojo   # NVIDIA GPU
 """
 
-from random import seed
-from time import perf_counter_ns
+from std.random import seed
+from std.time import perf_counter_ns
 
-from gpu.host import DeviceContext
+from std.gpu.host import DeviceContext
 
 from deep_agents.ppo_continuous import DeepPPOContinuousAgent
 from envs.pendulum import PendulumEnv
@@ -183,13 +183,9 @@ fn main() raises:
             # Total reward for 200 steps: optimal ~-200, random ~-1600
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > -200.0:
-                print(
-                    "SUCCESS: Agent learned to balance! (avg reward > -200)"
-                )
+                print("SUCCESS: Agent learned to balance! (avg reward > -200)")
             elif final_avg > -500.0:
-                print(
-                    "GOOD: Agent is learning well (avg reward > -500)"
-                )
+                print("GOOD: Agent is learning well (avg reward > -500)")
             elif final_avg > -1000.0:
                 print(
                     "PARTIAL: Agent is learning but needs more training"

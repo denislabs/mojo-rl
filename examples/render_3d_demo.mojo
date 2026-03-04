@@ -8,7 +8,7 @@ Run with:
     pixi run mojo run examples/render_3d_demo.mojo
 """
 
-from math import sin, cos, pi
+from std.math import sin, cos, pi
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from render import (

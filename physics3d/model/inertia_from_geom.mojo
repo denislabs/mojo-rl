@@ -9,11 +9,17 @@ Implements the MuJoCo compiler's inertiafromgeom="true" functionality:
 Reference: mujoco-3.3.6/src/user/user_objects.cc (mjCBody::InertiaFromGeom)
 """
 
-from collections import InlineArray
-from math import sqrt, abs as math_abs
-from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER
+from std.collections import InlineArray
+from std.math import sqrt, abs as math_abs
+from ..constants import (
+    GEOM_PLANE,
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+    GEOM_CYLINDER,
+)
 from ..types import Model
-from gpu.host import HostBuffer
+from std.gpu.host import HostBuffer
 from ..gpu.constants import (
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
@@ -78,9 +84,10 @@ fn geom_volume[
         # V = pi * r^2 * h + (4/3)*pi*r^3  where h = 2*half_length
         var r2 = radius * radius
         var h = Scalar[DTYPE](2.0) * half_length
-        return Scalar[DTYPE](PI) * r2 * h + Scalar[DTYPE](
-            4.0 / 3.0 * PI
-        ) * r2 * radius
+        return (
+            Scalar[DTYPE](PI) * r2 * h
+            + Scalar[DTYPE](4.0 / 3.0 * PI) * r2 * radius
+        )
     elif geom_type == GEOM_CYLINDER:
         # V = pi * r^2 * 2h (no hemisphere caps)
         var r2 = radius * radius
@@ -112,7 +119,9 @@ fn geom_effective_mass[
     if stored_mass >= Scalar[DTYPE](0):
         return stored_mass
     # Compute from default density (1000 kg/m³)
-    var vol = geom_volume(geom_type, radius, half_length, half_x, half_y, half_z)
+    var vol = geom_volume(
+        geom_type, radius, half_length, half_x, half_y, half_z
+    )
     return Scalar[DTYPE](MJ_DEFAULT_DENSITY) * vol
 
 
@@ -162,21 +171,20 @@ fn geom_inertia[
         # Transverse inertia (Ix = Iy)
         # Cylinder: m*(3r^2 + h^2)/12
         # Hemispheres: sphere_inertia + sphere_mass * h * (3r + 2h) / 8
-        var Ix = cylinder_mass * (Scalar[DTYPE](3.0) * r2 + h * h) / Scalar[
-            DTYPE
-        ](12.0) + sphere_inertia + sphere_mass * h * (
-            Scalar[DTYPE](3.0) * r + Scalar[DTYPE](2.0) * h
-        ) / Scalar[
-            DTYPE
-        ](
-            8.0
+        var Ix = (
+            cylinder_mass
+            * (Scalar[DTYPE](3.0) * r2 + h * h)
+            / Scalar[DTYPE](12.0)
+            + sphere_inertia
+            + sphere_mass
+            * h
+            * (Scalar[DTYPE](3.0) * r + Scalar[DTYPE](2.0) * h)
+            / Scalar[DTYPE](8.0)
         )
 
         # Axial inertia (Iz)
         # Cylinder: m*r^2/2, Hemispheres: sphere_inertia
-        var Iz = cylinder_mass * r2 / Scalar[DTYPE](
-            2.0
-        ) + sphere_inertia
+        var Iz = cylinder_mass * r2 / Scalar[DTYPE](2.0) + sphere_inertia
 
         return (Ix, Ix, Iz)
 
@@ -339,7 +347,9 @@ fn mat3_to_quat[
     DTYPE: DType
 ](
     mat: InlineArray[Scalar[DTYPE], 9],
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+]:
     """Convert 3x3 rotation matrix (row-major) to quaternion (x,y,z,w).
 
     Uses Shepperd's method for numerical stability.
@@ -357,25 +367,25 @@ fn mat3_to_quat[
         qy = (mat[2] - mat[6]) / s
         qz = (mat[3] - mat[1]) / s
     elif mat[0] > mat[4] and mat[0] > mat[8]:
-        var s = sqrt(
-            Scalar[DTYPE](1) + mat[0] - mat[4] - mat[8]
-        ) * Scalar[DTYPE](2)
+        var s = sqrt(Scalar[DTYPE](1) + mat[0] - mat[4] - mat[8]) * Scalar[
+            DTYPE
+        ](2)
         qw = (mat[7] - mat[5]) / s
         qx = s * Scalar[DTYPE](0.25)
         qy = (mat[1] + mat[3]) / s
         qz = (mat[2] + mat[6]) / s
     elif mat[4] > mat[8]:
-        var s = sqrt(
-            Scalar[DTYPE](1) + mat[4] - mat[0] - mat[8]
-        ) * Scalar[DTYPE](2)
+        var s = sqrt(Scalar[DTYPE](1) + mat[4] - mat[0] - mat[8]) * Scalar[
+            DTYPE
+        ](2)
         qw = (mat[2] - mat[6]) / s
         qx = (mat[1] + mat[3]) / s
         qy = s * Scalar[DTYPE](0.25)
         qz = (mat[5] + mat[7]) / s
     else:
-        var s = sqrt(
-            Scalar[DTYPE](1) + mat[8] - mat[0] - mat[4]
-        ) * Scalar[DTYPE](2)
+        var s = sqrt(Scalar[DTYPE](1) + mat[8] - mat[0] - mat[4]) * Scalar[
+            DTYPE
+        ](2)
         qw = (mat[3] - mat[1]) / s
         qx = (mat[2] + mat[6]) / s
         qy = (mat[5] + mat[7]) / s
@@ -438,9 +448,11 @@ fn eig3_symmetric[
                 var s = Scalar[DTYPE](0)
                 for k in range(3):
                     for l in range(3):
-                        s += eigvec[k * 3 + i] * mat[k * 3 + l] * eigvec[
-                            l * 3 + j
-                        ]
+                        s += (
+                            eigvec[k * 3 + i]
+                            * mat[k * 3 + l]
+                            * eigvec[l * 3 + j]
+                        )
                 D[i * 3 + j] = s
 
         # Find largest off-diagonal element
@@ -475,13 +487,9 @@ fn eig3_symmetric[
         var tau = d_diff / (Scalar[DTYPE](2) * D[rk * 3 + ck])
         var t: Scalar[DTYPE]
         if tau >= Scalar[DTYPE](0):
-            t = Scalar[DTYPE](1) / (
-                tau + sqrt(Scalar[DTYPE](1) + tau * tau)
-            )
+            t = Scalar[DTYPE](1) / (tau + sqrt(Scalar[DTYPE](1) + tau * tau))
         else:
-            t = Scalar[DTYPE](-1) / (
-                -tau + sqrt(Scalar[DTYPE](1) + tau * tau)
-            )
+            t = Scalar[DTYPE](-1) / (-tau + sqrt(Scalar[DTYPE](1) + tau * tau))
         var c = Scalar[DTYPE](1) / sqrt(Scalar[DTYPE](1) + t * t)
         var s = t * c
 
@@ -532,15 +540,18 @@ fn eig3_symmetric[
 
     # Ensure right-handed coordinate system (det(eigvec) > 0)
     # det = eigvec col0 . (col1 x col2)
-    var cross_x = eigvec[1 * 3 + 1] * eigvec[2 * 3 + 2] - eigvec[
-        2 * 3 + 1
-    ] * eigvec[1 * 3 + 2]
-    var cross_y = eigvec[2 * 3 + 1] * eigvec[0 * 3 + 2] - eigvec[
-        0 * 3 + 1
-    ] * eigvec[2 * 3 + 2]
-    var cross_z = eigvec[0 * 3 + 1] * eigvec[1 * 3 + 2] - eigvec[
-        1 * 3 + 1
-    ] * eigvec[0 * 3 + 2]
+    var cross_x = (
+        eigvec[1 * 3 + 1] * eigvec[2 * 3 + 2]
+        - eigvec[2 * 3 + 1] * eigvec[1 * 3 + 2]
+    )
+    var cross_y = (
+        eigvec[2 * 3 + 1] * eigvec[0 * 3 + 2]
+        - eigvec[0 * 3 + 1] * eigvec[2 * 3 + 2]
+    )
+    var cross_z = (
+        eigvec[0 * 3 + 1] * eigvec[1 * 3 + 2]
+        - eigvec[1 * 3 + 1] * eigvec[0 * 3 + 2]
+    )
     var det = (
         eigvec[0 * 3 + 0] * cross_x
         + eigvec[1 * 3 + 0] * cross_y
@@ -576,7 +587,17 @@ fn compute_inertia_from_geoms[
     NSITE: Int = 0,
 ](
     mut model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
     ],
 ):
     """Compute body mass/inertia/ipos/iquat from child geoms.
@@ -669,15 +690,15 @@ fn compute_inertia_from_geoms[
                         model.body_inertia[body_id * 3 + 0] = inertia[0]
                         model.body_inertia[body_id * 3 + 1] = inertia[1]
                         model.body_inertia[body_id * 3 + 2] = inertia[2]
-                        model.body_inv_inertia[body_id * 3 + 0] = Scalar[DTYPE](
-                            1.0
-                        ) / inertia[0]
-                        model.body_inv_inertia[body_id * 3 + 1] = Scalar[DTYPE](
-                            1.0
-                        ) / inertia[1]
-                        model.body_inv_inertia[body_id * 3 + 2] = Scalar[DTYPE](
-                            1.0
-                        ) / inertia[2]
+                        model.body_inv_inertia[body_id * 3 + 0] = (
+                            Scalar[DTYPE](1.0) / inertia[0]
+                        )
+                        model.body_inv_inertia[body_id * 3 + 1] = (
+                            Scalar[DTYPE](1.0) / inertia[1]
+                        )
+                        model.body_inv_inertia[body_id * 3 + 2] = (
+                            Scalar[DTYPE](1.0) / inertia[2]
+                        )
                         break
         else:
             # Multiple geoms: accumulate
@@ -773,15 +794,15 @@ fn compute_inertia_from_geoms[
             model.body_inertia[body_id * 3 + 0] = eig[0]
             model.body_inertia[body_id * 3 + 1] = eig[1]
             model.body_inertia[body_id * 3 + 2] = eig[2]
-            model.body_inv_inertia[body_id * 3 + 0] = Scalar[DTYPE](
-                1.0
-            ) / eig[0]
-            model.body_inv_inertia[body_id * 3 + 1] = Scalar[DTYPE](
-                1.0
-            ) / eig[1]
-            model.body_inv_inertia[body_id * 3 + 2] = Scalar[DTYPE](
-                1.0
-            ) / eig[2]
+            model.body_inv_inertia[body_id * 3 + 0] = (
+                Scalar[DTYPE](1.0) / eig[0]
+            )
+            model.body_inv_inertia[body_id * 3 + 1] = (
+                Scalar[DTYPE](1.0) / eig[1]
+            )
+            model.body_inv_inertia[body_id * 3 + 2] = (
+                Scalar[DTYPE](1.0) / eig[2]
+            )
             model.body_iquat[body_id * 4 + 0] = eig[3]
             model.body_iquat[body_id * 4 + 1] = eig[4]
             model.body_iquat[body_id * 4 + 2] = eig[5]
@@ -855,9 +876,9 @@ fn compute_inertia_from_geoms_buffer[
                     ]
                     # Set mass
                     buffer[body_off + BODY_IDX_MASS] = gm
-                    buffer[body_off + BODY_IDX_INV_MASS] = Scalar[DTYPE](
-                        1.0
-                    ) / gm
+                    buffer[body_off + BODY_IDX_INV_MASS] = (
+                        Scalar[DTYPE](1.0) / gm
+                    )
                     # Compute diagonal inertia
                     var gtype = Int(buffer[goff + GEOM_IDX_TYPE])
                     var inertia = geom_inertia[DTYPE](
@@ -872,15 +893,15 @@ fn compute_inertia_from_geoms_buffer[
                     buffer[body_off + BODY_IDX_IXX] = inertia[0]
                     buffer[body_off + BODY_IDX_IYY] = inertia[1]
                     buffer[body_off + BODY_IDX_IZZ] = inertia[2]
-                    buffer[body_off + BODY_IDX_INV_IXX] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[0]
-                    buffer[body_off + BODY_IDX_INV_IYY] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[1]
-                    buffer[body_off + BODY_IDX_INV_IZZ] = Scalar[DTYPE](
-                        1.0
-                    ) / inertia[2]
+                    buffer[body_off + BODY_IDX_INV_IXX] = (
+                        Scalar[DTYPE](1.0) / inertia[0]
+                    )
+                    buffer[body_off + BODY_IDX_INV_IYY] = (
+                        Scalar[DTYPE](1.0) / inertia[1]
+                    )
+                    buffer[body_off + BODY_IDX_INV_IZZ] = (
+                        Scalar[DTYPE](1.0) / inertia[2]
+                    )
                     break
         else:
             # Multiple geoms: accumulate
@@ -906,9 +927,9 @@ fn compute_inertia_from_geoms_buffer[
 
             # Set mass
             buffer[body_off + BODY_IDX_MASS] = total_mass
-            buffer[body_off + BODY_IDX_INV_MASS] = Scalar[DTYPE](
-                1.0
-            ) / total_mass
+            buffer[body_off + BODY_IDX_INV_MASS] = (
+                Scalar[DTYPE](1.0) / total_mass
+            )
 
             # Accumulate full 6-element inertia tensor
             var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))

@@ -9,7 +9,7 @@ Run with:
     pixi run mojo run physics3d/tests/test_rk4_integrator.mojo
 """
 
-from math import sqrt, pi, cos, abs
+from std.math import sqrt, pi, cos, abs
 from physics3d.types import Model, Data
 from physics3d.integrator import EulerIntegrator
 from physics3d.integrator.rk4_integrator import RK4Integrator
