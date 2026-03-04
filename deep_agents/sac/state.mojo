@@ -4,6 +4,7 @@ from nn.training import Network, NetworkState, NetworkPair
 from nn.replay import ReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Kaiming
+from deep_agents.core import OffPolicyState
 
 # =============================================================================
 # SACCPUState — CPU buffer container for SAC
@@ -19,7 +20,7 @@ struct SACCPUState[
     obs_dim: Int,
     action_dim: Int,
     batch_size: Int,
-]:
+](Movable, OffPolicyState):
     """CPU-resident state for SAC training.
 
     Holds all heap-allocated data needed for one SAC training loop:
@@ -46,6 +47,7 @@ struct SACCPUState[
     comptime ACTIONS = Self.action_dim
     comptime BATCH = Self.batch_size
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
+    comptime BUFFER_DTYPE = dtype
     # StochasticActor outputs mean + log_std
     comptime ACTOR_OUT = Self.ACTIONS * 2
 
@@ -62,41 +64,47 @@ struct SACCPUState[
     ]
 
     # Scratch — replay sample output
-    var _batch_obs: List[Scalar[dtype]]   # [BATCH * OBS]
-    var _batch_act: List[Scalar[dtype]]   # [BATCH * ACTIONS]
-    var _batch_rew: List[Scalar[dtype]]   # [BATCH]
+    var _batch_obs: List[Scalar[dtype]]  # [BATCH * OBS]
+    var _batch_act: List[Scalar[dtype]]  # [BATCH * ACTIONS]
+    var _batch_rew: List[Scalar[dtype]]  # [BATCH]
     var _batch_next: List[Scalar[dtype]]  # [BATCH * OBS]
     var _batch_done: List[Scalar[dtype]]  # [BATCH]
 
     # Scratch — TD target computation (next-state actor + twin critics)
-    var _next_out: List[Scalar[dtype]]     # [BATCH * ACTOR_OUT] actor mean+log_std
-    var _next_act: List[Scalar[dtype]]     # [BATCH * ACTIONS] sampled next actions
+    var _next_out: List[Scalar[dtype]]  # [BATCH * ACTOR_OUT] actor mean+log_std
+    var _next_act: List[Scalar[dtype]]  # [BATCH * ACTIONS] sampled next actions
     var _next_log_pi: List[Scalar[dtype]]  # [BATCH] log_probs for next actions
-    var _next_ci: List[Scalar[dtype]]      # [BATCH * CRITIC_IN]
-    var _nq1: List[Scalar[dtype]]          # [BATCH] critic1_target output
-    var _nq2: List[Scalar[dtype]]          # [BATCH] critic2_target output
-    var _targets: List[Scalar[dtype]]      # [BATCH]
+    var _next_ci: List[Scalar[dtype]]  # [BATCH * CRITIC_IN]
+    var _nq1: List[Scalar[dtype]]  # [BATCH] critic1_target output
+    var _nq2: List[Scalar[dtype]]  # [BATCH] critic2_target output
+    var _targets: List[Scalar[dtype]]  # [BATCH]
 
     # Scratch — critic updates (reused for both critics)
-    var _ci: List[Scalar[dtype]]       # [BATCH * CRITIC_IN]
-    var _q1_out: List[Scalar[dtype]]   # [BATCH]
-    var _q2_out: List[Scalar[dtype]]   # [BATCH]
-    var _q1_cache: List[Scalar[dtype]] # [BATCH * CriticModel.CACHE_SIZE]
-    var _q2_cache: List[Scalar[dtype]] # [BATCH * CriticModel.CACHE_SIZE]
-    var _q_grad: List[Scalar[dtype]]   # [BATCH] reused for q1_grad, q2_grad, dq
-    var _d_ci: List[Scalar[dtype]]     # [BATCH * CRITIC_IN] reused for d_c1/d_c2/d_new_ci
+    var _ci: List[Scalar[dtype]]  # [BATCH * CRITIC_IN]
+    var _q1_out: List[Scalar[dtype]]  # [BATCH]
+    var _q2_out: List[Scalar[dtype]]  # [BATCH]
+    var _q1_cache: List[Scalar[dtype]]  # [BATCH * CriticModel.CACHE_SIZE]
+    var _q2_cache: List[Scalar[dtype]]  # [BATCH * CriticModel.CACHE_SIZE]
+    var _q_grad: List[Scalar[dtype]]  # [BATCH] reused for q1_grad, q2_grad, dq
+    var _d_ci: List[
+        Scalar[dtype]
+    ]  # [BATCH * CRITIC_IN] reused for d_c1/d_c2/d_new_ci
 
     # Scratch — actor update
-    var _curr_out: List[Scalar[dtype]]      # [BATCH * ACTOR_OUT] actor mean+log_std
-    var _curr_act: List[Scalar[dtype]]      # [BATCH * ACTIONS] current sampled actions
-    var _curr_log_pi: List[Scalar[dtype]]   # [BATCH] log_probs for current actions
-    var _actor_cache: List[Scalar[dtype]]   # [BATCH * ActorModel.CACHE_SIZE]
-    var _new_ci: List[Scalar[dtype]]        # [BATCH * CRITIC_IN]
-    var _new_q1: List[Scalar[dtype]]        # [BATCH]
+    var _curr_out: List[Scalar[dtype]]  # [BATCH * ACTOR_OUT] actor mean+log_std
+    var _curr_act: List[
+        Scalar[dtype]
+    ]  # [BATCH * ACTIONS] current sampled actions
+    var _curr_log_pi: List[
+        Scalar[dtype]
+    ]  # [BATCH] log_probs for current actions
+    var _actor_cache: List[Scalar[dtype]]  # [BATCH * ActorModel.CACHE_SIZE]
+    var _new_ci: List[Scalar[dtype]]  # [BATCH * CRITIC_IN]
+    var _new_q1: List[Scalar[dtype]]  # [BATCH]
     var _new_c1_cache: List[Scalar[dtype]]  # [BATCH * CriticModel.CACHE_SIZE]
-    var _actor_grad_arr: List[Scalar[dtype]] # [BATCH * ACTOR_OUT]
-    var _grad_act: List[Scalar[dtype]]      # [BATCH * ACTIONS]
-    var _d_obs: List[Scalar[dtype]]         # [BATCH * OBS]
+    var _actor_grad_arr: List[Scalar[dtype]]  # [BATCH * ACTOR_OUT]
+    var _grad_act: List[Scalar[dtype]]  # [BATCH * ACTIONS]
+    var _d_obs: List[Scalar[dtype]]  # [BATCH * OBS]
 
     fn __init__(out self):
         """Allocate networks, replay buffer, and all scratch buffers."""
@@ -113,14 +121,20 @@ struct SACCPUState[
 
         # Allocate scratch with capacity
         self._batch_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
-        self._batch_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
+        self._batch_act = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.ACTIONS
+        )
         self._batch_rew = List[Scalar[dtype]](capacity=Self.BATCH)
         self._batch_next = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
         self._batch_done = List[Scalar[dtype]](capacity=Self.BATCH)
-        self._next_out = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTOR_OUT)
+        self._next_out = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.ACTOR_OUT
+        )
         self._next_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
         self._next_log_pi = List[Scalar[dtype]](capacity=Self.BATCH)
-        self._next_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
+        self._next_ci = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.CRITIC_IN
+        )
         self._nq1 = List[Scalar[dtype]](capacity=Self.BATCH)
         self._nq2 = List[Scalar[dtype]](capacity=Self.BATCH)
         self._targets = List[Scalar[dtype]](capacity=Self.BATCH)
@@ -135,7 +149,9 @@ struct SACCPUState[
         )
         self._q_grad = List[Scalar[dtype]](capacity=Self.BATCH)
         self._d_ci = List[Scalar[dtype]](capacity=Self.BATCH * Self.CRITIC_IN)
-        self._curr_out = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTOR_OUT)
+        self._curr_out = List[Scalar[dtype]](
+            capacity=Self.BATCH * Self.ACTOR_OUT
+        )
         self._curr_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
         self._curr_log_pi = List[Scalar[dtype]](capacity=Self.BATCH)
         self._actor_cache = List[Scalar[dtype]](
@@ -189,6 +205,38 @@ struct SACCPUState[
             self._new_c1_cache.append(Scalar[dtype](0))
         for _ in range(Self.BATCH * Self.ActorModel.CACHE_SIZE):
             self._actor_cache.append(Scalar[dtype](0))
+
+    fn store[
+        dtype: DType
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: List[Scalar[dtype]],
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push one transition into the replay buffer.
+
+        Expects action already normalized to actor output range ([-1, 1]).
+        """
+        var obs_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.OBS](
+            uninitialized=True
+        )
+        var next_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.OBS](
+            uninitialized=True
+        )
+        var act_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.ACTIONS](
+            uninitialized=True
+        )
+        for i in range(Self.OBS):
+            obs_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(obs[i]))
+            next_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(next_obs[i]))
+        for i in range(Self.ACTIONS):
+            act_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(action[i]))
+        self.buffer.add(
+            obs_arr, act_arr, Scalar[Self.BUFFER_DTYPE](reward), next_arr, done
+        )
 
     fn is_ready(self) -> Bool:
         """Return True if the replay buffer has enough samples to train."""

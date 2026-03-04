@@ -22,8 +22,7 @@ Usage:
     var metrics = run_onpolicy_continuous_train(agent, env, num_updates=1000)
 """
 
-from .metrics import TrainingMetrics
-from .env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
+from core import TrainingMetrics, BoxDiscreteActionEnv, BoxContinuousActionEnv
 
 
 # =============================================================================
@@ -45,9 +44,7 @@ trait OnPolicyAgent:
     comptime ROLLOUT_LEN: Int
     """Number of steps per rollout buffer (compile-time constant)."""
 
-    fn collect_rollout[
-        E: BoxDiscreteActionEnv
-    ](mut self, mut env: E) -> None:
+    fn collect_rollout[E: BoxDiscreteActionEnv](mut self, mut env: E) -> None:
         """Collect exactly ROLLOUT_LEN steps in a discrete-action environment.
 
         Must handle episode resets internally when done=True.
@@ -89,9 +86,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn select_greedy_action_list(
-        self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select action without exploration for evaluation.
 
         Args:

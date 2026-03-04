@@ -52,11 +52,12 @@ struct RMSprop[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
         """RMSprop update step. step_num is unused."""
         var alpha = Scalar[dtype](Self.ALPHA)
         var one_minus_alpha = Scalar[dtype](1.0 - Self.ALPHA)
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
 
         for i in range(PARAM_SIZE):
@@ -121,9 +122,10 @@ struct RMSprop[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch RMSprop optimization step on GPU. step_num is unused."""
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var alpha = Scalar[dtype](Self.ALPHA)
         var eps = Scalar[dtype](Self.EPS)
 

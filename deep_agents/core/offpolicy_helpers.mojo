@@ -28,7 +28,7 @@ from nn.constants import dtype
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkState
-from nn.utils import obs_to_inline
+from .utils import obs_to_inline
 from nn.replay import ReplayBuffer
 from nn.gpu.random import gaussian_noise
 

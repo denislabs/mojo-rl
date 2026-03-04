@@ -46,7 +46,7 @@ from nn.model import Linear, Sequential, LinearReLU
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState, GPUNetworkState
-from nn.utils import fill_inline
+from deep_agents.core import fill_inline
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.checkpoint import (
     write_checkpoint_header,

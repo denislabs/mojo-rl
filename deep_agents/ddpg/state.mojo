@@ -4,7 +4,7 @@ from nn.training import Network, NetworkPair
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Xavier, Kaiming
-from core import GPUOffPolicyState
+from deep_agents.core import GPUOffPolicyState, OffPolicyState
 from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.training import GPUNetworkPair
 
@@ -22,7 +22,7 @@ struct DDPGCPUState[
     obs_dim: Int,
     action_dim: Int,
     batch_size: Int,
-]:
+](Movable, OffPolicyState):
     """CPU-resident state for DDPG training.
 
     Holds all heap-allocated data needed for one DDPG training loop:
@@ -48,6 +48,7 @@ struct DDPGCPUState[
     comptime ACTIONS = Self.action_dim
     comptime BATCH = Self.batch_size
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
+    comptime BUFFER_DTYPE = dtype  # module-level float32 constant; avoids shadowing in store()
 
     # Network pairs (online + target, params + grads + optimizer state)
     var actor: NetworkPair[Self.ActorModel, Self.ActorOpt]
@@ -165,6 +166,40 @@ struct DDPGCPUState[
             self._q_cache.append(Scalar[dtype](0))
         for _ in range(Self.BATCH * Self.ActorModel.CACHE_SIZE):
             self._actor_cache.append(Scalar[dtype](0))
+
+    fn store[
+        dtype: DType
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: List[Scalar[dtype]],
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push one transition into the replay buffer.
+
+        Expects action already normalized to actor output range ([-1, 1]).
+        The `dtype` parameter is the observation dtype (may differ from
+        BUFFER_DTYPE which is the internal float32 storage type).
+        """
+        var obs_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.OBS](
+            uninitialized=True
+        )
+        var next_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.OBS](
+            uninitialized=True
+        )
+        var act_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.ACTIONS](
+            uninitialized=True
+        )
+        for i in range(Self.OBS):
+            obs_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(obs[i]))
+            next_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(next_obs[i]))
+        for i in range(Self.ACTIONS):
+            act_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(action[i]))
+        self.buffer.add(
+            obs_arr, act_arr, Scalar[Self.BUFFER_DTYPE](reward), next_arr, done
+        )
 
     fn is_ready(self) -> Bool:
         """Return True if the replay buffer has enough samples to train."""

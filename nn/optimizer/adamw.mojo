@@ -61,6 +61,7 @@ struct AdamW[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
         """AdamW update step."""
         var bias_correction1 = Scalar[dtype](1.0 - (Self.BETA1**step_num))
@@ -69,7 +70,7 @@ struct AdamW[
         var one_minus_beta2 = Scalar[dtype](1.0 - Self.BETA2)
         var beta1 = Scalar[dtype](Self.BETA1)
         var beta2 = Scalar[dtype](Self.BETA2)
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
         var wd_factor = Scalar[dtype](1.0 - Self.LR * Self.WEIGHT_DECAY)
 
@@ -152,10 +153,11 @@ struct AdamW[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         var bias_correction1 = Scalar[dtype](1.0 - (Self.BETA1**step_num))
         var bias_correction2 = Scalar[dtype](1.0 - (Self.BETA2**step_num))
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var beta1 = Scalar[dtype](Self.BETA1)
         var beta2 = Scalar[dtype](Self.BETA2)
         var eps = Scalar[dtype](Self.EPS)

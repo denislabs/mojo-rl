@@ -49,8 +49,7 @@ Usage:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
-from .metrics import TrainingMetrics
-from .env_traits import GPUDiscreteEnv, GPUContinuousEnv
+from core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
 from nn.constants import dtype
 
 

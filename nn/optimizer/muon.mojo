@@ -71,13 +71,14 @@ struct Muon[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ):
         """Muon update step (1D simplified version). step_num is unused.
 
         For 1D parameters, Newton-Schulz degenerates to normalized momentum.
         """
         var beta = Scalar[dtype](Self.BETA)
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
 
         # Update momentum (Nesterov style)
@@ -331,6 +332,7 @@ struct Muon[
             MutAnyOrigin,
         ],
         step_num: Int,
+        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch Muon optimization step on GPU (simplified 1D version).
 
@@ -339,7 +341,7 @@ struct Muon[
         step_num is unused.
         """
         var beta = Scalar[dtype](Self.BETA)
-        var lr = Scalar[dtype](Self.LR)
+        var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
         var scale_factor = Scalar[dtype](sqrt(Float64(PARAM_SIZE)))
 

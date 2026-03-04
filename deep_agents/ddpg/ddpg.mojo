@@ -6,7 +6,7 @@ This DDPG (Deep Deterministic Policy Gradient) implementation uses:
 - Sequential composition for actor and critic networks
 - Tanh output activation for bounded actions
 - ReplayBuffer from nn.replay for experience replay
-- OffPolicyAgent trait for shared CPU training loop
+- OffPolicyContinuousAgent trait for shared CPU training loop
 - GPUOffPolicyAgent trait for shared GPU training loop
 
 Features:
@@ -51,12 +51,21 @@ from nn.training import (
     NetworkPair,
     GPUNetworkPair,
 )
-from nn.utils import fill_inline, obs_to_inline, concat_obs_action_batch
-from deep_agents.offpolicy_helpers import (
+from deep_agents.core import (
     deterministic_select_action,
     greedy_continuous_action,
     store_continuous_transition,
     random_continuous_action,
+    fill_inline,
+    obs_to_inline,
+    concat_obs_action_batch,
+    OffPolicyState,
+    OffPolicyContinuousAgent,
+    GPUOffPolicyState,
+    GPUOffPolicyAgent,
+    run_offpolicy_continuous_train,
+    run_offpolicy_continuous_eval,
+    run_offpolicy_continuous_train_gpu,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
@@ -81,12 +90,6 @@ from core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     RenderableEnv,
-    OffPolicyAgent,
-    GPUOffPolicyState,
-    GPUOffPolicyAgent,
-    run_offpolicy_continuous_train,
-    run_offpolicy_continuous_eval,
-    run_offpolicy_continuous_train_gpu,
     GPUContinuousEnv,
 )
 from .state import DDPGCPUState, DDPGGPUState
@@ -105,7 +108,7 @@ struct DeepDDPGAgent[
     actor_lr: Float64 = 0.001,
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
-](OffPolicyAgent & GPUOffPolicyAgent):
+](OffPolicyContinuousAgent & GPUOffPolicyAgent):
     """Deep Deterministic Policy Gradient agent — unified CPU + GPU.
 
     DDPG is an off-policy actor-critic algorithm that uses a deterministic
@@ -239,52 +242,54 @@ struct DeepDDPGAgent[
         self.checkpoint_path = checkpoint_path
 
     # =========================================================================
-    # OffPolicyAgent trait — required methods (CPU training)
+    # OffPolicyContinuousAgent trait — required methods (CPU training)
     # =========================================================================
 
-    fn select_action_list[
-        DTYPE: DType
-    ](mut self, obs: List[Scalar[DTYPE]]) -> List[Scalar[DTYPE]]:
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        """Allocate a fresh CPUStateType (networks + replay buffer + scratch).
+
+        Called once before training. The returned state is owned by the caller.
+        """
+        return Self.CPUStateType()
+
+    fn select_action[
+        dtype: DType
+    ](
+        mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[dtype]]
+    ) -> List[Scalar[dtype]]:
         """Select action with Gaussian exploration noise (training)."""
         return deterministic_select_action[
-            DTYPE, Self.ActorModel, Adam[Self.actor_lr]
-        ](self.state.actor.online, obs, self.action_scale, self.noise_std)
+            dtype, Self.ActorModel, Adam[Self.actor_lr]
+        ](cpu_state.actor.online, obs, self.action_scale, self.noise_std)
 
-    fn store_list_transition[
-        DTYPE: DType
+    fn store_transition[
+        dtype: DType
     ](
         mut self,
-        obs: List[Scalar[DTYPE]],
-        action: List[Scalar[DTYPE]],
+        mut cpu_state: Self.CPUStateType,
+        obs: List[Scalar[dtype]],
+        action: List[Scalar[dtype]],
         reward: Float64,
-        next_obs: List[Scalar[DTYPE]],
+        next_obs: List[Scalar[dtype]],
         done: Bool,
     ) -> None:
-        """Store transition in the replay buffer."""
-        store_continuous_transition[
-            DTYPE, Self.OBS, Self.ACTIONS, Self.buffer_capacity
-        ](
-            self.state.buffer,
-            obs,
-            action,
-            reward,
-            next_obs,
-            done,
-            self.action_scale,
-            self.total_steps,
-        )
+        """Store transition in the replay buffer (action normalized by action_scale).
+        """
+        var normalized_action = List[Scalar[dtype]](capacity=len(action))
+        for i in range(len(action)):
+            normalized_action.append(
+                Scalar[dtype](Float64(action[i]) / self.action_scale)
+            )
+        cpu_state.store[dtype](obs, normalized_action, reward, next_obs, done)
+        self.total_steps += 1
 
-    fn is_ready(self) -> Bool:
-        """Return True if buffer has enough samples to begin training."""
-        return self.state.is_ready()
-
-    fn do_train_step(mut self) -> Float64:
+    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Perform one DDPG gradient update step.
 
         Returns:
             Critic loss value.
         """
-        return self.train_step()
+        return self.train_step(cpu_state)
 
     fn decay_explore(mut self) -> None:
         """Decay exploration noise (call once per episode)."""
@@ -296,29 +301,31 @@ struct DeepDDPGAgent[
         """Return current exploration noise std."""
         return self.noise_std
 
-    fn random_action_list[DTYPE: DType](self) -> List[Scalar[DTYPE]]:
+    fn random_action[dtype: DType](self) -> List[Scalar[dtype]]:
         """Return a uniformly random action in [-action_scale, action_scale]."""
-        return random_continuous_action[DTYPE](
+        return random_continuous_action[dtype](
             Self.action_dim, self.action_scale
         )
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    fn select_greedy_action(
+        self, cpu_state: Self.CPUStateType, obs: List[Float64]
+    ) -> List[Float64]:
         """Select action using deterministic policy (no exploration noise)."""
         return greedy_continuous_action[Self.ActorModel, Adam[Self.actor_lr]](
-            self.state.actor.online, obs, self.action_scale
+            cpu_state.actor.online, obs, self.action_scale
         )
 
     # =========================================================================
     # Core DDPG CPU Training Step
     # =========================================================================
 
-    fn train_step(mut self) -> Float64:
+    fn train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Perform one DDPG training step (critic update → actor update → soft target update).
 
         Returns:
             Critic loss value, or 0.0 if buffer not ready.
         """
-        if not self.state.buffer.is_ready[Self.BATCH]():
+        if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
         # Phase 1: Sample batch from replay buffer
@@ -339,7 +346,7 @@ struct DeepDDPGAgent[
             uninitialized=True
         )
 
-        self.state.buffer.sample[Self.BATCH](
+        cpu_state.buffer.sample[Self.BATCH](
             batch_obs, batch_act, batch_rew, batch_next, batch_done
         )
 
@@ -354,8 +361,8 @@ struct DeepDDPGAgent[
         # y = r + γ * Q_target(s', µ_target(s')) * (1 − done)
         var next_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](self.state._next_act.unsafe_ptr())
-        var p_actor_target = self.state.actor.target.params_view()
+        ](cpu_state._next_act.unsafe_ptr())
+        var p_actor_target = cpu_state.actor.target.params_view()
         Self.ActorNet.forward[Self.BATCH](
             next_obs_t, next_act_t, p_actor_target
         )
@@ -364,25 +371,25 @@ struct DeepDDPGAgent[
         # (batch_next is a local InlineArray; _next_act is a pre-allocated List)
         var next_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](self.state._next_ci.unsafe_ptr())
+        ](cpu_state._next_ci.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                self.state._next_ci[b * Self.CRITIC_IN + i] = batch_next[
+                cpu_state._next_ci[b * Self.CRITIC_IN + i] = batch_next[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                self.state._next_ci[
+                cpu_state._next_ci[
                     b * Self.CRITIC_IN + Self.OBS + i
-                ] = self.state._next_act[b * Self.ACTIONS + i]
+                ] = cpu_state._next_act[b * Self.ACTIONS + i]
 
         var next_q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](self.state._next_q.unsafe_ptr())
-        var p_critic_target = self.state.critic.target.params_view()
+        ](cpu_state._next_q.unsafe_ptr())
+        var p_critic_target = cpu_state.critic.target.params_view()
         Self.CriticNet.forward[Self.BATCH](next_ci_t, next_q_t, p_critic_target)
 
         for b in range(Self.BATCH):
-            var q = Float64(self.state._next_q[b])
+            var q = Float64(cpu_state._next_q[b])
             if q != q:
                 q = 0.0
             var done_mask = 1.0 - Float64(batch_done[b])
@@ -393,71 +400,71 @@ struct DeepDDPGAgent[
                 tgt = 1000.0
             elif tgt < -1000.0:
                 tgt = -1000.0
-            self.state._targets[b] = Scalar[dtype](tgt)
+            cpu_state._targets[b] = Scalar[dtype](tgt)
 
         # Phase 3: Update Critic
         # Build critic input: concat(batch_obs, batch_act) via manual loop
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](self.state._ci.unsafe_ptr())
+        ](cpu_state._ci.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                self.state._ci[b * Self.CRITIC_IN + i] = batch_obs[
+                cpu_state._ci[b * Self.CRITIC_IN + i] = batch_obs[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                self.state._ci[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
+                cpu_state._ci[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
                     b * Self.ACTIONS + i
                 ]
 
         var q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](self.state._q_out.unsafe_ptr())
+        ](cpu_state._q_out.unsafe_ptr())
         var critic_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](self.state._q_cache.unsafe_ptr())
+        ](cpu_state._q_cache.unsafe_ptr())
 
-        var p_critic = self.state.critic.params_view()
+        var p_critic = cpu_state.critic.params_view()
         Self.CriticNet.forward_with_cache[Self.BATCH](
             ci_t, q_t, p_critic, critic_cache_t
         )
 
         var q_grad_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](self.state._q_grad.unsafe_ptr())
+        ](cpu_state._q_grad.unsafe_ptr())
         var critic_loss: Float64 = 0.0
         for b in range(Self.BATCH):
-            var td_err = self.state._q_out[b] - self.state._targets[b]
+            var td_err = cpu_state._q_out[b] - cpu_state._targets[b]
             critic_loss += Float64(td_err * td_err)
-            self.state._q_grad[b] = (
+            cpu_state._q_grad[b] = (
                 Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
             )
         critic_loss /= Float64(Self.BATCH)
 
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](self.state._d_ci.unsafe_ptr())
+        ](cpu_state._d_ci.unsafe_ptr())
 
-        var g_critic = self.state.critic.grads_view()
-        self.state.critic.zero_grads()
+        var g_critic = cpu_state.critic.grads_view()
+        cpu_state.critic.zero_grads()
         Self.CriticNet.backward[Self.BATCH](
             q_grad_t, d_ci_t, p_critic, critic_cache_t, g_critic
         )
-        self.state.critic.optimizer_step()
+        cpu_state.critic.optimizer_step()
 
         # Phase 4: Update Actor
         var actor_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](self.state._actor_act.unsafe_ptr())
+        ](cpu_state._actor_act.unsafe_ptr())
         var actor_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.ActorModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](self.state._actor_cache.unsafe_ptr())
+        ](cpu_state._actor_cache.unsafe_ptr())
 
-        var p_actor = self.state.actor.params_view()
+        var p_actor = cpu_state.actor.params_view()
         Self.ActorNet.forward_with_cache[Self.BATCH](
             obs_t, actor_act_t, p_actor, actor_cache_t
         )
@@ -465,25 +472,25 @@ struct DeepDDPGAgent[
         # Build actor critic input: concat(batch_obs, _actor_act) via manual loop
         var new_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](self.state._new_ci.unsafe_ptr())
+        ](cpu_state._new_ci.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                self.state._new_ci[b * Self.CRITIC_IN + i] = batch_obs[
+                cpu_state._new_ci[b * Self.CRITIC_IN + i] = batch_obs[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                self.state._new_ci[
+                cpu_state._new_ci[
                     b * Self.CRITIC_IN + Self.OBS + i
-                ] = self.state._actor_act[b * Self.ACTIONS + i]
+                ] = cpu_state._actor_act[b * Self.ACTIONS + i]
 
         var new_q_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](self.state._new_q.unsafe_ptr())
+        ](cpu_state._new_q.unsafe_ptr())
         var new_cache_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](self.state._q_cache.unsafe_ptr())
+        ](cpu_state._q_cache.unsafe_ptr())
 
         Self.CriticNet.forward_with_cache[Self.BATCH](
             new_ci_t, new_q_t, p_critic, new_cache_t
@@ -491,42 +498,42 @@ struct DeepDDPGAgent[
 
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](self.state._dq.unsafe_ptr())
+        ](cpu_state._dq.unsafe_ptr())
         for b in range(Self.BATCH):
-            self.state._dq[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
+            cpu_state._dq[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
 
         var d_new_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-        ](self.state._d_new_ci.unsafe_ptr())
+        ](cpu_state._d_new_ci.unsafe_ptr())
 
-        self.state.critic.zero_grads()
+        cpu_state.critic.zero_grads()
         Self.CriticNet.backward[Self.BATCH](
             dq_t, d_new_ci_t, p_critic, new_cache_t, g_critic
         )
 
         var d_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](self.state._d_act.unsafe_ptr())
+        ](cpu_state._d_act.unsafe_ptr())
         for b in range(Self.BATCH):
             for i in range(Self.ACTIONS):
-                self.state._d_act[b * Self.ACTIONS + i] = self.state._d_new_ci[
+                cpu_state._d_act[b * Self.ACTIONS + i] = cpu_state._d_new_ci[
                     b * Self.CRITIC_IN + Self.OBS + i
                 ]
 
         var d_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](self.state._d_obs.unsafe_ptr())
+        ](cpu_state._d_obs.unsafe_ptr())
 
-        var g_actor = self.state.actor.grads_view()
-        self.state.actor.zero_grads()
+        var g_actor = cpu_state.actor.grads_view()
+        cpu_state.actor.zero_grads()
         Self.ActorNet.backward[Self.BATCH](
             d_act_t, d_obs_t, p_actor, actor_cache_t, g_actor
         )
-        self.state.actor.optimizer_step()
+        cpu_state.actor.optimizer_step()
 
         # Phase 5: Soft update target networks
-        self.state.actor.soft_update(self.tau)
-        self.state.critic.soft_update(self.tau)
+        cpu_state.actor.soft_update(self.tau)
+        cpu_state.critic.soft_update(self.tau)
 
         self.train_step_count += 1
         return critic_loss
@@ -962,8 +969,10 @@ struct DeepDDPGAgent[
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        return run_offpolicy_continuous_train(
+        var cpu_state = Self.CPUStateType()
+        var metrics = run_offpolicy_continuous_train(
             self,
+            cpu_state,
             env,
             num_episodes,
             max_steps_per_episode=max_steps_per_episode,
@@ -974,6 +983,8 @@ struct DeepDDPGAgent[
             environment_name=environment_name,
             algorithm_name="Deep DDPG",
         )
+        self.state = cpu_state^
+        return metrics
 
     # =========================================================================
     # GPU training — delegates to shared run_offpolicy_continuous_train_gpu
@@ -1058,6 +1069,7 @@ struct DeepDDPGAgent[
         """
         return run_offpolicy_continuous_eval(
             self,
+            self.state,
             env,
             num_episodes=num_episodes,
             max_steps=max_steps,

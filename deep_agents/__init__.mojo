@@ -15,11 +15,9 @@ Available agents:
 - DeepPPOContinuousAgent: PPO for continuous action spaces
 """
 
-from .dqn import DQNAgent
-from .dqn_per import DQNPERAgent
+from .dqn import DQNAgent, DQNPERAgent, DuelingDQNAgent
 from .ddpg import DeepDDPGAgent
 from .td3 import DeepTD3Agent
 from .sac import DeepSACAgent
-from .dueling_dqn import DuelingDQNAgent
 from .a2c import DeepA2CAgent
 from .ppo import DeepPPOAgent, DeepPPOContinuousAgent

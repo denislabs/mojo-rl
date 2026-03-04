@@ -3,7 +3,7 @@
 Provides free functions used across multiple agents to reduce code duplication.
 """
 
-from .constants import dtype
+from nn.constants import dtype
 
 
 fn fill_inline[

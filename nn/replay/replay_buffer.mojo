@@ -69,7 +69,7 @@ struct ReplayBuffer[
     obs_dim: Int,
     action_dim: Int,
     dtype: DType = DType.float64,
-](ReplayBufferTrait):
+](ReplayBufferTrait, Movable):
     """Fixed-size replay buffer with compile-time dimensions.
 
     Parameters:
