@@ -50,6 +50,9 @@ This module provides common GPU operations used across deep RL algorithms.
 - actor_grad_from_critic_kernel: Extract ∂Q/∂a from critic input gradient
 - add_gaussian_noise_kernel: Clipped Gaussian noise for TD3 exploration
 - sac_reparameterize_kernel: SAC reparameterization trick with Jacobian log-prob
+- sac_sample_actions_kernel: SAC inference from actor_out[N, 2*ACTION_DIM]
+- sac_rsample_with_cache_kernel: SAC training forward — actions + log_prob + eps_cache
+- sac_rsample_bwd_kernel: SAC backward through reparameterization trick
 - a2c_gae_kernel: GAE advantages + returns for A2C GPU training
 - a2c_softmax_sample_kernel: Softmax categorical sampling for parallel A2C envs
 """
@@ -112,6 +115,9 @@ from .continuous_kernels import (
     actor_grad_from_critic_kernel,
     add_gaussian_noise_kernel,
     sac_reparameterize_kernel,
+    sac_sample_actions_kernel,
+    sac_rsample_with_cache_kernel,
+    sac_rsample_bwd_kernel,
     a2c_gae_kernel,
     a2c_softmax_sample_kernel,
     concat_obs_action_kernel,

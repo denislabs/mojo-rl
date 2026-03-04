@@ -74,8 +74,7 @@ fn main() raises:
 
     var a2c_metrics = a2c_agent.train(
         env_a2c,
-        num_episodes=num_episodes,
-        max_steps_per_episode=max_steps,
+        num_updates=num_episodes,
         verbose=True,
         print_every=50,
         environment_name="CartPole",

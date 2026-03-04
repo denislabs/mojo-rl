@@ -367,6 +367,52 @@ fn get_metadata_value(metadata: List[String], key: String) -> String:
     return String("")
 
 
+fn set_metadata_value_float(
+    metadata: List[String], key: String, mut dest: Float64
+) raises:
+    """Get value for a key from metadata list as float.
+
+    Args:
+        metadata: List of key=value strings.
+        key: Key to look for.
+        dest: Destination float value.
+
+    """
+    var value = get_metadata_value(metadata, "target_noise_clip")
+    if len(value) > 0:
+        dest = atof(value)
+
+
+fn set_metadata_value_int(
+    metadata: List[String], key: String, mut dest: Int
+) raises:
+    """Get value for a key from metadata list as int.
+
+    Args:
+        metadata: List of key=value strings.
+        key: Key to look for.
+        dest: Destination int value.
+    """
+    var value = get_metadata_value(metadata, "target_noise_clip")
+    if len(value) > 0:
+        dest = Int(atol(value))
+
+
+fn set_metadata_value_bool(
+    metadata: List[String], key: String, mut dest: Bool
+) raises:
+    """Get value for a key from metadata list as bool.
+
+    Args:
+        metadata: List of key=value strings.
+        key: Key to look for.
+        dest: Destination bool value.
+    """
+    var value = get_metadata_value(metadata, "target_noise_clip")
+    if len(value) > 0:
+        dest = Bool(atol(value))
+
+
 fn save_checkpoint_file(filepath: String, content: String) raises:
     """Write checkpoint content to file.
 

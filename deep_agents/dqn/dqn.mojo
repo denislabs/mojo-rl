@@ -46,7 +46,12 @@ from nn.model import Linear, Sequential, LinearReLU
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState, GPUNetworkState
-from deep_agents.core import fill_inline
+from deep_agents.core import (
+    fill_inline,
+    obs_to_inline,
+    OffPolicyAgent,
+    run_offpolicy_discrete_train,
+)
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.checkpoint import (
     write_checkpoint_header,
@@ -165,7 +170,7 @@ struct DQNAgent[
     n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.001,
-]:
+](OffPolicyAgent):
     """Deep Q-Network agent using the new trait-based architecture.
 
     Parameters:
@@ -516,6 +521,62 @@ struct DQNAgent[
         return self.train_step_count
 
     # =========================================================================
+    # OffPolicyAgent trait conformance
+    # =========================================================================
+
+    fn select_action_list[
+        dt: DType
+    ](mut self, obs: List[Scalar[dt]]) -> List[Scalar[dt]]:
+        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
+        var action = self.select_action(obs_inline)
+        var result = List[Scalar[dt]]()
+        result.append(Scalar[dt](action))
+        return result^
+
+    fn store_list_transition[
+        dt: DType
+    ](
+        mut self,
+        obs: List[Scalar[dt]],
+        action: List[Scalar[dt]],
+        reward: Float64,
+        next_obs: List[Scalar[dt]],
+        done: Bool,
+    ) -> None:
+        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
+        var next_inline = obs_to_inline[Self.OBS, dt](next_obs)
+        var action_int = Int(Float64(action[0]))
+        self.store_transition(obs_inline, action_int, reward, next_inline, done)
+
+    fn is_ready(self) -> Bool:
+        return self.buffer.is_ready[Self.batch_size]()
+
+    fn do_train_step(mut self) -> Float64:
+        return self.train_step()
+
+    fn decay_explore(mut self) -> None:
+        self.decay_epsilon()
+
+    fn get_explore_rate(self) -> Float64:
+        return self.epsilon
+
+    fn random_action_list[dt: DType](self) -> List[Scalar[dt]]:
+        var result = List[Scalar[dt]]()
+        result.append(
+            Scalar[dt](
+                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
+            )
+        )
+        return result^
+
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+        var obs_inline = obs_to_inline[Self.OBS, DType.float64](obs)
+        var action = self.select_action(obs_inline, greedy=True)
+        var result = List[Float64]()
+        result.append(Float64(action))
+        return result^
+
+    # =========================================================================
     # High-level CPU training and evaluation
     # =========================================================================
 
@@ -547,97 +608,21 @@ struct DQNAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
-        var metrics = TrainingMetrics(
-            algorithm_name="DQN" if not Self.double_dqn else "Double DQN",
-            environment_name=environment_name,
+        var algo_name = String("DQN")
+        if Self.double_dqn:
+            algo_name = String("Double DQN")
+        return run_offpolicy_discrete_train(
+            self,
+            env,
+            num_episodes,
+            max_steps_per_episode,
+            warmup_steps,
+            train_every,
+            verbose,
+            print_every,
+            environment_name,
+            algo_name,
         )
-
-        # Warmup: fill buffer with random transitions
-        var warmup_obs = InlineArray[Scalar[dtype], Self.obs_dim](
-            uninitialized=True
-        )
-        var warmup_next = InlineArray[Scalar[dtype], Self.obs_dim](
-            uninitialized=True
-        )
-        fill_inline(env.reset_obs_list(), warmup_obs)
-        var warmup_count = 0
-        while warmup_count < warmup_steps:
-            var action = Int(random_float64() * Float64(Self.num_actions))
-            var result = env.step_obs(action)
-            fill_inline(result[0], warmup_next)
-            self.store_transition(
-                warmup_obs, action, Float64(result[1]), warmup_next, result[2]
-            )
-            fill_inline(result[0], warmup_obs)
-            warmup_count += 1
-            if result[2]:
-                fill_inline(env.reset_obs_list(), warmup_obs)
-
-        # Training loop
-        var total_steps = 0
-        var obs = InlineArray[Scalar[dtype], Self.obs_dim](uninitialized=True)
-        var next_obs = InlineArray[Scalar[dtype], Self.obs_dim](
-            uninitialized=True
-        )
-        for episode in range(num_episodes):
-            fill_inline(env.reset_obs_list(), obs)
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for step in range(max_steps_per_episode):
-                var action = self.select_action(obs)
-                var result = env.step_obs(action)
-                fill_inline(result[0], next_obs)
-                var reward = Float64(result[1])
-                var done = result[2]
-
-                self.store_transition(obs, action, reward, next_obs, done)
-
-                if total_steps % train_every == 0:
-                    _ = self.train_step()
-
-                episode_reward += reward
-                fill_inline(result[0], obs)
-                total_steps += 1
-                episode_steps += 1
-
-                if done:
-                    break
-
-            self.decay_epsilon()
-            metrics.log_episode(
-                episode, episode_reward, episode_steps, self.epsilon
-            )
-
-            if verbose and (episode + 1) % print_every == 0:
-                var avg_reward = metrics.mean_reward_last_n(print_every)
-                print(
-                    "Episode "
-                    + String(episode + 1)
-                    + " | Avg reward: "
-                    + String(avg_reward)[:7]
-                    + " | Epsilon: "
-                    + String(self.epsilon)[:5]
-                    + " | Steps: "
-                    + String(total_steps)
-                )
-
-            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
-                if (episode + 1) % self.checkpoint_every == 0:
-                    try:
-                        self.save_checkpoint(self.checkpoint_path)
-                        if verbose:
-                            print(
-                                "Checkpoint saved at episode "
-                                + String(episode + 1)
-                            )
-                    except:
-                        print(
-                            "Warning: Failed to save checkpoint at episode "
-                            + String(episode + 1)
-                        )
-
-        return metrics^
 
     fn evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv

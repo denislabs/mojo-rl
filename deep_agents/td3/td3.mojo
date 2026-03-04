@@ -386,6 +386,9 @@ struct DeepTD3Agent[
         var next_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](batch_next.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](batch_act.unsafe_ptr())
 
         # =================================================================
         # Phase 2: Compute TD targets with target policy smoothing
@@ -417,19 +420,13 @@ struct DeepTD3Agent[
                     noisy_a = -1.0
                 cpu_state._next_act[idx] = Scalar[dtype](noisy_a)
 
-        # Build next critic input: concat(batch_next, _next_act) via manual loop
+        # Build next critic input: concat(next_obs, next_act)
         var next_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](cpu_state._next_ci.unsafe_ptr())
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                cpu_state._next_ci[b * Self.CRITIC_IN + i] = batch_next[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                cpu_state._next_ci[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = cpu_state._next_act[b * Self.ACTIONS + i]
+        concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+            next_ci_t, next_obs_t, next_act_t
+        )
 
         # Forward both target critics
         var nq1_t = LayoutTensor[
@@ -467,19 +464,13 @@ struct DeepTD3Agent[
         # Phase 3: Update Both Critics with the same targets
         # =================================================================
 
-        # Build critic input: concat(batch_obs, batch_act) via manual loop
+        # Build critic input: concat(obs, act)
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](cpu_state._ci.unsafe_ptr())
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                cpu_state._ci[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                cpu_state._ci[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
-                    b * Self.ACTIONS + i
-                ]
+        concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+            ci_t, obs_t, act_t
+        )
 
         # --- Update Critic 1 ---
         var q1_t = LayoutTensor[
@@ -579,21 +570,15 @@ struct DeepTD3Agent[
                 obs_t, actor_act_t, p_actor, actor_cache_t
             )
 
-            # Build actor critic input: concat(batch_obs, _actor_act) via manual loop
+            # Build actor critic input: concat(obs, actor_act)
             var new_ci_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.BATCH, Self.CRITIC_IN),
                 MutAnyOrigin,
             ](cpu_state._new_ci.unsafe_ptr())
-            for b in range(Self.BATCH):
-                for i in range(Self.OBS):
-                    cpu_state._new_ci[b * Self.CRITIC_IN + i] = batch_obs[
-                        b * Self.OBS + i
-                    ]
-                for i in range(Self.ACTIONS):
-                    cpu_state._new_ci[
-                        b * Self.CRITIC_IN + Self.OBS + i
-                    ] = cpu_state._actor_act[b * Self.ACTIONS + i]
+            concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+                new_ci_t, obs_t, actor_act_t
+            )
 
             var new_q_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin

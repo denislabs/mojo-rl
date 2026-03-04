@@ -3,6 +3,8 @@
 Provides free functions used across multiple agents to reduce code duplication.
 """
 
+from layout import Layout, LayoutTensor, MutAnyOrigin
+
 from nn.constants import dtype
 
 
@@ -87,19 +89,15 @@ fn concat_obs_action[
 fn concat_obs_action_batch[
     OBS: Int, ACT: Int, BATCH: Int
 ](
-    obs: InlineArray[Scalar[dtype], BATCH * OBS],
-    act: InlineArray[Scalar[dtype], BATCH * ACT],
-    mut dst: InlineArray[Scalar[dtype], BATCH * (OBS + ACT)],
+    dst: LayoutTensor[dtype, Layout.row_major(BATCH, OBS + ACT), MutAnyOrigin],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    act: LayoutTensor[dtype, Layout.row_major(BATCH, ACT), MutAnyOrigin],
 ):
     """Batch version of concat_obs_action for train_step critic inputs.
 
-    Builds a flat [BATCH × (OBS+ACT)] array by interleaving obs and action
-    slices per sample. Replaces the repeated double-loop pattern found in
-    DDPG / TD3 / SAC train_step:
-
-        for b in range(BATCH):
-            for i in range(OBS): dst[b*CI+i] = obs[b*OBS+i]
-            for i in range(ACT): dst[b*CI+OBS+i] = act[b*ACT+i]
+    Builds a [BATCH, OBS+ACT] LayoutTensor by interleaving obs and action
+    columns per sample. Mirrors concat_obs_action_kernel (GPU) with the same
+    signature so both CPU and GPU share the same calling convention.
 
     Parameters:
         OBS: Observation dimension per sample (compile-time).
@@ -107,13 +105,12 @@ fn concat_obs_action_batch[
         BATCH: Batch size (compile-time).
 
     Args:
-        obs: Flat observation batch [BATCH * OBS].
-        act: Flat action batch [BATCH * ACT].
-        dst: Destination flat batch [BATCH * (OBS+ACT)] (written in-place).
+        dst: Destination tensor [BATCH, OBS+ACT] (written in-place).
+        obs: Observation tensor [BATCH, OBS].
+        act: Action tensor [BATCH, ACT].
     """
-    comptime CI = OBS + ACT
     for b in range(BATCH):
         for i in range(OBS):
-            dst[b * CI + i] = obs[b * OBS + i]
+            dst[b, i] = obs[b, i]
         for i in range(ACT):
-            dst[b * CI + OBS + i] = act[b * ACT + i]
+            dst[b, OBS + i] = act[b, i]

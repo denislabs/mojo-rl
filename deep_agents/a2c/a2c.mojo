@@ -50,8 +50,14 @@ from nn.checkpoint import (
     read_metadata_section,
     get_metadata_value,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+from core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+    RenderableEnv,
+)
 from core.utils.gae import compute_gae_inline
+from deep_agents.core import OnPolicyAgent, run_onpolicy_discrete_train
 from core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
@@ -72,7 +78,7 @@ struct DeepA2CAgent[
     rollout_len: Int = 128,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-]:
+](OnPolicyAgent):
     """Deep Advantage Actor-Critic Agent using the new stateless architecture.
 
     Uses separate actor and critic NetworkStates with heap-allocated params.
@@ -92,6 +98,9 @@ struct DeepA2CAgent[
     comptime ACTIONS = Self.num_actions
     comptime HIDDEN = Self.hidden_dim
     comptime ROLLOUT = Self.rollout_len
+
+    # OnPolicyAgent trait requirement
+    comptime ROLLOUT_LEN: Int = Self.rollout_len
 
     # Stateless model descriptions (no stored weights)
     comptime ActorModel = Sequential[
@@ -130,6 +139,13 @@ struct DeepA2CAgent[
     var buffer_log_probs: InlineArray[Scalar[dtype], Self.ROLLOUT]
     var buffer_dones: InlineArray[Bool, Self.ROLLOUT]
     var buffer_idx: Int
+
+    # OnPolicyAgent state: advantages/returns computed in compute_advantages()
+    var _advantages: InlineArray[Scalar[dtype], Self.ROLLOUT]
+    var _returns: InlineArray[Scalar[dtype], Self.ROLLOUT]
+    # Current observation carried across rollout boundaries
+    var _current_obs: InlineArray[Scalar[dtype], Self.OBS]
+    var _env_initialized: Bool
 
     # Training state
     var train_step_count: Int
@@ -182,6 +198,12 @@ struct DeepA2CAgent[
         self.buffer_log_probs = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
         self.buffer_dones = InlineArray[Bool, Self.ROLLOUT](fill=False)
         self.buffer_idx = 0
+
+        # OnPolicyAgent state
+        self._advantages = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
+        self._returns = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
+        self._current_obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+        self._env_initialized = False
 
         # Training state
         self.train_step_count = 0
@@ -492,12 +514,287 @@ struct DeepA2CAgent[
                 obs[i] = Scalar[dtype](obs_list[i])
         return obs^
 
+    # =========================================================================
+    # OnPolicyAgent trait conformance
+    # =========================================================================
+
+    fn collect_rollout[E: BoxDiscreteActionEnv](mut self, mut env: E) -> None:
+        """Collect exactly ROLLOUT_LEN steps from the environment.
+
+        Handles episode resets internally. Stores observations, actions,
+        rewards, log_probs, values, and dones in internal rollout buffers.
+        After collecting, self._current_obs holds the last observation
+        (used as bootstrap value in compute_advantages).
+
+        Args:
+            env: Discrete-action environment.
+        """
+        if not self._env_initialized:
+            self._current_obs = self._list_to_inline(env.reset_obs_list())
+            self._env_initialized = True
+
+        self.buffer_idx = 0
+
+        for _ in range(Self.ROLLOUT):
+            var action_result = self.select_action(
+                self._current_obs, training=True
+            )
+            var action = action_result[0]
+            var log_prob = action_result[1]
+            var value = action_result[2]
+
+            var result = env.step_obs(action)
+            var reward = result[1]
+            var done = result[2]
+
+            # Copy to local to avoid aliasing self while calling mut self method
+            var obs_copy = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+            for _i in range(Self.OBS):
+                obs_copy[_i] = self._current_obs[_i]
+            self.store_transition(
+                obs_copy,
+                action,
+                Float64(reward),
+                log_prob,
+                value,
+                done,
+            )
+
+            if done:
+                self._current_obs = self._list_to_inline(env.reset_obs_list())
+            else:
+                self._current_obs = self._list_to_inline(result[0])
+
+    fn collect_rollout_continuous[
+        E: BoxContinuousActionEnv
+    ](mut self, mut env: E) -> None:
+        """Not implemented: A2C is discrete-only."""
+        pass
+
+    fn compute_advantages(mut self) -> None:
+        """Compute GAE advantages and returns using self._current_obs for bootstrap.
+
+        Called after collect_rollout(), before update_epochs().
+        Fills self._advantages and self._returns in-place.
+        Normalizes advantages if buffer has more than one step.
+        """
+        if self.buffer_idx == 0:
+            return
+
+        # Bootstrap value from the observation after the last rollout step
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](self._current_obs.unsafe_ptr())
+        var next_value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var next_value_t = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](next_value_data.unsafe_ptr())
+        var critic_params = self.critic.params_view()
+        Self.CriticNetwork.forward[1](next_obs_t, next_value_t, critic_params)
+        var next_value = rebind[Scalar[dtype]](next_value_t[0, 0])
+
+        compute_gae_inline[dtype, Self.ROLLOUT](
+            self.buffer_rewards,
+            self.buffer_values,
+            next_value,
+            self.buffer_dones,
+            self.gamma,
+            self.gae_lambda,
+            self.buffer_idx,
+            self._advantages,
+            self._returns,
+        )
+
+        if self.buffer_idx > 1:
+            normalize_inline[dtype, Self.ROLLOUT](
+                self.buffer_idx, self._advantages
+            )
+
+    fn update_epochs(mut self) -> Float64:
+        """Update actor and critic using computed advantages and returns.
+
+        Must be called after compute_advantages(). Iterates over the
+        collected rollout, updates actor with policy gradient + entropy,
+        updates critic with value loss, then clears the buffer.
+
+        Returns:
+            Mean total loss across the rollout.
+        """
+        if self.buffer_idx == 0:
+            return 0.0
+
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_entropy = Scalar[dtype](0.0)
+
+        for t in range(self.buffer_idx):
+            var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            for i in range(Self.OBS):
+                obs[i] = self.buffer_obs[t * Self.OBS + i]
+
+            var action = self.buffer_actions[t]
+            var advantage = self._advantages[t]
+            var return_t = self._returns[t]
+
+            var obs_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](obs.unsafe_ptr())
+
+            # Actor forward with cache
+            var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            var logits_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](logits_data.unsafe_ptr())
+            var actor_cache = InlineArray[
+                Scalar[dtype], Self.ActorNetwork.CACHE_SIZE
+            ](uninitialized=True)
+            var actor_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(1, Self.ActorNetwork.CACHE_SIZE),
+                MutAnyOrigin,
+            ](actor_cache.unsafe_ptr())
+            var actor_params = self.actor.params_view()
+            Self.ActorNetwork.forward_with_cache[1](
+                obs_t, logits_t, actor_params, actor_cache_t
+            )
+
+            var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            for i in range(Self.ACTIONS):
+                logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
+
+            var probs = softmax_inline[dtype, Self.ACTIONS](logits)
+            var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
+
+            var policy_loss = -new_log_prob * advantage
+            total_policy_loss += policy_loss
+
+            var entropy = Scalar[dtype](0.0)
+            for a in range(Self.ACTIONS):
+                if probs[a] > Scalar[dtype](1e-8):
+                    entropy -= probs[a] * log(probs[a])
+            total_entropy += entropy
+
+            var d_logits = InlineArray[Scalar[dtype], Self.ACTIONS](fill=0)
+            for a in range(Self.ACTIONS):
+                var d_log_prob: Scalar[dtype]
+                if a == action:
+                    d_log_prob = Scalar[dtype](1.0) - probs[a]
+                else:
+                    d_log_prob = -probs[a]
+
+                var d_entropy = -probs[a] * (
+                    Scalar[dtype](1.0) + log(probs[a] + Scalar[dtype](1e-8))
+                )
+
+                d_logits[a] = (
+                    -advantage * d_log_prob
+                    - Scalar[dtype](self.entropy_coef) * d_entropy
+                )
+
+            var d_logits_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](d_logits.unsafe_ptr())
+            var actor_grad_in = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            var actor_grad_in_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](actor_grad_in.unsafe_ptr())
+            self.actor.zero_grads()
+            var actor_grads = self.actor.grads_view()
+            Self.ActorNetwork.backward[1](
+                d_logits_t,
+                actor_grad_in_t,
+                actor_params,
+                actor_cache_t,
+                actor_grads,
+            )
+            self.actor.optimizer_step()
+
+            # Critic forward with cache
+            var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+            var value_t = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](value_data.unsafe_ptr())
+            var critic_cache = InlineArray[
+                Scalar[dtype], Self.CriticNetwork.CACHE_SIZE
+            ](uninitialized=True)
+            var critic_cache_t = LayoutTensor[
+                dtype,
+                Layout.row_major(1, Self.CriticNetwork.CACHE_SIZE),
+                MutAnyOrigin,
+            ](critic_cache.unsafe_ptr())
+            var new_critic_params = self.critic.params_view()
+            Self.CriticNetwork.forward_with_cache[1](
+                obs_t, value_t, new_critic_params, critic_cache_t
+            )
+            var value = rebind[Scalar[dtype]](value_t[0, 0])
+
+            var value_loss = (return_t - value) * (return_t - value)
+            total_value_loss += value_loss
+
+            var d_value = InlineArray[Scalar[dtype], 1](fill=0)
+            d_value[0] = (
+                Scalar[dtype](2.0)
+                * Scalar[dtype](self.value_loss_coef)
+                * (value - return_t)
+            )
+            var d_value_t = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](d_value.unsafe_ptr())
+            var critic_grad_in = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+            var critic_grad_in_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](critic_grad_in.unsafe_ptr())
+            self.critic.zero_grads()
+            var critic_grads = self.critic.grads_view()
+            Self.CriticNetwork.backward[1](
+                d_value_t,
+                critic_grad_in_t,
+                new_critic_params,
+                critic_cache_t,
+                critic_grads,
+            )
+            self.critic.optimizer_step()
+
+        self.buffer_idx = 0
+        self.train_step_count += 1
+
+        var n = Scalar[dtype](Self.ROLLOUT)
+        var total_loss = (
+            total_policy_loss / n
+            + Scalar[dtype](self.value_loss_coef) * total_value_loss / n
+            - Scalar[dtype](self.entropy_coef) * total_entropy / n
+        )
+        return Float64(total_loss)
+
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+        """Select greedy action for evaluation (no sampling).
+
+        Args:
+            obs: Current observation as List[Float64].
+
+        Returns:
+            List with one element: the greedy action index as Float64.
+        """
+        var obs_inline = self._list_to_inline(obs)
+        var action_result = self.select_action(obs_inline, training=False)
+        var result = List[Float64]()
+        result.append(Float64(action_result[0]))
+        return result^
+
+    fn get_explore_rate(self) -> Float64:
+        """Return entropy coefficient as exploration rate proxy."""
+        return self.entropy_coef
+
     fn train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
         mut env: E,
-        num_episodes: Int,
+        num_updates: Int,
         max_steps_per_episode: Int = 1000,
         verbose: Bool = False,
         print_every: Int = 10,
@@ -507,91 +804,24 @@ struct DeepA2CAgent[
 
         Args:
             env: The environment to train on.
-            num_episodes: Number of episodes to train.
-            max_steps_per_episode: Maximum steps per episode.
+            num_updates: Number of collect→advantage→update cycles to run.
+            max_steps_per_episode: Unused (kept for API compatibility).
             verbose: Whether to print progress.
-            print_every: Print progress every N episodes if verbose.
+            print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        var metrics = TrainingMetrics(
-            algorithm_name="Deep A2C",
-            environment_name=environment_name,
+        return run_onpolicy_discrete_train(
+            self,
+            env,
+            num_updates,
+            verbose,
+            print_every,
+            environment_name,
+            "Deep A2C",
         )
-
-        var total_steps = 0
-
-        for episode in range(num_episodes):
-            var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for _ in range(max_steps_per_episode):
-                # Select action
-                var action_result = self.select_action(obs, training=True)
-                var action = action_result[0]
-                var log_prob = action_result[1]
-                var value = action_result[2]
-
-                # Step environment
-                var result = env.step_obs(action)
-                var next_obs_list = result[0].copy()
-                var reward = result[1]
-                var done = result[2]
-
-                var next_obs = self._list_to_inline(next_obs_list)
-
-                # Store transition
-                self.store_transition(
-                    obs, action, Float64(reward), log_prob, value, done
-                )
-
-                episode_reward += Float64(reward)
-                obs = next_obs^
-                total_steps += 1
-                episode_steps += 1
-
-                # Update at rollout boundary or episode end
-                if self.buffer_idx >= Self.ROLLOUT or done:
-                    _ = self.update(obs)
-
-                if done:
-                    break
-
-            # Log metrics
-            metrics.log_episode(episode, episode_reward, episode_steps, 0.0)
-
-            # Print progress
-            if verbose and (episode + 1) % print_every == 0:
-                var avg_reward = metrics.mean_reward_last_n(print_every)
-                print(
-                    "Episode",
-                    episode + 1,
-                    "| Avg reward:",
-                    String(avg_reward)[:7],
-                    "| Steps:",
-                    total_steps,
-                )
-
-            # Auto-checkpoint
-            if (
-                self.checkpoint_every > 0
-                and self.checkpoint_path != ""
-                and (episode + 1) % self.checkpoint_every == 0
-            ):
-                try:
-                    self.save_checkpoint(self.checkpoint_path)
-                    if verbose:
-                        print(
-                            "  [Checkpoint saved at episode", episode + 1, "]"
-                        )
-                except e:
-                    print("  [Checkpoint failed:", String(e), "]")
-
-        return metrics^
 
     fn save_checkpoint(self, path: String) raises:
         """Save agent state to a single checkpoint file.

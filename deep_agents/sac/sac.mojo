@@ -45,8 +45,14 @@ from nn.model.stochastic_actor import (
 )
 from nn.optimizer import Optimizer, Adam
 from nn.initializer import Kaiming
-from nn.training import Network, NetworkState, NetworkPair
-from .state import SACCPUState
+from nn.training import (
+    Network,
+    NetworkState,
+    NetworkPair,
+    GPUNetworkState,
+    GPUNetworkPair,
+)
+from .state import SACCPUState, SACGPUState
 from deep_agents.core import (
     obs_to_inline,
     concat_obs_action_batch,
@@ -54,12 +60,25 @@ from deep_agents.core import (
     random_continuous_action,
     OffPolicyAgent,
     OffPolicyContinuousAgent,
+    GPUOffPolicyState,
+    GPUOffPolicyAgent,
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_eval,
+    run_offpolicy_continuous_train_gpu,
 )
-from nn.replay import ReplayBuffer
+from nn.replay import ReplayBuffer, GPUReplayBuffer
 
 from nn.gpu.random import gaussian_noise
+from nn.gpu import (
+    concat_obs_action_kernel,
+    td_mse_grad_kernel,
+    actor_grad_from_critic_kernel,
+    td_target_min_twin_kernel,
+    sac_rsample_with_cache_kernel,
+    sac_rsample_bwd_kernel,
+    sac_sample_actions_kernel,
+)
+from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
@@ -67,11 +86,15 @@ from nn.checkpoint import (
     read_checkpoint_file,
     read_metadata_section,
     get_metadata_value,
+    set_metadata_value_float,
+    set_metadata_value_int,
+    set_metadata_value_bool,
     save_checkpoint_file,
 )
 from core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
+    GPUContinuousEnv,
 )
 
 
@@ -88,7 +111,8 @@ struct DeepSACAgent[
     batch_size: Int = 64,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.0003,
-](OffPolicyContinuousAgent):
+    max_n_envs: Int = 64,
+](OffPolicyContinuousAgent & GPUOffPolicyAgent):
     """Deep Soft Actor-Critic agent using the new trait-based architecture.
 
     SAC is an off-policy actor-critic algorithm based on the maximum entropy
@@ -150,6 +174,24 @@ struct DeepSACAgent[
         Self.obs_dim,
         Self.action_dim,
         Self.batch_size,
+    ]
+
+    # GPU compile-time aliases
+    comptime OBS_DIM = Self.obs_dim
+    comptime ACTION_DIM = Self.action_dim
+    comptime BUFFER_CAPACITY = Self.buffer_capacity
+    comptime MAX_N_ENVS = Self.max_n_envs
+
+    comptime GPUStateType = SACGPUState[
+        Self.ActorModel,
+        Adam[Self.actor_lr],
+        Self.CriticModel,
+        Adam[Self.critic_lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.action_dim,
+        Self.batch_size,
+        Self.max_n_envs,
     ]
 
     # CPU state: actor + twin critics + replay buffer + pre-allocated scratch
@@ -470,6 +512,9 @@ struct DeepSACAgent[
         var next_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](batch_next.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](batch_act.unsafe_ptr())
 
         # =================================================================
         # Phase 2: Compute TD targets
@@ -547,19 +592,13 @@ struct DeepSACAgent[
             if lp != lp or lp > 100.0 or lp < -100.0:
                 cpu_state._next_log_pi[b] = Scalar[dtype](-1.0)
 
-        # Build next critic input: concat(batch_next, _next_act) via manual loop
+        # Build next critic input: concat(next_obs, next_act)
         var next_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](cpu_state._next_ci.unsafe_ptr())
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                cpu_state._next_ci[b * Self.CRITIC_IN + i] = batch_next[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                cpu_state._next_ci[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = cpu_state._next_act[b * Self.ACTIONS + i]
+        concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+            next_ci_t, next_obs_t, next_act_t
+        )
 
         # Forward both target critics
         var nq1_t = LayoutTensor[
@@ -601,19 +640,13 @@ struct DeepSACAgent[
         # Phase 3: Update Both Critics
         # =================================================================
 
-        # Build critic input: concat(batch_obs, batch_act) via manual loop
+        # Build critic input: concat(obs, act)
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](cpu_state._ci.unsafe_ptr())
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                cpu_state._ci[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                cpu_state._ci[b * Self.CRITIC_IN + Self.OBS + i] = batch_act[
-                    b * Self.ACTIONS + i
-                ]
+        concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+            ci_t, obs_t, act_t
+        )
 
         # --- Critic 1 ---
         var q1_t = LayoutTensor[
@@ -786,19 +819,13 @@ struct DeepSACAgent[
             if lp != lp or lp > 100.0 or lp < -100.0:
                 cpu_state._curr_log_pi[b] = Scalar[dtype](-1.0)
 
-        # Step 3: Build critic input with sampled actions: concat(batch_obs, _curr_act) via manual loop
+        # Step 3: Build critic input with sampled actions: concat(obs, curr_act)
         var new_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](cpu_state._new_ci.unsafe_ptr())
-        for b in range(Self.BATCH):
-            for i in range(Self.OBS):
-                cpu_state._new_ci[b * Self.CRITIC_IN + i] = batch_obs[
-                    b * Self.OBS + i
-                ]
-            for i in range(Self.ACTIONS):
-                cpu_state._new_ci[
-                    b * Self.CRITIC_IN + Self.OBS + i
-                ] = cpu_state._curr_act[b * Self.ACTIONS + i]
+        concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
+            new_ci_t, obs_t, curr_act_t
+        )
 
         # Step 4: Forward critic1 with cache (need for actor backward)
         var new_q_t = LayoutTensor[
@@ -933,6 +960,714 @@ struct DeepSACAgent[
 
         self.train_step_count += 1
         return avg_critic_loss
+
+    # =========================================================================
+    # GPUOffPolicyAgent trait — required methods
+    # =========================================================================
+
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+        """Allocate all GPU buffers for SAC training.
+
+        Does NOT upload CPU weights — call upload_to_gpu after this.
+        """
+        return Self.GPUStateType(ctx)
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Upload CPU network states and replay buffer to GPU."""
+        gpu_state.actor.upload_from(self.state.actor, ctx)
+        gpu_state.critic1.upload_from(self.state.critic1, ctx)
+        gpu_state.critic2.upload_from(self.state.critic2, ctx)
+        gpu_state.buffer.upload_from(self.state.buffer, ctx)
+
+    fn download_from_gpu(
+        mut self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.actor.download_to(self.state.actor, ctx)
+        gpu_state.critic1.download_to(self.state.critic1, ctx)
+        gpu_state.critic2.download_to(self.state.critic2, ctx)
+
+    fn select_actions_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Forward SAC actor on GPU for N_ENVS environments + reparameterized sampling."""
+        comptime BLOCKS = (N_ENVS + TPB - 1) // TPB
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var inf_out_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
+        ](gpu_state.inf_out.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.rng_states.unsafe_ptr())
+
+        var p = gpu_state.actor.params_view()
+        Self.ActorNet.forward_gpu[N_ENVS](
+            ctx, obs_t, inf_out_t, p, gpu_state.inf_ws
+        )
+
+        var scale_s = Scalar[dtype](self.action_scale)
+        var log_std_min_s = Scalar[dtype](-5.0)
+        var log_std_max_s = Scalar[dtype](2.0)
+
+        @always_inline
+        fn sample_actions(
+            acts: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            ao: LayoutTensor[
+                dtype,
+                Layout.row_major(N_ENVS, Self.ACTIONS + Self.ACTIONS),
+                MutAnyOrigin,
+            ],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            sc: Scalar[dtype],
+            lsmin: Scalar[dtype],
+            lsmax: Scalar[dtype],
+        ):
+            sac_sample_actions_kernel[dtype, N_ENVS, Self.ACTIONS](
+                acts, ao, rng, sc, lsmin, lsmax
+            )
+
+        ctx.enqueue_function[sample_actions, sample_actions](
+            act_t,
+            inf_out_t,
+            rng_t,
+            scale_s,
+            log_std_min_s,
+            log_std_max_s,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    fn do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """One SAC training step on GPU.
+
+        Updates both critics, the actor via reparameterization, and alpha (if auto_alpha).
+        Unlike TD3, SAC has no target actor and always updates the actor.
+        Alpha update requires a CPU-GPU sync to compute the entropy gradient.
+        """
+        comptime BATCH = Self.BATCH
+        comptime OBS = Self.OBS
+        comptime ACTIONS = Self.ACTIONS
+        comptime ACTOR_OUT = Self.ACTOR_OUT
+        comptime CRITIC_IN = Self.CRITIC_IN
+        comptime CRITIC_CS = Self.CriticModel.CACHE_SIZE
+        comptime ACTOR_CS = Self.ActorModel.CACHE_SIZE
+        comptime TPB256 = 256
+        comptime ELEM_BLOCKS = (BATCH * CRITIC_IN + TPB256 - 1) // TPB256
+        comptime BATCH_BLOCKS = (BATCH + TPB256 - 1) // TPB256
+        comptime ACT_BLOCKS = (BATCH * ACTIONS + TPB256 - 1) // TPB256
+
+        self.train_step_count += 1
+
+        # ----- Phase 1: Sample batch -----
+        gpu_state.buffer.sample[BATCH](
+            ctx,
+            rng_seed=UInt32(self.train_step_count),
+            sampled_obs=gpu_state.s_obs,
+            sampled_actions=gpu_state.s_act,
+            sampled_rewards=gpu_state.s_rew,
+            sampled_next_obs=gpu_state.s_nobs,
+            sampled_dones=gpu_state.s_done,
+            indices=gpu_state.s_idx,
+        )
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu_state.s_obs.unsafe_ptr())
+        var nobs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu_state.s_nobs.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.s_act.unsafe_ptr())
+        var rew_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.s_rew.unsafe_ptr()
+        )
+        var done_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.s_done.unsafe_ptr()
+        )
+
+        var p_actor = gpu_state.actor.params_view()
+        var p_c1 = gpu_state.critic1.online.params_view()
+        var p_c2 = gpu_state.critic2.online.params_view()
+        var p_c1t = gpu_state.critic1.target.params_view()
+        var p_c2t = gpu_state.critic2.target.params_view()
+
+        var log_std_min_s = Scalar[dtype](-5.0)
+        var log_std_max_s = Scalar[dtype](2.0)
+        var trng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.training_rng.unsafe_ptr())
+
+        # ----- Phase 2: Actor forward on next_obs → next_actor_out -----
+        # SAC uses CURRENT actor (no target actor)
+        var next_actor_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
+        ](gpu_state.next_actor_out.unsafe_ptr())
+        Self.ActorNet.forward_gpu[BATCH](
+            ctx, nobs_t, next_actor_out_t, p_actor, gpu_state.actor_ws
+        )
+
+        # ----- Phase 3: sac_rsample next actions + log_probs -----
+        var next_act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.next_act.unsafe_ptr())
+        var next_lp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.next_lp.unsafe_ptr())
+        var eps_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.eps_cache.unsafe_ptr())
+
+        @always_inline
+        fn next_rsample(
+            acts: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            eps: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            ao: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, ACTIONS + ACTIONS),
+                MutAnyOrigin,
+            ],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            lsmin: Scalar[dtype],
+            lsmax: Scalar[dtype],
+        ):
+            sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
+                acts, lp, eps, ao, rng, lsmin, lsmax
+            )
+
+        ctx.enqueue_function[next_rsample, next_rsample](
+            next_act_t,
+            next_lp_t,
+            eps_cache_t,
+            next_actor_out_t,
+            trng_t,
+            log_std_min_s,
+            log_std_max_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 4: Concat(next_obs, next_act) → next_ci -----
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.next_ci.unsafe_ptr())
+
+        @always_inline
+        fn concat_next(
+            d: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+        ):
+            concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+        ctx.enqueue_function[concat_next, concat_next](
+            next_ci_t,
+            nobs_t,
+            next_act_t,
+            grid_dim=(ELEM_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 5: Both critic targets forward -----
+        var nq1_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.nq1.unsafe_ptr()
+        )
+        var nq2_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu_state.nq2.unsafe_ptr()
+        )
+        var nq1_2d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.nq1.unsafe_ptr())
+        var nq2_2d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.nq2.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu[BATCH](
+            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws
+        )
+        Self.CriticNet.forward_gpu[BATCH](
+            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws
+        )
+
+        # ----- Phase 6: SAC TD targets with entropy bonus -----
+        var targets_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.targets.unsafe_ptr())
+        var gamma_s = Scalar[dtype](self.gamma)
+        var alpha_s = Scalar[dtype](self.alpha)
+
+        @always_inline
+        fn sac_targets(
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            r: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            q2: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            d: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            g: Scalar[dtype],
+            a: Scalar[dtype],
+        ):
+            td_target_min_twin_kernel[dtype, BATCH, True](
+                tgt, r, q1, q2, d, lp, g, a
+            )
+
+        ctx.enqueue_function[sac_targets, sac_targets](
+            targets_t,
+            rew_t,
+            nq1_t,
+            nq2_t,
+            done_t,
+            next_lp_t,
+            gamma_s,
+            alpha_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 7: Concat(obs, actions) → ci -----
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.ci.unsafe_ptr())
+
+        @always_inline
+        fn concat_ci(
+            d: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+        ):
+            concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+        ctx.enqueue_function[concat_ci, concat_ci](
+            ci_t,
+            obs_t,
+            act_t,
+            grid_dim=(ELEM_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # ----- Phase 8: Critic1 forward + MSE grad + backward + optim -----
+        var q1_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q1_out.unsafe_ptr())
+        var q1_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+        ](gpu_state.q1_cache.unsafe_ptr())
+        var q1_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q1_grad.unsafe_ptr())
+        var d_ci1_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.d_ci1.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu_with_cache[BATCH](
+            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws
+        )
+
+        @always_inline
+        fn mse_grad1(
+            qg: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            td_mse_grad_kernel[dtype, BATCH](qg, q, tgt)
+
+        ctx.enqueue_function[mse_grad1, mse_grad1](
+            q1_grad_t,
+            q1_t,
+            targets_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        var g_c1 = gpu_state.critic1.online.grads_view()
+        gpu_state.critic1.online.zero_grads(ctx)
+        Self.CriticNet.backward_gpu[BATCH](
+            ctx,
+            q1_grad_t,
+            d_ci1_t,
+            p_c1,
+            q1_cache_t,
+            g_c1,
+            gpu_state.critic1_ws,
+        )
+        gpu_state.critic1.online.optimizer_step(ctx)
+
+        # ----- Phase 9: Critic2 forward + MSE grad + backward + optim -----
+        var q2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q2_out.unsafe_ptr())
+        var q2_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+        ](gpu_state.q2_cache.unsafe_ptr())
+        var q2_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.q2_grad.unsafe_ptr())
+        var d_ci2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.d_ci2.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu_with_cache[BATCH](
+            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws
+        )
+
+        @always_inline
+        fn mse_grad2(
+            qg: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            td_mse_grad_kernel[dtype, BATCH](qg, q, tgt)
+
+        ctx.enqueue_function[mse_grad2, mse_grad2](
+            q2_grad_t,
+            q2_t,
+            targets_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        var g_c2 = gpu_state.critic2.online.grads_view()
+        gpu_state.critic2.online.zero_grads(ctx)
+        Self.CriticNet.backward_gpu[BATCH](
+            ctx,
+            q2_grad_t,
+            d_ci2_t,
+            p_c2,
+            q2_cache_t,
+            g_c2,
+            gpu_state.critic2_ws,
+        )
+        gpu_state.critic2.online.optimizer_step(ctx)
+
+        # ----- Phase 10: Actor update via reparameterization trick -----
+
+        # 10a: Actor forward with cache on sampled obs → actor_out
+        var actor_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
+        ](gpu_state.actor_out.unsafe_ptr())
+        var actor_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTOR_CS), MutAnyOrigin
+        ](gpu_state.actor_cache.unsafe_ptr())
+
+        Self.ActorNet.forward_gpu_with_cache[BATCH](
+            ctx, obs_t, actor_out_t, p_actor, actor_cache_t, gpu_state.actor_ws
+        )
+
+        # 10b: sac_rsample with cache → curr_act, curr_lp, eps_cache (for backward)
+        var curr_act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.curr_act.unsafe_ptr())
+        var curr_lp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.curr_lp.unsafe_ptr())
+
+        @always_inline
+        fn curr_rsample(
+            acts: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            eps: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            ao: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, ACTIONS + ACTIONS),
+                MutAnyOrigin,
+            ],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            lsmin: Scalar[dtype],
+            lsmax: Scalar[dtype],
+        ):
+            sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
+                acts, lp, eps, ao, rng, lsmin, lsmax
+            )
+
+        ctx.enqueue_function[curr_rsample, curr_rsample](
+            curr_act_t,
+            curr_lp_t,
+            eps_cache_t,
+            actor_out_t,
+            trng_t,
+            log_std_min_s,
+            log_std_max_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # 10c: Concat(obs, curr_act) → new_ci
+        var new_ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.new_ci.unsafe_ptr())
+
+        @always_inline
+        fn concat_new_ci(
+            d: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+        ):
+            concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
+
+        ctx.enqueue_function[concat_new_ci, concat_new_ci](
+            new_ci_t,
+            obs_t,
+            curr_act_t,
+            grid_dim=(ELEM_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # 10d: Critic1 forward with cache for policy gradient
+        var new_q_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.new_q.unsafe_ptr())
+        var new_q_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin
+        ](gpu_state.new_q_cache.unsafe_ptr())
+
+        Self.CriticNet.forward_gpu_with_cache[BATCH](
+            ctx, new_ci_t, new_q_t, p_c1, new_q_cache_t, gpu_state.critic1_ws
+        )
+
+        # 10e: Critic1 backward with dq → d_new_ci (no optimizer step)
+        var dq_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](gpu_state.dq.unsafe_ptr())
+        var d_new_ci_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+        ](gpu_state.d_new_ci.unsafe_ptr())
+
+        var g_c1_pg = gpu_state.critic1.online.grads_view()
+        gpu_state.critic1.online.zero_grads(ctx)
+        Self.CriticNet.backward_gpu[BATCH](
+            ctx,
+            dq_t,
+            d_new_ci_t,
+            p_c1,
+            new_q_cache_t,
+            g_c1_pg,
+            gpu_state.critic1_ws,
+        )
+        # Intentionally NO optimizer_step here
+
+        # 10f: Extract action gradients from d_new_ci
+        var grad_act_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ](gpu_state.grad_act.unsafe_ptr())
+
+        @always_inline
+        fn extract_act_grad(
+            da: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            dnc: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
+            ],
+        ):
+            actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](da, dnc)
+
+        ctx.enqueue_function[extract_act_grad, extract_act_grad](
+            grad_act_t,
+            d_new_ci_t,
+            grid_dim=(ACT_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # 10g: Backward through reparameterization → actor_grad [BATCH, ACTOR_OUT]
+        var actor_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
+        ](gpu_state.actor_grad.unsafe_ptr())
+        var alpha_per_sample = Scalar[dtype](self.alpha / Float64(BATCH))
+
+        @always_inline
+        fn rsample_bwd(
+            agrad: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, ACTIONS + ACTIONS),
+                MutAnyOrigin,
+            ],
+            ga: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            aps: Scalar[dtype],
+            ca: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            eps: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            ao: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, ACTIONS + ACTIONS),
+                MutAnyOrigin,
+            ],
+            lsmin: Scalar[dtype],
+            lsmax: Scalar[dtype],
+        ):
+            sac_rsample_bwd_kernel[dtype, BATCH, ACTIONS](
+                agrad, ga, aps, ca, eps, ao, lsmin, lsmax
+            )
+
+        ctx.enqueue_function[rsample_bwd, rsample_bwd](
+            actor_grad_t,
+            grad_act_t,
+            alpha_per_sample,
+            curr_act_t,
+            eps_cache_t,
+            actor_out_t,
+            log_std_min_s,
+            log_std_max_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB256,),
+        )
+
+        # 10h: Actor backward + optimizer step
+        var d_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu_state.d_obs.unsafe_ptr())
+
+        var g_actor = gpu_state.actor.grads_view()
+        gpu_state.actor.zero_grads(ctx)
+        Self.ActorNet.backward_gpu[BATCH](
+            ctx,
+            actor_grad_t,
+            d_obs_t,
+            p_actor,
+            actor_cache_t,
+            g_actor,
+            gpu_state.actor_ws,
+        )
+        gpu_state.actor.optimizer_step(ctx)
+
+        # ----- Phase 11: Alpha update via CPU-GPU sync -----
+        if self.auto_alpha:
+            ctx.synchronize()
+            var lp_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+            ctx.enqueue_copy(lp_host, gpu_state.curr_lp)
+            ctx.synchronize()
+
+            var alpha_grad: Float64 = 0.0
+            for b in range(BATCH):
+                alpha_grad += Float64(lp_host[b]) + self.target_entropy
+            alpha_grad /= Float64(BATCH)
+
+            self.log_alpha -= self.alpha_lr * alpha_grad
+            if self.log_alpha < -5.0:
+                self.log_alpha = -5.0
+            elif self.log_alpha > 2.0:
+                self.log_alpha = 2.0
+            self.alpha = exp(self.log_alpha)
+
+    fn soft_update_targets_gpu(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Soft-update target critic networks on GPU.
+
+        SAC has NO target actor — only critic targets are updated.
+        """
+        gpu_state.critic1.soft_update(self.tau, ctx)
+        gpu_state.critic2.soft_update(self.tau, ctx)
+
+    # =========================================================================
+    # GPU training — delegates to shared run_offpolicy_continuous_train_gpu
+    # =========================================================================
+
+    fn train_gpu[
+        E: GPUContinuousEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        train_every: Int = 1,
+        sync_every: Int = 50,
+        verbose: Bool = False,
+        print_every: Int = 50,
+        environment_name: String = "Environment",
+    ) raises -> TrainingMetrics:
+        """Train on GPU using the shared off-policy GPU loop.
+
+        GPU state (networks, replay buffer, scratch buffers) is created
+        locally for the duration of training and freed when the method returns.
+        After this call self.state.actor / critic1 / critic2 hold the trained
+        GPU weights (synced by download_from_gpu).
+
+        Parameters:
+            E: GPU environment type implementing GPUContinuousEnv.
+
+        Args:
+            ctx: GPU device context.
+            num_steps: Total environment steps.
+            warmup_steps: Random steps before training starts (default: 1000).
+            train_every: Train step every N env steps (default: 1).
+            sync_every: Download GPU→CPU every N steps (default: 50).
+            verbose: Print progress (default: False).
+            print_every: Print every N steps if verbose (default: 50).
+            environment_name: Name for metrics labeling.
+
+        Returns:
+            TrainingMetrics with step-level statistics.
+        """
+        return run_offpolicy_continuous_train_gpu[E, Self](
+            self,
+            ctx,
+            num_steps,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            sync_every=sync_every,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name="Deep SAC GPU",
+        )
 
     # =========================================================================
     # High-level CPU training loop (delegates to shared off-policy runner)
@@ -1085,42 +1820,17 @@ struct DeepSACAgent[
 
         var metadata = read_metadata_section(content)
 
-        var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
-            self.gamma = atof(gamma_str)
-
-        var tau_str = get_metadata_value(metadata, "tau")
-        if len(tau_str) > 0:
-            self.tau = atof(tau_str)
-
-        var action_scale_str = get_metadata_value(metadata, "action_scale")
-        if len(action_scale_str) > 0:
-            self.action_scale = atof(action_scale_str)
-
-        var alpha_str = get_metadata_value(metadata, "alpha")
-        if len(alpha_str) > 0:
-            self.alpha = atof(alpha_str)
-
-        var log_alpha_str = get_metadata_value(metadata, "log_alpha")
-        if len(log_alpha_str) > 0:
-            self.log_alpha = atof(log_alpha_str)
-
-        var te_str = get_metadata_value(metadata, "target_entropy")
-        if len(te_str) > 0:
-            self.target_entropy = atof(te_str)
-
-        var alpha_lr_str = get_metadata_value(metadata, "alpha_lr")
-        if len(alpha_lr_str) > 0:
-            self.alpha_lr = atof(alpha_lr_str)
-
-        var auto_alpha_str = get_metadata_value(metadata, "auto_alpha")
-        if len(auto_alpha_str) > 0:
-            self.auto_alpha = Int(atol(auto_alpha_str)) != 0
-
-        var total_steps_str = get_metadata_value(metadata, "total_steps")
-        if len(total_steps_str) > 0:
-            self.total_steps = Int(atol(total_steps_str))
-
-        var train_step_str = get_metadata_value(metadata, "train_step_count")
-        if len(train_step_str) > 0:
-            self.train_step_count = Int(atol(train_step_str))
+        set_metadata_value_float(metadata, "gamma", self.gamma)
+        set_metadata_value_float(metadata, "tau", self.tau)
+        set_metadata_value_float(metadata, "action_scale", self.action_scale)
+        set_metadata_value_float(metadata, "alpha", self.alpha)
+        set_metadata_value_float(metadata, "log_alpha", self.log_alpha)
+        set_metadata_value_float(
+            metadata, "target_entropy", self.target_entropy
+        )
+        set_metadata_value_float(metadata, "alpha_lr", self.alpha_lr)
+        set_metadata_value_bool(metadata, "auto_alpha", self.auto_alpha)
+        set_metadata_value_int(metadata, "total_steps", self.total_steps)
+        set_metadata_value_int(
+            metadata, "train_step_count", self.train_step_count
+        )
