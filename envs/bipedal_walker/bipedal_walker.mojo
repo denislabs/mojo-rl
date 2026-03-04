@@ -390,7 +390,7 @@ struct BipedalWalker[
         var combined_seed = (
             Int(self.rng_seed) * 2654435761 + Int(self.rng_counter) * 12345
         )
-        var rng = PhiloxRandom(seed=combined_seed, offset=0)
+        var rng = PhiloxRandom(seed=UInt64(combined_seed), offset=0)
 
         # Generate terrain
         self._generate_terrain_cpu(Int(combined_seed))
@@ -1667,8 +1667,8 @@ struct BipedalWalker[
         seed: Int,
     ):
         """Reset a single environment (GPU version)."""
-        var rng = PhiloxRandom(seed=seed, offset=0)
-        var terrain_rng = PhiloxRandom(seed=seed + 1000, offset=0)
+        var rng = PhiloxRandom(seed=UInt64(seed), offset=0)
+        var terrain_rng = PhiloxRandom(seed=UInt64(seed) + 1000, offset=0)
 
         # Generate terrain
         var n_edges = min(

@@ -188,7 +188,6 @@ struct DeepPPOContinuousAgent[
             StochasticActor[Self.HIDDEN, Self.ACTIONS],
         ],
         Adam,
-        Kaiming,
     ]
     var actor: Self.ActorNetwork
 
@@ -200,7 +199,6 @@ struct DeepPPOContinuousAgent[
             Linear[Self.HIDDEN, 1],
         ],
         Adam,
-        Kaiming,
     ]
     var critic: Self.CriticNetwork
 

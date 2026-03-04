@@ -34,7 +34,7 @@ Reference: Schaul et al., "Prioritized Experience Replay" (2015)
 """
 
 from std.math import exp
-from std.randomndom import random_float64, seed
+from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 

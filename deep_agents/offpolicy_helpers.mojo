@@ -34,14 +34,15 @@ from nn.gpu.random import gaussian_noise
 
 
 fn deterministic_select_action[
+    DTYPE: DType,
     ActorModel: Model,
     ActorOpt: Optimizer,
 ](
     actor_online: NetworkState[ActorModel, ActorOpt],
-    obs: List[Float64],
+    obs: List[Scalar[DTYPE]],
     action_scale: Float64,
     noise_std: Float64,
-) -> List[Float64]:
+) -> List[Scalar[DTYPE]]:
     """Select action with Gaussian exploration noise (deterministic policy).
 
     Shared implementation for DDPG and TD3. Runs a forward pass through the
@@ -50,6 +51,7 @@ fn deterministic_select_action[
     OBS and ACTIONS are derived from ActorModel.IN_DIM and ActorModel.OUT_DIM.
 
     Parameters:
+        DTYPE: Data type (float32 or float64).
         ActorModel: Actor model type (implements Model trait).
         ActorOpt: Actor optimizer type (implements Optimizer trait).
 
@@ -66,7 +68,7 @@ fn deterministic_select_action[
     comptime ACTIONS = ActorModel.OUT_DIM
     comptime ActorNet = Network[ActorModel, ActorOpt]
 
-    var obs_arr = obs_to_inline[OBS, DType.float64](obs)
+    var obs_arr = obs_to_inline[OBS, DTYPE](obs)
     var obs_t = LayoutTensor[
         dtype, Layout.row_major(1, ActorModel.IN_DIM), MutAnyOrigin
     ](obs_arr.unsafe_ptr())
@@ -80,7 +82,7 @@ fn deterministic_select_action[
     var p = actor_online.params_view()
     ActorNet.forward[1](obs_t, act_t, p)
 
-    var result = List[Float64](capacity=ACTIONS)
+    var result = List[Scalar[DTYPE]](capacity=ACTIONS)
     for i in range(ACTIONS):
         var a = Float64(act_arr[i]) * action_scale
         a += noise_std * action_scale * gaussian_noise()
@@ -88,7 +90,7 @@ fn deterministic_select_action[
             a = action_scale
         elif a < -action_scale:
             a = -action_scale
-        result.append(a)
+        result.append(Scalar[DTYPE](a))
     return result^
 
 
@@ -149,15 +151,16 @@ fn greedy_continuous_action[
 
 
 fn store_continuous_transition[
+    DTYPE: DType,
     OBS: Int,
     ACTIONS: Int,
     CAPACITY: Int,
 ](
     mut buffer: ReplayBuffer[CAPACITY, OBS, ACTIONS, dtype],
-    obs: List[Float64],
-    action: List[Float64],
+    obs: List[Scalar[DTYPE]],
+    action: List[Scalar[DTYPE]],
     reward: Float64,
-    next_obs: List[Float64],
+    next_obs: List[Scalar[DTYPE]],
     done: Bool,
     action_scale: Float64,
     mut total_steps: Int,
@@ -169,6 +172,7 @@ fn store_continuous_transition[
     Buffer dtype is always the module-level `dtype` (float32).
 
     Parameters:
+        DTYPE: Data type (float32 or float64).
         OBS: Observation dimension (compile-time).
         ACTIONS: Action dimension (compile-time).
         CAPACITY: Replay buffer capacity (compile-time).
@@ -183,8 +187,8 @@ fn store_continuous_transition[
         action_scale: Action scaling factor (used to normalize stored action).
         total_steps: Step counter (incremented in-place).
     """
-    var obs_arr = obs_to_inline[OBS, DType.float64](obs)
-    var next_arr = obs_to_inline[OBS, DType.float64](next_obs)
+    var obs_arr = obs_to_inline[OBS, DTYPE](obs)
+    var next_arr = obs_to_inline[OBS, DTYPE](next_obs)
 
     var act_arr = InlineArray[Scalar[dtype], ACTIONS](uninitialized=True)
     for i in range(ACTIONS):
@@ -194,9 +198,9 @@ fn store_continuous_transition[
     total_steps += 1
 
 
-fn random_continuous_action(
-    action_dim: Int, action_scale: Float64
-) -> List[Float64]:
+fn random_continuous_action[
+    DTYPE: DType
+](action_dim: Int, action_scale: Float64) -> List[Scalar[DTYPE]]:
     """Return a uniformly random action in [-action_scale, action_scale].
 
     Shared implementation for DDPG, TD3, and SAC random exploration phase
@@ -209,7 +213,9 @@ fn random_continuous_action(
     Returns:
         Random action list of length action_dim.
     """
-    var result = List[Float64](capacity=action_dim)
+    var result = List[Scalar[DTYPE]](capacity=action_dim)
     for _ in range(action_dim):
-        result.append((random_float64() * 2.0 - 1.0) * action_scale)
+        result.append(
+            Scalar[DTYPE]((random_float64() * 2.0 - 1.0) * action_scale)
+        )
     return result^

@@ -11,7 +11,7 @@ with simple heuristic policies since they require policy gradient methods.
 Run with: pixi run mojo run examples/gymnasium_demo.mojo
 """
 
-from python import Python
+from std.python import Python
 from core.tile_coding import TileCoding
 from agents.tiled_qlearning import TiledQLearningAgent
 from agents.qlearning import QLearningAgent
@@ -83,7 +83,10 @@ fn train_mountain_car() raises:
     if eval_reward > -200:
         print("SUCCESS: MountainCar solved!")
     else:
-        print("Training complete. MountainCar is challenging - consider more episodes.")
+        print(
+            "Training complete. MountainCar is challenging - consider more"
+            " episodes."
+        )
 
     env.close()
 
@@ -280,7 +283,9 @@ fn train_lunar_lander() raises:
     if eval_reward >= 200:
         print("SUCCESS: LunarLander solved!")
     else:
-        print("Training complete. Consider more episodes for better performance.")
+        print(
+            "Training complete. Consider more episodes for better performance."
+        )
 
     env.close()
 

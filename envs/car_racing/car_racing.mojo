@@ -517,10 +517,20 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Wheel positions (local coords) - FL, FR, RL, RR
         var wheel_pos_x = InlineArray[Float64, 4](
-            WHEEL_POS_FL_X, WHEEL_POS_FR_X, WHEEL_POS_RL_X, WHEEL_POS_RR_X
+            fill=[
+                WHEEL_POS_FL_X,
+                WHEEL_POS_FR_X,
+                WHEEL_POS_RL_X,
+                WHEEL_POS_RR_X,
+            ]
         )
         var wheel_pos_y = InlineArray[Float64, 4](
-            WHEEL_POS_FL_Y, WHEEL_POS_FR_Y, WHEEL_POS_RL_Y, WHEEL_POS_RR_Y
+            fill=[
+                WHEEL_POS_FL_Y,
+                WHEEL_POS_FR_Y,
+                WHEEL_POS_RL_Y,
+                WHEEL_POS_RR_Y,
+            ]
         )
 
         for i in range(4):
@@ -1051,6 +1061,8 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dones: Done flags buffer (output) [BATCH_SIZE].
             obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed (unused, track already embedded).
+            curriculum_values: Optional curriculum values (unused).
+            workspace_ptr: Optional workspace pointer (unused).
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1310,7 +1322,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             seed: Random seed for track generation.
         """
         # Initialize RNG for this environment
-        var rng = PhiloxRandom(seed=seed, offset=0)
+        var rng = PhiloxRandom(seed=UInt64(seed), offset=0)
 
         # Clear entire state (including track and visited flags)
         for i in range(STATE_SIZE):

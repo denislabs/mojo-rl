@@ -23,7 +23,7 @@ Run with:
 """
 
 from testing import assert_true, TestSuite
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 

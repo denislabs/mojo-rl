@@ -11,7 +11,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 """
 
 from std.math import exp, sqrt, cos, log
-from std.randomndom import random_float64
+from std.random import random_float64
 
 from nn.constants import dtype
 from .world_model import WorldModel, decode_value_batch_scalar

@@ -19,7 +19,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_solver_forces_vs_mujoco.mojo
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.math import abs, sqrt
 from std.collections import InlineArray
 from testing import assert_true, TestSuite

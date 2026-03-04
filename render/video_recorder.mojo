@@ -11,7 +11,7 @@ Usage:
     rec.stop()
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 struct VideoRecorder(Movable):

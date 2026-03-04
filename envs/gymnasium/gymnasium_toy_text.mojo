@@ -10,7 +10,7 @@ These are simple tabular environments ideal for testing RL algorithms.
 All implement DiscreteEnv and RenderableEnv traits.
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from core import State, Action, DiscreteEnv, RenderableEnv
 
 

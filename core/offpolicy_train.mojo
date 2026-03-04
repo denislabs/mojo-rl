@@ -24,7 +24,7 @@ Usage:
 """
 
 from std.math import exp
-from std.randomndom import random_float64, seed
+from std.random import random_float64, seed
 
 from .metrics import TrainingMetrics
 from .env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
@@ -47,25 +47,29 @@ trait OffPolicyAgent:
         Continuous agents: List with action_dim elements = raw action values.
     """
 
-    fn select_action_list(mut self, obs: List[Float64]) -> List[Float64]:
+    fn select_action_list[
+        dtype: DType
+    ](mut self, obs: List[Scalar[dtype]]) -> List[Scalar[dtype]]:
         """Select an action given the current observation.
 
         Applies epsilon-greedy / noise internally.
 
         Args:
-            obs: Current observation as List[Float64].
+            obs: Current observation as List[Scalar[dtype]].
 
         Returns:
             Action list (length 1 for discrete, action_dim for continuous).
         """
         ...
 
-    fn store_list_transition(
+    fn store_list_transition[
+        dtype: DType
+    ](
         mut self,
-        obs: List[Float64],
-        action: List[Float64],
+        obs: List[Scalar[dtype]],
+        action: List[Scalar[dtype]],
         reward: Float64,
-        next_obs: List[Float64],
+        next_obs: List[Scalar[dtype]],
         done: Bool,
     ) -> None:
         """Store a transition in the replay buffer.
@@ -99,7 +103,7 @@ trait OffPolicyAgent:
         """Return current exploration rate (for logging)."""
         ...
 
-    fn random_action_list(self) -> List[Float64]:
+    fn random_action_list[dtype: DType](self) -> List[Scalar[dtype]]:
         """Return a uniformly random action (used during warmup).
 
         Returns:
@@ -174,7 +178,7 @@ fn run_offpolicy_discrete_train[
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
     while warmup_count < warmup_steps:
-        var action = agent.random_action_list()
+        var action = agent.random_action_list[E.dtype]()
         var action_int = Int(Float64(action[0]))
         var result = env.step_obs(action_int)
         var next_obs = result[0].copy()
@@ -287,27 +291,20 @@ fn run_offpolicy_continuous_train[
     )
 
     # --- Warmup: fill buffer with random transitions ---
-    var warmup_obs_raw = env.reset_obs_list()
-    var warmup_obs = List[Float64]()
-    for i in range(len(warmup_obs_raw)):
-        warmup_obs.append(Float64(warmup_obs_raw[i]))
+    var warmup_obs = env.reset_obs_list()
 
     var warmup_count = 0
     while warmup_count < warmup_steps:
-        var action = agent.random_action_list()
+        var action = agent.random_action_list[E.dtype]()
         var result = env.step_continuous_vec(action)
-        var next_obs = List[Float64]()
-        for i in range(len(result[0])):
-            next_obs.append(Float64(result[0][i]))
+        var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
         agent.store_list_transition(warmup_obs, action, reward, next_obs, done)
         warmup_count += 1
         if done:
             var reset_raw = env.reset_obs_list()
-            warmup_obs = List[Float64]()
-            for i in range(len(reset_raw)):
-                warmup_obs.append(Float64(reset_raw[i]))
+            warmup_obs = reset_raw^
         else:
             warmup_obs = next_obs^
 

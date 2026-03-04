@@ -4,7 +4,7 @@ Provides a flexible wrapper that can work with any Gymnasium environment,
 handling the Python-Mojo type conversions automatically.
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 struct GymnasiumEnv:

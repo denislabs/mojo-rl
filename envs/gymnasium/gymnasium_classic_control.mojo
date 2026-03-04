@@ -11,7 +11,7 @@ All use physics simulations with continuous observation spaces.
 These wrappers conform to the core environment traits for use with generic agents.
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from core import (
     State,
     Action,

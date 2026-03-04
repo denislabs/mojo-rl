@@ -20,8 +20,9 @@ Reference: Hansen et al., 2023 — TD-MPC2
 """
 
 from std.math import exp, log, sqrt
-from std.randomndom import random_float64
+from std.random import random_float64
 
+from layout import Layout, LayoutTensor
 from nn.constants import dtype
 from nn.model import (
     Linear,
@@ -50,6 +51,9 @@ struct WorldModel[
     SIMPLEX_DIM: Int = 8,
     V_MIN: Float64 = -10.0,
     V_MAX: Float64 = 10.0,
+    ENC_LR: Float64 = 9e-5,  # encoder LR = 0.3 * world_model_lr
+    WM_LR: Float64 = 3e-4,  # world model (non-encoder) LR
+    PI_LR: Float64 = 3e-4,  # policy LR
 ]:
     """World model for TDMPC2 with encoder, dynamics, reward, termination,
     policy, and Q-function ensemble.
@@ -64,6 +68,9 @@ struct WorldModel[
         SIMPLEX_DIM: SimNorm group size for dynamics head (default: 8).
         V_MIN: Minimum value for distribution bins (default: -10.0).
         V_MAX: Maximum value for distribution bins (default: 10.0).
+        ENC_LR: Encoder learning rate (default: 9e-5).
+        WM_LR: World model learning rate (default: 3e-4).
+        PI_LR: Policy learning rate (default: 3e-4).
 
     Note: LATENT_DIM must be divisible by SIMPLEX_DIM.
     """
@@ -121,12 +128,27 @@ struct WorldModel[
     ]
 
     # Network wrapper types
-    comptime EncoderNet = Network[Self.EncModel, Adam, Kaiming]
-    comptime DynamicsNet = Network[Self.DynModel, Adam, Kaiming]
-    comptime RewardNet = Network[Self.RewModel, Adam, Kaiming]
-    comptime TermNet = Network[Self.TermModel, Adam, Kaiming]
-    comptime PolicyNet = Network[Self.PolModel, Adam, Kaiming]
-    comptime QNet = Network[Self.QModel, Adam, Kaiming]
+    comptime EncoderNet = Network[Self.EncModel, Adam[LR = Self.ENC_LR]]
+    comptime DynamicsNet = Network[
+        Self.DynModel,
+        Adam[LR = Self.WM_LR],
+    ]
+    comptime RewardNet = Network[
+        Self.RewModel,
+        Adam[LR = Self.WM_LR],
+    ]
+    comptime TermNet = Network[
+        Self.TermModel,
+        Adam[LR = Self.WM_LR],
+    ]
+    comptime PolicyNet = Network[
+        Self.PolModel,
+        Adam[LR = Self.PI_LR],
+    ]
+    comptime QNet = Network[
+        Self.QModel,
+        Adam[LR = Self.WM_LR],
+    ]
 
     # -------------------------------------------------------------------------
     # Sub-networks
@@ -156,18 +178,9 @@ struct WorldModel[
 
     fn __init__(
         out self,
-        enc_lr: Float64 = 9e-5,  # encoder LR = 0.3 * world_model_lr
-        wm_lr: Float64 = 3e-4,  # world model (non-encoder) LR
-        pi_lr: Float64 = 3e-4,  # policy LR
     ):
-        """Initialize WorldModel with all sub-networks.
-
-        Args:
-            enc_lr: Encoder learning rate (typically 0.3 * wm_lr).
-            wm_lr: World model learning rate.
-            pi_lr: Policy learning rate.
-        """
-        self.encoder = Self.EncoderNet(Adam(lr=enc_lr), Kaiming())
+        """Initialize WorldModel with all sub-networks."""
+        self.encoder = Self.EncoderNet()
         self.dynamics = Self.DynamicsNet(Adam(lr=wm_lr), Kaiming())
         self.reward_head = Self.RewardNet(Adam(lr=wm_lr), Kaiming())
         self.termination = Self.TermNet(Adam(lr=wm_lr), Kaiming())
@@ -205,16 +218,16 @@ struct WorldModel[
         BATCH: Int
     ](
         self,
-        obs_ptr: UnsafePointer[Scalar[dtype]],
-        z_ptr: UnsafePointer[Scalar[dtype]],
+        obs: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS_DIM)],
+        z: LayoutTensor[dtype, Layout.row_major(BATCH, Self.LATENT_DIM)],
     ):
         """Encode observations to latent states (no cache, stop-gradient).
 
         Args:
-            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
-            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
+            obs: Input observations [BATCH * OBS_DIM].
+            z: Output latent states [BATCH * LATENT_DIM] (written).
         """
-        self.encoder.forward_ptr[BATCH](obs_ptr, z_ptr)
+        Self.EncoderNet.forward[BATCH](obs, z)
 
     fn encode_with_cache[
         BATCH: Int
