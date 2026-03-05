@@ -496,23 +496,6 @@ fn ppo_critic_grad_clipped_kernel[
 
 
 @always_inline
-fn normalize_advantages_kernel[
-    dtype: DType, BATCH_SIZE: Int
-](
-    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    mean: Scalar[dtype],
-    std: Scalar[dtype],
-    batch_size: Int,
-):
-    """Normalize advantages in-place."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= batch_size:
-        return
-
-    advantages[i] = (advantages[i] - mean) / (std + Scalar[dtype](1e-8))
-
-
-@always_inline
 fn normalize_advantages_fused_kernel[
     dtype: DType, BATCH_SIZE: Int, BLOCK_SIZE: Int
 ](advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],):
@@ -939,3 +922,386 @@ fn add_obs_noise_kernel[
 
         # Add scaled noise to observation
         obs[i, d] = obs[i, d] + noise * noise_std
+
+
+# =============================================================================
+# GPU Kernels for PPO Operations
+# =============================================================================
+
+
+@always_inline
+fn ppo_store_rollout_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    # Outputs - rollout buffer storage
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    rollout_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    rollout_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Inputs - current step data
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Store transition data for one timestep (n_envs transitions).
+
+    This kernel stores data at timestep t. The rollout buffer tensors
+    passed in should be views at offset t * n_envs.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    # Store observation
+    for d in range(OBS_DIM):
+        rollout_obs[i, d] = obs[i, d]
+
+    rollout_actions[i] = actions[i]
+    rollout_rewards[i] = rewards[i]
+    rollout_values[i] = values[i]
+    rollout_log_probs[i] = log_probs[i]
+    rollout_dones[i] = dones[i]
+
+
+@always_inline
+fn ppo_gather_minibatch_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    TOTAL_SIZE: Int,
+](
+    # Outputs - minibatch buffers
+    mb_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    mb_actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    mb_advantages: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    mb_old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_old_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    # Inputs - rollout buffers and indices
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_actions: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    batch_size: Int,
+):
+    """Gather samples from rollout buffer using shuffled indices."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= batch_size:
+        return
+
+    var src_idx = Int(indices[i])
+
+    # Gather observation
+    for d in range(OBS_DIM):
+        mb_obs[i, d] = rollout_obs[src_idx, d]
+
+    mb_actions[i] = rollout_actions[src_idx]
+    mb_advantages[i] = advantages[src_idx]
+    mb_returns[i] = returns[src_idx]
+    mb_old_log_probs[i] = rollout_log_probs[src_idx]
+    mb_old_values[i] = rollout_values[src_idx]
+
+
+@always_inline
+fn ppo_actor_grad_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+](
+    # Outputs
+    grad_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    # Inputs
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_epsilon: Scalar[dtype],
+    entropy_coef: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for PPO actor with clipped surrogate objective.
+
+    Gradient is zero if ratio is clipped, otherwise:
+    grad = -advantage * ratio * d_log_prob - entropy_coef * d_entropy
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    var action = Int(actions[b])
+    var advantage = advantages[b]
+
+    # Compute softmax probabilities
+    var max_logit = logits[b, 0]
+    for a in range(1, NUM_ACTIONS):
+        if logits[b, a] > max_logit:
+            max_logit = logits[b, a]
+
+    var sum_exp = max_logit - max_logit  # Initialize to zero with correct type
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        sum_exp = sum_exp + exp(logit_val)
+
+    var probs = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0.0))
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        var prob_val = exp(logit_val) / sum_exp
+        probs[a] = Scalar[dtype](prob_val[0])
+
+    # Compute new log probability
+    var log_eps = Float32(1e-8)
+    var prob_for_log = Float32(probs[action]) + log_eps
+    var new_log_prob = Scalar[dtype](log(prob_for_log))
+
+    # Probability ratio
+    var ratio = exp(new_log_prob - old_log_probs[b])
+
+    # Check if clipped
+    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
+        ratio > Scalar[dtype](1.0) + clip_epsilon
+    )
+
+    # Compute gradients
+    for a in range(NUM_ACTIONS):
+        if is_clipped:
+            grad_logits[b, a] = Scalar[dtype](0.0)
+        else:
+            # d_log_prob / d_logits for softmax
+            var d_log_prob: Scalar[dtype]
+            if a == action:
+                d_log_prob = Scalar[dtype](1.0) - probs[a]
+            else:
+                d_log_prob = -probs[a]
+
+            # Entropy gradient: d(-p * log(p)) / d_logits
+            var prob_for_log_ent = Float32(probs[a]) + Float32(1e-8)
+            var log_prob_ent = Scalar[dtype](log(prob_for_log_ent))
+            var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log_prob_ent)
+
+            # PPO gradient (negative because we maximize)
+            grad_logits[b, a] = (
+                -advantage * ratio * d_log_prob - entropy_coef * d_entropy
+            ) / Scalar[dtype](BATCH_SIZE)
+
+
+@always_inline
+fn ppo_actor_grad_with_kl_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+](
+    # Outputs
+    grad_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    kl_divergences: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    # Inputs
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_epsilon: Scalar[dtype],
+    entropy_coef: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for PPO actor with clipped surrogate objective.
+
+    Also computes approximate KL divergence for early stopping:
+    KL ≈ old_log_prob - new_log_prob (approximation)
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    var action = Int(actions[b])
+    var advantage = advantages[b]
+
+    # Compute softmax probabilities
+    var max_logit = logits[b, 0]
+    for a in range(1, NUM_ACTIONS):
+        if logits[b, a] > max_logit:
+            max_logit = logits[b, a]
+
+    var sum_exp = max_logit - max_logit  # Initialize to zero with correct type
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        sum_exp = sum_exp + exp(logit_val)
+
+    var probs = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0.0))
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        var prob_val = exp(logit_val) / sum_exp
+        probs[a] = Scalar[dtype](prob_val[0])
+
+    # Compute new log probability
+    var log_eps = Float32(1e-8)
+    var prob_for_log = Float32(probs[action]) + log_eps
+    var new_log_prob = Scalar[dtype](log(prob_for_log))
+
+    # Compute approximate KL divergence: old_log_prob - new_log_prob
+    var kl = old_log_probs[b] - new_log_prob
+    kl_divergences[b] = kl
+
+    # Probability ratio
+    var ratio = exp(new_log_prob - old_log_probs[b])
+
+    # Check if clipped
+    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
+        ratio > Scalar[dtype](1.0) + clip_epsilon
+    )
+
+    # Compute gradients
+    for a in range(NUM_ACTIONS):
+        if is_clipped:
+            grad_logits[b, a] = Scalar[dtype](0.0)
+        else:
+            # d_log_prob / d_logits for softmax
+            var d_log_prob: Scalar[dtype]
+            if a == action:
+                d_log_prob = Scalar[dtype](1.0) - probs[a]
+            else:
+                d_log_prob = -probs[a]
+
+            # Entropy gradient: d(-p * log(p)) / d_logits
+            var prob_for_log_ent = Float32(probs[a]) + Float32(1e-8)
+            var log_prob_ent = Scalar[dtype](log(prob_for_log_ent))
+            var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log_prob_ent)
+
+            # PPO gradient (negative because we maximize)
+            grad_logits[b, a] = (
+                -advantage * ratio * d_log_prob - entropy_coef * d_entropy
+            ) / Scalar[dtype](BATCH_SIZE)
+
+
+@always_inline
+fn normalize_advantages_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+](
+    # In/Out
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs (pre-computed on CPU and passed in)
+    mean: Scalar[dtype],
+    std: Scalar[dtype],
+    batch_size: Int,
+):
+    """Normalize advantages in-place using pre-computed mean and std."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    advantages[b] = (advantages[b] - mean) / (std + Scalar[dtype](1e-8))
+
+
+# =============================================================================
+# GPU Kernels: Store transition data
+# =============================================================================
+
+
+@always_inline
+fn _store_pre_step_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    # Outputs - rollout buffer at timestep t
+    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    r_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Inputs - current step data
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Store pre-step data (obs, action, log_prob, value) to rollout buffer."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    for d in range(OBS_DIM):
+        r_obs[i, d] = obs[i, d]
+    r_actions[i] = actions[i]
+    r_log_probs[i] = log_probs[i]
+    r_values[i] = values[i]
+
+
+@always_inline
+fn _extract_obs_from_state_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    STATE_SIZE: Int,
+    OBS_DIM: Int,
+](
+    # Output - observation buffer for neural network input
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    # Input - full state buffer from environment
+    states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+    ],
+):
+    """Extract observations from full state buffer.
+
+    For environments where STATE_SIZE > OBS_DIM, observations are stored
+    at the beginning of each environment's state (offset 0).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    # Copy first OBS_DIM elements from state to obs
+    for d in range(OBS_DIM):
+        obs[i, d] = states[i, d]

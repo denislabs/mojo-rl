@@ -78,668 +78,30 @@ from core.utils.softmax import (
 )
 from core.utils.normalization import normalize_inline
 from core.utils.shuffle import shuffle_indices_inline
-
-
-# =============================================================================
-# GPU Kernels for PPO Operations
-# =============================================================================
-
-
-@always_inline
-fn ppo_store_rollout_kernel[
-    dtype: DType,
-    N_ENVS: Int,
-    OBS_DIM: Int,
-](
-    # Outputs - rollout buffer storage
-    rollout_obs: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin
-    ],
-    rollout_actions: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
-    rollout_rewards: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
-    rollout_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    rollout_log_probs: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
-    rollout_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    # Inputs - current step data
-    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
-    """Store transition data for one timestep (n_envs transitions).
-
-    This kernel stores data at timestep t. The rollout buffer tensors
-    passed in should be views at offset t * n_envs.
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= N_ENVS:
-        return
-
-    # Store observation
-    for d in range(OBS_DIM):
-        rollout_obs[i, d] = obs[i, d]
-
-    rollout_actions[i] = actions[i]
-    rollout_rewards[i] = rewards[i]
-    rollout_values[i] = values[i]
-    rollout_log_probs[i] = log_probs[i]
-    rollout_dones[i] = dones[i]
-
-
-@always_inline
-fn ppo_gather_minibatch_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-    OBS_DIM: Int,
-    TOTAL_SIZE: Int,
-](
-    # Outputs - minibatch buffers
-    mb_obs: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-    ],
-    mb_actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    mb_advantages: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    mb_returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    mb_old_log_probs: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    mb_old_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    # Inputs - rollout buffers and indices
-    rollout_obs: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
-    ],
-    rollout_actions: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
-    ],
-    advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
-    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
-    rollout_log_probs: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
-    ],
-    rollout_values: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
-    ],
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    batch_size: Int,
-):
-    """Gather samples from rollout buffer using shuffled indices."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= batch_size:
-        return
-
-    var src_idx = Int(indices[i])
-
-    # Gather observation
-    for d in range(OBS_DIM):
-        mb_obs[i, d] = rollout_obs[src_idx, d]
-
-    mb_actions[i] = rollout_actions[src_idx]
-    mb_advantages[i] = advantages[src_idx]
-    mb_returns[i] = returns[src_idx]
-    mb_old_log_probs[i] = rollout_log_probs[src_idx]
-    mb_old_values[i] = rollout_values[src_idx]
-
-
-@always_inline
-fn ppo_actor_grad_kernel[
-    dtype: DType where dtype.is_floating_point(),
-    BATCH_SIZE: Int,
-    NUM_ACTIONS: Int,
-](
-    # Outputs
-    grad_logits: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    # Inputs
-    logits: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    old_log_probs: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    clip_epsilon: Scalar[dtype],
-    entropy_coef: Scalar[dtype],
-    batch_size: Int,
-):
-    """Compute gradient for PPO actor with clipped surrogate objective.
-
-    Gradient is zero if ratio is clipped, otherwise:
-    grad = -advantage * ratio * d_log_prob - entropy_coef * d_entropy
-    """
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= batch_size:
-        return
-
-    var action = Int(actions[b])
-    var advantage = advantages[b]
-
-    # Compute softmax probabilities
-    var max_logit = logits[b, 0]
-    for a in range(1, NUM_ACTIONS):
-        if logits[b, a] > max_logit:
-            max_logit = logits[b, a]
-
-    var sum_exp = max_logit - max_logit  # Initialize to zero with correct type
-    for a in range(NUM_ACTIONS):
-        var l = logits[b, a]
-        var logit_val = l - max_logit
-        sum_exp = sum_exp + exp(logit_val)
-
-    var probs = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0.0))
-    for a in range(NUM_ACTIONS):
-        var l = logits[b, a]
-        var logit_val = l - max_logit
-        var prob_val = exp(logit_val) / sum_exp
-        probs[a] = Scalar[dtype](prob_val[0])
-
-    # Compute new log probability
-    var log_eps = Float32(1e-8)
-    var prob_for_log = Float32(probs[action]) + log_eps
-    var new_log_prob = Scalar[dtype](log(prob_for_log))
-
-    # Probability ratio
-    var ratio = exp(new_log_prob - old_log_probs[b])
-
-    # Check if clipped
-    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
-        ratio > Scalar[dtype](1.0) + clip_epsilon
-    )
-
-    # Compute gradients
-    for a in range(NUM_ACTIONS):
-        if is_clipped:
-            grad_logits[b, a] = Scalar[dtype](0.0)
-        else:
-            # d_log_prob / d_logits for softmax
-            var d_log_prob: Scalar[dtype]
-            if a == action:
-                d_log_prob = Scalar[dtype](1.0) - probs[a]
-            else:
-                d_log_prob = -probs[a]
-
-            # Entropy gradient: d(-p * log(p)) / d_logits
-            var prob_for_log_ent = Float32(probs[a]) + Float32(1e-8)
-            var log_prob_ent = Scalar[dtype](log(prob_for_log_ent))
-            var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log_prob_ent)
-
-            # PPO gradient (negative because we maximize)
-            grad_logits[b, a] = (
-                -advantage * ratio * d_log_prob - entropy_coef * d_entropy
-            ) / Scalar[dtype](BATCH_SIZE)
-
-
-@always_inline
-fn ppo_actor_grad_with_kl_kernel[
-    dtype: DType where dtype.is_floating_point(),
-    BATCH_SIZE: Int,
-    NUM_ACTIONS: Int,
-](
-    # Outputs
-    grad_logits: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    kl_divergences: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    # Inputs
-    logits: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    old_log_probs: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    clip_epsilon: Scalar[dtype],
-    entropy_coef: Scalar[dtype],
-    batch_size: Int,
-):
-    """Compute gradient for PPO actor with clipped surrogate objective.
-
-    Also computes approximate KL divergence for early stopping:
-    KL ≈ old_log_prob - new_log_prob (approximation)
-    """
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= batch_size:
-        return
-
-    var action = Int(actions[b])
-    var advantage = advantages[b]
-
-    # Compute softmax probabilities
-    var max_logit = logits[b, 0]
-    for a in range(1, NUM_ACTIONS):
-        if logits[b, a] > max_logit:
-            max_logit = logits[b, a]
-
-    var sum_exp = max_logit - max_logit  # Initialize to zero with correct type
-    for a in range(NUM_ACTIONS):
-        var l = logits[b, a]
-        var logit_val = l - max_logit
-        sum_exp = sum_exp + exp(logit_val)
-
-    var probs = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0.0))
-    for a in range(NUM_ACTIONS):
-        var l = logits[b, a]
-        var logit_val = l - max_logit
-        var prob_val = exp(logit_val) / sum_exp
-        probs[a] = Scalar[dtype](prob_val[0])
-
-    # Compute new log probability
-    var log_eps = Float32(1e-8)
-    var prob_for_log = Float32(probs[action]) + log_eps
-    var new_log_prob = Scalar[dtype](log(prob_for_log))
-
-    # Compute approximate KL divergence: old_log_prob - new_log_prob
-    var kl = old_log_probs[b] - new_log_prob
-    kl_divergences[b] = kl
-
-    # Probability ratio
-    var ratio = exp(new_log_prob - old_log_probs[b])
-
-    # Check if clipped
-    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
-        ratio > Scalar[dtype](1.0) + clip_epsilon
-    )
-
-    # Compute gradients
-    for a in range(NUM_ACTIONS):
-        if is_clipped:
-            grad_logits[b, a] = Scalar[dtype](0.0)
-        else:
-            # d_log_prob / d_logits for softmax
-            var d_log_prob: Scalar[dtype]
-            if a == action:
-                d_log_prob = Scalar[dtype](1.0) - probs[a]
-            else:
-                d_log_prob = -probs[a]
-
-            # Entropy gradient: d(-p * log(p)) / d_logits
-            var prob_for_log_ent = Float32(probs[a]) + Float32(1e-8)
-            var log_prob_ent = Scalar[dtype](log(prob_for_log_ent))
-            var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log_prob_ent)
-
-            # PPO gradient (negative because we maximize)
-            grad_logits[b, a] = (
-                -advantage * ratio * d_log_prob - entropy_coef * d_entropy
-            ) / Scalar[dtype](BATCH_SIZE)
-
-
-@always_inline
-fn gradient_norm_kernel[
-    dtype: DType,
-    SIZE: Int,
-    NUM_BLOCKS: Int,
-    BLOCK_SIZE: Int,
-](
-    # Output
-    partial_sums: LayoutTensor[
-        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
-    ],
-    # Input
-    grads: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-):
-    """Compute partial squared sums for gradient norm calculation.
-
-    Each block computes a partial sum of squared gradients.
-    Final norm = sqrt(sum of all partial_sums).
-    """
-    var tid = Int(thread_idx.x)
-    var bid = Int(block_idx.x)
-    var i = bid * BLOCK_SIZE + tid
-
-    # Shared memory for block reduction
-    shared = LayoutTensor[
-        dtype,
-        Layout.row_major(BLOCK_SIZE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
-
-    # Load and square
-    if i < SIZE:
-        var g = grads[i]
-        shared[tid] = g * g
-    else:
-        shared[tid] = Scalar[dtype](0.0)
-
-    barrier()
-
-    # Block reduction
-    var stride = BLOCK_SIZE // 2
-    while stride > 0:
-        if tid < stride:
-            shared[tid] = shared[tid] + shared[tid + stride]
-        barrier()
-        stride //= 2
-
-    # Write result
-    if tid == 0:
-        partial_sums[bid] = shared[0]
-
-
-@always_inline
-fn gradient_clip_kernel[
-    dtype: DType,
-    SIZE: Int,
-](
-    # In/Out
-    grads: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    # Input
-    scale: Scalar[dtype],
-):
-    """Scale gradients by a factor (for gradient clipping).
-
-    Called when grad_norm > max_grad_norm with scale = max_grad_norm / grad_norm.
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= SIZE:
-        return
-
-    grads[i] = grads[i] * scale
-
-
-@always_inline
-fn gradient_reduce_and_compute_scale_kernel[
-    dtype: DType,
-    NUM_BLOCKS: Int,
-    BLOCK_SIZE: Int,
-](
-    # Output
-    scale_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
-    # Input
-    partial_sums: LayoutTensor[
-        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
-    ],
-    max_grad_norm: Scalar[dtype],
-):
-    """Reduce partial sums and compute clipping scale entirely on GPU.
-
-    This kernel runs with a single block. It:
-    1. Loads all partial sums into shared memory
-    2. Reduces them to get total squared gradient norm
-    3. Computes scale = min(1.0, max_grad_norm / norm)
-    4. Stores scale to global memory for the next kernel
-    """
-    var thread_id = Int(thread_idx.x)
-
-    # Shared memory for reduction
-    var shared = LayoutTensor[
-        dtype,
-        Layout.row_major(BLOCK_SIZE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
-
-    # Load partial sums (handle case where NUM_BLOCKS > BLOCK_SIZE by striding)
-    var local_sum = Scalar[dtype](0.0)
-    var idx = thread_id
-    while idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums[idx])
-        idx += BLOCK_SIZE
-    shared[thread_id] = local_sum
-
-    barrier()
-
-    # Reduction within block
-    var stride = BLOCK_SIZE // 2
-    while stride > 0:
-        if thread_id < stride:
-            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
-        barrier()
-        stride = stride // 2
-
-    # Thread 0 computes and stores the scale
-    if thread_id == 0:
-        var total_sq_sum = rebind[Scalar[dtype]](shared[0])
-        var norm = Scalar[dtype](sqrt(total_sq_sum))
-        var scale = Scalar[dtype](1.0)
-        if norm > max_grad_norm:
-            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
-        scale_out[0] = scale
-
-
-@always_inline
-fn gradient_apply_scale_kernel[
-    dtype: DType,
-    PARAM_SIZE: Int,
-](
-    # In/Out
-    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    # Input
-    scale_in: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
-):
-    """Apply precomputed scale to all gradients.
-
-    This kernel reads the scale computed by gradient_reduce_and_compute_scale_kernel
-    and applies it to all gradients. Always runs (no conditional), but when no
-    clipping is needed, scale=1.0 so it's a no-op multiply.
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= PARAM_SIZE:
-        return
-
-    var scale = scale_in[0]
-    grads[i] = grads[i] * scale
-
-
-@always_inline
-fn ppo_critic_grad_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-](
-    # Outputs
-    grad_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin
-    ],
-    # Inputs
-    values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
-    returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    value_loss_coef: Scalar[dtype],
-    batch_size: Int,
-):
-    """Compute gradient for critic value loss: MSE(value, return)."""
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= BATCH_SIZE:
-        return
-
-    # Gradient of MSE loss: 2 * (value - return) / N
-    grad_values[b, 0] = (
-        Scalar[dtype](2.0)
-        * value_loss_coef
-        * (values[b, 0] - returns[b])
-        / Scalar[dtype](BATCH_SIZE)
-    )
-
-
-@always_inline
-fn ppo_critic_grad_clipped_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-](
-    # Outputs
-    grad_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin
-    ],
-    # Inputs
-    values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
-    old_values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    value_loss_coef: Scalar[dtype],
-    clip_epsilon: Scalar[dtype],
-    batch_size: Int,
-):
-    """Compute gradient for critic with value clipping.
-
-    Value clipping prevents the value function from changing too drastically:
-    V_clipped = V_old + clip(V - V_old, -ε, +ε)
-    L_value = max((V - returns)², (V_clipped - returns)²)
-
-    We take gradient of the max, which means we use the gradient of whichever
-    loss is larger (more pessimistic update).
-    """
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= BATCH_SIZE:
-        return
-
-    var v_new_simd = values[b, 0]
-    var v_old_simd = old_values[b]
-    var ret_simd = returns[b]
-
-    # Extract scalar values
-    var v_new = Scalar[dtype](v_new_simd[0])
-    var v_old = Scalar[dtype](v_old_simd[0])
-    var ret = Scalar[dtype](ret_simd[0])
-
-    # Clipped value
-    var v_diff = v_new - v_old
-    var v_clipped: Scalar[dtype]
-    if v_diff > clip_epsilon:
-        v_clipped = v_old + clip_epsilon
-    elif v_diff < -clip_epsilon:
-        v_clipped = v_old - clip_epsilon
-    else:
-        v_clipped = v_new
-
-    # Unclipped and clipped losses
-    var loss_unclipped = (v_new - ret) * (v_new - ret)
-    var loss_clipped = (v_clipped - ret) * (v_clipped - ret)
-
-    # Use gradient of the larger loss (pessimistic)
-    var grad: Scalar[dtype]
-    if loss_unclipped > loss_clipped:
-        # Gradient of unclipped loss
-        grad = Scalar[dtype](2.0) * (v_new - ret)
-    else:
-        # Gradient of clipped loss - but v_clipped might be clamped
-        if v_diff > clip_epsilon or v_diff < -clip_epsilon:
-            # v_clipped doesn't depend on v_new, so gradient is 0
-            grad = Scalar[dtype](0.0)
-        else:
-            # v_clipped = v_new, same as unclipped
-            grad = Scalar[dtype](2.0) * (v_new - ret)
-
-    grad_values[b, 0] = value_loss_coef * grad / Scalar[dtype](BATCH_SIZE)
-
-
-@always_inline
-fn normalize_advantages_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-](
-    # In/Out
-    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    # Inputs (pre-computed on CPU and passed in)
-    mean: Scalar[dtype],
-    std: Scalar[dtype],
-    batch_size: Int,
-):
-    """Normalize advantages in-place using pre-computed mean and std."""
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= batch_size:
-        return
-
-    advantages[b] = (advantages[b] - mean) / (std + Scalar[dtype](1e-8))
-
-
-# =============================================================================
-# GPU Kernels: Store transition data
-# =============================================================================
-
-
-@always_inline
-fn _store_pre_step_kernel[
-    dtype: DType,
-    N_ENVS: Int,
-    OBS_DIM: Int,
-](
-    # Outputs - rollout buffer at timestep t
-    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    r_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    r_log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    r_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    # Inputs - current step data
-    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
-    """Store pre-step data (obs, action, log_prob, value) to rollout buffer."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= N_ENVS:
-        return
-
-    for d in range(OBS_DIM):
-        r_obs[i, d] = obs[i, d]
-    r_actions[i] = actions[i]
-    r_log_probs[i] = log_probs[i]
-    r_values[i] = values[i]
-
-
-@always_inline
-fn _store_post_step_kernel[
-    dtype: DType,
-    N_ENVS: Int,
-](
-    # Outputs - rollout buffer at timestep t
-    r_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    r_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    # Inputs - current step data
-    rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
-    """Store post-step data (rewards, dones) to rollout buffer."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= N_ENVS:
-        return
-
-    r_rewards[i] = rewards[i]
-    r_dones[i] = dones[i]
-
-
-@always_inline
-fn _extract_obs_from_state_kernel[
-    dtype: DType,
-    N_ENVS: Int,
-    STATE_SIZE: Int,
-    OBS_DIM: Int,
-](
-    # Output - observation buffer for neural network input
-    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    # Input - full state buffer from environment
-    states: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
-    ],
-):
-    """Extract observations from full state buffer.
-
-    For environments where STATE_SIZE > OBS_DIM, observations are stored
-    at the beginning of each environment's state (offset 0).
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= N_ENVS:
-        return
-
-    # Copy first OBS_DIM elements from state to obs
-    for d in range(OBS_DIM):
-        obs[i, d] = states[i, d]
-
+from deep_agents.ppo.state import PPODiscreteState
+from deep_agents.core.onpolicy_train import OnPolicyDiscreteAgent
+from deep_agents.core.onpolicy_helpers import (
+    compute_gae_list,
+    normalize_advantages_list,
+    fisher_yates_shuffle,
+)
+
+from .kernels import (
+    ppo_actor_grad_kernel,
+    ppo_actor_grad_with_kl_kernel,
+    ppo_critic_grad_kernel,
+    ppo_critic_grad_clipped_kernel,
+    normalize_advantages_kernel,
+    _store_post_step_kernel,
+    _extract_obs_from_state_kernel,
+    _store_pre_step_kernel,
+    ppo_gather_minibatch_kernel,
+    gradient_norm_kernel,
+    gradient_clip_kernel,
+    gradient_reduce_and_compute_scale_kernel,
+    gradient_apply_scale_kernel,
+    gradient_reduce_apply_fused_kernel,
+)
 
 # =============================================================================
 # Deep PPO Agent
@@ -755,7 +117,7 @@ struct DeepPPOAgent[
     gpu_minibatch_size: Int = 256,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-]:
+](OnPolicyDiscreteAgent):
     """Deep Proximal Policy Optimization Agent using new trait-based architecture.
 
     Uses clipped surrogate objective for stable policy updates:
@@ -795,7 +157,6 @@ struct DeepPPOAgent[
         Linear[Self.HIDDEN, Self.ACTIONS],
     ]
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
-    var actor: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
 
     # Critic model and network (stateless ops)
     comptime CriticModel = Sequential[
@@ -804,7 +165,22 @@ struct DeepPPOAgent[
         Linear[Self.HIDDEN, 1],
     ]
     comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
-    var critic: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
+
+    # Compile-time state type (actor + critic + rollout buffers)
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+    comptime CPUStateType = PPODiscreteState[
+        Self.ActorModel,
+        Self.ActorOpt,
+        Self.CriticModel,
+        Self.CriticOpt,
+        Self.OBS,
+        Self.ACTIONS,
+        Self.ROLLOUT,
+    ]
+
+    # CPU state (actor + critic networks + rollout buffers)
+    var state: Self.CPUStateType
 
     # Hyperparameters
     var gamma: Float64
@@ -824,15 +200,6 @@ struct DeepPPOAgent[
     var target_total_steps: Int  # Target steps for annealing (0 = auto-calculate)
     var clip_value: Bool  # Whether to clip value function updates
     var norm_adv_per_minibatch: Bool  # Normalize advantages per minibatch
-
-    # Rollout buffers (heap-allocated to avoid stack overflow for large ROLLOUT/OBS)
-    var buffer_obs: List[Scalar[dtype]]
-    var buffer_actions: List[Int]
-    var buffer_rewards: List[Scalar[dtype]]
-    var buffer_values: List[Scalar[dtype]]
-    var buffer_log_probs: List[Scalar[dtype]]
-    var buffer_dones: List[Bool]
-    var buffer_idx: Int
 
     # Training state
     var train_step_count: Int
@@ -884,11 +251,8 @@ struct DeepPPOAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Initialize network states with Xavier initialization
-        self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
-        self.actor.initialize[Xavier]()
-        self.critic = NetworkState[Self.CriticModel, Adam[Self.critic_lr]]()
-        self.critic.initialize[Xavier]()
+        # Initialize CPU state (actor + critic + rollout buffers)
+        self.state = Self.CPUStateType()
 
         # Store hyperparameters
         self.gamma = gamma
@@ -908,33 +272,6 @@ struct DeepPPOAgent[
         self.target_total_steps = target_total_steps
         self.clip_value = clip_value
         self.norm_adv_per_minibatch = norm_adv_per_minibatch
-
-        # Initialize buffers (heap-allocated Lists)
-        self.buffer_obs = List[Scalar[dtype]](capacity=Self.ROLLOUT * Self.OBS)
-        for _ in range(Self.ROLLOUT * Self.OBS):
-            self.buffer_obs.append(Scalar[dtype](0))
-
-        self.buffer_actions = List[Int](capacity=Self.ROLLOUT)
-        for _ in range(Self.ROLLOUT):
-            self.buffer_actions.append(0)
-
-        self.buffer_rewards = List[Scalar[dtype]](capacity=Self.ROLLOUT)
-        for _ in range(Self.ROLLOUT):
-            self.buffer_rewards.append(Scalar[dtype](0))
-
-        self.buffer_values = List[Scalar[dtype]](capacity=Self.ROLLOUT)
-        for _ in range(Self.ROLLOUT):
-            self.buffer_values.append(Scalar[dtype](0))
-
-        self.buffer_log_probs = List[Scalar[dtype]](capacity=Self.ROLLOUT)
-        for _ in range(Self.ROLLOUT):
-            self.buffer_log_probs.append(Scalar[dtype](0))
-
-        self.buffer_dones = List[Bool](capacity=Self.ROLLOUT)
-        for _ in range(Self.ROLLOUT):
-            self.buffer_dones.append(False)
-
-        self.buffer_idx = 0
 
         # Training state
         self.train_step_count = 0
@@ -967,7 +304,7 @@ struct DeepPPOAgent[
         var logits_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](logits_data.unsafe_ptr())
-        var p_actor = self.actor.params_view()
+        var p_actor = self.state.actor.params_view()
         Self.ActorNet.forward[1](obs_t, logits_t, p_actor)
 
         var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -984,7 +321,7 @@ struct DeepPPOAgent[
         var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](
             value_data.unsafe_ptr()
         )
-        var p_critic = self.critic.params_view()
+        var p_critic = self.state.critic.params_view()
         Self.CriticNet.forward[1](obs_t, value_t, p_critic)
         var value = rebind[Scalar[dtype]](value_t[0, 0])
 
@@ -1012,15 +349,15 @@ struct DeepPPOAgent[
         """Store transition in rollout buffer."""
         # Store observation
         for i in range(Self.OBS):
-            self.buffer_obs[self.buffer_idx * Self.OBS + i] = obs[i]
+            self.state.buffer_obs[self.state.buffer_idx * Self.OBS + i] = obs[i]
 
-        self.buffer_actions[self.buffer_idx] = action
-        self.buffer_rewards[self.buffer_idx] = Scalar[dtype](reward)
-        self.buffer_log_probs[self.buffer_idx] = log_prob
-        self.buffer_values[self.buffer_idx] = value
-        self.buffer_dones[self.buffer_idx] = done
+        self.state.buffer_actions[self.state.buffer_idx] = action
+        self.state.buffer_rewards[self.state.buffer_idx] = Scalar[dtype](reward)
+        self.state.buffer_log_probs[self.state.buffer_idx] = log_prob
+        self.state.buffer_values[self.state.buffer_idx] = value
+        self.state.buffer_dones[self.state.buffer_idx] = done
 
-        self.buffer_idx += 1
+        self.state.buffer_idx += 1
 
     fn update(
         mut self,
@@ -1034,10 +371,10 @@ struct DeepPPOAgent[
         Returns:
             Total loss value.
         """
-        if self.buffer_idx == 0:
+        if self.state.buffer_idx == 0:
             return 0.0
 
-        var buffer_len = self.buffer_idx
+        var buffer_len = self.state.buffer_idx
 
         # Get bootstrap value
         var next_obs_t = LayoutTensor[
@@ -1047,7 +384,7 @@ struct DeepPPOAgent[
         var next_val_t = LayoutTensor[
             dtype, Layout.row_major(1, 1), MutAnyOrigin
         ](next_val_data.unsafe_ptr())
-        var p_critic = self.critic.params_view()
+        var p_critic = self.state.critic.params_view()
         Self.CriticNet.forward[1](next_obs_t, next_val_t, p_critic)
         var next_value = rebind[Scalar[dtype]](next_val_t[0, 0])
 
@@ -1066,25 +403,25 @@ struct DeepPPOAgent[
             if t == buffer_len - 1:
                 next_val = next_value
             else:
-                next_val = self.buffer_values[t + 1]
+                next_val = self.state.buffer_values[t + 1]
 
             # Reset GAE at episode boundary
-            if self.buffer_dones[t]:
+            if self.state.buffer_dones[t]:
                 next_val = Scalar[dtype](0.0)
                 gae = Scalar[dtype](0.0)
 
             # TD residual: δ = r + γV(s') - V(s)
             var delta = (
-                self.buffer_rewards[t]
+                self.state.buffer_rewards[t]
                 + Scalar[dtype](self.gamma) * next_val
-                - self.buffer_values[t]
+                - self.state.buffer_values[t]
             )
 
             # GAE accumulation: A = δ + γλA'
             gae = delta + gae_decay * gae
 
             advantages[t] = gae
-            returns[t] = gae + self.buffer_values[t]
+            returns[t] = gae + self.state.buffer_values[t]
 
         # Normalize advantages
         if self.normalize_advantages and buffer_len > 1:
@@ -1161,11 +498,11 @@ struct DeepPPOAgent[
                     # Get observation for this timestep
                     var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
                     for i in range(Self.OBS):
-                        obs[i] = self.buffer_obs[t * Self.OBS + i]
+                        obs[i] = self.state.buffer_obs[t * Self.OBS + i]
 
-                    var action = self.buffer_actions[t]
-                    var old_log_prob = self.buffer_log_probs[t]
-                    var old_value = self.buffer_values[t]
+                    var action = self.state.buffer_actions[t]
+                    var old_log_prob = self.state.buffer_log_probs[t]
+                    var old_value = self.state.buffer_values[t]
                     var advantage = mb_advantages[mb_idx]
                     var return_t = returns[t]
 
@@ -1181,7 +518,7 @@ struct DeepPPOAgent[
                     var logits_tensor = LayoutTensor[
                         dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
                     ](logits_data.unsafe_ptr())
-                    var p_actor = self.actor.params_view()
+                    var p_actor = self.state.actor.params_view()
                     Self.ActorNet.forward[1](obs_tensor, logits_tensor, p_actor)
 
                     var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -1274,8 +611,8 @@ struct DeepPPOAgent[
                     var actor_grad_input_tensor = LayoutTensor[
                         dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
                     ](actor_grad_input.unsafe_ptr())
-                    var g_actor = self.actor.grads_view()
-                    self.actor.zero_grads()
+                    var g_actor = self.state.actor.grads_view()
+                    self.state.actor.zero_grads()
                     Self.ActorNet.backward[1](
                         d_logits_tensor,
                         actor_grad_input_tensor,
@@ -1283,7 +620,7 @@ struct DeepPPOAgent[
                         actor_cache_t,
                         g_actor,
                     )
-                    self.actor.optimizer_step()
+                    self.state.actor.optimizer_step()
 
                     # ==========================================================
                     # Critic forward and update
@@ -1304,7 +641,7 @@ struct DeepPPOAgent[
                         Layout.row_major(1, Self.CriticModel.CACHE_SIZE),
                         MutAnyOrigin,
                     ](critic_cache.unsafe_ptr())
-                    var p_critic_u = self.critic.params_view()
+                    var p_critic_u = self.state.critic.params_view()
                     Self.CriticNet.forward_with_cache[1](
                         obs_tensor, value_out_t, p_critic_u, critic_cache_t
                     )
@@ -1379,8 +716,8 @@ struct DeepPPOAgent[
                     var d_in_t = LayoutTensor[
                         dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
                     ](critic_grad_input.unsafe_ptr())
-                    var g_critic = self.critic.grads_view()
-                    self.critic.zero_grads()
+                    var g_critic = self.state.critic.grads_view()
+                    self.state.critic.zero_grads()
                     Self.CriticNet.backward[1](
                         d_value_t,
                         d_in_t,
@@ -1388,7 +725,7 @@ struct DeepPPOAgent[
                         critic_cache_t,
                         g_critic,
                     )
-                    self.critic.optimizer_step()
+                    self.state.critic.optimizer_step()
 
                     total_loss += (
                         policy_loss
@@ -1399,7 +736,7 @@ struct DeepPPOAgent[
                 batch_start = batch_end
 
         # Clear buffer
-        self.buffer_idx = 0
+        self.state.buffer_idx = 0
         self.train_step_count += 1
 
         return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
@@ -1415,6 +752,416 @@ struct DeepPPOAgent[
             if i < len(obs_list):
                 obs[i] = Scalar[dtype](obs_list[i])
         return obs^
+
+    # =========================================================================
+    # OnPolicyDiscreteAgent trait conformance
+    # =========================================================================
+
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        """Allocate a fresh PPODiscreteState with Xavier-initialized networks.
+        """
+        return Self.CPUStateType()
+
+    fn collect_rollout[
+        E: BoxDiscreteActionEnv
+    ](mut self, mut cpu_state: Self.CPUStateType, mut env: E) -> None:
+        """Collect exactly ROLLOUT_LEN steps into cpu_state rollout buffers.
+
+        Handles episode resets internally. Stores obs, action, reward,
+        value, log_prob, done in cpu_state buffers. After this call,
+        cpu_state._current_obs holds the last observation for bootstrapping.
+        """
+        if not cpu_state._env_initialized:
+            var obs_list = env.reset_obs_list()
+            for i in range(Self.OBS):
+                cpu_state._current_obs[i] = Scalar[dtype](obs_list[i])
+            cpu_state._env_initialized = True
+
+        cpu_state.buffer_idx = 0
+
+        for _ in range(Self.ROLLOUT):
+            var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+            for i in range(Self.OBS):
+                obs[i] = cpu_state._current_obs[i]
+
+            var action_result = self.select_action_state(
+                cpu_state, obs, training=True
+            )
+            var action = action_result[0]
+            var log_prob = action_result[1]
+            var value = action_result[2]
+
+            var result = env.step_obs(action)
+            var reward = Float64(result[1])
+            var done = result[2]
+
+            # Store in buffer
+            for i in range(Self.OBS):
+                cpu_state.buffer_obs[cpu_state.buffer_idx * Self.OBS + i] = obs[
+                    i
+                ]
+            cpu_state.buffer_actions[cpu_state.buffer_idx] = action
+            cpu_state.buffer_rewards[cpu_state.buffer_idx] = Scalar[dtype](
+                reward
+            )
+            cpu_state.buffer_values[cpu_state.buffer_idx] = value
+            cpu_state.buffer_log_probs[cpu_state.buffer_idx] = log_prob
+            cpu_state.buffer_dones[cpu_state.buffer_idx] = done
+            cpu_state.buffer_idx += 1
+
+            if done:
+                var next_obs_list = env.reset_obs_list()
+                for i in range(Self.OBS):
+                    cpu_state._current_obs[i] = Scalar[dtype](next_obs_list[i])
+            else:
+                for i in range(Self.OBS):
+                    cpu_state._current_obs[i] = Scalar[dtype](result[0][i])
+
+    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
+        """Compute GAE advantages and returns using cpu_state._current_obs to bootstrap.
+
+        Fills cpu_state._advantages and cpu_state._returns in-place.
+        Optionally normalizes advantages.
+        """
+        var buffer_len = cpu_state.buffer_idx
+        if buffer_len == 0:
+            return
+
+        # Bootstrap value from the last obs
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](cpu_state._current_obs.unsafe_ptr())
+        var next_val_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var next_val_t = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](next_val_data.unsafe_ptr())
+        var p_critic = cpu_state.critic.params_view()
+        Self.CriticNet.forward[1](next_obs_t, next_val_t, p_critic)
+        var next_value = rebind[Scalar[dtype]](next_val_t[0, 0])
+
+        compute_gae_list[dtype](
+            cpu_state.buffer_rewards,
+            cpu_state.buffer_values,
+            cpu_state.buffer_dones,
+            next_value,
+            buffer_len,
+            self.gamma,
+            self.gae_lambda,
+            cpu_state._advantages,
+            cpu_state._returns,
+        )
+
+        if self.normalize_advantages and buffer_len > 1:
+            normalize_advantages_list[dtype](cpu_state._advantages, buffer_len)
+
+    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+        """Update actor/critic over num_epochs with minibatch PPO. Returns mean loss.
+        """
+        var buffer_len = cpu_state.buffer_idx
+        if buffer_len == 0:
+            return 0.0
+
+        # Prepare index list for shuffling
+        for i in range(buffer_len):
+            cpu_state._indices[i] = i
+
+        var total_loss = Scalar[dtype](0.0)
+
+        for epoch in range(self.num_epochs):
+            # Shuffle indices (Fisher-Yates)
+            fisher_yates_shuffle(cpu_state._indices, buffer_len)
+
+            var batch_start = 0
+            while batch_start < buffer_len:
+                var batch_end = batch_start + self.minibatch_size
+                if batch_end > buffer_len:
+                    batch_end = buffer_len
+                var mb_size = batch_end - batch_start
+
+                # Per-minibatch advantage normalization
+                var mb_advantages = List[Scalar[dtype]](capacity=mb_size)
+                for b in range(batch_start, batch_end):
+                    var t = cpu_state._indices[b]
+                    mb_advantages.append(cpu_state._advantages[t])
+
+                if self.norm_adv_per_minibatch and mb_size > 1:
+                    normalize_advantages_list[dtype](mb_advantages, mb_size)
+
+                # Process minibatch samples
+                for b in range(batch_start, batch_end):
+                    var t = cpu_state._indices[b]
+                    var mb_idx = b - batch_start
+
+                    var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
+                    for i in range(Self.OBS):
+                        obs[i] = cpu_state.buffer_obs[t * Self.OBS + i]
+
+                    var action = cpu_state.buffer_actions[t]
+                    var old_log_prob = cpu_state.buffer_log_probs[t]
+                    var old_value = cpu_state.buffer_values[t]
+                    var advantage = mb_advantages[mb_idx]
+                    var return_t = cpu_state._returns[t]
+
+                    # Actor forward
+                    var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
+                        uninitialized=True
+                    )
+                    var obs_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](obs.unsafe_ptr())
+                    var logits_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+                    ](logits_data.unsafe_ptr())
+                    var p_actor = cpu_state.actor.params_view()
+                    Self.ActorNet.forward[1](obs_tensor, logits_tensor, p_actor)
+
+                    var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+                        uninitialized=True
+                    )
+                    for i in range(Self.ACTIONS):
+                        logits[i] = rebind[Scalar[dtype]](logits_tensor[0, i])
+
+                    var probs = softmax_inline[dtype, Self.ACTIONS](logits)
+                    var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
+                    var ratio = exp(new_log_prob - old_log_prob)
+
+                    var surr1 = ratio * advantage
+                    var clipped_ratio: Scalar[dtype]
+                    if advantage >= Scalar[dtype](0.0):
+                        clipped_ratio = min(
+                            ratio, Scalar[dtype](1.0 + self.clip_epsilon)
+                        )
+                    else:
+                        clipped_ratio = max(
+                            ratio, Scalar[dtype](1.0 - self.clip_epsilon)
+                        )
+                    var surr2 = clipped_ratio * advantage
+
+                    var policy_loss: Scalar[dtype]
+                    if surr1 < surr2:
+                        policy_loss = -surr1
+                    else:
+                        policy_loss = -surr2
+
+                    var entropy = Scalar[dtype](0.0)
+                    for a in range(Self.ACTIONS):
+                        if probs[a] > Scalar[dtype](1e-8):
+                            entropy -= probs[a] * log(probs[a])
+
+                    var is_clipped = (
+                        ratio < Scalar[dtype](1.0 - self.clip_epsilon)
+                    ) or (ratio > Scalar[dtype](1.0 + self.clip_epsilon))
+
+                    var d_logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+                        fill=0
+                    )
+                    if not is_clipped:
+                        for a in range(Self.ACTIONS):
+                            var d_log_prob: Scalar[dtype]
+                            if a == action:
+                                d_log_prob = Scalar[dtype](1.0) - probs[a]
+                            else:
+                                d_log_prob = -probs[a]
+                            var d_entropy = -probs[a] * (
+                                Scalar[dtype](1.0)
+                                + log(probs[a] + Scalar[dtype](1e-8))
+                            )
+                            d_logits[a] = (
+                                -advantage * ratio * d_log_prob
+                                - Scalar[dtype](self.entropy_coef) * d_entropy
+                            )
+
+                    var actor_cache = List[Scalar[dtype]](
+                        capacity=Self.ActorModel.CACHE_SIZE
+                    )
+                    for _ in range(Self.ActorModel.CACHE_SIZE):
+                        actor_cache.append(Scalar[dtype](0))
+                    var actor_cache_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(1, Self.ActorModel.CACHE_SIZE),
+                        MutAnyOrigin,
+                    ](actor_cache.unsafe_ptr())
+                    Self.ActorNet.forward_with_cache[1](
+                        obs_tensor, logits_tensor, p_actor, actor_cache_t
+                    )
+
+                    var d_logits_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+                    ](d_logits.unsafe_ptr())
+                    var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](
+                        fill=0
+                    )
+                    var actor_grad_input_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](actor_grad_input.unsafe_ptr())
+                    var g_actor = cpu_state.actor.grads_view()
+                    cpu_state.actor.zero_grads()
+                    Self.ActorNet.backward[1](
+                        d_logits_tensor,
+                        actor_grad_input_tensor,
+                        p_actor,
+                        actor_cache_t,
+                        g_actor,
+                    )
+                    cpu_state.actor.optimizer_step()
+
+                    # Critic forward + update
+                    var value_data = InlineArray[Scalar[dtype], 1](
+                        uninitialized=True
+                    )
+                    var value_out_t = LayoutTensor[
+                        dtype, Layout.row_major(1, 1), MutAnyOrigin
+                    ](value_data.unsafe_ptr())
+                    var critic_cache = List[Scalar[dtype]](
+                        capacity=Self.CriticModel.CACHE_SIZE
+                    )
+                    for _ in range(Self.CriticModel.CACHE_SIZE):
+                        critic_cache.append(Scalar[dtype](0))
+                    var critic_cache_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(1, Self.CriticModel.CACHE_SIZE),
+                        MutAnyOrigin,
+                    ](critic_cache.unsafe_ptr())
+                    var p_critic_u = cpu_state.critic.params_view()
+                    Self.CriticNet.forward_with_cache[1](
+                        obs_tensor, value_out_t, p_critic_u, critic_cache_t
+                    )
+                    var value = rebind[Scalar[dtype]](value_out_t[0, 0])
+                    var value_loss = (return_t - value) * (return_t - value)
+
+                    var d_value = InlineArray[Scalar[dtype], 1](fill=0)
+                    if self.clip_value:
+                        var v_diff = value - old_value
+                        var v_clipped: Scalar[dtype]
+                        if v_diff > Scalar[dtype](self.clip_epsilon):
+                            v_clipped = old_value + Scalar[dtype](
+                                self.clip_epsilon
+                            )
+                        elif v_diff < -Scalar[dtype](self.clip_epsilon):
+                            v_clipped = old_value - Scalar[dtype](
+                                self.clip_epsilon
+                            )
+                        else:
+                            v_clipped = value
+                        var loss_unclipped = (value - return_t) * (
+                            value - return_t
+                        )
+                        var loss_clipped = (v_clipped - return_t) * (
+                            v_clipped - return_t
+                        )
+                        if loss_unclipped > loss_clipped:
+                            d_value[0] = (
+                                Scalar[dtype](2.0)
+                                * Scalar[dtype](self.value_loss_coef)
+                                * (value - return_t)
+                            )
+                        else:
+                            if v_diff > Scalar[dtype](
+                                self.clip_epsilon
+                            ) or v_diff < -Scalar[dtype](self.clip_epsilon):
+                                d_value[0] = Scalar[dtype](0.0)
+                            else:
+                                d_value[0] = (
+                                    Scalar[dtype](2.0)
+                                    * Scalar[dtype](self.value_loss_coef)
+                                    * (value - return_t)
+                                )
+                    else:
+                        d_value[0] = (
+                            Scalar[dtype](2.0)
+                            * Scalar[dtype](self.value_loss_coef)
+                            * (value - return_t)
+                        )
+
+                    var d_value_t = LayoutTensor[
+                        dtype, Layout.row_major(1, 1), MutAnyOrigin
+                    ](d_value.unsafe_ptr())
+                    var critic_grad_input = InlineArray[
+                        Scalar[dtype], Self.OBS
+                    ](fill=0)
+                    var d_in_t = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](critic_grad_input.unsafe_ptr())
+                    var g_critic = cpu_state.critic.grads_view()
+                    cpu_state.critic.zero_grads()
+                    Self.CriticNet.backward[1](
+                        d_value_t, d_in_t, p_critic_u, critic_cache_t, g_critic
+                    )
+                    cpu_state.critic.optimizer_step()
+
+                    total_loss += (
+                        policy_loss
+                        + Scalar[dtype](self.value_loss_coef) * value_loss
+                        - Scalar[dtype](self.entropy_coef) * entropy
+                    )
+
+                batch_start = batch_end
+
+        cpu_state.buffer_idx = 0
+        self.train_step_count += 1
+        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+
+    fn select_greedy_action(
+        self, cpu_state: Self.CPUStateType, obs: List[Float64]
+    ) -> List[Float64]:
+        """Select greedy action for evaluation using cpu_state actor."""
+        var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        for i in range(Self.OBS):
+            obs_arr[i] = Scalar[dtype](obs[i])
+        var action_result = self.select_action_state(
+            cpu_state, obs_arr, training=False
+        )
+        var result = List[Float64]()
+        result.append(Float64(action_result[0]))
+        return result^
+
+    fn get_explore_rate(self) -> Float64:
+        """Return entropy coefficient as exploration rate."""
+        return self.entropy_coef
+
+    fn select_action_state(
+        self,
+        cpu_state: Self.CPUStateType,
+        obs: InlineArray[Scalar[dtype], Self.OBS],
+        training: Bool = True,
+    ) -> Tuple[Int, Scalar[dtype], Scalar[dtype]]:
+        """Select action using cpu_state actor/critic networks."""
+        var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs.unsafe_ptr())
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](logits_data.unsafe_ptr())
+        var p_actor = cpu_state.actor.params_view()
+        Self.ActorNet.forward[1](obs_t, logits_t, p_actor)
+
+        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        for i in range(Self.ACTIONS):
+            logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
+
+        var probs = softmax_inline[dtype, Self.ACTIONS](logits)
+
+        var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](
+            value_data.unsafe_ptr()
+        )
+        var p_critic = cpu_state.critic.params_view()
+        Self.CriticNet.forward[1](obs_t, value_t, p_critic)
+        var value = rebind[Scalar[dtype]](value_t[0, 0])
+
+        var action: Int
+        if training:
+            action = sample_from_probs_inline[dtype, Self.ACTIONS](probs)
+        else:
+            action = argmax_probs_inline[dtype, Self.ACTIONS](probs)
+
+        var log_prob = log(probs[action] + Scalar[dtype](1e-8))
+        return (action, log_prob, value)
 
     fn train[
         E: BoxDiscreteActionEnv
@@ -1485,7 +1232,7 @@ struct DeepPPOAgent[
                 episode_steps += 1
 
                 # Update at rollout boundary or episode end
-                if self.buffer_idx >= Self.ROLLOUT or done:
+                if self.state.buffer_idx >= Self.ROLLOUT or done:
                     _ = self.update(obs)
 
                 if done:
@@ -1674,8 +1421,8 @@ struct DeepPPOAgent[
         var gpu_critic = GPUNetworkState[
             Self.CriticModel, Adam[Self.critic_lr]
         ](ctx)
-        gpu_actor.upload_from(self.actor, ctx)
-        gpu_critic.upload_from(self.critic, ctx)
+        gpu_actor.upload_from(self.state.actor, ctx)
+        gpu_critic.upload_from(self.state.critic, ctx)
 
         # Pre-allocated workspace buffers (prevents GPU memory leak!)
         var actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
@@ -2328,8 +2075,8 @@ struct DeepPPOAgent[
                             and completed_episodes % self.checkpoint_every == 0
                         ):
                             # Copy params and state from GPU to CPU
-                            gpu_actor.download_to(self.actor, ctx)
-                            gpu_critic.download_to(self.critic, ctx)
+                            gpu_actor.download_to(self.state.actor, ctx)
+                            gpu_critic.download_to(self.state.critic, ctx)
                             ctx.synchronize()
 
                             # Save checkpoint
@@ -2845,8 +2592,8 @@ struct DeepPPOAgent[
         # =====================================================================
         # Copy final parameters back to CPU
         # =====================================================================
-        gpu_actor.download_to(self.actor, ctx)
-        gpu_critic.download_to(self.critic, ctx)
+        gpu_actor.download_to(self.state.actor, ctx)
+        gpu_critic.download_to(self.state.critic, ctx)
         ctx.synchronize()
 
         # =====================================================================
@@ -2918,1082 +2665,6 @@ struct DeepPPOAgent[
         return metrics^
 
     # =========================================================================
-    # GPU Training with CPU Environments (Hybrid)
-    # =========================================================================
-
-    fn train_gpu_cpu_env[
-        EnvType: BoxDiscreteActionEnv & Copyable & Movable,
-    ](
-        mut self,
-        ctx: DeviceContext,
-        mut envs: List[EnvType],
-        num_episodes: Int,
-        verbose: Bool = False,
-        print_every: Int = 10,
-    ) raises -> TrainingMetrics:
-        """Train PPO on GPU with CPU environments.
-
-        This hybrid approach uses CPU environments for accurate physics simulation
-        (e.g., Box2D for LunarLander) while leveraging GPU for neural network
-        computations (forward/backward passes, parameter updates).
-
-        The training loop:
-        1. Forward pass on GPU to get actions
-        2. Step environments on CPU (accurate physics)
-        3. Store transitions and compute GAE on CPU
-        4. Train actor/critic on GPU
-
-        Args:
-            ctx: GPU device context.
-            envs: List of n_envs CPU environments (must match Self.n_envs).
-            num_episodes: Target number of episodes to complete.
-            verbose: Whether to print progress.
-            print_every: Print progress every N rollouts.
-
-        Returns:
-            TrainingMetrics with episode rewards and statistics.
-
-        Note:
-            The envs list must have exactly n_envs environments.
-            Each environment should be independently initialized.
-        """
-        # Validate environment count
-        if len(envs) != Self.n_envs:
-            print(
-                "Error: Expected",
-                Self.n_envs,
-                "environments, got",
-                len(envs),
-            )
-            return TrainingMetrics(
-                algorithm_name="Deep PPO (GPU+CPU)",
-                environment_name="Error",
-            )
-
-        var metrics = TrainingMetrics(
-            algorithm_name="Deep PPO (GPU+CPU)",
-            environment_name="CPU Environment",
-        )
-
-        # =====================================================================
-        # Compile-time constants for buffer sizes
-        # =====================================================================
-        comptime ACTOR_PARAMS = Self.ActorModel.PARAM_SIZE
-        comptime CRITIC_PARAMS = Self.CriticModel.PARAM_SIZE
-
-        comptime ENV_OBS_SIZE = Self.n_envs * Self.OBS
-        comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
-        comptime ROLLOUT_OBS_SIZE = ROLLOUT_TOTAL * Self.OBS
-
-        comptime MINIBATCH = Self.GPU_MINIBATCH
-        comptime MINIBATCH_OBS_SIZE = MINIBATCH * Self.OBS
-        comptime MINIBATCH_LOGITS_SIZE = MINIBATCH * Self.ACTIONS
-        comptime MINIBATCH_CACHE_ACTOR = MINIBATCH * Self.ActorModel.CACHE_SIZE
-        comptime MINIBATCH_CACHE_CRITIC = MINIBATCH * Self.CriticModel.CACHE_SIZE
-
-        comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
-        comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
-        comptime ROLLOUT_BLOCKS = (ROLLOUT_TOTAL + TPB - 1) // TPB
-
-        # Workspace sizes for forward passes
-        comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
-        comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
-        comptime MINIBATCH_WORKSPACE_SIZE = MINIBATCH * WORKSPACE_PER_SAMPLE
-
-        # =====================================================================
-        # Network parameter buffers (via GPUNetworkState)
-        # =====================================================================
-        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](
-            ctx
-        )
-        var gpu_critic = GPUNetworkState[
-            Self.CriticModel, Adam[Self.critic_lr]
-        ](ctx)
-        gpu_actor.upload_from(self.actor, ctx)
-        gpu_critic.upload_from(self.critic, ctx)
-
-        # Pre-allocated workspace buffers
-        var actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
-            ENV_WORKSPACE_SIZE
-        )
-        var critic_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
-            ENV_WORKSPACE_SIZE
-        )
-        var actor_minibatch_workspace_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_WORKSPACE_SIZE
-        )
-        var critic_minibatch_workspace_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_WORKSPACE_SIZE
-        )
-
-        # =====================================================================
-        # Environment buffers (GPU device + CPU host for transfers)
-        # =====================================================================
-        var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
-        var obs_host = ctx.enqueue_create_host_buffer[dtype](ENV_OBS_SIZE)
-        var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var actions_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var actions_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-        var values_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var logits_buf = ctx.enqueue_create_buffer[dtype](
-            Self.n_envs * Self.ACTIONS
-        )
-
-        # =====================================================================
-        # Rollout buffers
-        # =====================================================================
-        var rollout_obs_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_OBS_SIZE)
-        var rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var rollout_values_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_TOTAL)
-        var rollout_log_probs_buf = ctx.enqueue_create_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var rollout_dones_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_TOTAL)
-
-        # Advantages and returns
-        var advantages_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_TOTAL)
-        var returns_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_TOTAL)
-
-        # Host buffers for GAE computation
-        var rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var rollout_values_host = ctx.enqueue_create_host_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var rollout_dones_host = ctx.enqueue_create_host_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var advantages_host = ctx.enqueue_create_host_buffer[dtype](
-            ROLLOUT_TOTAL
-        )
-        var returns_host = ctx.enqueue_create_host_buffer[dtype](ROLLOUT_TOTAL)
-        var bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.n_envs
-        )
-
-        # =====================================================================
-        # Minibatch buffers (for training)
-        # =====================================================================
-        var mb_obs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH_OBS_SIZE)
-        var mb_actions_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var mb_advantages_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var mb_returns_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var mb_old_values_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](MINIBATCH)
-        var mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](
-            MINIBATCH
-        )
-
-        # Training workspace
-        var actor_logits_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_LOGITS_SIZE
-        )
-        var actor_cache_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_CACHE_ACTOR
-        )
-        var actor_grad_output_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_LOGITS_SIZE
-        )
-        var actor_grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_OBS_SIZE
-        )
-
-        var critic_values_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var critic_cache_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_CACHE_CRITIC
-        )
-        var critic_grad_output_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var critic_grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            MINIBATCH_OBS_SIZE
-        )
-
-        # =====================================================================
-        # KL divergence and gradient clipping buffers
-        # =====================================================================
-        var kl_divergences_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
-            MINIBATCH
-        )
-
-        var mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](
-            MINIBATCH
-        )
-
-        # Gradient norm computation buffers (fused kernel keeps everything on GPU)
-        comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
-        comptime CRITIC_GRAD_BLOCKS = (CRITIC_PARAMS + TPB - 1) // TPB
-        var actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
-            ACTOR_GRAD_BLOCKS
-        )
-        var critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
-            CRITIC_GRAD_BLOCKS
-        )
-        # Scale buffers for fused gradient clipping (single scalar each)
-        var actor_scale_buf = ctx.enqueue_create_buffer[dtype](1)
-        var critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
-
-        # =====================================================================
-        # Create LayoutTensor views from GPUNetworkState
-        # =====================================================================
-        var actor_params_tensor = gpu_actor.params_view()
-        var actor_grads_tensor = gpu_actor.grads_view()
-        var actor_state_tensor = gpu_actor.state_view()
-        var critic_params_tensor = gpu_critic.params_view()
-        var critic_grads_tensor = gpu_critic.grads_view()
-        var critic_state_tensor = gpu_critic.state_view()
-
-        var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs, Self.OBS), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
-        var rewards_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
-        var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
-        var actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
-
-        var mb_obs_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.OBS),
-            MutAnyOrigin,
-        ](mb_obs_buf.unsafe_ptr())
-        var mb_actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_actions_buf.unsafe_ptr())
-        var mb_advantages_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_advantages_buf.unsafe_ptr())
-        var mb_returns_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_returns_buf.unsafe_ptr())
-        var mb_old_log_probs_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_old_log_probs_buf.unsafe_ptr())
-        var mb_old_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_old_values_buf.unsafe_ptr())
-        var rollout_obs_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(ROLLOUT_TOTAL, Self.OBS),
-            MutAnyOrigin,
-        ](rollout_obs_buf.unsafe_ptr())
-        var rollout_actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](rollout_actions_buf.unsafe_ptr())
-        var advantages_tensor = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](advantages_buf.unsafe_ptr())
-        var returns_tensor = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](returns_buf.unsafe_ptr())
-        var rollout_log_probs_tensor = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](rollout_log_probs_buf.unsafe_ptr())
-        var rollout_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](rollout_values_buf.unsafe_ptr())
-        var mb_indices_tensor = LayoutTensor[
-            DType.int32, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_indices_buf.unsafe_ptr())
-
-        var actor_logits_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ACTIONS),
-            MutAnyOrigin,
-        ](actor_logits_buf.unsafe_ptr())
-        var actor_grad_output_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ACTIONS),
-            MutAnyOrigin,
-        ](actor_grad_output_buf.unsafe_ptr())
-        var actor_old_log_probs_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_old_log_probs_buf.unsafe_ptr())
-        var actor_advantages_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_advantages_buf.unsafe_ptr())
-        var actor_actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_actions_buf.unsafe_ptr())
-        var critic_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, 1), MutAnyOrigin
-        ](critic_values_buf.unsafe_ptr())
-        var critic_grad_output_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, 1), MutAnyOrigin
-        ](critic_grad_output_buf.unsafe_ptr())
-        var critic_returns_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](mb_returns_buf.unsafe_ptr())
-
-        var logits_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.n_envs, Self.ACTIONS),
-            MutAnyOrigin,
-        ](logits_buf.unsafe_ptr())
-
-        var log_probs_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](log_probs_buf.unsafe_ptr())
-
-        var kl_divergences_tensor = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](kl_divergences_buf.unsafe_ptr())
-
-        var actor_grad_partial_sums_tensor = LayoutTensor[
-            dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
-        ](actor_grad_partial_sums_buf.unsafe_ptr())
-        var critic_grad_partial_sums_tensor = LayoutTensor[
-            dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
-        ](critic_grad_partial_sums_buf.unsafe_ptr())
-        var actor_scale_tensor = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](actor_scale_buf.unsafe_ptr())
-        var critic_scale_tensor = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](critic_scale_buf.unsafe_ptr())
-        var actor_cache_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ActorModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](actor_cache_buf.unsafe_ptr())
-        var critic_cache_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.CriticModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](critic_cache_buf.unsafe_ptr())
-        var actor_grad_input_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ActorModel.IN_DIM),
-            MutAnyOrigin,
-        ](actor_grad_input_buf.unsafe_ptr())
-        var critic_grad_input_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.CriticModel.IN_DIM),
-            MutAnyOrigin,
-        ](critic_grad_input_buf.unsafe_ptr())
-        var values_rollout_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.n_envs, Self.CriticModel.OUT_DIM),
-            MutAnyOrigin,
-        ](values_buf.unsafe_ptr())
-
-        # =====================================================================
-        # Initialize all CPU environments and copy observations to GPU
-        # =====================================================================
-        for i in range(Self.n_envs):
-            var obs_list = envs[i].reset_obs_list()
-            for d in range(Self.OBS):
-                obs_host[i * Self.OBS + d] = Scalar[dtype](obs_list[d])
-
-        ctx.enqueue_copy(obs_buf, obs_host)
-        ctx.synchronize()
-
-        # =====================================================================
-        # Episode tracking (CPU-side)
-        # =====================================================================
-        var episode_rewards = List[Scalar[dtype]]()
-        var episode_steps = List[Int]()
-        for _ in range(Self.n_envs):
-            episode_rewards.append(0.0)
-            episode_steps.append(0)
-
-        # =====================================================================
-        # Training state
-        # =====================================================================
-        var completed_episodes = 0
-        var total_steps = 0
-        var rollout_count = 0
-
-        # Annealing target
-        var annealing_target_steps = self.target_total_steps
-        if annealing_target_steps == 0:
-            annealing_target_steps = num_episodes * 200
-
-        var initial_actor_lr = Float64(Self.actor_lr)
-        var initial_critic_lr = Float64(Self.critic_lr)
-        var initial_entropy_coef = self.entropy_coef
-
-        # Phase 3 kernel wrappers
-        comptime gather_wrapper = ppo_gather_minibatch_kernel[
-            dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
-        ]
-        comptime actor_grad_with_kl_wrapper = ppo_actor_grad_with_kl_kernel[
-            dtype, MINIBATCH, Self.ACTIONS
-        ]
-        comptime critic_grad_wrapper = ppo_critic_grad_kernel[dtype, MINIBATCH]
-        comptime critic_grad_clipped_wrapper = ppo_critic_grad_clipped_kernel[
-            dtype, MINIBATCH
-        ]
-        comptime normalize_advantages_wrapper = normalize_advantages_kernel[
-            dtype, MINIBATCH
-        ]
-
-        comptime actor_grad_norm_wrapper = gradient_norm_kernel[
-            dtype, ACTOR_PARAMS, ACTOR_GRAD_BLOCKS, TPB
-        ]
-        comptime critic_grad_norm_wrapper = gradient_norm_kernel[
-            dtype, CRITIC_PARAMS, CRITIC_GRAD_BLOCKS, TPB
-        ]
-        # Fused two-kernel approach: reduce+scale then apply
-        comptime actor_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
-            dtype, ACTOR_GRAD_BLOCKS, TPB
-        ]
-        comptime actor_apply_scale_wrapper = gradient_apply_scale_kernel[
-            dtype, ACTOR_PARAMS
-        ]
-        comptime critic_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
-            dtype, CRITIC_GRAD_BLOCKS, TPB
-        ]
-        comptime critic_apply_scale_wrapper = gradient_apply_scale_kernel[
-            dtype, CRITIC_PARAMS
-        ]
-
-        comptime sample_actions_wrapper = _sample_actions_kernel[
-            dtype, Self.n_envs, Self.ACTIONS
-        ]
-
-        # Timing accumulators
-        var total_phase1_ns: UInt = 0
-        var total_phase2_ns: UInt = 0
-        var total_phase3_ns: UInt = 0
-
-        # =====================================================================
-        # Main Training Loop
-        # =====================================================================
-
-        while completed_episodes < num_episodes:
-            var rollout_start_episodes = completed_episodes
-            rollout_count += 1
-
-            # =================================================================
-            # Phase 1: Collect rollout (CPU environments + GPU forward passes)
-            # =================================================================
-            var phase1_start = perf_counter_ns()
-
-            for t in range(Self.rollout_len):
-                var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
-
-                # Forward actor on GPU to get logits
-                Self.ActorModel.forward_gpu_no_cache[Self.n_envs](
-                    ctx,
-                    logits_tensor,
-                    obs_tensor,
-                    actor_params_tensor,
-                    actor_env_workspace_buf,
-                )
-
-                # Forward critic on GPU to get values
-                Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
-                    ctx,
-                    values_rollout_tensor,
-                    obs_tensor,
-                    critic_params_tensor,
-                    critic_env_workspace_buf,
-                )
-                ctx.synchronize()
-
-                # Sample actions on GPU
-                ctx.enqueue_function[
-                    sample_actions_wrapper, sample_actions_wrapper
-                ](
-                    logits_tensor,
-                    actions_tensor,
-                    log_probs_tensor,
-                    Scalar[DType.uint32](rng_seed),
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                ctx.synchronize()
-
-                # Copy actions to CPU for environment stepping
-                ctx.enqueue_copy(actions_host, actions_buf)
-                ctx.synchronize()
-
-                # Store pre-step data to rollout buffer (observations on GPU)
-                var t_offset = t * Self.n_envs
-
-                var rollout_obs_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, Self.OBS),
-                    MutAnyOrigin,
-                ](rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
-                var rollout_actions_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](rollout_actions_buf.unsafe_ptr() + t_offset)
-                var rollout_log_probs_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](rollout_log_probs_buf.unsafe_ptr() + t_offset)
-                var rollout_values_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](rollout_values_buf.unsafe_ptr() + t_offset)
-
-                var values_tensor_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](values_buf.unsafe_ptr())
-                var log_probs_tensor_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](log_probs_buf.unsafe_ptr())
-
-                comptime store_pre_step_wrapper = _store_pre_step_kernel[
-                    dtype, Self.n_envs, Self.OBS
-                ]
-
-                ctx.enqueue_function[
-                    store_pre_step_wrapper, store_pre_step_wrapper
-                ](
-                    rollout_obs_t,
-                    rollout_actions_t,
-                    rollout_log_probs_t,
-                    rollout_values_t,
-                    obs_tensor,
-                    actions_tensor,
-                    log_probs_tensor_t,
-                    values_tensor_t,
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                ctx.synchronize()
-
-                # =============================================================
-                # Step CPU environments (the key difference from train_gpu!)
-                # =============================================================
-                for i in range(Self.n_envs):
-                    var action = Int(actions_host[i])
-                    var result = envs[i].step_obs(action)
-                    var next_obs = result[0].copy()
-                    var reward = result[1]
-                    var done = result[2]
-
-                    # Store reward and done in host buffer for later copy
-                    rollout_rewards_host[t_offset + i] = Scalar[dtype](reward)
-                    rollout_dones_host[t_offset + i] = Scalar[dtype](
-                        1.0 if done else 0.0
-                    )
-
-                    # Update episode tracking
-                    episode_rewards[i] += Scalar[dtype](reward)
-                    episode_steps[i] += 1
-
-                    # Handle episode completion
-                    if done:
-                        metrics.log_episode(
-                            completed_episodes,
-                            episode_rewards[i],
-                            episode_steps[i],
-                            0.0,
-                        )
-                        completed_episodes += 1
-
-                        # Auto-checkpoint
-                        if (
-                            self.checkpoint_every > 0
-                            and self.checkpoint_path != ""
-                            and completed_episodes % self.checkpoint_every == 0
-                        ):
-                            gpu_actor.download_to(self.actor, ctx)
-                            gpu_critic.download_to(self.critic, ctx)
-                            self.save_checkpoint(self.checkpoint_path)
-                            if verbose:
-                                print(
-                                    "  [Checkpoint saved at episode",
-                                    completed_episodes,
-                                    "]",
-                                )
-
-                        # Reset episode tracking
-                        episode_rewards[i] = 0.0
-                        episode_steps[i] = 0
-
-                        # Reset environment
-                        var reset_obs = envs[i].reset_obs_list()
-                        for d in range(Self.OBS):
-                            obs_host[i * Self.OBS + d] = Scalar[dtype](
-                                reset_obs[d]
-                            )
-                    else:
-                        # Copy next observation
-                        for d in range(Self.OBS):
-                            obs_host[i * Self.OBS + d] = Scalar[dtype](
-                                next_obs[d]
-                            )
-
-                total_steps += Self.n_envs
-
-                # Copy updated observations to GPU for next iteration
-                ctx.enqueue_copy(obs_buf, obs_host)
-                ctx.synchronize()
-
-            # Early exit if we've reached target episodes
-            if completed_episodes >= num_episodes:
-                break
-
-            var phase1_end = perf_counter_ns()
-
-            # =================================================================
-            # Phase 2: Compute GAE advantages on CPU
-            # =================================================================
-            var phase2_start = perf_counter_ns()
-
-            # Get bootstrap values from final observations
-            Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
-                ctx,
-                values_rollout_tensor,
-                obs_tensor,
-                critic_params_tensor,
-                critic_env_workspace_buf,
-            )
-
-            ctx.enqueue_copy(bootstrap_values_host, values_buf)
-
-            # Copy rollout values to CPU
-            ctx.enqueue_copy(rollout_values_host, rollout_values_buf)
-            ctx.synchronize()
-
-            # Compute GAE for each environment
-            for env_idx in range(Self.n_envs):
-                var gae = Scalar[dtype](0.0)
-                var gae_decay = Scalar[dtype](self.gamma * self.gae_lambda)
-                var bootstrap_val = Scalar[dtype](
-                    bootstrap_values_host[env_idx]
-                )
-
-                for t in range(Self.rollout_len - 1, -1, -1):
-                    var idx = t * Self.n_envs + env_idx
-                    var reward = rollout_rewards_host[idx]
-                    var value = rollout_values_host[idx]
-                    var done = rollout_dones_host[idx]
-
-                    var next_val: Scalar[dtype]
-                    if t == Self.rollout_len - 1:
-                        next_val = bootstrap_val
-                    else:
-                        var next_idx = (t + 1) * Self.n_envs + env_idx
-                        next_val = rollout_values_host[next_idx]
-
-                    if done > Scalar[dtype](0.5):
-                        next_val = Scalar[dtype](0.0)
-                        gae = Scalar[dtype](0.0)
-
-                    var delta = (
-                        reward + Scalar[dtype](self.gamma) * next_val - value
-                    )
-                    gae = delta + gae_decay * gae
-
-                    advantages_host[idx] = gae
-                    returns_host[idx] = gae + value
-
-            # Normalize advantages
-            if self.normalize_advantages:
-                var mean = Scalar[dtype](0.0)
-                var var_sum = Scalar[dtype](0.0)
-                for i in range(ROLLOUT_TOTAL):
-                    mean += advantages_host[i]
-                mean /= Scalar[dtype](ROLLOUT_TOTAL)
-                for i in range(ROLLOUT_TOTAL):
-                    var diff = advantages_host[i] - mean
-                    var_sum += diff * diff
-
-                var variance = var_sum / Scalar[dtype](ROLLOUT_TOTAL)
-                var std = sqrt(variance + Scalar[dtype](1e-8))
-                for i in range(ROLLOUT_TOTAL):
-                    advantages_host[i] = (advantages_host[i] - mean) / (
-                        std + Scalar[dtype](1e-8)
-                    )
-
-            # Copy advantages, returns, rewards, dones to GPU
-            ctx.enqueue_copy(advantages_buf, advantages_host)
-            ctx.enqueue_copy(returns_buf, returns_host)
-            ctx.enqueue_copy(rollout_rewards_buf, rollout_rewards_host)
-            ctx.enqueue_copy(rollout_dones_buf, rollout_dones_host)
-            ctx.synchronize()
-
-            var phase2_end = perf_counter_ns()
-
-            # =================================================================
-            # Phase 3: Train actor and critic with minibatches (GPU)
-            # =================================================================
-            var phase3_start = perf_counter_ns()
-
-            var progress = Float64(total_steps) / Float64(
-                annealing_target_steps
-            )
-            if progress > 1.0:
-                progress = 1.0
-
-            var current_actor_lr = initial_actor_lr
-            var current_critic_lr = initial_critic_lr
-            var current_entropy_coef = initial_entropy_coef
-            if self.anneal_lr:
-                var lr_multiplier = 1.0 - progress
-                current_actor_lr = initial_actor_lr * lr_multiplier
-                current_critic_lr = initial_critic_lr * lr_multiplier
-                # Note: Adam LR is a compile-time parameter; runtime annealing
-                # requires re-instantiating with a new LR type parameter.
-
-            if self.anneal_entropy:
-                current_entropy_coef = initial_entropy_coef * (1.0 - progress)
-
-            var kl_early_stop = False
-
-            for epoch in range(self.num_epochs):
-                if kl_early_stop:
-                    break
-
-                # Generate shuffled indices
-                var indices_list = List[Int]()
-                for i in range(ROLLOUT_TOTAL):
-                    indices_list.append(i)
-
-                for i in range(ROLLOUT_TOTAL - 1, 0, -1):
-                    var j = Int(random_float64() * Float64(i + 1))
-                    var temp = indices_list[i]
-                    indices_list[i] = indices_list[j]
-                    indices_list[j] = temp
-
-                var num_minibatches = ROLLOUT_TOTAL // MINIBATCH
-                for mb_idx in range(num_minibatches):
-                    var start_idx = mb_idx * MINIBATCH
-
-                    for i in range(MINIBATCH):
-                        mb_indices_host[i] = Int32(indices_list[start_idx + i])
-
-                    ctx.enqueue_copy(mb_indices_buf, mb_indices_host)
-
-                    ctx.enqueue_function[gather_wrapper, gather_wrapper](
-                        mb_obs_tensor,
-                        mb_actions_tensor,
-                        mb_advantages_tensor,
-                        mb_returns_tensor,
-                        mb_old_log_probs_tensor,
-                        mb_old_values_tensor,
-                        rollout_obs_tensor,
-                        rollout_actions_tensor,
-                        advantages_tensor,
-                        returns_tensor,
-                        rollout_log_probs_tensor,
-                        rollout_values_tensor,
-                        mb_indices_tensor,
-                        MINIBATCH,
-                        grid_dim=(MINIBATCH_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
-                    ctx.synchronize()
-
-                    # Per-minibatch advantage normalization
-                    if self.norm_adv_per_minibatch:
-                        ctx.enqueue_copy(mb_advantages_host, mb_advantages_buf)
-                        ctx.synchronize()
-
-                        var adv_mean = Scalar[dtype](0.0)
-                        for i in range(MINIBATCH):
-                            adv_mean += mb_advantages_host[i]
-                        adv_mean /= Scalar[dtype](MINIBATCH)
-
-                        var adv_var_sum = Scalar[dtype](0.0)
-                        for i in range(MINIBATCH):
-                            var diff = mb_advantages_host[i] - adv_mean
-                            adv_var_sum += diff * diff
-
-                        var adv_std = sqrt(
-                            adv_var_sum / Scalar[dtype](MINIBATCH)
-                            + Scalar[dtype](1e-8)
-                        )
-
-                        ctx.enqueue_function[
-                            normalize_advantages_wrapper,
-                            normalize_advantages_wrapper,
-                        ](
-                            mb_advantages_tensor,
-                            adv_mean,
-                            adv_std,
-                            MINIBATCH,
-                            grid_dim=(MINIBATCH_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                        ctx.synchronize()
-
-                    # Train actor
-                    gpu_actor.zero_grads(ctx)
-
-                    Self.ActorModel.forward_gpu[MINIBATCH](
-                        ctx,
-                        actor_logits_tensor,
-                        mb_obs_tensor,
-                        actor_params_tensor,
-                        actor_cache_tensor,
-                        actor_minibatch_workspace_buf,
-                    )
-                    ctx.synchronize()
-
-                    ctx.enqueue_function[
-                        actor_grad_with_kl_wrapper, actor_grad_with_kl_wrapper
-                    ](
-                        actor_grad_output_tensor,
-                        kl_divergences_tensor,
-                        actor_logits_tensor,
-                        actor_old_log_probs_tensor,
-                        actor_advantages_tensor,
-                        actor_actions_tensor,
-                        Scalar[dtype](self.clip_epsilon),
-                        Scalar[dtype](current_entropy_coef),
-                        MINIBATCH,
-                        grid_dim=(MINIBATCH_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
-                    ctx.synchronize()
-
-                    # KL divergence early stopping
-                    if self.target_kl > 0.0:
-                        ctx.enqueue_copy(
-                            kl_divergences_host, kl_divergences_buf
-                        )
-                        ctx.synchronize()
-
-                        var kl_sum = Scalar[dtype](0.0)
-                        for i in range(MINIBATCH):
-                            kl_sum += kl_divergences_host[i]
-                        var mean_kl = Float64(kl_sum) / Float64(MINIBATCH)
-
-                        if mean_kl > self.target_kl:
-                            kl_early_stop = True
-                            if verbose:
-                                print(
-                                    "    KL early stop at epoch",
-                                    epoch,
-                                    "minibatch",
-                                    mb_idx,
-                                    "| KL:",
-                                    String(mean_kl)[:7],
-                                )
-                            break
-
-                    Self.ActorModel.backward_gpu[MINIBATCH](
-                        ctx,
-                        actor_grad_input_tensor,
-                        actor_grad_output_tensor,
-                        actor_params_tensor,
-                        actor_cache_tensor,
-                        actor_grads_tensor,
-                        actor_minibatch_workspace_buf,
-                    )
-
-                    # Gradient clipping for actor (fused: no host copy)
-                    if self.max_grad_norm > 0.0:
-                        # Step 1: Compute partial sums of squared gradients
-                        ctx.enqueue_function[
-                            actor_grad_norm_wrapper, actor_grad_norm_wrapper
-                        ](
-                            actor_grad_partial_sums_tensor,
-                            actor_grads_tensor,
-                            grid_dim=(ACTOR_GRAD_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                        # Step 2: Reduce partial sums and compute scale (single block)
-                        ctx.enqueue_function[
-                            actor_reduce_scale_wrapper,
-                            actor_reduce_scale_wrapper,
-                        ](
-                            actor_scale_tensor,
-                            actor_grad_partial_sums_tensor,
-                            Scalar[dtype](self.max_grad_norm),
-                            grid_dim=(1,),
-                            block_dim=(TPB,),
-                        )
-                        # Step 3: Apply scale to all gradients
-                        ctx.enqueue_function[
-                            actor_apply_scale_wrapper,
-                            actor_apply_scale_wrapper,
-                        ](
-                            actor_grads_tensor,
-                            actor_scale_tensor,
-                            grid_dim=(ACTOR_GRAD_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                        ctx.synchronize()
-
-                    gpu_actor.optimizer_step(ctx)
-                    ctx.synchronize()
-
-                    # Train critic
-                    gpu_critic.zero_grads(ctx)
-
-                    Self.CriticModel.forward_gpu[MINIBATCH](
-                        ctx,
-                        critic_values_tensor,
-                        mb_obs_tensor,
-                        critic_params_tensor,
-                        critic_cache_tensor,
-                        critic_minibatch_workspace_buf,
-                    )
-                    ctx.synchronize()
-
-                    if self.clip_value:
-                        ctx.enqueue_function[
-                            critic_grad_clipped_wrapper,
-                            critic_grad_clipped_wrapper,
-                        ](
-                            critic_grad_output_tensor,
-                            critic_values_tensor,
-                            mb_old_values_tensor,
-                            critic_returns_tensor,
-                            Scalar[dtype](self.value_loss_coef),
-                            Scalar[dtype](self.clip_epsilon),
-                            MINIBATCH,
-                            grid_dim=(MINIBATCH_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                    else:
-                        ctx.enqueue_function[
-                            critic_grad_wrapper, critic_grad_wrapper
-                        ](
-                            critic_grad_output_tensor,
-                            critic_values_tensor,
-                            critic_returns_tensor,
-                            Scalar[dtype](self.value_loss_coef),
-                            MINIBATCH,
-                            grid_dim=(MINIBATCH_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                    ctx.synchronize()
-
-                    Self.CriticModel.backward_gpu[MINIBATCH](
-                        ctx,
-                        critic_grad_input_tensor,
-                        critic_grad_output_tensor,
-                        critic_params_tensor,
-                        critic_cache_tensor,
-                        critic_grads_tensor,
-                        critic_minibatch_workspace_buf,
-                    )
-
-                    # Gradient clipping for critic (fused: no host copy)
-                    if self.max_grad_norm > 0.0:
-                        # Step 1: Compute partial sums of squared gradients
-                        ctx.enqueue_function[
-                            critic_grad_norm_wrapper, critic_grad_norm_wrapper
-                        ](
-                            critic_grad_partial_sums_tensor,
-                            critic_grads_tensor,
-                            grid_dim=(CRITIC_GRAD_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                        # Step 2: Reduce partial sums and compute scale (single block)
-                        ctx.enqueue_function[
-                            critic_reduce_scale_wrapper,
-                            critic_reduce_scale_wrapper,
-                        ](
-                            critic_scale_tensor,
-                            critic_grad_partial_sums_tensor,
-                            Scalar[dtype](self.max_grad_norm),
-                            grid_dim=(1,),
-                            block_dim=(TPB,),
-                        )
-                        # Step 3: Apply scale to all gradients
-                        ctx.enqueue_function[
-                            critic_apply_scale_wrapper,
-                            critic_apply_scale_wrapper,
-                        ](
-                            critic_grads_tensor,
-                            critic_scale_tensor,
-                            grid_dim=(CRITIC_GRAD_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-                        ctx.synchronize()
-
-                    gpu_critic.optimizer_step(ctx)
-                    ctx.synchronize()
-
-            var phase3_end = perf_counter_ns()
-
-            total_phase1_ns += phase1_end - phase1_start
-            total_phase2_ns += phase2_end - phase2_start
-            total_phase3_ns += phase3_end - phase3_start
-
-            # Print rollout summary
-            if verbose and rollout_count % print_every == 0:
-                var rollout_end_episodes = completed_episodes
-                var episodes_this_rollout = (
-                    rollout_end_episodes - rollout_start_episodes
-                )
-                var avg_reward = metrics.mean_reward_last_n(
-                    min(100, completed_episodes)
-                )
-                print(
-                    "Rollout",
-                    rollout_count,
-                    "| Episodes",
-                    rollout_start_episodes + 1,
-                    "-",
-                    rollout_end_episodes,
-                    "(+" + String(episodes_this_rollout) + ")",
-                    "| Avg(100):",
-                    String(avg_reward)[:7],
-                    "| Steps:",
-                    total_steps,
-                )
-
-        # =====================================================================
-        # Copy final parameters back to CPU
-        # =====================================================================
-        gpu_actor.download_to(self.actor, ctx)
-        gpu_critic.download_to(self.critic, ctx)
-
-        # =====================================================================
-        # Print final timing summary
-        # =====================================================================
-        if verbose:
-            var total_time_ns = (
-                total_phase1_ns + total_phase2_ns + total_phase3_ns
-            )
-            var p1_pct = Float64(total_phase1_ns) / Float64(total_time_ns) * 100
-            var p2_pct = Float64(total_phase2_ns) / Float64(total_time_ns) * 100
-            var p3_pct = Float64(total_phase3_ns) / Float64(total_time_ns) * 100
-            print()
-            print("-" * 60)
-            print(
-                "Performance Summary (GPU+CPU) ("
-                + String(rollout_count)
-                + " rollouts)"
-            )
-            print("-" * 60)
-            print(
-                "  Phase 1 (collect+CPU step):  ",
-                String(Float64(total_phase1_ns) / 1e9)[:6],
-                "s (",
-                String(p1_pct)[:4],
-                "%)",
-            )
-            print(
-                "  Phase 2 (GAE):               ",
-                String(Float64(total_phase2_ns) / 1e9)[:6],
-                "s (",
-                String(p2_pct)[:4],
-                "%)",
-            )
-            print(
-                "  Phase 3 (train):             ",
-                String(Float64(total_phase3_ns) / 1e9)[:6],
-                "s (",
-                String(p3_pct)[:4],
-                "%)",
-            )
-            print("-" * 60)
-
-        return metrics^
-
-    # =========================================================================
     # Checkpoint Save/Load
     # =========================================================================
 
@@ -4022,20 +2693,24 @@ struct DeepPPOAgent[
         # Actor params
         content += "actor_params:\n"
         for i in range(actor_param_size):
-            content += String(Float64(self.actor.params[i])) + "\n"
+            content += String(Float64(self.state.actor.params[i])) + "\n"
 
         content += "actor_optimizer_state:\n"
         for i in range(actor_state_size):
-            content += String(Float64(self.actor.optimizer_state[i])) + "\n"
+            content += (
+                String(Float64(self.state.actor.optimizer_state[i])) + "\n"
+            )
 
         # Critic params
         content += "critic_params:\n"
         for i in range(critic_param_size):
-            content += String(Float64(self.critic.params[i])) + "\n"
+            content += String(Float64(self.state.critic.params[i])) + "\n"
 
         content += "critic_optimizer_state:\n"
         for i in range(critic_state_size):
-            content += String(Float64(self.critic.optimizer_state[i])) + "\n"
+            content += (
+                String(Float64(self.state.critic.optimizer_state[i])) + "\n"
+            )
 
         # Metadata
         content += "metadata:\n"
@@ -4078,7 +2753,7 @@ struct DeepPPOAgent[
         # Load actor params
         var actor_params_start = find_section_start(lines, "actor_params:")
         for i in range(actor_param_size):
-            self.actor.params[i] = Scalar[dtype](
+            self.state.actor.params[i] = Scalar[dtype](
                 atof(lines[actor_params_start + i])
             )
 
@@ -4086,14 +2761,14 @@ struct DeepPPOAgent[
             lines, "actor_optimizer_state:"
         )
         for i in range(actor_state_size):
-            self.actor.optimizer_state[i] = Scalar[dtype](
+            self.state.actor.optimizer_state[i] = Scalar[dtype](
                 atof(lines[actor_state_start + i])
             )
 
         # Load critic params
         var critic_params_start = find_section_start(lines, "critic_params:")
         for i in range(critic_param_size):
-            self.critic.params[i] = Scalar[dtype](
+            self.state.critic.params[i] = Scalar[dtype](
                 atof(lines[critic_params_start + i])
             )
 
@@ -4101,7 +2776,7 @@ struct DeepPPOAgent[
             lines, "critic_optimizer_state:"
         )
         for i in range(critic_state_size):
-            self.critic.optimizer_state[i] = Scalar[dtype](
+            self.state.critic.optimizer_state[i] = Scalar[dtype](
                 atof(lines[critic_state_start + i])
             )
 

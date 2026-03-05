@@ -27,8 +27,17 @@ from .eval import (
 
 from .onpolicy_train import (
     OnPolicyAgent,
+    OnPolicyDiscreteState,
+    OnPolicyContinuousState,
+    OnPolicyDiscreteAgent,
+    OnPolicyContinuousAgent,
     run_onpolicy_discrete_train,
     run_onpolicy_continuous_train,
+)
+from .onpolicy_helpers import (
+    compute_gae_list,
+    normalize_advantages_list,
+    fisher_yates_shuffle,
 )
 
 from .gpu_offpolicy_train import (

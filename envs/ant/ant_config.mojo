@@ -4,7 +4,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data
-from physics3d.integrator import RK4Integrator
+from physics3d.integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     META_IDX_PREV_X,
@@ -78,7 +78,7 @@ struct AntConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -188,7 +188,7 @@ struct AntConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,
