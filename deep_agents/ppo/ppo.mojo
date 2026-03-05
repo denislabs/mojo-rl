@@ -45,7 +45,7 @@ from nn.constants import dtype, TILE, TPB
 from nn.model import Linear, ReLU, LinearReLU, Sequential
 from nn.optimizer import Adam
 from nn.initializer import Xavier
-from nn.training import Network
+from nn.training import Network, NetworkState, GPUNetworkState
 from nn.checkpoint import (
     split_lines,
     find_section_start,
@@ -753,6 +753,8 @@ struct DeepPPOAgent[
     rollout_len: Int = 128,
     n_envs: Int = 1024,
     gpu_minibatch_size: Int = 256,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.001,
 ]:
     """Deep Proximal Policy Optimization Agent using new trait-based architecture.
 
@@ -780,63 +782,32 @@ struct DeepPPOAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime ROLLOUT = Self.rollout_len
 
-    # Cache sizes
-    comptime ACTOR_CACHE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-    comptime CRITIC_CACHE: Int = Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN
-
-    # Network parameter sizes (for GPU buffer allocation)
-    # Actor: Linear[obs, hidden] + ReLU + Linear[hidden, hidden] + ReLU + Linear[hidden, actions]
-    comptime ACTOR_PARAM_SIZE: Int = (
-        Self.OBS * Self.HIDDEN
-        + Self.HIDDEN  # Linear 1
-        + Self.HIDDEN * Self.HIDDEN
-        + Self.HIDDEN  # Linear 2
-        + Self.HIDDEN * Self.ACTIONS
-        + Self.ACTIONS  # Linear 3
-    )
-    # Critic: Linear[obs, hidden] + ReLU + Linear[hidden, hidden] + ReLU + Linear[hidden, 1]
-    comptime CRITIC_PARAM_SIZE: Int = (
-        Self.OBS * Self.HIDDEN
-        + Self.HIDDEN  # Linear 1
-        + Self.HIDDEN * Self.HIDDEN
-        + Self.HIDDEN  # Linear 2
-        + Self.HIDDEN * 1
-        + 1  # Linear 3
-    )
-
     # GPU-specific sizes
     comptime TOTAL_ROLLOUT_SIZE: Int = Self.n_envs * Self.rollout_len
     comptime GPU_MINIBATCH = Self.gpu_minibatch_size
 
-    # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
-    comptime ActorNetwork = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, Self.ACTIONS],
-        ],
-        Adam,
-        Xavier,
+    # Actor model and network (stateless ops)
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACTIONS],
     ]
-    var actor: Self.ActorNetwork
+    comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
+    var actor: NetworkState[Self.ActorModel, Adam[Self.actor_lr]]
 
-    # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
-    comptime CriticNetwork = Network[
-        Sequential[
-            LinearReLU[Self.OBS, Self.HIDDEN],
-            LinearReLU[Self.HIDDEN, Self.HIDDEN],
-            Linear[Self.HIDDEN, 1],
-        ],
-        Adam,
+    # Critic model and network (stateless ops)
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
     ]
-    var critic: Self.CriticNetwork
+    comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
+    var critic: NetworkState[Self.CriticModel, Adam[Self.critic_lr]]
 
     # Hyperparameters
     var gamma: Float64
     var gae_lambda: Float64
     var clip_epsilon: Float64
-    var actor_lr: Float64
-    var critic_lr: Float64
     var entropy_coef: Float64
     var value_loss_coef: Float64
     var num_epochs: Int
@@ -873,8 +844,6 @@ struct DeepPPOAgent[
         gamma: Float64 = 0.99,
         gae_lambda: Float64 = 0.95,
         clip_epsilon: Float64 = 0.2,
-        actor_lr: Float64 = 0.0003,
-        critic_lr: Float64 = 0.001,
         entropy_coef: Float64 = 0.01,
         value_loss_coef: Float64 = 0.5,
         num_epochs: Int = 4,
@@ -898,8 +867,6 @@ struct DeepPPOAgent[
             gamma: Discount factor (default: 0.99).
             gae_lambda: GAE lambda parameter (default: 0.95).
             clip_epsilon: PPO clipping parameter (default: 0.2).
-            actor_lr: Actor learning rate (default: 0.0003).
-            critic_lr: Critic learning rate (default: 0.001).
             entropy_coef: Entropy bonus coefficient (default: 0.01).
             value_loss_coef: Value loss coefficient (default: 0.5).
             num_epochs: Number of optimization epochs per update (default: 4).
@@ -915,16 +882,16 @@ struct DeepPPOAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Initialize networks
-        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
-        self.critic = Self.CriticNetwork(Adam(lr=critic_lr), Xavier())
+        # Initialize network states with Xavier initialization
+        self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
+        self.actor.initialize[Xavier]()
+        self.critic = NetworkState[Self.CriticModel, Adam[Self.critic_lr]]()
+        self.critic.initialize[Xavier]()
 
         # Store hyperparameters
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_epsilon = clip_epsilon
-        self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
         self.num_epochs = num_epochs
@@ -989,18 +956,27 @@ struct DeepPPOAgent[
             Tuple of (action, log_prob, value).
         """
         # Forward actor to get logits
-        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+        var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
-        self.actor.forward[1](obs, logits)
+        var obs_t = LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin](obs.unsafe_ptr())
+        var logits_t = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](logits_data.unsafe_ptr())
+        var p_actor = self.actor.params_view()
+        Self.ActorNet.forward[1](obs_t, logits_t, p_actor)
+
+        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        for i in range(Self.ACTIONS):
+            logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
 
         # Compute softmax probabilities
         var probs = softmax_inline[dtype, Self.ACTIONS](logits)
 
         # Forward critic to get value
-        var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        self.critic.forward[1](obs, value_out)
-        var value = value_out[0]
+        var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](value_data.unsafe_ptr())
+        var p_critic = self.critic.params_view()
+        Self.CriticNet.forward[1](obs_t, value_t, p_critic)
+        var value = rebind[Scalar[dtype]](value_t[0, 0])
 
         # Sample or select greedy action
         var action: Int
@@ -1054,9 +1030,12 @@ struct DeepPPOAgent[
         var buffer_len = self.buffer_idx
 
         # Get bootstrap value
-        var next_value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        self.critic.forward[1](next_obs, next_value_out)
-        var next_value = next_value_out[0]
+        var next_obs_t = LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin](next_obs.unsafe_ptr())
+        var next_val_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        var next_val_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](next_val_data.unsafe_ptr())
+        var p_critic = self.critic.params_view()
+        Self.CriticNet.forward[1](next_obs_t, next_val_t, p_critic)
+        var next_value = rebind[Scalar[dtype]](next_val_t[0, 0])
 
         # Compute GAE advantages and returns (inline for List compatibility)
         var advantages = List[Scalar[dtype]](capacity=Self.ROLLOUT)
@@ -1179,10 +1158,23 @@ struct DeepPPOAgent[
                     # ==========================================================
                     # Actor forward and update
                     # ==========================================================
+                    var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
+                        uninitialized=True
+                    )
+                    var obs_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](obs.unsafe_ptr())
+                    var logits_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+                    ](logits_data.unsafe_ptr())
+                    var p_actor = self.actor.params_view()
+                    Self.ActorNet.forward[1](obs_tensor, logits_tensor, p_actor)
+
                     var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
                         uninitialized=True
                     )
-                    self.actor.forward[1](obs, logits)
+                    for i in range(Self.ACTIONS):
+                        logits[i] = rebind[Scalar[dtype]](logits_tensor[0, i])
 
                     var probs = softmax_inline[dtype, Self.ACTIONS](logits)
                     var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
@@ -1244,54 +1236,66 @@ struct DeepPPOAgent[
                                 - Scalar[dtype](self.entropy_coef) * d_entropy
                             )
 
-                    # Backward through actor (use heap-allocated cache for large HIDDEN)
+                    # Backward through actor (heap-allocated cache to avoid stack overflow)
                     var actor_cache = List[Scalar[dtype]](
-                        capacity=Self.ACTOR_CACHE
+                        capacity=Self.ActorModel.CACHE_SIZE
                     )
-                    for _ in range(Self.ACTOR_CACHE):
+                    for _ in range(Self.ActorModel.CACHE_SIZE):
                         actor_cache.append(Scalar[dtype](0))
-                    var obs_tensor = LayoutTensor[
-                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-                    ](obs.unsafe_ptr())
-                    var logits_tensor = LayoutTensor[
-                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-                    ](logits.unsafe_ptr())
-                    var actor_cache_tensor = LayoutTensor[
+                    var actor_cache_t = LayoutTensor[
                         dtype,
-                        Layout.row_major(Self.ACTOR_CACHE, 1),
+                        Layout.row_major(1, Self.ActorModel.CACHE_SIZE),
                         MutAnyOrigin,
                     ](actor_cache.unsafe_ptr())
-                    self.actor.forward_with_cache[1](
-                        obs_tensor, logits_tensor, actor_cache_tensor
+                    Self.ActorNet.forward_with_cache[1](
+                        obs_tensor, logits_tensor, p_actor, actor_cache_t
                     )
 
+                    var d_logits_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+                    ](d_logits.unsafe_ptr())
                     var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](
                         fill=0
                     )
+                    var actor_grad_input_tensor = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](actor_grad_input.unsafe_ptr())
+                    var g_actor = self.actor.grads_view()
                     self.actor.zero_grads()
-                    self.actor.backward[1](
+                    Self.ActorNet.backward[1](
                         d_logits_tensor,
                         actor_grad_input_tensor,
-                        actor_cache_tensor,
+                        p_actor,
+                        actor_cache_t,
+                        g_actor,
                     )
-                    self.actor.update()
+                    self.actor.optimizer_step()
 
                     # ==========================================================
                     # Critic forward and update
                     # ==========================================================
-                    var value_out = InlineArray[Scalar[dtype], 1](
+                    var value_data = InlineArray[Scalar[dtype], 1](
                         uninitialized=True
                     )
+                    var value_out_t = LayoutTensor[
+                        dtype, Layout.row_major(1, 1), MutAnyOrigin
+                    ](value_data.unsafe_ptr())
                     var critic_cache = List[Scalar[dtype]](
-                        capacity=Self.CRITIC_CACHE
+                        capacity=Self.CriticModel.CACHE_SIZE
                     )
-                    for _ in range(Self.CRITIC_CACHE):
+                    for _ in range(Self.CriticModel.CACHE_SIZE):
                         critic_cache.append(Scalar[dtype](0))
-                    self.critic.forward_with_cache[1](
-                        obs, value_out, critic_cache
+                    var critic_cache_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(1, Self.CriticModel.CACHE_SIZE),
+                        MutAnyOrigin,
+                    ](critic_cache.unsafe_ptr())
+                    var p_critic_u = self.critic.params_view()
+                    Self.CriticNet.forward_with_cache[1](
+                        obs_tensor, value_out_t, p_critic_u, critic_cache_t
                     )
 
-                    var value = value_out[0]
+                    var value = rebind[Scalar[dtype]](value_out_t[0, 0])
 
                     # Value loss: (return - value)^2
                     var value_loss = (return_t - value) * (return_t - value)
@@ -1352,14 +1356,25 @@ struct DeepPPOAgent[
                         )
 
                     # Backward through critic
+                    var d_value_t = LayoutTensor[
+                        dtype, Layout.row_major(1, 1), MutAnyOrigin
+                    ](d_value.unsafe_ptr())
                     var critic_grad_input = InlineArray[
                         Scalar[dtype], Self.OBS
                     ](fill=0)
+                    var d_in_t = LayoutTensor[
+                        dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](critic_grad_input.unsafe_ptr())
+                    var g_critic = self.critic.grads_view()
                     self.critic.zero_grads()
-                    self.critic.backward_heap[1](
-                        d_value, critic_grad_input, critic_cache
+                    Self.CriticNet.backward[1](
+                        d_value_t,
+                        d_in_t,
+                        p_critic_u,
+                        critic_cache_t,
+                        g_critic,
                     )
-                    self.critic.update()
+                    self.critic.optimizer_step()
 
                     total_loss += (
                         policy_loss
@@ -1612,10 +1627,8 @@ struct DeepPPOAgent[
         # =====================================================================
         # Compile-time constants for buffer sizes
         # =====================================================================
-        comptime ACTOR_PARAMS = Self.ACTOR_PARAM_SIZE
-        comptime CRITIC_PARAMS = Self.CRITIC_PARAM_SIZE
-        comptime ACTOR_STATE = ACTOR_PARAMS * 2  # Adam: 2 states per param
-        comptime CRITIC_STATE = CRITIC_PARAMS * 2
+        comptime ACTOR_PARAMS = Self.ActorModel.PARAM_SIZE
+        comptime CRITIC_PARAMS = Self.CriticModel.PARAM_SIZE
 
         comptime ENV_OBS_SIZE = Self.n_envs * Self.OBS
         # Full environment state size (may be larger than OBS for complex physics)
@@ -1626,29 +1639,25 @@ struct DeepPPOAgent[
         comptime MINIBATCH = Self.GPU_MINIBATCH
         comptime MINIBATCH_OBS_SIZE = MINIBATCH * Self.OBS
         comptime MINIBATCH_LOGITS_SIZE = MINIBATCH * Self.ACTIONS
-        comptime MINIBATCH_CACHE_ACTOR = MINIBATCH * Self.ACTOR_CACHE
-        comptime MINIBATCH_CACHE_CRITIC = MINIBATCH * Self.CRITIC_CACHE
+        comptime MINIBATCH_CACHE_ACTOR = MINIBATCH * Self.ActorModel.CACHE_SIZE
+        comptime MINIBATCH_CACHE_CRITIC = MINIBATCH * Self.CriticModel.CACHE_SIZE
 
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
         comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
         comptime ROLLOUT_BLOCKS = (ROLLOUT_TOTAL + TPB - 1) // TPB
 
-        # Workspace sizes for forward passes (5-layer network = 4*HIDDEN intermediates)
-        # Formula: for seq(L,R,L,R,L), workspace = 4 * HIDDEN per sample
-        comptime WORKSPACE_PER_SAMPLE = 4 * Self.HIDDEN
+        # Workspace sizes for forward passes
+        comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
         comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
         comptime MINIBATCH_WORKSPACE_SIZE = MINIBATCH * WORKSPACE_PER_SAMPLE
 
         # =====================================================================
-        # Network parameter buffers
+        # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var actor_params_buf = ctx.enqueue_create_buffer[dtype](ACTOR_PARAMS)
-        var actor_grads_buf = ctx.enqueue_create_buffer[dtype](ACTOR_PARAMS)
-        var actor_state_buf = ctx.enqueue_create_buffer[dtype](ACTOR_STATE)
-
-        var critic_params_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
-        var critic_grads_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
-        var critic_state_buf = ctx.enqueue_create_buffer[dtype](CRITIC_STATE)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
+        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        gpu_actor.upload_from(self.actor, ctx)
+        gpu_critic.upload_from(self.critic, ctx)
 
         # Pre-allocated workspace buffers (prevents GPU memory leak!)
         var actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
@@ -1804,16 +1813,15 @@ struct DeepPPOAgent[
         var critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
 
         # =====================================================================
-        # Initialize network parameters on GPU
+        # Create LayoutTensor views from GPUNetworkState
         # =====================================================================
-        self.actor.copy_params_to_device(ctx, actor_params_buf)
-        self.actor.copy_state_to_device(ctx, actor_state_buf)
-        self.critic.copy_params_to_device(ctx, critic_params_buf)
-        self.critic.copy_state_to_device(ctx, critic_state_buf)
+        var actor_params_tensor = gpu_actor.params_view()
+        var actor_grads_tensor = gpu_actor.grads_view()
+        var actor_state_tensor = gpu_actor.state_view()
+        var critic_params_tensor = gpu_critic.params_view()
+        var critic_grads_tensor = gpu_critic.grads_view()
+        var critic_state_tensor = gpu_critic.state_view()
 
-        # =====================================================================
-        # Create LayoutTensor views
-        # =====================================================================
         # Full state tensor for environment (physics, metadata, etc.)
         var states_tensor = LayoutTensor[
             dtype,
@@ -1937,16 +1945,6 @@ struct DeepPPOAgent[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](kl_divergences_buf.unsafe_ptr())
 
-        var actor_grads_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](actor_grads_buf.unsafe_ptr())
-        var critic_grads_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
         ](actor_grad_partial_sums_buf.unsafe_ptr())
@@ -1959,57 +1957,31 @@ struct DeepPPOAgent[
         var critic_scale_tensor = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](critic_scale_buf.unsafe_ptr())
-        var actor_params_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](actor_params_buf.unsafe_ptr())
-        var critic_params_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](critic_params_buf.unsafe_ptr())
         var actor_cache_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            Layout.row_major(MINIBATCH, Self.ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](actor_cache_buf.unsafe_ptr())
         var critic_cache_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            Layout.row_major(MINIBATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
         ](critic_cache_buf.unsafe_ptr())
         var actor_grad_input_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            Layout.row_major(MINIBATCH, Self.ActorModel.IN_DIM),
             MutAnyOrigin,
         ](actor_grad_input_buf.unsafe_ptr())
         var critic_grad_input_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            Layout.row_major(MINIBATCH, Self.CriticModel.IN_DIM),
             MutAnyOrigin,
         ](critic_grad_input_buf.unsafe_ptr())
         var values_rollout_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            Layout.row_major(Self.n_envs, Self.CriticModel.OUT_DIM),
             MutAnyOrigin,
         ](values_buf.unsafe_ptr())
-        var actor_state_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                Self.ActorNetwork.MODEL.PARAM_SIZE,
-                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
-            ),
-            MutAnyOrigin,
-        ](actor_state_buf.unsafe_ptr())
-        var critic_state_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                Self.CriticNetwork.MODEL.PARAM_SIZE,
-                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
-            ),
-            MutAnyOrigin,
-        ](critic_state_buf.unsafe_ptr())
 
         # Define extract_obs_wrapper early (needed for initial reset)
         comptime extract_obs_wrapper = _extract_obs_from_state_kernel[
@@ -2062,8 +2034,8 @@ struct DeepPPOAgent[
             annealing_target_steps = num_episodes * 200
 
         # Store initial learning rates for annealing
-        var initial_actor_lr = self.actor_lr
-        var initial_critic_lr = self.critic_lr
+        var initial_actor_lr = Float64(Self.actor_lr)
+        var initial_critic_lr = Float64(Self.critic_lr)
         var initial_entropy_coef = self.entropy_coef
 
         # Kernel wrappers
@@ -2162,7 +2134,7 @@ struct DeepPPOAgent[
                 # Select actions for all environments
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
                 # Forward actor to get logits (using pre-allocated workspace)
-                Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+                Self.ActorModel.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     logits_tensor,
                     obs_tensor,
@@ -2171,7 +2143,7 @@ struct DeepPPOAgent[
                 )
 
                 # Forward critic to get values (using pre-allocated workspace)
-                Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+                Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     values_rollout_tensor,
                     obs_tensor,
@@ -2337,19 +2309,9 @@ struct DeepPPOAgent[
                             and self.checkpoint_path != ""
                             and completed_episodes % self.checkpoint_every == 0
                         ):
-                            # Copy params and state from std.gpu to CPU
-                            self.actor.copy_params_from_device(
-                                ctx, actor_params_buf
-                            )
-                            self.actor.copy_state_from_device(
-                                ctx, actor_state_buf
-                            )
-                            self.critic.copy_params_from_device(
-                                ctx, critic_params_buf
-                            )
-                            self.critic.copy_state_from_device(
-                                ctx, critic_state_buf
-                            )
+                            # Copy params and state from GPU to CPU
+                            gpu_actor.download_to(self.actor, ctx)
+                            gpu_critic.download_to(self.critic, ctx)
                             ctx.synchronize()
 
                             # Save checkpoint
@@ -2404,7 +2366,7 @@ struct DeepPPOAgent[
             var phase2_start = perf_counter_ns()
 
             # Get bootstrap values from final observations (using pre-allocated workspace)
-            Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+            Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
                 ctx,
                 values_rollout_tensor,
                 obs_tensor,
@@ -2621,10 +2583,10 @@ struct DeepPPOAgent[
                     var actor_start = perf_counter_ns()
 
                     # Zero actor gradients
-                    ctx.enqueue_memset(actor_grads_buf, 0)
+                    gpu_actor.zero_grads(ctx)
 
                     # Forward pass with cache (using pre-allocated workspace)
-                    Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
+                    Self.ActorModel.forward_gpu[MINIBATCH](
                         ctx,
                         actor_logits_tensor,
                         mb_obs_tensor,
@@ -2679,7 +2641,7 @@ struct DeepPPOAgent[
                             break  # Break from minibatch loop
 
                     # Backward pass (using pre-allocated workspace)
-                    Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
+                    Self.ActorModel.backward_gpu[MINIBATCH](
                         ctx,
                         actor_grad_input_tensor,
                         actor_grad_output_tensor,
@@ -2724,16 +2686,7 @@ struct DeepPPOAgent[
                         ctx.synchronize()
 
                     # Update actor parameters
-                    self.actor.step_num += 1
-                    Self.ActorNetwork.OPTIMIZER.step_gpu[
-                        Self.ActorNetwork.MODEL.PARAM_SIZE
-                    ](
-                        ctx,
-                        actor_params_tensor,
-                        actor_grads_tensor,
-                        actor_state_tensor,
-                        self.actor.step_num,
-                    )
+                    gpu_actor.optimizer_step(ctx)
                     ctx.synchronize()
                     actor_train_time_ns += perf_counter_ns() - actor_start
 
@@ -2741,10 +2694,10 @@ struct DeepPPOAgent[
                     var critic_start = perf_counter_ns()
 
                     # Zero critic gradients
-                    ctx.enqueue_memset(critic_grads_buf, 0)
+                    gpu_critic.zero_grads(ctx)
 
                     # Forward pass with cache (using pre-allocated workspace)
-                    Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
+                    Self.CriticModel.forward_gpu[MINIBATCH](
                         ctx,
                         critic_values_tensor,
                         mb_obs_tensor,
@@ -2787,7 +2740,7 @@ struct DeepPPOAgent[
                     ctx.synchronize()
 
                     # Backward pass (using pre-allocated workspace)
-                    Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
+                    Self.CriticModel.backward_gpu[MINIBATCH](
                         ctx,
                         critic_grad_input_tensor,
                         critic_grad_output_tensor,
@@ -2832,16 +2785,7 @@ struct DeepPPOAgent[
                         ctx.synchronize()
 
                     # Update critic parameters
-                    self.critic.step_num += 1
-                    Self.CriticNetwork.OPTIMIZER.step_gpu[
-                        Self.CriticNetwork.MODEL.PARAM_SIZE
-                    ](
-                        ctx,
-                        critic_params_tensor,
-                        critic_grads_tensor,
-                        critic_state_tensor,
-                        self.critic.step_num,
-                    )
+                    gpu_critic.optimizer_step(ctx)
                     ctx.synchronize()
                     critic_train_time_ns += perf_counter_ns() - critic_start
 
@@ -2883,10 +2827,8 @@ struct DeepPPOAgent[
         # =====================================================================
         # Copy final parameters back to CPU
         # =====================================================================
-        self.actor.copy_params_from_device(ctx, actor_params_buf)
-        self.actor.copy_state_from_device(ctx, actor_state_buf)
-        self.critic.copy_params_from_device(ctx, critic_params_buf)
-        self.critic.copy_state_from_device(ctx, critic_state_buf)
+        gpu_actor.download_to(self.actor, ctx)
+        gpu_critic.download_to(self.critic, ctx)
         ctx.synchronize()
 
         # =====================================================================
@@ -3018,10 +2960,8 @@ struct DeepPPOAgent[
         # =====================================================================
         # Compile-time constants for buffer sizes
         # =====================================================================
-        comptime ACTOR_PARAMS = Self.ACTOR_PARAM_SIZE
-        comptime CRITIC_PARAMS = Self.CRITIC_PARAM_SIZE
-        comptime ACTOR_STATE = ACTOR_PARAMS * 2  # Adam: 2 states per param
-        comptime CRITIC_STATE = CRITIC_PARAMS * 2
+        comptime ACTOR_PARAMS = Self.ActorModel.PARAM_SIZE
+        comptime CRITIC_PARAMS = Self.CriticModel.PARAM_SIZE
 
         comptime ENV_OBS_SIZE = Self.n_envs * Self.OBS
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
@@ -3030,28 +2970,25 @@ struct DeepPPOAgent[
         comptime MINIBATCH = Self.GPU_MINIBATCH
         comptime MINIBATCH_OBS_SIZE = MINIBATCH * Self.OBS
         comptime MINIBATCH_LOGITS_SIZE = MINIBATCH * Self.ACTIONS
-        comptime MINIBATCH_CACHE_ACTOR = MINIBATCH * Self.ACTOR_CACHE
-        comptime MINIBATCH_CACHE_CRITIC = MINIBATCH * Self.CRITIC_CACHE
+        comptime MINIBATCH_CACHE_ACTOR = MINIBATCH * Self.ActorModel.CACHE_SIZE
+        comptime MINIBATCH_CACHE_CRITIC = MINIBATCH * Self.CriticModel.CACHE_SIZE
 
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
         comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
         comptime ROLLOUT_BLOCKS = (ROLLOUT_TOTAL + TPB - 1) // TPB
 
         # Workspace sizes for forward passes
-        comptime WORKSPACE_PER_SAMPLE = 4 * Self.HIDDEN
+        comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
         comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
         comptime MINIBATCH_WORKSPACE_SIZE = MINIBATCH * WORKSPACE_PER_SAMPLE
 
         # =====================================================================
-        # Network parameter buffers (GPU)
+        # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var actor_params_buf = ctx.enqueue_create_buffer[dtype](ACTOR_PARAMS)
-        var actor_grads_buf = ctx.enqueue_create_buffer[dtype](ACTOR_PARAMS)
-        var actor_state_buf = ctx.enqueue_create_buffer[dtype](ACTOR_STATE)
-
-        var critic_params_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
-        var critic_grads_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
-        var critic_state_buf = ctx.enqueue_create_buffer[dtype](CRITIC_STATE)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
+        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        gpu_actor.upload_from(self.actor, ctx)
+        gpu_critic.upload_from(self.critic, ctx)
 
         # Pre-allocated workspace buffers
         var actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
@@ -3183,16 +3120,15 @@ struct DeepPPOAgent[
         var critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
 
         # =====================================================================
-        # Initialize network parameters on GPU
+        # Create LayoutTensor views from GPUNetworkState
         # =====================================================================
-        self.actor.copy_params_to_device(ctx, actor_params_buf)
-        self.actor.copy_state_to_device(ctx, actor_state_buf)
-        self.critic.copy_params_to_device(ctx, critic_params_buf)
-        self.critic.copy_state_to_device(ctx, critic_state_buf)
+        var actor_params_tensor = gpu_actor.params_view()
+        var actor_grads_tensor = gpu_actor.grads_view()
+        var actor_state_tensor = gpu_actor.state_view()
+        var critic_params_tensor = gpu_critic.params_view()
+        var critic_grads_tensor = gpu_critic.grads_view()
+        var critic_state_tensor = gpu_critic.state_view()
 
-        # =====================================================================
-        # Create LayoutTensor views
-        # =====================================================================
         var obs_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -3293,16 +3229,6 @@ struct DeepPPOAgent[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](kl_divergences_buf.unsafe_ptr())
 
-        var actor_grads_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](actor_grads_buf.unsafe_ptr())
-        var critic_grads_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](critic_grads_buf.unsafe_ptr())
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
         ](actor_grad_partial_sums_buf.unsafe_ptr())
@@ -3315,57 +3241,31 @@ struct DeepPPOAgent[
         var critic_scale_tensor = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](critic_scale_buf.unsafe_ptr())
-        var actor_params_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.ActorNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](actor_params_buf.unsafe_ptr())
-        var critic_params_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.CriticNetwork.MODEL.PARAM_SIZE),
-            MutAnyOrigin,
-        ](critic_params_buf.unsafe_ptr())
         var actor_cache_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.CACHE_SIZE),
+            Layout.row_major(MINIBATCH, Self.ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](actor_cache_buf.unsafe_ptr())
         var critic_cache_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.CACHE_SIZE),
+            Layout.row_major(MINIBATCH, Self.CriticModel.CACHE_SIZE),
             MutAnyOrigin,
         ](critic_cache_buf.unsafe_ptr())
         var actor_grad_input_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.ActorNetwork.MODEL.IN_DIM),
+            Layout.row_major(MINIBATCH, Self.ActorModel.IN_DIM),
             MutAnyOrigin,
         ](actor_grad_input_buf.unsafe_ptr())
         var critic_grad_input_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(MINIBATCH, Self.CriticNetwork.MODEL.IN_DIM),
+            Layout.row_major(MINIBATCH, Self.CriticModel.IN_DIM),
             MutAnyOrigin,
         ](critic_grad_input_buf.unsafe_ptr())
         var values_rollout_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs, Self.CriticNetwork.MODEL.OUT_DIM),
+            Layout.row_major(Self.n_envs, Self.CriticModel.OUT_DIM),
             MutAnyOrigin,
         ](values_buf.unsafe_ptr())
-        var actor_state_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                Self.ActorNetwork.MODEL.PARAM_SIZE,
-                Self.ActorNetwork.OPTIMIZER.STATE_PER_PARAM,
-            ),
-            MutAnyOrigin,
-        ](actor_state_buf.unsafe_ptr())
-        var critic_state_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                Self.CriticNetwork.MODEL.PARAM_SIZE,
-                Self.CriticNetwork.OPTIMIZER.STATE_PER_PARAM,
-            ),
-            MutAnyOrigin,
-        ](critic_state_buf.unsafe_ptr())
 
         # =====================================================================
         # Initialize all CPU environments and copy observations to GPU
@@ -3399,8 +3299,8 @@ struct DeepPPOAgent[
         if annealing_target_steps == 0:
             annealing_target_steps = num_episodes * 200
 
-        var initial_actor_lr = self.actor_lr
-        var initial_critic_lr = self.critic_lr
+        var initial_actor_lr = Float64(Self.actor_lr)
+        var initial_critic_lr = Float64(Self.critic_lr)
         var initial_entropy_coef = self.entropy_coef
 
         # Phase 3 kernel wrappers
@@ -3464,7 +3364,7 @@ struct DeepPPOAgent[
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
 
                 # Forward actor on GPU to get logits
-                Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+                Self.ActorModel.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     logits_tensor,
                     obs_tensor,
@@ -3473,7 +3373,7 @@ struct DeepPPOAgent[
                 )
 
                 # Forward critic on GPU to get values
-                Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+                Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     values_rollout_tensor,
                     obs_tensor,
@@ -3580,19 +3480,8 @@ struct DeepPPOAgent[
                             and self.checkpoint_path != ""
                             and completed_episodes % self.checkpoint_every == 0
                         ):
-                            self.actor.copy_params_from_device(
-                                ctx, actor_params_buf
-                            )
-                            self.actor.copy_state_from_device(
-                                ctx, actor_state_buf
-                            )
-                            self.critic.copy_params_from_device(
-                                ctx, critic_params_buf
-                            )
-                            self.critic.copy_state_from_device(
-                                ctx, critic_state_buf
-                            )
-                            ctx.synchronize()
+                            gpu_actor.download_to(self.actor, ctx)
+                            gpu_critic.download_to(self.critic, ctx)
                             self.save_checkpoint(self.checkpoint_path)
                             if verbose:
                                 print(
@@ -3636,7 +3525,7 @@ struct DeepPPOAgent[
             var phase2_start = perf_counter_ns()
 
             # Get bootstrap values from final observations
-            Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
+            Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
                 ctx,
                 values_rollout_tensor,
                 obs_tensor,
@@ -3814,9 +3703,9 @@ struct DeepPPOAgent[
                         ctx.synchronize()
 
                     # Train actor
-                    ctx.enqueue_memset(actor_grads_buf, 0)
+                    gpu_actor.zero_grads(ctx)
 
-                    Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
+                    Self.ActorModel.forward_gpu[MINIBATCH](
                         ctx,
                         actor_logits_tensor,
                         mb_obs_tensor,
@@ -3868,7 +3757,7 @@ struct DeepPPOAgent[
                                 )
                             break
 
-                    Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
+                    Self.ActorModel.backward_gpu[MINIBATCH](
                         ctx,
                         actor_grad_input_tensor,
                         actor_grad_output_tensor,
@@ -3912,22 +3801,13 @@ struct DeepPPOAgent[
                         )
                         ctx.synchronize()
 
-                    self.actor.step_num += 1
-                    Self.ActorNetwork.OPTIMIZER.step_gpu[
-                        Self.ActorNetwork.MODEL.PARAM_SIZE
-                    ](
-                        ctx,
-                        actor_params_tensor,
-                        actor_grads_tensor,
-                        actor_state_tensor,
-                        self.actor.step_num,
-                    )
+                    gpu_actor.optimizer_step(ctx)
                     ctx.synchronize()
 
                     # Train critic
-                    ctx.enqueue_memset(critic_grads_buf, 0)
+                    gpu_critic.zero_grads(ctx)
 
-                    Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
+                    Self.CriticModel.forward_gpu[MINIBATCH](
                         ctx,
                         critic_values_tensor,
                         mb_obs_tensor,
@@ -3966,7 +3846,7 @@ struct DeepPPOAgent[
                         )
                     ctx.synchronize()
 
-                    Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
+                    Self.CriticModel.backward_gpu[MINIBATCH](
                         ctx,
                         critic_grad_input_tensor,
                         critic_grad_output_tensor,
@@ -4010,16 +3890,7 @@ struct DeepPPOAgent[
                         )
                         ctx.synchronize()
 
-                    self.critic.step_num += 1
-                    Self.CriticNetwork.OPTIMIZER.step_gpu[
-                        Self.CriticNetwork.MODEL.PARAM_SIZE
-                    ](
-                        ctx,
-                        critic_params_tensor,
-                        critic_grads_tensor,
-                        critic_state_tensor,
-                        self.critic.step_num,
-                    )
+                    gpu_critic.optimizer_step(ctx)
                     ctx.synchronize()
 
             var phase3_end = perf_counter_ns()
@@ -4054,11 +3925,8 @@ struct DeepPPOAgent[
         # =====================================================================
         # Copy final parameters back to CPU
         # =====================================================================
-        self.actor.copy_params_from_device(ctx, actor_params_buf)
-        self.actor.copy_state_from_device(ctx, actor_state_buf)
-        self.critic.copy_params_from_device(ctx, critic_params_buf)
-        self.critic.copy_state_from_device(ctx, critic_state_buf)
-        ctx.synchronize()
+        gpu_actor.download_to(self.actor, ctx)
+        gpu_critic.download_to(self.critic, ctx)
 
         # =====================================================================
         # Print final timing summary
@@ -4115,10 +3983,10 @@ struct DeepPPOAgent[
         Args:
             filepath: Path to save the checkpoint file.
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+        var actor_param_size = Self.ActorModel.PARAM_SIZE
+        var critic_param_size = Self.CriticModel.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
 
         var content = String("# mojo-rl checkpoint v1\n")
         content += "# type: ppo_agent\n"
@@ -4148,8 +4016,8 @@ struct DeepPPOAgent[
         content += "gamma=" + String(self.gamma) + "\n"
         content += "gae_lambda=" + String(self.gae_lambda) + "\n"
         content += "clip_epsilon=" + String(self.clip_epsilon) + "\n"
-        content += "actor_lr=" + String(self.actor_lr) + "\n"
-        content += "critic_lr=" + String(self.critic_lr) + "\n"
+        content += "actor_lr=" + String(Float64(Self.actor_lr)) + "\n"
+        content += "critic_lr=" + String(Float64(Self.critic_lr)) + "\n"
         content += "entropy_coef=" + String(self.entropy_coef) + "\n"
         content += "value_loss_coef=" + String(self.value_loss_coef) + "\n"
         content += "num_epochs=" + String(self.num_epochs) + "\n"
@@ -4169,10 +4037,10 @@ struct DeepPPOAgent[
         Args:
             filepath: Path to the checkpoint file.
         """
-        var actor_param_size = self.actor.PARAM_SIZE
-        var critic_param_size = self.critic.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+        var actor_param_size = Self.ActorModel.PARAM_SIZE
+        var critic_param_size = Self.CriticModel.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
 
         var content = read_checkpoint_file(filepath)
         var lines = split_lines(content)
@@ -4218,9 +4086,9 @@ struct DeepPPOAgent[
             elif line.startswith("clip_epsilon="):
                 self.clip_epsilon = atof(String(line[13:]))
             elif line.startswith("actor_lr="):
-                self.actor_lr = atof(String(line[9:]))
+                pass  # compile-time parameter; ignore loaded value
             elif line.startswith("critic_lr="):
-                self.critic_lr = atof(String(line[10:]))
+                pass  # compile-time parameter; ignore loaded value
             elif line.startswith("entropy_coef="):
                 self.entropy_coef = atof(String(line[13:]))
             elif line.startswith("value_loss_coef="):

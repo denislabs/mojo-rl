@@ -43,7 +43,7 @@ from .sdl_video import *
 comptime Ptr = UnsafePointer
 
 
-from sys import CompilationTarget, is_little_endian, is_big_endian
+from std.sys import CompilationTarget, is_little_endian, is_big_endian
 from std.ffi import (
     _Global,
     OwnedDLHandle,

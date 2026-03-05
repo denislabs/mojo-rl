@@ -12,7 +12,7 @@ from .mat3 import Mat3
 from .quat import Quat
 
 
-struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
+struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     """4x4 matrix for 3D transformations.
 
     Row-major storage. Affine transforms store rotation/scale in top-left 3x3

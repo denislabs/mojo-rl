@@ -877,7 +877,7 @@ struct ComptimeActData(Copyable, Movable):
         for i in range(64):
             self.qpos0[i] = copy.qpos0[i]
 
-    fn __init__(out self, *, move: Self):
+    fn __init__(out self, *, deinit take: Self):
         self.motor_gears = take.motor_gears^
         self.motor_dof_adr = take.motor_dof_adr^
         self.joint_is_limited = take.joint_is_limited^

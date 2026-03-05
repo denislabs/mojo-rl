@@ -10,7 +10,7 @@ from .vec3 import Vec3
 from .quat import Quat
 
 
-struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
+struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     """3x3 matrix for rotations and linear transformations.
 
     Row-major storage: elements are stored as [row0, row1, row2].

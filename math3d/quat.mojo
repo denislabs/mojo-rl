@@ -11,7 +11,7 @@ from .vec3 import Vec3
 
 
 @fieldwise_init
-struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
+struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     """Unit quaternion for 3D rotations.
 
     Stores rotation as (w, x, y, z) where:

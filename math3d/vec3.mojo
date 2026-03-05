@@ -8,7 +8,7 @@ from std.math import sqrt, cos, sin
 
 
 @fieldwise_init
-struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
+struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     """3D vector for positions, velocities, and directions.
 
     Backed by SIMD[DType.float64, 4] for efficient math operations.

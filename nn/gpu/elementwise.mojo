@@ -17,7 +17,7 @@ from std.gpu.host.compile import get_gpu_target
 from layout import Layout, LayoutTensor
 from utils import IndexList
 from algorithm.functional import elementwise
-from sys import simd_width_of, align_of
+from std.sys import simd_width_of, align_of
 from std.math import tanh, exp, max
 
 
