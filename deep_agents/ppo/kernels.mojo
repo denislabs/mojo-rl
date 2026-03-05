@@ -432,9 +432,14 @@ fn ppo_critic_grad_kernel[
     # Inputs
     values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
     returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    value_loss_coef: Scalar[dtype],
     batch_size: Int,
 ):
-    """Compute gradient for PPO critic (MSE loss)."""
+    """Compute gradient for PPO critic (MSE loss scaled by value_loss_coef).
+
+    Gradient: value_loss_coef * d(0.5 * mean((value - target)^2)) / d_value
+            = value_loss_coef * (value - target) / BATCH_SIZE
+    """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= batch_size:
         return
@@ -442,8 +447,7 @@ fn ppo_critic_grad_kernel[
     var value = values[b, 0]
     var target = returns[b]
 
-    # MSE gradient: d(0.5 * (value - target)^2) / d_value = (value - target)
-    grad_values[b, 0] = (value - target) / Scalar[dtype](BATCH_SIZE)
+    grad_values[b, 0] = value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
 
 
 @always_inline
@@ -459,9 +463,10 @@ fn ppo_critic_grad_clipped_kernel[
     returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     old_values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     clip_epsilon: Scalar[dtype],
+    value_loss_coef: Scalar[dtype],
     batch_size: Int,
 ):
-    """Compute gradient for PPO critic with value clipping."""
+    """Compute gradient for PPO critic with value clipping, scaled by value_loss_coef."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= batch_size:
         return
@@ -489,10 +494,10 @@ fn ppo_critic_grad_clipped_kernel[
         elif value - old_value < -clip_epsilon:
             clip_sign = Scalar[dtype](0.0)
         grad_values[b, 0] = (
-            clip_sign * (value_clipped - target) / Scalar[dtype](BATCH_SIZE)
+            value_loss_coef * clip_sign * (value_clipped - target) / Scalar[dtype](BATCH_SIZE)
         )
     else:
-        grad_values[b, 0] = (value - target) / Scalar[dtype](BATCH_SIZE)
+        grad_values[b, 0] = value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
 
 
 @always_inline

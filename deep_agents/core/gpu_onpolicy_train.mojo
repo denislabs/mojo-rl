@@ -53,7 +53,13 @@ Usage:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
-from core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
+from core import (
+    TrainingMetrics,
+    GPUDiscreteEnv,
+    GPUContinuousEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
+)
 from nn.constants import dtype
 from nn.gpu import (
     accumulate_rewards_kernel,
@@ -683,11 +689,13 @@ fn run_onpolicy_discrete_train_gpu[
 fn run_onpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOnPolicyContinuousAgent,
+    CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
     target_episodes: Int = 0,
+    target_total_steps: Int = 0,
     sync_every: Int = 50,
     verbose: Bool = False,
     print_every: Int = 10,
@@ -702,12 +710,14 @@ fn run_onpolicy_continuous_train_gpu[
     Parameters:
         E: GPU environment type implementing GPUContinuousEnv.
         A: Agent type implementing GPUOnPolicyContinuousAgent.
+        CurriculumType: Curriculum scheduler type (default: NoCurriculumScheduler).
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_updates: Number of rollout + update cycles.
         target_episodes: Target number of episodes to complete (default: 0 = unlimited).
+        target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
@@ -793,6 +803,19 @@ fn run_onpolicy_continuous_train_gpu[
     for update in range(num_updates):
         if target_episodes > 0 and completed_episodes >= target_episodes:
             break
+
+        # Curriculum update (once per rollout, before collecting steps)
+        comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+            var progress = Float64(0.0)
+            if target_total_steps > 0:
+                progress = Float64(total_steps) / Float64(target_total_steps)
+            if progress > 1.0:
+                progress = 1.0
+            var curriculum_values = CurriculumType.get_params[dtype](
+                Scalar[dtype](progress)
+            )
+            E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
+
         # Phase 1: Collect rollout
         gpu_state.gpu_rollout_reset()
         for _t in range(A.ROLLOUT_LEN):

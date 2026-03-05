@@ -94,7 +94,7 @@ fn main() raises:
             anneal_lr=True,  # CleanRL uses LR annealing
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
-            norm_adv_per_minibatch=False,
+            norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
             checkpoint_path="ppo_half_cheetah.ckpt",
             normalize_rewards=True,

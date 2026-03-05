@@ -526,8 +526,10 @@ struct DeepPPOContinuousAgent[
         """
         var s = Self.CPUStateType()
         comptime sa_offset = (
-            Self.OBS * Self.HIDDEN + Self.HIDDEN
-            + Self.HIDDEN * Self.HIDDEN + Self.HIDDEN
+            Self.OBS * Self.HIDDEN
+            + Self.HIDDEN
+            + Self.HIDDEN * Self.HIDDEN
+            + Self.HIDDEN
         )
         comptime sa_size = Self.HIDDEN * Self.ACTIONS + Self.ACTIONS + Self.ACTIONS
         var stochastic_actor_params = LayoutTensor[
@@ -1992,26 +1994,6 @@ struct DeepPPOContinuousAgent[
         )
         ctx.synchronize()
 
-        # *** DIAGNOSTIC v5 ***
-        if self.train_step_count < 5:
-            print(
-                "[DIAG v5 rollout="
-                + String(self.train_step_count)
-                + "]"
-                + " normalize_rewards="
-                + String(self.normalize_rewards)
-                + " reward_rms.count="
-                + String(self.reward_rms.count)
-                + " reward_rms.mean="
-                + String(self.reward_rms.mean)
-            )
-        # sample raw reward[0] before normalization
-        print(
-            "[DIAG v5 raw r[0]="
-            + String(Float64(gpu_state.rollout_rewards_host[0]))
-            + "]"
-        )
-
         # Reward normalization (CleanRL-style).
         if self.normalize_rewards:
             # --- Inline RunningMeanStd.update ---
@@ -2020,18 +2002,6 @@ struct DeepPPOContinuousAgent[
             )
             self.reward_rms.normalize(
                 gpu_state.rollout_rewards_host, ROLLOUT_TOTAL
-            )
-            # *** DIAGNOSTIC: check if buffer write worked and rms persisted ***
-            print(
-                "[DIAG v5 POST-NORM]"
-                + " rms_count_now="
-                + String(self.reward_rms.count)
-                + " rms_mean_now="
-                + String(self.reward_rms.mean)
-                + " std="
-                + String(self.reward_rms.std())
-                + " r[0]_after="
-                + String(Float64(gpu_state.rollout_rewards_host[0]))
             )
 
         # GAE computation per environment
@@ -2088,89 +2058,6 @@ struct DeepPPOContinuousAgent[
         ctx.enqueue_copy(gpu_state.advantages_buf, gpu_state.advantages_host)
         ctx.enqueue_copy(gpu_state.returns_buf, gpu_state.returns_host)
         ctx.synchronize()
-
-        # ---------------------------------------------------------------
-        # DEBUG logging for first 5 rollouts (remove after debugging)
-        # ---------------------------------------------------------------
-        if self.train_step_count < 5:
-            var r_sum = Scalar[dtype](0.0)
-            var r_min = gpu_state.rollout_rewards_host[0]
-            var r_max = gpu_state.rollout_rewards_host[0]
-            var done_count = 0
-            var v_sum = Scalar[dtype](0.0)
-            var adv_sum = Scalar[dtype](0.0)
-            var adv_min = gpu_state.advantages_host[0]
-            var adv_max = gpu_state.advantages_host[0]
-            for i in range(ROLLOUT_TOTAL):
-                var r = gpu_state.rollout_rewards_host[i]
-                var v = gpu_state.rollout_values_host[i]
-                var d = gpu_state.rollout_dones_host[i]
-                var a = gpu_state.advantages_host[i]
-                r_sum += r
-                v_sum += v
-                adv_sum += a
-                if r < r_min:
-                    r_min = r
-                if r > r_max:
-                    r_max = r
-                if a < adv_min:
-                    adv_min = a
-                if a > adv_max:
-                    adv_max = a
-                if d > Scalar[dtype](0.5):
-                    done_count += 1
-            var r_mean = r_sum / Scalar[dtype](ROLLOUT_TOTAL)
-            var v_mean = v_sum / Scalar[dtype](ROLLOUT_TOTAL)
-            var adv_mean = adv_sum / Scalar[dtype](ROLLOUT_TOTAL)
-            var bs_sum = Scalar[dtype](0.0)
-            for i in range(Self.n_envs):
-                bs_sum += gpu_state.bootstrap_values_host[i]
-            var bs_mean = bs_sum / Scalar[dtype](Self.n_envs)
-            print(
-                "[DEBUG GAE rollout="
-                + String(self.train_step_count)
-                + "]"
-                + " reward mean="
-                + String(Float64(r_mean))[:25]
-                + " min="
-                + String(Float64(r_min))[:25]
-                + " max="
-                + String(Float64(r_max))[:25]
-                + " | dones="
-                + String(done_count)
-                + " | value_mean="
-                + String(Float64(v_mean))[:25]
-                + " | bootstrap_mean="
-                + String(Float64(bs_mean))[:25]
-                + " | adv mean="
-                + String(Float64(adv_mean))[:25]
-                + " min="
-                + String(Float64(adv_min))[:25]
-                + " max="
-                + String(Float64(adv_max))[:25]
-            )
-            var _ret_sum2 = Scalar[dtype](0.0)
-            var _ret_min2 = gpu_state.returns_host[0]
-            var _ret_max2 = gpu_state.returns_host[0]
-            for _j in range(ROLLOUT_TOTAL):
-                var _rv = gpu_state.returns_host[_j]
-                _ret_sum2 += _rv
-                if _rv < _ret_min2:
-                    _ret_min2 = _rv
-                if _rv > _ret_max2:
-                    _ret_max2 = _rv
-            var _ret_mean2 = _ret_sum2 / Scalar[dtype](ROLLOUT_TOTAL)
-            print(
-                "[DEBUG RETURNS rollout="
-                + String(self.train_step_count)
-                + "]"
-                + " mean="
-                + String(Float64(_ret_mean2))[:25]
-                + " min="
-                + String(Float64(_ret_min2))[:25]
-                + " max="
-                + String(Float64(_ret_max2))[:25]
-            )
 
     fn update_epochs_gpu(
         mut self,
@@ -2277,6 +2164,17 @@ struct DeepPPOContinuousAgent[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](gpu_state.critic_grad_partial_sums_buf.unsafe_ptr())
 
+        # LR annealing (linear decay, CleanRL-style)
+        if self.anneal_lr and self.target_total_steps > 0:
+            var total_updates = self.target_total_steps // Int(ROLLOUT_TOTAL)
+            if total_updates > 0:
+                var progress = Float64(update_idx) / Float64(total_updates)
+                if progress > 1.0:
+                    progress = 1.0
+                var lr_scale = 1.0 - progress
+                gpu_state.gpu_actor.set_lr_scale(lr_scale)
+                gpu_state.gpu_critic.set_lr_scale(lr_scale)
+
         # Entropy annealing
         var current_entropy_coef = self.entropy_coef
         if self.anneal_entropy and self.target_total_steps > 0:
@@ -2377,43 +2275,6 @@ struct DeepPPOContinuousAgent[
                     block_dim=(TPB,),
                 )
 
-                # ---------------------------------------------------------------
-                # DEBUG: PRE-normalization adv stats (first 5 rollouts, e0 mb0)
-                # ---------------------------------------------------------------
-                if self.train_step_count < 5 and epoch == 0 and mb_idx == 0:
-                    ctx.synchronize()
-                    ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host,
-                        gpu_state.mb_advantages_buf,
-                    )
-                    ctx.synchronize()
-                    var _pre_sum = Scalar[dtype](0.0)
-                    var _pre_min = gpu_state.mb_advantages_host[0]
-                    var _pre_max = gpu_state.mb_advantages_host[0]
-                    for _i in range(MINIBATCH):
-                        var _pv = gpu_state.mb_advantages_host[_i]
-                        _pre_sum += _pv
-                        if _pv < _pre_min:
-                            _pre_min = _pv
-                        if _pv > _pre_max:
-                            _pre_max = _pv
-                    var _pre_mean = _pre_sum / Scalar[dtype](MINIBATCH)
-                    print(
-                        "[DEBUG PRE-NORM adv rollout="
-                        + String(self.train_step_count)
-                        + "]"
-                        + " mean="
-                        + String(Float64(_pre_mean))[:25]
-                        + " min="
-                        + String(Float64(_pre_min))[:25]
-                        + " max="
-                        + String(Float64(_pre_max))[:25]
-                        + " | norm_adv_per_mb="
-                        + String(self.norm_adv_per_minibatch)
-                        + " normalize_adv="
-                        + String(self.normalize_advantages)
-                    )
-
                 # Per-minibatch advantage normalization (fully GPU fused)
                 if self.norm_adv_per_minibatch:
                     ctx.enqueue_function[
@@ -2423,60 +2284,6 @@ struct DeepPPOContinuousAgent[
                         mb_advantages_t,
                         grid_dim=(1,),
                         block_dim=(TPB,),
-                    )
-
-                # ---------------------------------------------------------------
-                # DEBUG: log minibatch stats for first 5 rollouts, epoch 0, mb 0
-                # ---------------------------------------------------------------
-                if self.train_step_count < 5 and epoch == 0 and mb_idx == 0:
-                    ctx.synchronize()
-                    ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host,
-                        gpu_state.mb_advantages_buf,
-                    )
-                    # Borrow kl_divergences_host to read old log probs
-                    ctx.enqueue_copy(
-                        gpu_state.kl_divergences_host,
-                        gpu_state.mb_old_log_probs_buf,
-                    )
-                    ctx.synchronize()
-                    var _adv_sum = Scalar[dtype](0.0)
-                    var _adv_min = gpu_state.mb_advantages_host[0]
-                    var _adv_max = gpu_state.mb_advantages_host[0]
-                    var _olp_sum = Scalar[dtype](0.0)
-                    var _olp_min = gpu_state.kl_divergences_host[0]
-                    var _olp_max = gpu_state.kl_divergences_host[0]
-                    for _i in range(MINIBATCH):
-                        var _av = gpu_state.mb_advantages_host[_i]
-                        var _lv = gpu_state.kl_divergences_host[_i]
-                        _adv_sum += _av
-                        _olp_sum += _lv
-                        if _av < _adv_min:
-                            _adv_min = _av
-                        if _av > _adv_max:
-                            _adv_max = _av
-                        if _lv < _olp_min:
-                            _olp_min = _lv
-                        if _lv > _olp_max:
-                            _olp_max = _lv
-                    var _adv_mean = _adv_sum / Scalar[dtype](MINIBATCH)
-                    var _olp_mean = _olp_sum / Scalar[dtype](MINIBATCH)
-                    print(
-                        "[DEBUG MB gather rollout="
-                        + String(self.train_step_count)
-                        + "]"
-                        + " adv mean="
-                        + String(Float64(_adv_mean))[:25]
-                        + " min="
-                        + String(Float64(_adv_min))[:25]
-                        + " max="
-                        + String(Float64(_adv_max))[:25]
-                        + " | old_lp mean="
-                        + String(Float64(_olp_mean))[:25]
-                        + " min="
-                        + String(Float64(_olp_min))[:25]
-                        + " max="
-                        + String(Float64(_olp_max))[:25]
                     )
 
                 # Actor forward
@@ -2504,102 +2311,6 @@ struct DeepPPOContinuousAgent[
                     grid_dim=(MINIBATCH_BLOCKS,),
                     block_dim=(TPB,),
                 )
-
-                # ---------------------------------------------------------------
-                # DEBUG: log actor output + grad + KL for first 5 rollouts, e0 mb0
-                # ---------------------------------------------------------------
-                if self.train_step_count < 5 and epoch == 0 and mb_idx == 0:
-                    ctx.synchronize()
-                    # Read actor output (means + log_stds per sample)
-                    var _ao_host = ctx.enqueue_create_host_buffer[dtype](
-                        MINIBATCH * Self.ACTOR_OUT
-                    )
-                    ctx.enqueue_copy(_ao_host, gpu_state.actor_logits_buf)
-                    # Read actor grad output
-                    var _ag_host = ctx.enqueue_create_host_buffer[dtype](
-                        MINIBATCH * Self.ACTOR_OUT
-                    )
-                    ctx.enqueue_copy(_ag_host, gpu_state.actor_grad_output_buf)
-                    # Read KL
-                    ctx.enqueue_copy(
-                        gpu_state.kl_divergences_host,
-                        gpu_state.kl_divergences_buf,
-                    )
-                    ctx.synchronize()
-                    var _m_sum = Scalar[dtype](0.0)
-                    var _l_sum = Scalar[dtype](0.0)
-                    var _g_sum = Scalar[dtype](0.0)
-                    var _kl_sum2 = Scalar[dtype](0.0)
-                    var _m_min = _ao_host[0]
-                    var _m_max = _ao_host[0]
-                    var _l_min = _ao_host[Self.ACTIONS]
-                    var _l_max = _ao_host[Self.ACTIONS]
-                    var _g_min = _ag_host[0]
-                    var _g_max = _ag_host[0]
-                    var _kl_min2 = gpu_state.kl_divergences_host[0]
-                    var _kl_max2 = gpu_state.kl_divergences_host[0]
-                    for _i in range(MINIBATCH):
-                        var _m = _ao_host[_i * Self.ACTOR_OUT]
-                        var _l = _ao_host[_i * Self.ACTOR_OUT + Self.ACTIONS]
-                        var _g = _ag_host[_i * Self.ACTOR_OUT]
-                        var _k = gpu_state.kl_divergences_host[_i]
-                        _m_sum += _m
-                        _l_sum += _l
-                        _g_sum += _g
-                        _kl_sum2 += _k
-                        if _m < _m_min:
-                            _m_min = _m
-                        if _m > _m_max:
-                            _m_max = _m
-                        if _l < _l_min:
-                            _l_min = _l
-                        if _l > _l_max:
-                            _l_max = _l
-                        if _g < _g_min:
-                            _g_min = _g
-                        if _g > _g_max:
-                            _g_max = _g
-                        if _k < _kl_min2:
-                            _kl_min2 = _k
-                        if _k > _kl_max2:
-                            _kl_max2 = _k
-                    var _m_avg = _m_sum / Scalar[dtype](MINIBATCH)
-                    var _l_avg = _l_sum / Scalar[dtype](MINIBATCH)
-                    var _g_avg = _g_sum / Scalar[dtype](MINIBATCH)
-                    var _kl_avg2 = _kl_sum2 / Scalar[dtype](MINIBATCH)
-                    print(
-                        "[DEBUG ACTOR FWD+GRAD rollout="
-                        + String(self.train_step_count)
-                        + "]"
-                        + " mean0 avg="
-                        + String(Float64(_m_avg))[:25]
-                        + " ["
-                        + String(Float64(_m_min))[:25]
-                        + ","
-                        + String(Float64(_m_max))[:25]
-                        + "]"
-                        + " | logstd0 avg="
-                        + String(Float64(_l_avg))[:25]
-                        + " ["
-                        + String(Float64(_l_min))[:25]
-                        + ","
-                        + String(Float64(_l_max))[:25]
-                        + "]"
-                        + " | KL mean="
-                        + String(Float64(_kl_avg2))[:25]
-                        + " ["
-                        + String(Float64(_kl_min2))[:25]
-                        + ","
-                        + String(Float64(_kl_max2))[:25]
-                        + "]"
-                        + " | grad_mean0 avg="
-                        + String(Float64(_g_avg))[:25]
-                        + " ["
-                        + String(Float64(_g_min))[:25]
-                        + ","
-                        + String(Float64(_g_max))[:25]
-                        + "]"
-                    )
 
                 # KL early stopping
                 if self.target_kl > 0.0:
@@ -2681,6 +2392,7 @@ struct DeepPPOContinuousAgent[
                         mb_returns_t,
                         mb_old_values_t,
                         Scalar[dtype](self.clip_epsilon),
+                        Scalar[dtype](self.value_loss_coef),
                         MINIBATCH,
                         grid_dim=(MINIBATCH_BLOCKS,),
                         block_dim=(TPB,),
@@ -2692,63 +2404,10 @@ struct DeepPPOContinuousAgent[
                         critic_grad_output_t,
                         critic_values_t,
                         mb_returns_t,
+                        Scalar[dtype](self.value_loss_coef),
                         MINIBATCH,
                         grid_dim=(MINIBATCH_BLOCKS,),
                         block_dim=(TPB,),
-                    )
-
-                # Debug: critic predicted values vs target returns
-                if self.train_step_count < 5 and epoch == 0 and mb_idx == 0:
-                    ctx.synchronize()
-                    ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host,
-                        gpu_state.critic_values_buf,
-                    )
-                    ctx.synchronize()
-                    var _cv_sum = Scalar[dtype](0.0)
-                    var _cv_min = gpu_state.mb_advantages_host[0]
-                    var _cv_max = gpu_state.mb_advantages_host[0]
-                    for _i in range(MINIBATCH):
-                        var _cv = gpu_state.mb_advantages_host[_i]
-                        _cv_sum += _cv
-                        if _cv < _cv_min:
-                            _cv_min = _cv
-                        if _cv > _cv_max:
-                            _cv_max = _cv
-                    var _cv_avg = _cv_sum / Scalar[dtype](MINIBATCH)
-                    ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host, gpu_state.mb_returns_buf
-                    )
-                    ctx.synchronize()
-                    var _ret_sum = Scalar[dtype](0.0)
-                    var _ret_min = gpu_state.mb_advantages_host[0]
-                    var _ret_max = gpu_state.mb_advantages_host[0]
-                    for _i in range(MINIBATCH):
-                        var _ret = gpu_state.mb_advantages_host[_i]
-                        _ret_sum += _ret
-                        if _ret < _ret_min:
-                            _ret_min = _ret
-                        if _ret > _ret_max:
-                            _ret_max = _ret
-                    var _ret_avg = _ret_sum / Scalar[dtype](MINIBATCH)
-                    print(
-                        "[DEBUG CRITIC VALUES rollout="
-                        + String(self.train_step_count)
-                        + "]"
-                        + " critic_val avg="
-                        + String(Float64(_cv_avg))[:25]
-                        + " ["
-                        + String(Float64(_cv_min))[:25]
-                        + ","
-                        + String(Float64(_cv_max))[:25]
-                        + "]"
-                        + " | returns avg="
-                        + String(Float64(_ret_avg))[:25]
-                        + " ["
-                        + String(Float64(_ret_min))[:25]
-                        + ","
-                        + String(Float64(_ret_max))[:25]
-                        + "]"
                     )
 
                 # Critic backward
@@ -2819,11 +2478,12 @@ struct DeepPPOContinuousAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
-        return run_onpolicy_continuous_train_gpu[EnvType](
+        return run_onpolicy_continuous_train_gpu[EnvType, Self, CurriculumType](
             self,
             ctx,
             num_updates=10_000_000,
             target_episodes=num_episodes,
+            target_total_steps=self.target_total_steps,
             verbose=verbose,
             print_every=print_every,
         )

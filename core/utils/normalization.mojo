@@ -274,9 +274,14 @@ struct RunningMeanStd:
     fn normalize[
         dt: DType
     ](self, mut buffer: HostBuffer[dt], n: Int, eps: Float64 = 1e-8):
-        """Normalize values in-place using running statistics.
+        """Normalize values in-place using running statistics (CleanRL-style).
 
-        Computes: buffer[i] = (buffer[i] - mean) / (std + eps)
+        Computes: buffer[i] = buffer[i] / (std + eps)
+
+        Only divides by std — does NOT subtract the mean. This matches
+        CleanRL's VecNormalize reward normalization, which preserves the
+        sign/magnitude of rewards relative to zero and avoids systematically
+        shifting rewards lower as the running mean grows.
 
         Args:
             buffer: HostBuffer to normalize in-place.
@@ -285,6 +290,4 @@ struct RunningMeanStd:
         """
         var std_val = self.std()
         for i in range(n):
-            buffer[i] = Scalar[dt](
-                (Float64(buffer[i]) - self.mean) / (std_val + eps)
-            )
+            buffer[i] = Scalar[dt](Float64(buffer[i]) / (std_val + eps))
