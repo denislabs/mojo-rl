@@ -1,3 +1,8 @@
 from .ppo_continuous import DeepPPOContinuousAgent
 from .ppo import DeepPPOAgent
-from .state import PPODiscreteState, PPOContinuousState
+from .state import (
+    PPODiscreteState,
+    PPOContinuousState,
+    PPODiscreteGPUState,
+    PPOContinuousGPUState,
+)

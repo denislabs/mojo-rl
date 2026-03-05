@@ -58,7 +58,7 @@ from nn.constants import dtype
 # =============================================================================
 
 
-trait GPUOffPolicyState:
+trait GPUOffPolicyState(ImplicitlyDestructible):
     """GPU-side buffer container for off-policy agents.
 
     Holds all GPU-resident state: network DeviceBuffers (online + target),

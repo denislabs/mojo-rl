@@ -27,15 +27,17 @@ Usage:
 """
 
 from layout import Layout, LayoutTensor
-from nn.constants import dtype
+from nn.constants import dtype, TPB
 from nn.model import Model
 from nn.optimizer import Optimizer
-from nn.training import NetworkState, Network
+from nn.training import NetworkState, Network, GPUNetworkState
 from nn.initializer import Xavier, Kaiming
 from deep_agents.core.onpolicy_train import (
     OnPolicyDiscreteState,
     OnPolicyContinuousState,
 )
+from deep_agents.core.gpu_onpolicy_train import GPUOnPolicyState
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 
 # =============================================================================
@@ -340,3 +342,641 @@ struct PPOContinuousState[
     fn clear(mut self) -> None:
         """Reset the rollout buffer write pointer."""
         self.buffer_idx = 0
+
+# =============================================================================
+# PPODiscreteGPUState — GPU state container for discrete-action PPO
+# =============================================================================
+
+
+struct PPODiscreteGPUState[
+    ActorModel: Model,
+    ActorOpt: Optimizer,
+    CriticModel: Model,
+    CriticOpt: Optimizer,
+    obs_dim: Int,
+    num_actions: Int,
+    rollout_len: Int,
+    n_envs: Int,
+    gpu_minibatch: Int,
+](Movable, GPUOnPolicyState):
+    """GPU-resident state for discrete-action PPO training.
+
+    Holds all DeviceBuffers needed for one GPU PPO training loop:
+      - Actor and critic GPUNetworkStates (params + grads + optimizer state)
+      - Rollout buffers (obs, actions, log_probs, rewards, values, dones)
+      - Advantage and return buffers (computed by compute_advantages_gpu)
+      - Pinned host buffers for GAE computation and episode tracking
+      - Minibatch scratch buffers for GPU update epochs
+      - Training workspace buffers (logits, cache, grad output, KL, etc.)
+
+    Parameters:
+        ActorModel: Actor network model type.
+        ActorOpt: Actor optimizer type.
+        CriticModel: Critic network model type.
+        CriticOpt: Critic optimizer type.
+        obs_dim: Observation space dimension.
+        num_actions: Number of discrete actions.
+        rollout_len: Steps per rollout per environment.
+        n_envs: Number of parallel environments (sizes rollout buffers).
+        gpu_minibatch: Minibatch size for update epochs.
+    """
+
+    comptime OBS = Self.obs_dim
+    comptime ACTIONS = Self.num_actions
+    comptime ROLLOUT = Self.rollout_len
+    comptime N = Self.n_envs
+    comptime MB = Self.gpu_minibatch
+    comptime ROLLOUT_TOTAL = Self.ROLLOUT * Self.N
+
+    comptime ACTOR_PARAMS = Self.ActorModel.PARAM_SIZE
+    comptime CRITIC_PARAMS = Self.CriticModel.PARAM_SIZE
+    comptime ACTOR_GRAD_BLOCKS = (Self.ACTOR_PARAMS + TPB - 1) // TPB
+    comptime CRITIC_GRAD_BLOCKS = (Self.CRITIC_PARAMS + TPB - 1) // TPB
+
+    comptime ACTOR_WS_ENV = Self.N * Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime ACTOR_WS_MB = Self.MB * Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime CRITIC_WS_ENV = Self.N * Self.CriticModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime CRITIC_WS_MB = Self.MB * Self.CriticModel.WORKSPACE_SIZE_PER_SAMPLE
+
+    # GPU networks (params + grads + optimizer state)
+    var gpu_actor: GPUNetworkState[Self.ActorModel, Self.ActorOpt]
+    var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
+
+    # Rollout buffers (ROLLOUT_LEN * N_ENVS elements)
+    var rollout_obs_buf: DeviceBuffer[dtype]       # [ROLLOUT_TOTAL * OBS_DIM]
+    var rollout_actions_buf: DeviceBuffer[dtype]   # [ROLLOUT_TOTAL]
+    var rollout_log_probs_buf: DeviceBuffer[dtype] # [ROLLOUT_TOTAL]
+    var rollout_values_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL]
+    var rollout_rewards_buf: DeviceBuffer[dtype]   # [ROLLOUT_TOTAL]
+    var rollout_dones_buf: DeviceBuffer[dtype]     # [ROLLOUT_TOTAL]
+    var rollout_step: Int
+
+    # Advantage and return buffers (filled by compute_advantages_gpu)
+    var advantages_buf: DeviceBuffer[dtype]        # [ROLLOUT_TOTAL]
+    var returns_buf: DeviceBuffer[dtype]           # [ROLLOUT_TOTAL]
+
+    # Pinned host buffers for GAE computation
+    var rollout_rewards_host: HostBuffer[dtype]    # [ROLLOUT_TOTAL]
+    var rollout_values_host: HostBuffer[dtype]     # [ROLLOUT_TOTAL]
+    var rollout_dones_host: HostBuffer[dtype]      # [ROLLOUT_TOTAL]
+    var advantages_host: HostBuffer[dtype]         # [ROLLOUT_TOTAL]
+    var returns_host: HostBuffer[dtype]            # [ROLLOUT_TOTAL]
+    var bootstrap_values_host: HostBuffer[dtype]   # [N_ENVS]
+
+    # Minibatch scratch buffers
+    var mb_obs_buf: DeviceBuffer[dtype]            # [MB * OBS_DIM]
+    var mb_actions_buf: DeviceBuffer[dtype]        # [MB]
+    var mb_advantages_buf: DeviceBuffer[dtype]     # [MB]
+    var mb_returns_buf: DeviceBuffer[dtype]        # [MB]
+    var mb_old_log_probs_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_old_values_buf: DeviceBuffer[dtype]     # [MB]
+    var mb_indices_buf: DeviceBuffer[DType.int32]  # [MB]
+    var mb_indices_host: HostBuffer[DType.int32]   # [MB]
+
+    # Training workspace buffers
+    var logits_buf: DeviceBuffer[dtype]                  # [N_ENVS * NUM_ACTIONS]
+    var actor_logits_buf: DeviceBuffer[dtype]            # [MB * NUM_ACTIONS]
+    var actor_cache_buf: DeviceBuffer[dtype]             # [MB * ActorModel.CACHE_SIZE]
+    var actor_grad_output_buf: DeviceBuffer[dtype]       # [MB * NUM_ACTIONS]
+    var actor_grad_input_buf: DeviceBuffer[dtype]        # [MB * OBS_DIM]
+    var critic_values_buf: DeviceBuffer[dtype]           # [MB]
+    var critic_cache_buf: DeviceBuffer[dtype]            # [MB * CriticModel.CACHE_SIZE]
+    var critic_grad_output_buf: DeviceBuffer[dtype]      # [MB]
+    var critic_grad_input_buf: DeviceBuffer[dtype]       # [MB * OBS_DIM]
+    var kl_divergences_buf: DeviceBuffer[dtype]          # [MB]
+    var kl_divergences_host: HostBuffer[dtype]           # [MB]
+    var mb_advantages_host: HostBuffer[dtype]            # [MB]
+    var actor_grad_partial_sums_buf: DeviceBuffer[dtype] # [ACTOR_GRAD_BLOCKS]
+    var critic_grad_partial_sums_buf: DeviceBuffer[dtype]# [CRITIC_GRAD_BLOCKS]
+    var actor_scale_buf: DeviceBuffer[dtype]             # [1]
+    var critic_scale_buf: DeviceBuffer[dtype]            # [1]
+    var actor_env_workspace_buf: DeviceBuffer[dtype]     # [N_ENVS * WORKSPACE_PER_SAMPLE]
+    var actor_mb_workspace_buf: DeviceBuffer[dtype]      # [MB * WORKSPACE_PER_SAMPLE]
+    var critic_env_workspace_buf: DeviceBuffer[dtype]    # [N_ENVS * WORKSPACE_PER_SAMPLE]
+    var critic_mb_workspace_buf: DeviceBuffer[dtype]     # [MB * WORKSPACE_PER_SAMPLE]
+
+    # Env-step scratch buffers (values and log_probs for select_actions_with_meta_gpu)
+    var values_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
+    var log_probs_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all GPU device and pinned host buffers."""
+        self.gpu_actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
+        self.gpu_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
+
+        self.rollout_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL * Self.OBS
+        )
+        self.rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_log_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_values_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_dones_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_step = 0
+
+        self.advantages_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+
+        self.rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_values_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_dones_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.advantages_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](Self.N)
+
+        self.mb_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MB * Self.OBS)
+        self.mb_actions_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_returns_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_old_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.MB)
+        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](Self.MB)
+
+        self.logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N * Self.ACTIONS
+        )
+        self.actor_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ACTIONS
+        )
+        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ActorModel.CACHE_SIZE
+        )
+        self.actor_grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ACTIONS
+        )
+        self.actor_grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.OBS
+        )
+        self.critic_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.CriticModel.CACHE_SIZE
+        )
+        self.critic_grad_output_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.critic_grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.OBS
+        )
+        self.kl_divergences_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+
+        self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ACTOR_GRAD_BLOCKS
+        )
+        self.critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
+            Self.CRITIC_GRAD_BLOCKS
+        )
+        self.actor_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+        self.critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+
+        comptime actor_ws_size = Self.ACTOR_WS_ENV if Self.ACTOR_WS_ENV > 0 else 1
+        comptime actor_mb_ws_size = Self.ACTOR_WS_MB if Self.ACTOR_WS_MB > 0 else 1
+        comptime critic_ws_size = Self.CRITIC_WS_ENV if Self.CRITIC_WS_ENV > 0 else 1
+        comptime critic_mb_ws_size = Self.CRITIC_WS_MB if Self.CRITIC_WS_MB > 0 else 1
+
+        self.actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            actor_ws_size
+        )
+        self.actor_mb_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            actor_mb_ws_size
+        )
+        self.critic_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            critic_ws_size
+        )
+        self.critic_mb_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            critic_mb_ws_size
+        )
+
+        self.values_env_buf = ctx.enqueue_create_buffer[dtype](Self.N)
+        self.log_probs_env_buf = ctx.enqueue_create_buffer[dtype](Self.N)
+
+    # -------------------------------------------------------------------------
+    # GPUOnPolicyState trait methods
+    # -------------------------------------------------------------------------
+
+    fn gpu_store_pre_step[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        log_probs_buf: DeviceBuffer[dtype],
+        values_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
+        from deep_agents.ppo.kernels import _store_pre_step_kernel
+
+        var t_offset = self.rollout_step * N_ENVS
+        var r_obs = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](self.rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
+        var r_actions = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_actions_buf.unsafe_ptr() + t_offset)
+        var r_log_probs = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_log_probs_buf.unsafe_ptr() + t_offset)
+        var r_values = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_values_buf.unsafe_ptr() + t_offset)
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var log_probs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](log_probs_buf.unsafe_ptr())
+        var values_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](values_buf.unsafe_ptr())
+
+        comptime store_wrapper = _store_pre_step_kernel[dtype, N_ENVS, Self.OBS]
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+        ctx.enqueue_function[store_wrapper, store_wrapper](
+            r_obs, r_actions, r_log_probs, r_values,
+            obs_t, actions_t, log_probs_t, values_t,
+            grid_dim=(blocks,), block_dim=(TPB,),
+        )
+
+    fn gpu_store_post_step[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        rewards_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
+        from deep_agents.ppo.kernels import _store_post_step_kernel
+
+        var t_offset = self.rollout_step * N_ENVS
+        var r_rewards = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_rewards_buf.unsafe_ptr() + t_offset)
+        var r_dones = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_dones_buf.unsafe_ptr() + t_offset)
+
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+        ctx.enqueue_function[store_wrapper, store_wrapper](
+            r_rewards, r_dones, rewards_t, dones_t,
+            grid_dim=(blocks,), block_dim=(TPB,),
+        )
+        self.rollout_step += 1
+
+    fn gpu_rollout_is_full(self) -> Bool:
+        """Return True when rollout_len steps have been stored."""
+        return self.rollout_step >= Self.ROLLOUT
+
+
+# =============================================================================
+# PPOContinuousGPUState — GPU state container for continuous-action PPO
+# =============================================================================
+
+
+struct PPOContinuousGPUState[
+    ActorModel: Model,
+    ActorOpt: Optimizer,
+    CriticModel: Model,
+    CriticOpt: Optimizer,
+    obs_dim: Int,
+    action_dim: Int,
+    rollout_len: Int,
+    n_envs: Int,
+    gpu_minibatch: Int,
+](Movable, GPUOnPolicyState):
+    """GPU-resident state for continuous-action PPO training.
+
+    Same layout as PPODiscreteGPUState but rollout_actions_buf is sized
+    ROLLOUT_TOTAL * ACTION_DIM (one float per action dimension).
+
+    Parameters:
+        ActorModel: Actor network model type.
+        ActorOpt: Actor optimizer type.
+        CriticModel: Critic network model type.
+        CriticOpt: Critic optimizer type.
+        obs_dim: Observation space dimension.
+        action_dim: Continuous action space dimension.
+        rollout_len: Steps per rollout per environment.
+        n_envs: Number of parallel environments.
+        gpu_minibatch: Minibatch size for update epochs.
+    """
+
+    comptime OBS = Self.obs_dim
+    comptime ACTIONS = Self.action_dim
+    comptime ROLLOUT = Self.rollout_len
+    comptime N = Self.n_envs
+    comptime MB = Self.gpu_minibatch
+    comptime ROLLOUT_TOTAL = Self.ROLLOUT * Self.N
+
+    comptime ACTOR_PARAMS = Self.ActorModel.PARAM_SIZE
+    comptime CRITIC_PARAMS = Self.CriticModel.PARAM_SIZE
+    comptime ACTOR_GRAD_BLOCKS = (Self.ACTOR_PARAMS + TPB - 1) // TPB
+    comptime CRITIC_GRAD_BLOCKS = (Self.CRITIC_PARAMS + TPB - 1) // TPB
+
+    comptime ACTOR_WS_ENV = Self.N * Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime ACTOR_WS_MB = Self.MB * Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime CRITIC_WS_ENV = Self.N * Self.CriticModel.WORKSPACE_SIZE_PER_SAMPLE
+    comptime CRITIC_WS_MB = Self.MB * Self.CriticModel.WORKSPACE_SIZE_PER_SAMPLE
+
+    # GPU networks
+    var gpu_actor: GPUNetworkState[Self.ActorModel, Self.ActorOpt]
+    var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
+
+    # Rollout buffers
+    var rollout_obs_buf: DeviceBuffer[dtype]        # [ROLLOUT_TOTAL * OBS_DIM]
+    var rollout_actions_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL * ACTION_DIM]
+    var rollout_log_probs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_values_buf: DeviceBuffer[dtype]     # [ROLLOUT_TOTAL]
+    var rollout_rewards_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL]
+    var rollout_dones_buf: DeviceBuffer[dtype]      # [ROLLOUT_TOTAL]
+    var rollout_step: Int
+
+    # Advantage and return buffers
+    var advantages_buf: DeviceBuffer[dtype]         # [ROLLOUT_TOTAL]
+    var returns_buf: DeviceBuffer[dtype]            # [ROLLOUT_TOTAL]
+
+    # Pinned host buffers for GAE
+    var rollout_rewards_host: HostBuffer[dtype]
+    var rollout_values_host: HostBuffer[dtype]
+    var rollout_dones_host: HostBuffer[dtype]
+    var advantages_host: HostBuffer[dtype]
+    var returns_host: HostBuffer[dtype]
+    var bootstrap_values_host: HostBuffer[dtype]    # [N_ENVS]
+
+    # Minibatch scratch
+    var mb_obs_buf: DeviceBuffer[dtype]             # [MB * OBS_DIM]
+    var mb_actions_buf: DeviceBuffer[dtype]         # [MB * ACTION_DIM]
+    var mb_advantages_buf: DeviceBuffer[dtype]      # [MB]
+    var mb_returns_buf: DeviceBuffer[dtype]         # [MB]
+    var mb_old_log_probs_buf: DeviceBuffer[dtype]   # [MB]
+    var mb_old_values_buf: DeviceBuffer[dtype]      # [MB]
+    var mb_indices_buf: DeviceBuffer[DType.int32]   # [MB]
+    var mb_indices_host: HostBuffer[DType.int32]    # [MB]
+
+    # Training workspace
+    var actor_means_buf: DeviceBuffer[dtype]         # [N_ENVS * ACTION_DIM]
+    var actor_logstds_buf: DeviceBuffer[dtype]       # [N_ENVS * ACTION_DIM]
+    var actor_logits_buf: DeviceBuffer[dtype]        # [MB * ACTION_DIM * 2]
+    var actor_cache_buf: DeviceBuffer[dtype]         # [MB * ActorModel.CACHE_SIZE]
+    var actor_grad_output_buf: DeviceBuffer[dtype]   # [MB * ACTION_DIM * 2]
+    var actor_grad_input_buf: DeviceBuffer[dtype]    # [MB * OBS_DIM]
+    var critic_values_buf: DeviceBuffer[dtype]       # [MB]
+    var critic_cache_buf: DeviceBuffer[dtype]        # [MB * CriticModel.CACHE_SIZE]
+    var critic_grad_output_buf: DeviceBuffer[dtype]  # [MB]
+    var critic_grad_input_buf: DeviceBuffer[dtype]   # [MB * OBS_DIM]
+    var kl_divergences_buf: DeviceBuffer[dtype]      # [MB]
+    var kl_divergences_host: HostBuffer[dtype]       # [MB]
+    var mb_advantages_host: HostBuffer[dtype]        # [MB]
+    var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
+    var critic_grad_partial_sums_buf: DeviceBuffer[dtype] # [CRITIC_GRAD_BLOCKS]
+    var actor_scale_buf: DeviceBuffer[dtype]         # [1]
+    var critic_scale_buf: DeviceBuffer[dtype]        # [1]
+    var actor_env_workspace_buf: DeviceBuffer[dtype]
+    var actor_mb_workspace_buf: DeviceBuffer[dtype]
+    var critic_env_workspace_buf: DeviceBuffer[dtype]
+    var critic_mb_workspace_buf: DeviceBuffer[dtype]
+
+    # Env-step scratch
+    var values_env_buf: DeviceBuffer[dtype]          # [N_ENVS]
+    var log_probs_env_buf: DeviceBuffer[dtype]       # [N_ENVS]
+    var sampled_actions_buf: DeviceBuffer[dtype]     # [N_ENVS * ACTION_DIM]
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all GPU device and pinned host buffers."""
+        self.gpu_actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
+        self.gpu_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
+
+        self.rollout_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL * Self.OBS
+        )
+        self.rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL * Self.ACTIONS
+        )
+        self.rollout_log_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_values_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_dones_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_step = 0
+
+        self.advantages_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+
+        self.rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_values_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.rollout_dones_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.advantages_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](Self.N)
+
+        self.mb_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MB * Self.OBS)
+        self.mb_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ACTIONS
+        )
+        self.mb_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_returns_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_old_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.MB)
+        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](Self.MB)
+
+        self.actor_means_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N * Self.ACTIONS
+        )
+        self.actor_logstds_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N * Self.ACTIONS
+        )
+        self.actor_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ACTIONS * 2
+        )
+        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ActorModel.CACHE_SIZE
+        )
+        self.actor_grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.ACTIONS * 2
+        )
+        self.actor_grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.OBS
+        )
+        self.critic_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.CriticModel.CACHE_SIZE
+        )
+        self.critic_grad_output_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.critic_grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MB * Self.OBS
+        )
+        self.kl_divergences_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+
+        self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ACTOR_GRAD_BLOCKS
+        )
+        self.critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
+            Self.CRITIC_GRAD_BLOCKS
+        )
+        self.actor_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+        self.critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+
+        comptime actor_ws_size = Self.ACTOR_WS_ENV if Self.ACTOR_WS_ENV > 0 else 1
+        comptime actor_mb_ws_size = Self.ACTOR_WS_MB if Self.ACTOR_WS_MB > 0 else 1
+        comptime critic_ws_size = Self.CRITIC_WS_ENV if Self.CRITIC_WS_ENV > 0 else 1
+        comptime critic_mb_ws_size = Self.CRITIC_WS_MB if Self.CRITIC_WS_MB > 0 else 1
+
+        self.actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            actor_ws_size
+        )
+        self.actor_mb_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            actor_mb_ws_size
+        )
+        self.critic_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            critic_ws_size
+        )
+        self.critic_mb_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            critic_mb_ws_size
+        )
+
+        self.values_env_buf = ctx.enqueue_create_buffer[dtype](Self.N)
+        self.log_probs_env_buf = ctx.enqueue_create_buffer[dtype](Self.N)
+        self.sampled_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N * Self.ACTIONS
+        )
+
+    # -------------------------------------------------------------------------
+    # GPUOnPolicyState trait methods
+    # -------------------------------------------------------------------------
+
+    fn gpu_store_pre_step[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        log_probs_buf: DeviceBuffer[dtype],
+        values_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
+        from deep_agents.ppo.kernels import _store_continuous_pre_step_kernel
+
+        var t_offset = self.rollout_step * N_ENVS
+        var r_obs = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](self.rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
+        var r_actions = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](self.rollout_actions_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
+        var r_log_probs = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_log_probs_buf.unsafe_ptr() + t_offset)
+        var r_values = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_values_buf.unsafe_ptr() + t_offset)
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var log_probs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](log_probs_buf.unsafe_ptr())
+        var values_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](values_buf.unsafe_ptr())
+
+        comptime store_wrapper = _store_continuous_pre_step_kernel[
+            dtype, N_ENVS, Self.OBS, Self.ACTIONS
+        ]
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+        ctx.enqueue_function[store_wrapper, store_wrapper](
+            r_obs, r_actions, r_log_probs, r_values,
+            obs_t, actions_t, log_probs_t, values_t,
+            grid_dim=(blocks,), block_dim=(TPB,),
+        )
+
+    fn gpu_store_post_step[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        rewards_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
+        from deep_agents.ppo.kernels import _store_post_step_kernel
+
+        var t_offset = self.rollout_step * N_ENVS
+        var r_rewards = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_rewards_buf.unsafe_ptr() + t_offset)
+        var r_dones = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](self.rollout_dones_buf.unsafe_ptr() + t_offset)
+
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+        ctx.enqueue_function[store_wrapper, store_wrapper](
+            r_rewards, r_dones, rewards_t, dones_t,
+            grid_dim=(blocks,), block_dim=(TPB,),
+        )
+        self.rollout_step += 1
+
+    fn gpu_rollout_is_full(self) -> Bool:
+        """Return True when rollout_len steps have been stored."""
+        return self.rollout_step >= Self.ROLLOUT

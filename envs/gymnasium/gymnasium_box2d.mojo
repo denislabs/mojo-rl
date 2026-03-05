@@ -9,7 +9,7 @@ These use the Box2D physics engine for 2D rigid body simulation.
 All implement appropriate environment traits for generic training.
 """
 
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from core import (
     State,
     Action,

@@ -23,6 +23,8 @@ from .offpolicy_train import (
 from .eval import (
     run_offpolicy_continuous_eval,
     run_offpolicy_discrete_eval,
+    run_onpolicy_discrete_eval,
+    run_onpolicy_continuous_eval,
 )
 
 from .onpolicy_train import (
@@ -45,4 +47,12 @@ from .gpu_offpolicy_train import (
     GPUOffPolicyAgent,
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_discrete_train_gpu,
+)
+
+from .gpu_onpolicy_train import (
+    GPUOnPolicyState,
+    GPUOnPolicyDiscreteAgent,
+    GPUOnPolicyContinuousAgent,
+    run_onpolicy_discrete_train_gpu,
+    run_onpolicy_continuous_train_gpu,
 )
