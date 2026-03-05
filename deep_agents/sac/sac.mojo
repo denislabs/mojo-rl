@@ -135,6 +135,7 @@ struct DeepSACAgent[
         batch_size: Training batch size (default: 64).
         actor_lr: Actor Adam learning rate — compile-time (default: 0.0003).
         critic_lr: Critic Adam learning rate — compile-time (default: 0.0003).
+        max_n_envs: Maximum number of environments (default: 64).
     """
 
     # Convenience compile-time aliases
@@ -276,6 +277,7 @@ struct DeepSACAgent[
         noise is needed.
 
         Args:
+            cpu_state: CPU state containing actor network.
             obs: Observation as List[Float64].
 
         Returns:
@@ -1002,7 +1004,8 @@ struct DeepSACAgent[
         obs_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Forward SAC actor on GPU for N_ENVS environments + reparameterized sampling."""
+        """Forward SAC actor on GPU for N_ENVS environments + reparameterized sampling.
+        """
         comptime BLOCKS = (N_ENVS + TPB - 1) // TPB
 
         var obs_t = LayoutTensor[
@@ -1038,7 +1041,9 @@ struct DeepSACAgent[
                 MutAnyOrigin,
             ],
             rng: LayoutTensor[
-                DType.uint32, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+                DType.uint32,
+                Layout.row_major(N_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
             ],
             sc: Scalar[dtype],
             lsmin: Scalar[dtype],

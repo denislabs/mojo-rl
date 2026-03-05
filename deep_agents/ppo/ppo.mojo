@@ -763,12 +763,14 @@ struct DeepPPOAgent[
     where r(θ) = π_θ(a|s) / π_θ_old(a|s)
 
     Parameters:
-        obs_dim: Dimension of observation space.
-        num_actions: Number of discrete actions.
+        obs_dim: Observation dimension.
+        num_actions: Action dimension.
         hidden_dim: Hidden layer size (default: 64).
         rollout_len: Steps per rollout per environment (default: 128 for GPU).
-        n_envs: Number of parallel environments for GPU training (default: 1024).
-        gpu_minibatch_size: Minibatch size for GPU training (default: 256).
+        n_envs: Number of parallel environments for GPU training.
+        gpu_minibatch_size: Minibatch size for GPU training.
+        actor_lr: Actor learning rate.
+        critic_lr: Critic learning rate.
 
     Note on GPU training:
         - n_envs: Parallel environments on GPU (affects data collection rate)
@@ -959,12 +961,18 @@ struct DeepPPOAgent[
         var logits_data = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
-        var obs_t = LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin](obs.unsafe_ptr())
-        var logits_t = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](logits_data.unsafe_ptr())
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs.unsafe_ptr())
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](logits_data.unsafe_ptr())
         var p_actor = self.actor.params_view()
         Self.ActorNet.forward[1](obs_t, logits_t, p_actor)
 
-        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
         for i in range(Self.ACTIONS):
             logits[i] = rebind[Scalar[dtype]](logits_t[0, i])
 
@@ -973,7 +981,9 @@ struct DeepPPOAgent[
 
         # Forward critic to get value
         var value_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](value_data.unsafe_ptr())
+        var value_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](
+            value_data.unsafe_ptr()
+        )
         var p_critic = self.critic.params_view()
         Self.CriticNet.forward[1](obs_t, value_t, p_critic)
         var value = rebind[Scalar[dtype]](value_t[0, 0])
@@ -1030,9 +1040,13 @@ struct DeepPPOAgent[
         var buffer_len = self.buffer_idx
 
         # Get bootstrap value
-        var next_obs_t = LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin](next_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](next_obs.unsafe_ptr())
         var next_val_data = InlineArray[Scalar[dtype], 1](uninitialized=True)
-        var next_val_t = LayoutTensor[dtype, Layout.row_major(1, 1), MutAnyOrigin](next_val_data.unsafe_ptr())
+        var next_val_t = LayoutTensor[
+            dtype, Layout.row_major(1, 1), MutAnyOrigin
+        ](next_val_data.unsafe_ptr())
         var p_critic = self.critic.params_view()
         Self.CriticNet.forward[1](next_obs_t, next_val_t, p_critic)
         var next_value = rebind[Scalar[dtype]](next_val_t[0, 0])
@@ -1654,8 +1668,12 @@ struct DeepPPOAgent[
         # =====================================================================
         # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
-        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](
+            ctx
+        )
+        var gpu_critic = GPUNetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](ctx)
         gpu_actor.upload_from(self.actor, ctx)
         gpu_critic.upload_from(self.critic, ctx)
 
@@ -2985,8 +3003,12 @@ struct DeepPPOAgent[
         # =====================================================================
         # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
-        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](
+            ctx
+        )
+        var gpu_critic = GPUNetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](ctx)
         gpu_actor.upload_from(self.actor, ctx)
         gpu_critic.upload_from(self.critic, ctx)
 
@@ -3985,8 +4007,12 @@ struct DeepPPOAgent[
         """
         var actor_param_size = Self.ActorModel.PARAM_SIZE
         var critic_param_size = Self.CriticModel.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
+        var actor_state_size = (
+            actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
+        )
+        var critic_state_size = (
+            critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
+        )
 
         var content = String("# mojo-rl checkpoint v1\n")
         content += "# type: ppo_agent\n"
@@ -4039,8 +4065,12 @@ struct DeepPPOAgent[
         """
         var actor_param_size = Self.ActorModel.PARAM_SIZE
         var critic_param_size = Self.CriticModel.PARAM_SIZE
-        var actor_state_size = actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
-        var critic_state_size = critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
+        var actor_state_size = (
+            actor_param_size * Adam[Self.actor_lr].STATE_PER_PARAM
+        )
+        var critic_state_size = (
+            critic_param_size * Adam[Self.critic_lr].STATE_PER_PARAM
+        )
 
         var content = read_checkpoint_file(filepath)
         var lines = split_lines(content)
@@ -4154,14 +4184,14 @@ fn _sample_actions_kernel[
     rng_state = rand_result[1]
 
     var cumsum_val = Scalar[dtype](0.0)
-    var selected_action = 0
+    var selected_action: actions.element_type = 0
     for a in range(NUM_ACTIONS):
         var logit_val = logits[i, a] - max_logit
         var prob = exp(logit_val) / sum_exp
         var prob_scalar = Scalar[dtype](prob[0])
         cumsum_val = cumsum_val + prob_scalar
         if rand_val < cumsum_val:
-            selected_action = a
+            selected_action = Scalar[dtype](a)
             break
 
     actions[i] = selected_action

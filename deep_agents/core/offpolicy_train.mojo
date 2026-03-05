@@ -212,6 +212,169 @@ trait OffPolicyContinuousAgent:
 
 
 # =============================================================================
+# OffPolicyDiscreteState Trait  (CPU buffer container for DQN family)
+# =============================================================================
+
+
+trait OffPolicyDiscreteState:
+    """CPU-side buffer container for discrete off-policy agents (DQN family).
+
+    Holds all heap-allocated state: network weights (online + target) and
+    replay buffer.
+
+    Mirrors OffPolicyState: the training loop holds and passes this
+    explicitly rather than having the agent own it internally.
+
+    Required methods:
+        store[dtype](): Push one transition into the replay buffer.
+        is_ready(): True when the buffer has enough samples to train.
+    """
+
+    fn store[
+        dtype: DType
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push one transition into the replay buffer.
+
+        Args:
+            obs: Current observation.
+            action: Discrete action index taken.
+            reward: Scalar reward received.
+            next_obs: Next observation.
+            done: Whether the episode ended.
+        """
+        ...
+
+    fn is_ready(self) -> Bool:
+        """Return True if the replay buffer has enough samples to train."""
+        ...
+
+
+# =============================================================================
+# OffPolicyDiscreteAgent Trait  (explicit state design for DQN family)
+# =============================================================================
+
+
+trait OffPolicyDiscreteAgent:
+    """Discrete off-policy agent with explicit CPU state management.
+
+    The agent struct owns only hyperparameters and algorithm logic.
+    All heap-allocated state (networks, replay buffer) lives in CPUStateType,
+    which is created via make_cpu_state() and held by the caller.
+
+    This mirrors OffPolicyContinuousAgent for the discrete action setting:
+
+        CPU training:  run_offpolicy_discrete_train(agent, cpu_state, env)
+
+    Compile-time constants (must be set on the concrete struct):
+        CPUStateType: Concrete OffPolicyDiscreteState implementation.
+    """
+
+    comptime CPUStateType: OffPolicyDiscreteState
+    """Concrete CPU state type holding networks and replay buffer."""
+
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        """Allocate a fresh CPUStateType (networks + replay buffer).
+
+        Called once before training. The returned state is owned by the caller.
+        """
+        ...
+
+    fn select_action[
+        dtype: DType
+    ](
+        mut self,
+        mut cpu_state: Self.CPUStateType,
+        obs: List[Scalar[dtype]],
+    ) -> Int:
+        """Select an action with exploration (epsilon-greedy).
+
+        Args:
+            cpu_state: CPU state holding online network weights.
+            obs: Current observation as List[Scalar[dtype]].
+
+        Returns:
+            Selected action index.
+        """
+        ...
+
+    fn store_transition[
+        dtype: DType
+    ](
+        mut self,
+        mut cpu_state: Self.CPUStateType,
+        obs: List[Scalar[dtype]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push transition into the replay buffer via cpu_state.store().
+
+        Args:
+            cpu_state: CPU state holding the replay buffer.
+            obs: Current observation.
+            action: Discrete action index taken.
+            reward: Scalar reward received.
+            next_obs: Next observation.
+            done: Whether the episode ended.
+        """
+        ...
+
+    fn do_cpu_train_step(
+        mut self,
+        mut cpu_state: Self.CPUStateType,
+    ) -> Float64:
+        """Perform one gradient update step using cpu_state buffers.
+
+        Args:
+            cpu_state: CPU state with replay buffer and network weights.
+
+        Returns:
+            Loss value (critic loss or similar).
+        """
+        ...
+
+    fn decay_explore(mut self) -> None:
+        """Decay exploration rate (epsilon, noise_std, etc.)."""
+        ...
+
+    fn get_explore_rate(self) -> Float64:
+        """Return current exploration rate (for logging)."""
+        ...
+
+    fn random_action(self) -> Int:
+        """Return a uniformly random action index (used during warmup).
+
+        Returns:
+            Random action index in [0, num_actions).
+        """
+        ...
+
+    fn select_greedy_action(
+        self,
+        cpu_state: Self.CPUStateType,
+        obs: List[Float64],
+    ) -> Int:
+        """Select action without exploration (for evaluation).
+
+        Args:
+            cpu_state: CPU state holding online network weights.
+            obs: Current observation as List[Float64].
+
+        Returns:
+            Greedy action index.
+        """
+        ...
+
+
+# =============================================================================
 # OffPolicyAgent Trait  (kept for DQN family — discrete + continuous)
 # =============================================================================
 
@@ -391,6 +554,129 @@ fn run_offpolicy_discrete_train[
 
             if agent.is_ready() and total_steps % train_every == 0:
                 _ = agent.do_train_step()
+
+            episode_reward += reward
+            total_steps += 1
+            episode_steps += 1
+            obs = next_obs^
+
+            if done:
+                break
+
+        agent.decay_explore()
+        metrics.log_episode(
+            episode,
+            Scalar[DType.float64](episode_reward),
+            episode_steps,
+            agent.get_explore_rate(),
+        )
+
+        if verbose and (episode + 1) % print_every == 0:
+            var avg_reward = metrics.mean_reward_last_n(print_every)
+            print(
+                "Episode "
+                + String(episode + 1)
+                + " | Avg reward: "
+                + String(avg_reward)[:7]
+                + " | Explore: "
+                + String(agent.get_explore_rate())[:5]
+                + " | Steps: "
+                + String(total_steps)
+            )
+
+    return metrics^
+
+
+# =============================================================================
+# Shared Training Loop — Discrete Actions (OffPolicyDiscreteAgent)
+# =============================================================================
+
+
+fn run_offpolicy_discrete_train[
+    E: BoxDiscreteActionEnv, A: OffPolicyDiscreteAgent
+](
+    mut agent: A,
+    mut cpu_state: A.CPUStateType,
+    mut env: E,
+    num_episodes: Int,
+    max_steps_per_episode: Int = 500,
+    warmup_steps: Int = 1000,
+    train_every: Int = 4,
+    verbose: Bool = False,
+    print_every: Int = 10,
+    environment_name: String = "Environment",
+    algorithm_name: String = "OffPolicy",
+) -> TrainingMetrics:
+    """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
+
+    Symmetric with run_offpolicy_continuous_train (OffPolicyContinuousAgent):
+        - cpu_state is passed explicitly (not owned by the agent).
+        - The loop calls cpu_state.is_ready() directly.
+        - The loop calls agent.do_cpu_train_step(cpu_state).
+
+    Parameters:
+        E: Environment type implementing BoxDiscreteActionEnv.
+        A: Agent type implementing OffPolicyDiscreteAgent.
+
+    Args:
+        agent: Off-policy agent (hyperparameters + algorithm only).
+        cpu_state: CPU state buffer (networks + replay buffer).
+        env: Discrete-action environment.
+        num_episodes: Number of training episodes.
+        max_steps_per_episode: Maximum steps per episode (default: 500).
+        warmup_steps: Random exploration steps before training (default: 1000).
+        train_every: Call do_cpu_train_step every N steps (default: 4).
+        verbose: Print progress (default: False).
+        print_every: Print every N episodes if verbose (default: 10).
+        environment_name: Name for metrics labeling.
+        algorithm_name: Name for metrics labeling.
+
+    Returns:
+        TrainingMetrics with per-episode rewards and statistics.
+    """
+    var metrics = TrainingMetrics(
+        algorithm_name=algorithm_name,
+        environment_name=environment_name,
+    )
+
+    # --- Warmup: fill buffer with random transitions ---
+    var warmup_obs = env.reset_obs_list()
+    var warmup_count = 0
+    while warmup_count < warmup_steps:
+        var action = agent.random_action()
+        var result = env.step_obs(action)
+        var next_obs = result[0].copy()
+        var reward = Float64(result[1])
+        var done = result[2]
+        agent.store_transition[E.dtype](
+            cpu_state, warmup_obs, action, reward, next_obs, done
+        )
+        warmup_count += 1
+        if done:
+            warmup_obs = env.reset_obs_list()
+        else:
+            warmup_obs = next_obs^
+
+    # --- Training loop ---
+    var total_steps = 0
+    for episode in range(num_episodes):
+        var obs = env.reset_obs_list()
+        var episode_reward: Float64 = 0.0
+        var episode_steps = 0
+
+        for _ in range(max_steps_per_episode):
+            var action = agent.select_action[E.dtype](cpu_state, obs)
+            var result = env.step_obs(action)
+            var next_obs = result[0].copy()
+            var reward = Float64(result[1])
+            var done = result[2]
+
+            agent.store_transition[E.dtype](
+                cpu_state, obs, action, reward, next_obs, done
+            )
+
+            if cpu_state.is_ready() and total_steps % train_every == 0:
+                _ = agent.do_cpu_train_step(cpu_state)
 
             episode_reward += reward
             total_steps += 1

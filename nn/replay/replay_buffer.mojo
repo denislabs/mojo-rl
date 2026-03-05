@@ -215,7 +215,7 @@ struct PrioritizedReplayBuffer[
     obs_dim: Int,
     action_dim: Int,
     dtype: DType = DType.float64,
-]:
+](Movable):
     """Prioritized Experience Replay buffer with compile-time dimensions.
 
     Uses proportional prioritization with importance sampling:

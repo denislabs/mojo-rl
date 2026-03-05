@@ -12,7 +12,7 @@ Features:
 - Epsilon-greedy exploration with decay
 - Target network with soft updates
 - Double DQN to reduce overestimation bias (optional)
-- GPU support for batch training (all network ops on GPU)
+- GPU support via GPUOffPolicyAgent trait + run_offpolicy_discrete_train_gpu
 - lr is a compile-time parameter (Adam LR baked in at compile time)
 
 Usage:
@@ -25,9 +25,9 @@ Usage:
     # CPU Training
     var metrics = agent.train(env, num_episodes=200)
 
-    # GPU Training
+    # GPU Training (step-based, using shared off-policy GPU loop)
     var ctx = DeviceContext()
-    var metrics_gpu = agent.train_gpu(ctx, env, num_episodes=200)
+    var metrics_gpu = agent.train_gpu[CartPoleGPUEnv](ctx, num_steps=100000)
 
     # Evaluate
     var avg_reward = agent.evaluate(env, num_episodes=10, greedy=True)
@@ -46,11 +46,18 @@ from nn.model import Linear, Sequential, LinearReLU
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState, GPUNetworkState
+from nn.model import Model
+from nn.optimizer import Optimizer
 from deep_agents.core import (
     fill_inline,
     obs_to_inline,
-    OffPolicyAgent,
+    OffPolicyDiscreteState,
+    OffPolicyDiscreteAgent,
+    GPUOffPolicyState,
+    GPUOffPolicyAgent,
     run_offpolicy_discrete_train,
+    run_offpolicy_discrete_eval,
+    run_offpolicy_discrete_train_gpu,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.checkpoint import (
@@ -63,15 +70,8 @@ from nn.checkpoint import (
     save_checkpoint_file,
 )
 from nn.gpu import (
-    random_range,
     xorshift32,
     random_uniform,
-    zero_buffer_kernel,
-    copy_buffer_kernel,
-    accumulate_rewards_kernel,
-    increment_steps_kernel,
-    extract_completed_episodes_kernel,
-    selective_reset_tracking_kernel,
 )
 from core import (
     TrainingMetrics,
@@ -79,81 +79,8 @@ from core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-
-
-# =============================================================================
-# GPU Kernels for DQN Operations
-# =============================================================================
-
-
-@always_inline
-fn dqn_td_target_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-    NUM_ACTIONS: Int,
-](
-    # Outputs
-    targets: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    # Inputs
-    next_q_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    gamma: Scalar[dtype],
-):
-    """Compute TD targets for standard DQN: target = r + gamma * max_a Q(s', a) * (1 - done).
-    """
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= BATCH_SIZE:
-        return
-
-    var max_q = next_q_values[b, 0]
-    for a in range(1, NUM_ACTIONS):
-        var q = next_q_values[b, a]
-        if q > max_q:
-            max_q = q
-
-    var done_mask = Scalar[dtype](1.0) - dones[b]
-    targets[b] = rewards[b] + gamma * max_q * done_mask
-
-
-@always_inline
-fn dqn_double_td_target_kernel[
-    dtype: DType,
-    BATCH_SIZE: Int,
-    NUM_ACTIONS: Int,
-](
-    # Outputs
-    targets: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    # Inputs
-    online_next_q: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    target_next_q: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
-    ],
-    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    gamma: Scalar[dtype],
-):
-    """Compute TD targets for Double DQN: target = r + gamma * Q_target(s', argmax_a Q_online(s', a)) * (1 - done).
-    """
-    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if b >= BATCH_SIZE:
-        return
-
-    var best_action = 0
-    var best_q = online_next_q[b, 0]
-    for a in range(1, NUM_ACTIONS):
-        var q = online_next_q[b, a]
-        if q > best_q:
-            best_q = q
-            best_action = a
-
-    var target_q = target_next_q[b, best_action]
-    var done_mask = Scalar[dtype](1.0) - dones[b]
-    targets[b] = rewards[b] + gamma * target_q * done_mask
+from .state import DQNGPUState, DQNCPUState
+from .kernels import dqn_td_target_kernel, dqn_double_td_target_kernel
 
 
 # =============================================================================
@@ -170,8 +97,10 @@ struct DQNAgent[
     n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.001,
-](OffPolicyAgent):
-    """Deep Q-Network agent using the new trait-based architecture.
+](OffPolicyDiscreteAgent & GPUOffPolicyAgent):
+    """Deep Q-Network agent — unified CPU + GPU.
+
+    DQN is an off-policy value-based algorithm for discrete action spaces.
 
     Parameters:
         obs_dim: Dimension of observation space.
@@ -190,6 +119,7 @@ struct DQNAgent[
     comptime OBS = Self.obs_dim
     comptime ACTIONS = Self.num_actions
     comptime HIDDEN = Self.hidden_dim
+    comptime BATCH = Self.batch_size
 
     # Q-network: obs → hidden (ReLU) → hidden (ReLU) → num_actions
     comptime Q_Model = Sequential[
@@ -199,12 +129,32 @@ struct DQNAgent[
     ]
     comptime Q_Network = Network[Self.Q_Model, Adam[Self.lr]]
 
-    # Network states (heap-allocated params + grads + optimizer state)
-    var online: NetworkState[Self.Q_Model, Adam[Self.lr]]
-    var target: NetworkState[Self.Q_Model, Adam[Self.lr]]
+    # CPU state type (online + target networks + replay buffer)
+    comptime CPUStateType = DQNCPUState[
+        Self.Q_Model,
+        Adam[Self.lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.batch_size,
+    ]
 
-    # CPU replay buffer (action_dim=1: store discrete action as scalar)
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
+    # GPUOffPolicyAgent required compile-time constants
+    comptime OBS_DIM: Int = Self.OBS
+    comptime ACTION_DIM: Int = 1  # discrete action stored as float scalar index
+    comptime BUFFER_CAPACITY: Int = Self.buffer_capacity
+    comptime MAX_N_ENVS: Int = Self.n_envs
+    comptime GPUStateType = DQNGPUState[
+        Self.Q_Model,
+        Adam[Self.lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.num_actions,
+        Self.batch_size,
+        Self.n_envs,
+    ]
+
+    # CPU state: persistent for evaluate() and checkpointing
+    var state: Self.CPUStateType
 
     # Hyperparameters
     var gamma: Float64
@@ -243,15 +193,7 @@ struct DQNAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
         """
-        self.online = NetworkState[Self.Q_Model, Adam[Self.lr]]()
-        self.online.initialize[Kaiming]()
-        self.target = NetworkState[Self.Q_Model, Adam[Self.lr]](
-            copy=self.online
-        )
-
-        self.buffer = ReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, 1, dtype
-        ]()
+        self.state = Self.CPUStateType()
 
         self.gamma = gamma
         self.tau = tau
@@ -266,19 +208,13 @@ struct DQNAgent[
     # Action Selection
     # =========================================================================
 
-    fn select_action(
+    fn _select_action_inline(
         self,
+        cpu_state: Self.CPUStateType,
         obs: InlineArray[Scalar[dtype], Self.obs_dim],
-        greedy: Bool = False,
+        greedy: Bool,
     ) -> Int:
-        """Select action using epsilon-greedy policy.
-
-        Args:
-            obs: Current observation.
-            greedy: If True, always select argmax (ignore epsilon).
-
-        Returns:
-            Selected action index.
+        """Internal greedy/epsilon-greedy action selection using InlineArray obs.
         """
         if not greedy and random_float64() < self.epsilon:
             return Int(random_float64() * Float64(Self.num_actions))
@@ -290,7 +226,7 @@ struct DQNAgent[
         var q_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](q_arr.unsafe_ptr())
-        var p = self.online.params_view()
+        var p = cpu_state.online.params_view()
         Self.Q_Network.forward[1](obs_t, q_t, p)
 
         var best_action = 0
@@ -302,39 +238,20 @@ struct DQNAgent[
 
         return best_action
 
-    fn store_transition(
-        mut self,
-        obs: InlineArray[Scalar[dtype], Self.obs_dim],
-        action: Int,
-        reward: Float64,
-        next_obs: InlineArray[Scalar[dtype], Self.obs_dim],
-        done: Bool,
-    ):
-        """Store transition in replay buffer.
-
-        Args:
-            obs: Current observation.
-            action: Action taken.
-            reward: Reward received.
-            next_obs: Next observation.
-            done: Whether episode ended.
-        """
-        var action_arr = InlineArray[Scalar[dtype], 1](
-            fill=Scalar[dtype](action)
-        )
-        self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
-
     # =========================================================================
     # CPU Training Step
     # =========================================================================
 
-    fn train_step(mut self) -> Float64:
+    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Perform one CPU training step.
+
+        Args:
+            cpu_state: CPU state with replay buffer and network weights.
 
         Returns:
             Loss value (0 if buffer not ready).
         """
-        if not self.buffer.is_ready[Self.batch_size]():
+        if not cpu_state.buffer.is_ready[Self.batch_size]():
             return 0.0
 
         var batch_obs = InlineArray[
@@ -357,7 +274,7 @@ struct DQNAgent[
         var batch_act1 = InlineArray[Scalar[dtype], Self.batch_size * 1](
             uninitialized=True
         )
-        self.buffer.sample[Self.batch_size](
+        cpu_state.buffer.sample[Self.batch_size](
             batch_obs, batch_act1, batch_rewards, batch_next_obs, batch_dones
         )
         for i in range(Self.batch_size):
@@ -393,7 +310,7 @@ struct DQNAgent[
             MutAnyOrigin,
         ](cache_arr.unsafe_ptr())
 
-        var p_online = self.online.params_view()
+        var p_online = cpu_state.online.params_view()
         Self.Q_Network.forward_with_cache[Self.batch_size](
             obs_t, q_t, p_online, cache_t
         )
@@ -407,7 +324,7 @@ struct DQNAgent[
             Layout.row_major(Self.batch_size, Self.ACTIONS),
             MutAnyOrigin,
         ](next_q_arr.unsafe_ptr())
-        var p_target = self.target.params_view()
+        var p_target = cpu_state.target.params_view()
         Self.Q_Network.forward[Self.batch_size](next_obs_t, next_q_t, p_target)
 
         # Compute TD targets
@@ -495,15 +412,15 @@ struct DQNAgent[
             Layout.row_major(Self.batch_size, Self.OBS),
             MutAnyOrigin,
         ](grad_in_arr.unsafe_ptr())
-        var g = self.online.grads_view()
+        var g = cpu_state.online.grads_view()
 
-        self.online.zero_grads()
+        cpu_state.online.zero_grads()
         Self.Q_Network.backward[Self.batch_size](
             grad_t, grad_in_t, p_online, cache_t, g
         )
-        self.online.optimizer_step()
+        cpu_state.online.optimizer_step()
 
-        self.target.soft_update_from(self.online, self.tau)
+        cpu_state.target.soft_update_from(cpu_state.online, self.tau)
         self.train_step_count += 1
 
         return total_loss
@@ -521,38 +438,31 @@ struct DQNAgent[
         return self.train_step_count
 
     # =========================================================================
-    # OffPolicyAgent trait conformance
+    # OffPolicyDiscreteAgent trait conformance
     # =========================================================================
 
-    fn select_action_list[
-        dt: DType
-    ](mut self, obs: List[Scalar[dt]]) -> List[Scalar[dt]]:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var action = self.select_action(obs_inline)
-        var result = List[Scalar[dt]]()
-        result.append(Scalar[dt](action))
-        return result^
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        """Allocate a fresh CPUStateType (networks + replay buffer)."""
+        return Self.CPUStateType()
 
-    fn store_list_transition[
+    fn select_action[
+        dt: DType
+    ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[dt]]) -> Int:
+        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
+        return self._select_action_inline(cpu_state, obs_inline, False)
+
+    fn store_transition[
         dt: DType
     ](
         mut self,
+        mut cpu_state: Self.CPUStateType,
         obs: List[Scalar[dt]],
-        action: List[Scalar[dt]],
+        action: Int,
         reward: Float64,
         next_obs: List[Scalar[dt]],
         done: Bool,
     ) -> None:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var next_inline = obs_to_inline[Self.OBS, dt](next_obs)
-        var action_int = Int(Float64(action[0]))
-        self.store_transition(obs_inline, action_int, reward, next_inline, done)
-
-    fn is_ready(self) -> Bool:
-        return self.buffer.is_ready[Self.batch_size]()
-
-    fn do_train_step(mut self) -> Float64:
-        return self.train_step()
+        cpu_state.store[dt](obs, action, reward, next_obs, done)
 
     fn decay_explore(mut self) -> None:
         self.decay_epsilon()
@@ -560,201 +470,91 @@ struct DQNAgent[
     fn get_explore_rate(self) -> Float64:
         return self.epsilon
 
-    fn random_action_list[dt: DType](self) -> List[Scalar[dt]]:
-        var result = List[Scalar[dt]]()
-        result.append(
-            Scalar[dt](
-                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
-            )
-        )
-        return result^
+    fn random_action(self) -> Int:
+        return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    fn select_greedy_action(
+        self,
+        cpu_state: Self.CPUStateType,
+        obs: List[Float64],
+    ) -> Int:
         var obs_inline = obs_to_inline[Self.OBS, DType.float64](obs)
-        var action = self.select_action(obs_inline, greedy=True)
-        var result = List[Float64]()
-        result.append(Float64(action))
-        return result^
+        return self._select_action_inline(cpu_state, obs_inline, True)
 
     # =========================================================================
-    # High-level CPU training and evaluation
+    # GPUOffPolicyAgent trait conformance
     # =========================================================================
 
-    fn train[
-        E: BoxDiscreteActionEnv
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+        """Allocate all GPU buffers for DQN training.
+
+        Does NOT upload CPU weights — call upload_to_gpu after this.
+        """
+        return Self.GPUStateType(ctx)
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Upload CPU network weights to GPU online and target networks."""
+        gpu_state.online.upload_from(self.state.online, ctx)
+        gpu_state.target.upload_from(self.state.target, ctx)
+
+    fn download_from_gpu(
+        mut self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.online.download_to(self.state.online, ctx)
+        gpu_state.target.download_to(self.state.target, ctx)
+
+    fn select_actions_gpu[
+        N_ENVS: Int
     ](
         mut self,
-        mut env: E,
-        num_episodes: Int,
-        max_steps_per_episode: Int = 500,
-        warmup_steps: Int = 1000,
-        train_every: Int = 4,
-        verbose: Bool = False,
-        print_every: Int = 10,
-        environment_name: String = "Environment",
-    ) -> TrainingMetrics:
-        """Train the DQN agent on a continuous-state environment.
-
-        Args:
-            env: Environment (must implement BoxDiscreteActionEnv).
-            num_episodes: Number of training episodes.
-            max_steps_per_episode: Maximum steps per episode (default: 500).
-            warmup_steps: Random steps to fill replay buffer (default: 1000).
-            train_every: Train every N steps (default: 4).
-            verbose: Print progress (default: False).
-            print_every: Print every N episodes if verbose (default: 10).
-            environment_name: Name for metrics labeling.
-
-        Returns:
-            TrainingMetrics with episode rewards and statistics.
-        """
-        var algo_name = String("DQN")
-        if Self.double_dqn:
-            algo_name = String("Double DQN")
-        return run_offpolicy_discrete_train(
-            self,
-            env,
-            num_episodes,
-            max_steps_per_episode,
-            warmup_steps,
-            train_every,
-            verbose,
-            print_every,
-            environment_name,
-            algo_name,
-        )
-
-    fn evaluate[
-        E: BoxDiscreteActionEnv & RenderableEnv
-    ](
-        self,
-        mut env: E,
-        num_episodes: Int = 10,
-        max_steps_per_episode: Int = 500,
-        verbose: Bool = False,
-        render: Bool = False,
-        frame_delay_ms: Int = 16,
-        greedy: Bool = True,
-    ) raises -> Float64:
-        """Evaluate the agent on the environment.
-
-        Args:
-            env: Environment to evaluate on.
-            num_episodes: Number of evaluation episodes (default: 10).
-            max_steps_per_episode: Maximum steps per episode (default: 500).
-            verbose: Print per-episode results (default: False).
-            render: Render the environment (default: False).
-            frame_delay_ms: Delay between frames in ms (default: 16).
-            greedy: Use pure greedy policy (epsilon=0) when True (default: True).
-
-        Returns:
-            Average reward across episodes.
-        """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        var obs = InlineArray[Scalar[dtype], Self.obs_dim](uninitialized=True)
-        for episode in range(num_episodes):
-            if quit_requested:
-                break
-
-            fill_inline(env.reset_obs_list(), obs)
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for _ in range(max_steps_per_episode):
-                var action = self.select_action(obs, greedy)
-
-                var result = env.step_obs(action)
-                var done = result[2]
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                episode_reward += Float64(result[1])
-                fill_inline(result[0], obs)
-                episode_steps += 1
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode",
-                    episode + 1,
-                    "| Reward:",
-                    String(episode_reward)[:10],
-                    "| Steps:",
-                    episode_steps,
-                )
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
-
-    # =========================================================================
-    # GPU Training Helpers
-    # =========================================================================
-
-    fn _select_actions_gpu[
-        N: Int
-    ](
-        self,
         ctx: DeviceContext,
-        mut obs_buf: DeviceBuffer[dtype],
-        mut q_buf: DeviceBuffer[dtype],
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
-        mut gpu_online: GPUNetworkState[Self.Q_Model, Adam[Self.lr]],
-        workspace_buf: DeviceBuffer[dtype],
-        rng_seed: UInt32,
-    ) raises:
-        """Select actions for N environments using a GPU forward pass.
+    ) raises -> None:
+        """Forward Q-network on GPU for N_ENVS environments + epsilon-greedy selection.
 
         Args:
             ctx: GPU device context.
-            obs_buf: Observations [N * obs_dim].
-            q_buf: Q-value output buffer [N * num_actions].
-            actions_buf: Action output buffer [N].
-            gpu_online: Online network GPU state (params read-only).
-            workspace_buf: Pre-allocated workspace [N * WORKSPACE_SIZE_PER_SAMPLE].
-            rng_seed: RNG seed (should vary per call).
+            gpu_state: GPU state with Q-network and inference scratch buffers.
+            obs_buf: Observations [N_ENVS * obs_dim].
+            actions_buf: Output actions [N_ENVS] (float scalar indices).
         """
         var obs_t = LayoutTensor[
-            dtype, Layout.row_major(N, Self.OBS), MutAnyOrigin
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
         var q_t = LayoutTensor[
-            dtype, Layout.row_major(N, Self.ACTIONS), MutAnyOrigin
-        ](q_buf.unsafe_ptr())
-        var p = gpu_online.params_view()
-        Self.Q_Network.forward_gpu[N](ctx, obs_t, q_t, p, workspace_buf)
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.env_q_buf.unsafe_ptr())
+        var p = gpu_state.online.params_view()
+        Self.Q_Network.forward_gpu[N_ENVS](ctx, obs_t, q_t, p, gpu_state.inf_ws)
 
-        var actions_t = LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin](
-            actions_buf.unsafe_ptr()
-        )
-        var seed_s = Scalar[DType.uint32](rng_seed)
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
         var epsilon_s = Scalar[dtype](self.epsilon)
+        var seed_s = Scalar[DType.uint32](
+            UInt32(self.train_step_count * 2654435761)
+        )
 
         @always_inline
         fn argmax_wrapper(
             eps: Scalar[dtype],
             q_vals: LayoutTensor[
-                dtype, Layout.row_major(N, Self.ACTIONS), MutAnyOrigin
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
             ],
-            acts: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
+            acts: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
             base_seed: Scalar[DType.uint32],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if b >= N:
+            if b >= N_ENVS:
                 return
 
             var rng = xorshift32(
@@ -786,109 +586,96 @@ struct DQNAgent[
             q_t,
             actions_t,
             seed_s,
-            grid_dim=((N + TPB - 1) // TPB,),
+            grid_dim=((N_ENVS + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
-    fn _train_step_gpu(
+    fn do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
-        mut gpu_online: GPUNetworkState[Self.Q_Model, Adam[Self.lr]],
-        mut gpu_target: GPUNetworkState[Self.Q_Model, Adam[Self.lr]],
-        sampled_obs_buf: DeviceBuffer[dtype],
-        sampled_next_obs_buf: DeviceBuffer[dtype],
-        sampled_actions_buf: DeviceBuffer[dtype],
-        sampled_rewards_buf: DeviceBuffer[dtype],
-        sampled_dones_buf: DeviceBuffer[dtype],
-        mut q_values_buf: DeviceBuffer[dtype],
-        mut next_q_values_buf: DeviceBuffer[dtype],
-        mut online_next_q_buf: DeviceBuffer[dtype],
-        mut cache_buf: DeviceBuffer[dtype],
-        mut grad_output_buf: DeviceBuffer[dtype],
-        mut grad_input_buf: DeviceBuffer[dtype],
-        mut targets_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """One GPU training step: forward → TD targets → grad → backward → update → soft-update.
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """One DQN training step on GPU: sample → TD targets → backward → update.
+
+        Soft-update of target network is handled separately by soft_update_targets_gpu.
 
         Args:
             ctx: GPU device context.
-            gpu_online: Online network (params updated in-place).
-            gpu_target: Target network (soft-updated in-place).
-            sampled_obs_buf: Sampled observations [batch_size * obs_dim].
-            sampled_next_obs_buf: Sampled next observations [batch_size * obs_dim].
-            sampled_actions_buf: Sampled actions [batch_size].
-            sampled_rewards_buf: Sampled rewards [batch_size].
-            sampled_dones_buf: Sampled done flags [batch_size].
-            q_values_buf: Q-value scratch [batch_size * num_actions].
-            next_q_values_buf: Next Q-value scratch [batch_size * num_actions].
-            online_next_q_buf: Online next-state Q scratch [batch_size * num_actions].
-            cache_buf: Forward-pass cache [batch_size * CACHE_SIZE].
-            grad_output_buf: Gradient scratch [batch_size * num_actions].
-            grad_input_buf: Input gradient scratch [batch_size * obs_dim].
-            targets_buf: TD target scratch [batch_size].
-            workspace_buf: Network workspace [batch_size * WORKSPACE_SIZE_PER_SAMPLE].
+            gpu_state: GPU state with replay buffer, networks, and scratch buffers.
         """
         comptime BATCH = Self.batch_size
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        # ---- Phase 1: Sample batch ----
+        gpu_state.buffer.sample[BATCH](
+            ctx,
+            UInt32(self.train_step_count),
+            gpu_state.s_obs,
+            gpu_state.s_act,
+            gpu_state.s_rew,
+            gpu_state.s_nobs,
+            gpu_state.s_done,
+            gpu_state.s_idx,
+        )
+
         # LayoutTensor views for sampled batch
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](sampled_obs_buf.unsafe_ptr())
+        ](gpu_state.s_obs.unsafe_ptr())
         var next_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](sampled_next_obs_buf.unsafe_ptr())
+        ](gpu_state.s_nobs.unsafe_ptr())
         var q_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](q_values_buf.unsafe_ptr())
+        ](gpu_state.q_values.unsafe_ptr())
         var next_q_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](next_q_values_buf.unsafe_ptr())
+        ](gpu_state.next_q_values.unsafe_ptr())
         var cache_t = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.Q_Model.CACHE_SIZE),
             MutAnyOrigin,
-        ](cache_buf.unsafe_ptr())
+        ](gpu_state.cache.unsafe_ptr())
         var targets_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](targets_buf.unsafe_ptr())
+        ](gpu_state.targets.unsafe_ptr())
         var rewards_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](sampled_rewards_buf.unsafe_ptr())
+        ](gpu_state.s_rew.unsafe_ptr())
         var dones_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](sampled_dones_buf.unsafe_ptr())
+        ](gpu_state.s_done.unsafe_ptr())
         var actions_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](sampled_actions_buf.unsafe_ptr())
+        ](gpu_state.s_act.unsafe_ptr())
         var grad_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
+        ](gpu_state.grad_output.unsafe_ptr())
         var grad_in_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
+        ](gpu_state.grad_input.unsafe_ptr())
 
-        # Online forward with cache
-        var p_online = gpu_online.params_view()
-        var p_target = gpu_target.params_view()
+        # ---- Phase 2: Online forward with cache ----
+        var p_online = gpu_state.online.params_view()
+        var p_target = gpu_state.target.params_view()
         Self.Q_Network.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, q_t, p_online, cache_t, workspace_buf
+            ctx, obs_t, q_t, p_online, cache_t, gpu_state.train_ws
         )
 
-        # Target forward (no cache)
+        # ---- Phase 3: Target forward (no cache) ----
         Self.Q_Network.forward_gpu[BATCH](
-            ctx, next_obs_t, next_q_t, p_target, workspace_buf
+            ctx, next_obs_t, next_q_t, p_target, gpu_state.train_ws
         )
 
+        # ---- Phase 4: Compute TD targets ----
         var gamma_s = Scalar[dtype](self.gamma)
 
         comptime if Self.double_dqn:
             var online_next_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-            ](online_next_q_buf.unsafe_ptr())
+            ](gpu_state.online_next_q.unsafe_ptr())
             Self.Q_Network.forward_gpu[BATCH](
-                ctx, next_obs_t, online_next_t, p_online, workspace_buf
+                ctx, next_obs_t, online_next_t, p_online, gpu_state.train_ws
             )
 
             @always_inline
@@ -944,7 +731,7 @@ struct DQNAgent[
                 block_dim=(TPB,),
             )
 
-        # Gradient kernel (masked MSE grad)
+        # ---- Phase 5: Gradient kernel (masked MSE grad) ----
         @always_inline
         fn grad_wrapper(
             grd: LayoutTensor[
@@ -979,52 +766,49 @@ struct DQNAgent[
             block_dim=(TPB,),
         )
 
-        # Backward + optimizer step
-        var g = gpu_online.grads_view()
-        gpu_online.zero_grads(ctx)
+        # ---- Phase 6: Backward + optimizer step ----
+        var g = gpu_state.online.grads_view()
+        gpu_state.online.zero_grads(ctx)
         Self.Q_Network.backward_gpu[BATCH](
-            ctx, grad_t, grad_in_t, p_online, cache_t, g, workspace_buf
+            ctx, grad_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws
         )
-        gpu_online.optimizer_step(ctx)
-
-        # Soft-update target on GPU
-        gpu_target.soft_update_from_gpu(gpu_online, self.tau, ctx)
+        gpu_state.online.optimizer_step(ctx)
 
         self.train_step_count += 1
 
-    # =========================================================================
-    # GPU Training Loop
-    # =========================================================================
-
-    fn train_gpu[
-        EnvType: GPUDiscreteEnv
-    ](
+    fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
-        mut env: EnvType,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Soft-update target Q-network on GPU: θ_t ← τ*θ + (1-τ)*θ_t."""
+        gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+
+    # =========================================================================
+    # High-level CPU training and evaluation
+    # =========================================================================
+
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
+        mut self,
+        mut env: E,
         num_episodes: Int,
         max_steps_per_episode: Int = 500,
         warmup_steps: Int = 1000,
         train_every: Int = 4,
-        sync_every: Int = 5,
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) raises -> TrainingMetrics:
-        """Train the DQN agent on GPU with vectorized environments.
-
-        GPU states and replay buffer are created locally (freed on exit).
-        After training, params are synced back to self.online/self.target
-        so evaluate() works immediately.
+    ) -> TrainingMetrics:
+        """Train the DQN agent on a continuous-state environment.
 
         Args:
-            ctx: GPU device context.
-            env: Environment (must implement GPUDiscreteEnv).
-            num_episodes: Number of episodes to train.
+            env: Environment (must implement BoxDiscreteActionEnv).
+            num_episodes: Number of training episodes.
             max_steps_per_episode: Maximum steps per episode (default: 500).
             warmup_steps: Random steps to fill replay buffer (default: 1000).
-            train_every: Train every N iterations (default: 4).
-            sync_every: Sync GPU→CPU every N episodes for backup (default: 5).
+            train_every: Train every N steps (default: 4).
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
@@ -1032,561 +816,123 @@ struct DQNAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
-        var metrics = TrainingMetrics(
-            algorithm_name=(
-                "DQN (GPU)" if not Self.double_dqn else "Double DQN (GPU)"
-            ),
+        var algo_name = String("DQN")
+        if Self.double_dqn:
+            algo_name = String("Double DQN")
+        var cpu_state = Self.CPUStateType()
+        var metrics = run_offpolicy_discrete_train(
+            self,
+            cpu_state,
+            env,
+            num_episodes,
+            max_steps_per_episode,
+            warmup_steps,
+            train_every,
+            verbose,
+            print_every,
+            environment_name,
+            algo_name,
+        )
+        self.state = cpu_state^
+        return metrics
+
+    fn evaluate[
+        E: BoxDiscreteActionEnv & RenderableEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+        greedy: Bool = True,
+    ) raises -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: Environment to evaluate on.
+            num_episodes: Number of evaluation episodes (default: 10).
+            max_steps_per_episode: Maximum steps per episode (default: 500).
+            verbose: Print per-episode results (default: False).
+            render: Render the environment (default: False).
+            frame_delay_ms: Delay between frames in ms (default: 16).
+            greedy: Unused (always greedy via select_greedy_action).
+
+        Returns:
+            Average reward across episodes.
+        """
+        var metrics = run_offpolicy_discrete_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps_per_episode,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
+
+    # =========================================================================
+    # GPU Training — delegates to shared run_offpolicy_discrete_train_gpu
+    # =========================================================================
+
+    fn train_gpu[
+        E: GPUDiscreteEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        train_every: Int = 1,
+        sync_every: Int = 100,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) raises -> TrainingMetrics:
+        """Train on GPU using the shared off-policy discrete GPU loop.
+
+        GPU state (networks, replay buffer, scratch buffers) is created
+        locally for the duration of training and freed when the method returns.
+        After this call self.state.online / target hold the trained GPU weights,
+        so evaluate() works immediately.
+
+        Note: This is step-based training (num_steps total env steps across
+        n_envs parallel environments). Epsilon is not automatically decayed;
+        call decay_epsilon() manually between stages if needed.
+
+        Parameters:
+            E: GPU environment type implementing GPUDiscreteEnv.
+
+        Args:
+            ctx: GPU device context.
+            num_steps: Total number of environment steps.
+            warmup_steps: Random steps before training starts (default: 1000).
+            train_every: Train every N env steps (default: 1).
+            sync_every: GPU→CPU param sync interval in steps (default: 100).
+            verbose: Print progress (default: False).
+            print_every: Print every N steps if verbose (default: 100).
+            environment_name: Name for metrics labeling.
+
+        Returns:
+            TrainingMetrics with step-level statistics.
+        """
+        var algo_name = String(
+            "DQN (GPU)" if not Self.double_dqn else "Double DQN (GPU)"
+        )
+        return run_offpolicy_discrete_train_gpu[E, Self](
+            self,
+            ctx,
+            num_steps,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            sync_every=sync_every,
+            verbose=verbose,
+            print_every=print_every,
             environment_name=environment_name,
+            algorithm_name=algo_name,
         )
-
-        # =====================================================================
-        # Create GPU network states from current CPU params
-        # =====================================================================
-        var gpu_online = GPUNetworkState[Self.Q_Model, Adam[Self.lr]](ctx)
-        var gpu_target = GPUNetworkState[Self.Q_Model, Adam[Self.lr]](ctx)
-        gpu_online.upload_from(self.online, ctx)
-        gpu_target.upload_from(self.target, ctx)
-
-        # =====================================================================
-        # GPU Replay Buffer (local — freed on function exit)
-        # =====================================================================
-        var rb = GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim](ctx)
-        var indices_buf = ctx.enqueue_create_buffer[DType.int32](
-            Self.batch_size
-        )
-
-        # =====================================================================
-        # Pre-allocate environment and training buffers
-        # =====================================================================
-        comptime ENV_OBS_SIZE = Self.n_envs * Self.obs_dim
-        comptime ENV_Q_SIZE = Self.n_envs * Self.num_actions
-        comptime BATCH_OBS_SIZE = Self.batch_size * Self.obs_dim
-        comptime BATCH_Q_SIZE = Self.batch_size * Self.num_actions
-        comptime BATCH_CACHE_SIZE = Self.batch_size * Self.Q_Model.CACHE_SIZE
-        comptime WS_PER_SAMPLE = Self.Q_Network.WORKSPACE_SIZE_PER_SAMPLE
-        comptime ENV_WS_SIZE = Self.n_envs * WS_PER_SAMPLE
-        comptime BATCH_WS_SIZE = Self.batch_size * WS_PER_SAMPLE
-
-        # Environment buffers
-        var prev_obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
-        var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
-        var state_buf = ctx.enqueue_create_buffer[dtype](
-            Self.n_envs * EnvType.STATE_SIZE
-        )
-        var env_q_buf = ctx.enqueue_create_buffer[dtype](ENV_Q_SIZE)
-        var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var actions_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-
-        # Training buffers
-        var q_values_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
-        var next_q_values_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
-        var online_next_q_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
-        var cache_buf = ctx.enqueue_create_buffer[dtype](BATCH_CACHE_SIZE)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
-        var targets_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-
-        # Sampled batch buffers (output of GPUReplayBuffer.sample)
-        var sampled_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
-        var sampled_actions_buf = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size
-        )
-        var sampled_rewards_buf = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size
-        )
-        var sampled_next_obs_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH_OBS_SIZE
-        )
-        var sampled_dones_buf = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size
-        )
-
-        # Workspace buffers
-        var env_ws_buf = ctx.enqueue_create_buffer[dtype](ENV_WS_SIZE)
-        var batch_ws_buf = ctx.enqueue_create_buffer[dtype](BATCH_WS_SIZE)
-
-        # Host buffers for CPU↔GPU data transfer
-        var obs_host = ctx.enqueue_create_host_buffer[dtype](ENV_OBS_SIZE)
-        var rewards_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-        var dones_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-        var actions_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-
-        # Episode tracking buffers (GPU)
-        var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var episode_steps_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var completed_rewards_buf = ctx.enqueue_create_buffer[dtype](
-            Self.n_envs
-        )
-        var completed_steps_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var completed_mask_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-
-        # Host mirrors for episode tracking read-back
-        var completed_rewards_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.n_envs
-        )
-        var completed_steps_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.n_envs
-        )
-        var completed_mask_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.n_envs
-        )
-
-        # =====================================================================
-        # LayoutTensor views (created once — zero-copy pointer wrappers)
-        # =====================================================================
-        comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
-        comptime BATCH_BLOCKS = (Self.batch_size + TPB - 1) // TPB
-        comptime OBS_BLOCKS = (ENV_OBS_SIZE + TPB - 1) // TPB
-
-        var episode_rewards_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](episode_rewards_buf.unsafe_ptr())
-        var episode_steps_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](episode_steps_buf.unsafe_ptr())
-        var completed_rewards_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](completed_rewards_buf.unsafe_ptr())
-        var completed_steps_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](completed_steps_buf.unsafe_ptr())
-        var completed_mask_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](completed_mask_buf.unsafe_ptr())
-        var rewards_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
-        var dones_t = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
-        var prev_obs_t = LayoutTensor[
-            dtype, Layout.row_major(ENV_OBS_SIZE), MutAnyOrigin
-        ](prev_obs_buf.unsafe_ptr())
-        var obs_flat_t = LayoutTensor[
-            dtype, Layout.row_major(ENV_OBS_SIZE), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
-
-        # =====================================================================
-        # Kernel wrappers (defined once outside the loop)
-        # =====================================================================
-        @always_inline
-        fn zero_envs_wrapper(
-            buf: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-        ):
-            zero_buffer_kernel[dtype, Self.n_envs](buf)
-
-        @always_inline
-        fn copy_obs_wrapper(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(ENV_OBS_SIZE), MutAnyOrigin
-            ],
-            src: LayoutTensor[
-                dtype, Layout.row_major(ENV_OBS_SIZE), MutAnyOrigin
-            ],
-        ):
-            copy_buffer_kernel[dtype, ENV_OBS_SIZE](dst, src)
-
-        @always_inline
-        fn accum_rewards_wrapper(
-            ep_r: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-            step_r: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-        ):
-            accumulate_rewards_kernel[dtype, Self.n_envs](ep_r, step_r)
-
-        @always_inline
-        fn incr_steps_wrapper(
-            ep_s: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-        ):
-            increment_steps_kernel[dtype, Self.n_envs](ep_s)
-
-        @always_inline
-        fn extract_wrapper(
-            d: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
-            ep_r: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-            ep_s: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-            comp_r: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-            comp_s: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-            comp_m: LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-            ],
-        ):
-            extract_completed_episodes_kernel[dtype, Self.n_envs](
-                d, ep_r, ep_s, comp_r, comp_s, comp_m
-            )
-
-        # =====================================================================
-        # Initialization
-        # =====================================================================
-        ctx.enqueue_function[zero_envs_wrapper, zero_envs_wrapper](
-            episode_rewards_t,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        ctx.enqueue_function[zero_envs_wrapper, zero_envs_wrapper](
-            episode_steps_t,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](ctx, obs_buf)
-
-        if verbose:
-            print("GPU buffers allocated. Starting training...")
-            print("Running " + String(Self.n_envs) + " parallel environments")
-            print("Training batch size: " + String(Self.batch_size))
-
-        # =====================================================================
-        # Warmup: fill replay buffer with random transitions
-        # =====================================================================
-        if verbose:
-            print(
-                "Warmup: collecting "
-                + String(warmup_steps)
-                + " random transitions..."
-            )
-
-        var saved_epsilon = self.epsilon
-        self.epsilon = 1.0  # Force random actions during warmup
-
-        var warmup_count = 0
-        while warmup_count < warmup_steps:
-            ctx.enqueue_function[copy_obs_wrapper, copy_obs_wrapper](
-                prev_obs_t,
-                obs_flat_t,
-                grid_dim=(OBS_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            self._select_actions_gpu[Self.n_envs](
-                ctx,
-                obs_buf,
-                env_q_buf,
-                actions_buf,
-                gpu_online,
-                env_ws_buf,
-                UInt32(warmup_count * 7919 + 12345),
-            )
-
-            EnvType.step_kernel_gpu[
-                Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim
-            ](ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
-
-            rb.store[Self.n_envs](
-                ctx,
-                prev_obs_buf,
-                actions_buf,
-                rewards_buf,
-                obs_buf,
-                dones_buf,
-            )
-
-            warmup_count += Self.n_envs
-
-            var rng_seed = UInt64(warmup_count * 7919 + 42)
-            EnvType.selective_reset_kernel_gpu[Self.n_envs, Self.obs_dim](
-                ctx, obs_buf, dones_buf, rng_seed
-            )
-
-        self.epsilon = saved_epsilon
-
-        # Reset all envs after warmup (start fresh episodes)
-        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](
-            ctx, obs_buf, UInt64(warmup_count)
-        )
-
-        if verbose:
-            print("Warmup complete. Replay buffer size: " + String(rb.size))
-
-        # =====================================================================
-        # Timing counters
-        # =====================================================================
-        from std.time import perf_counter_ns
-
-        var time_action_select: UInt = 0
-        var time_env_step: UInt = 0
-        var time_store: UInt = 0
-        var time_train: UInt = 0
-        var time_episode_track: UInt = 0
-        var iteration_count = 0
-
-        # =====================================================================
-        # Main Training Loop
-        # =====================================================================
-        var total_steps = 0
-        var completed_episodes = 0
-        var last_print_episode = 0
-        var last_checkpoint_episode = 0
-
-        while completed_episodes < num_episodes:
-            var t0 = perf_counter_ns()
-
-            # Copy current obs to prev_obs
-            ctx.enqueue_function[copy_obs_wrapper, copy_obs_wrapper](
-                prev_obs_t,
-                obs_flat_t,
-                grid_dim=(OBS_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # Select actions
-            self._select_actions_gpu[Self.n_envs](
-                ctx,
-                obs_buf,
-                env_q_buf,
-                actions_buf,
-                gpu_online,
-                env_ws_buf,
-                UInt32(total_steps * 2654435761 + iteration_count * 7919),
-            )
-            ctx.synchronize()
-            var t1 = perf_counter_ns()
-            time_action_select += t1 - t0
-
-            # Step environments (obs_buf now contains next_obs)
-            EnvType.step_kernel_gpu[
-                Self.n_envs, EnvType.STATE_SIZE, Self.obs_dim
-            ](ctx, state_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
-            ctx.synchronize()
-            var t2 = perf_counter_ns()
-            time_env_step += t2 - t1
-
-            # Accumulate rewards / steps
-            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
-                episode_rewards_t,
-                rewards_t,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
-                episode_steps_t,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            total_steps += Self.n_envs
-
-            # Store transitions (prev_obs → obs = next_obs)
-            rb.store[Self.n_envs](
-                ctx,
-                prev_obs_buf,
-                actions_buf,
-                rewards_buf,
-                obs_buf,
-                dones_buf,
-            )
-
-            ctx.synchronize()
-            var t3 = perf_counter_ns()
-            time_store += t3 - t2
-
-            var t4 = t3
-
-            # Training
-            if (
-                rb.is_ready[Self.batch_size]()
-                and iteration_count % train_every == 0
-            ):
-                var num_train_steps = max(
-                    1, Self.n_envs // (Self.batch_size * train_every)
-                )
-
-                for train_idx in range(num_train_steps):
-                    var raw_seed = UInt32(
-                        total_steps * 2654435761
-                        + train_idx * 1013904223
-                        + iteration_count * 7919
-                    )
-                    var rng_seed = UInt32(
-                        (raw_seed ^ (raw_seed >> 16)) * 2246822519
-                    )
-
-                    rb.sample[Self.batch_size](
-                        ctx,
-                        rng_seed,
-                        sampled_obs_buf,
-                        sampled_actions_buf,
-                        sampled_rewards_buf,
-                        sampled_next_obs_buf,
-                        sampled_dones_buf,
-                        indices_buf,
-                    )
-
-                    self._train_step_gpu(
-                        ctx,
-                        gpu_online,
-                        gpu_target,
-                        sampled_obs_buf,
-                        sampled_next_obs_buf,
-                        sampled_actions_buf,
-                        sampled_rewards_buf,
-                        sampled_dones_buf,
-                        q_values_buf,
-                        next_q_values_buf,
-                        online_next_q_buf,
-                        cache_buf,
-                        grad_output_buf,
-                        grad_input_buf,
-                        targets_buf,
-                        batch_ws_buf,
-                    )
-
-                ctx.synchronize()
-                t4 = perf_counter_ns()
-                time_train += t4 - t3
-
-            # Extract completed episodes and reset done envs
-            ctx.enqueue_function[extract_wrapper, extract_wrapper](
-                dones_t,
-                episode_rewards_t,
-                episode_steps_t,
-                completed_rewards_t,
-                completed_steps_t,
-                completed_mask_t,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            ctx.enqueue_copy(completed_rewards_host, completed_rewards_buf)
-            ctx.enqueue_copy(completed_steps_host, completed_steps_buf)
-            ctx.enqueue_copy(completed_mask_host, completed_mask_buf)
-            ctx.synchronize()
-
-            var any_done = False
-            for i in range(Self.n_envs):
-                if completed_mask_host[i] > 0.5:
-                    any_done = True
-                    var ep_reward = Float64(completed_rewards_host[i])
-                    var ep_steps = Int(completed_steps_host[i])
-                    metrics.log_episode(
-                        completed_episodes, ep_reward, ep_steps, self.epsilon
-                    )
-                    completed_episodes += 1
-                    self.decay_epsilon()
-
-            if any_done:
-                EnvType.selective_reset_kernel_gpu[Self.n_envs, Self.obs_dim](
-                    ctx,
-                    obs_buf,
-                    dones_buf,
-                    UInt64(total_steps * 7919 + 42),
-                )
-
-            var t5 = perf_counter_ns()
-            time_episode_track += t5 - t4
-            iteration_count += 1
-
-            # Periodic CPU sync (cheap: online only)
-            if (
-                completed_episodes > 0
-                and (completed_episodes % sync_every == 0)
-                and completed_episodes != last_print_episode
-            ):
-                gpu_online.download_to(self.online, ctx)
-
-            # Print progress
-            if verbose and completed_episodes > 0:
-                var next_milestone = (
-                    (last_print_episode // print_every) + 1
-                ) * print_every
-                if completed_episodes >= next_milestone:
-                    last_print_episode = completed_episodes
-                    var avg_reward = metrics.mean_reward_last_n(
-                        min(print_every, completed_episodes)
-                    )
-                    print(
-                        "Episode "
-                        + String(completed_episodes)
-                        + " | Avg reward: "
-                        + String(avg_reward)[:7]
-                        + " | Epsilon: "
-                        + String(self.epsilon)[:5]
-                        + " | Steps: "
-                        + String(total_steps)
-                    )
-
-            # Auto-checkpoint
-            if (
-                self.checkpoint_every > 0
-                and len(self.checkpoint_path) > 0
-                and completed_episodes > 0
-            ):
-                var next_ckpt = (
-                    (last_checkpoint_episode // self.checkpoint_every) + 1
-                ) * self.checkpoint_every
-                if completed_episodes >= next_ckpt:
-                    last_checkpoint_episode = completed_episodes
-                    gpu_online.download_to(self.online, ctx)
-                    gpu_target.download_to(self.target, ctx)
-                    try:
-                        self.save_checkpoint(self.checkpoint_path)
-                        if verbose:
-                            print(
-                                "Checkpoint saved at episode "
-                                + String(completed_episodes)
-                            )
-                    except:
-                        print(
-                            "Warning: Failed to save checkpoint at episode "
-                            + String(completed_episodes)
-                        )
-
-        # Final sync → evaluate() works immediately after train_gpu()
-        gpu_online.download_to(self.online, ctx)
-        gpu_target.download_to(self.target, ctx)
-
-        # Timing summary
-        if verbose:
-            var total_time = (
-                time_action_select
-                + time_env_step
-                + time_store
-                + time_train
-                + time_episode_track
-            )
-            print()
-            print("Timing breakdown (ms):")
-            print(
-                "  Action select: "
-                + String(Float64(time_action_select) / 1e6)[:8]
-            )
-            print(
-                "  Env step:      " + String(Float64(time_env_step) / 1e6)[:8]
-            )
-            print("  Store trans:   " + String(Float64(time_store) / 1e6)[:8])
-            print("  Training:      " + String(Float64(time_train) / 1e6)[:8])
-            print(
-                "  Episode track: "
-                + String(Float64(time_episode_track) / 1e6)[:8]
-            )
-            print("  Total:         " + String(Float64(total_time) / 1e6)[:8])
-            print("  Iterations:    " + String(iteration_count))
-            if iteration_count > 0:
-                print(
-                    "  Avg per iter:  "
-                    + String(
-                        Float64(total_time) / Float64(iteration_count) / 1e6
-                    )[:8]
-                    + " ms"
-                )
-
-        return metrics^
 
     # =========================================================================
     # Checkpoint Save / Load
@@ -1607,8 +953,8 @@ struct DQNAgent[
         var content = write_checkpoint_header(
             "dqn_agent", PARAM_SIZE, STATE_SIZE
         )
-        content += self.online.write_sections("online_")
-        content += self.target.write_sections("target_")
+        content += self.state.online.write_sections("online_")
+        content += self.state.target.write_sections("target_")
 
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
@@ -1641,8 +987,8 @@ struct DQNAgent[
                 + ")"
             )
 
-        self.online.read_sections(content, "online_")
-        self.target.read_sections(content, "target_")
+        self.state.online.read_sections(content, "online_")
+        self.state.target.read_sections(content, "target_")
 
         var metadata = read_metadata_section(content)
 

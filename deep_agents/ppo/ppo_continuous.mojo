@@ -134,6 +134,8 @@ struct DeepPPOContinuousAgent[
         n_envs: Number of parallel environments for training (default: 64).
         gpu_minibatch_size: Minibatch size for GPU training (default: 256).
         clip_value: Whether to clip value function updates (default: True).
+        actor_lr: Learning rate for actor network (default: 0.0003).
+        critic_lr: Learning rate for critic network (default: 0.001).
 
     Note on hybrid training:
         - Neural network computations (forward/backward) run on GPU
@@ -1082,8 +1084,12 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
-        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](
+            ctx
+        )
+        var gpu_critic = GPUNetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](ctx)
         gpu_actor.upload_from(self.actor, ctx)
         gpu_critic.upload_from(self.critic, ctx)
 
@@ -2195,8 +2201,12 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Network parameter buffers (via GPUNetworkState)
         # =====================================================================
-        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](ctx)
-        var gpu_critic = GPUNetworkState[Self.CriticModel, Adam[Self.critic_lr]](ctx)
+        var gpu_actor = GPUNetworkState[Self.ActorModel, Adam[Self.actor_lr]](
+            ctx
+        )
+        var gpu_critic = GPUNetworkState[
+            Self.CriticModel, Adam[Self.critic_lr]
+        ](ctx)
         gpu_actor.upload_from(self.actor, ctx)
         gpu_critic.upload_from(self.critic, ctx)
 

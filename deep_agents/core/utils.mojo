@@ -3,7 +3,10 @@
 Provides free functions used across multiple agents to reduce code duplication.
 """
 
-from layout import Layout, LayoutTensor, MutAnyOrigin
+from layout import (
+    Layout,
+    LayoutTensor,
+)
 
 from nn.constants import dtype
 

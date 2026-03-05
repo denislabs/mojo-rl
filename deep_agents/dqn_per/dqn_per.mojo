@@ -44,13 +44,101 @@ from nn.optimizer import Adam
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState
 from nn.replay import PrioritizedReplayBuffer
+from nn.model import Model
+from nn.optimizer import Optimizer
 from deep_agents.core import (
     fill_inline,
     obs_to_inline,
-    OffPolicyAgent,
+    OffPolicyDiscreteState,
+    OffPolicyDiscreteAgent,
     run_offpolicy_discrete_train,
+    run_offpolicy_discrete_eval,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+
+
+# =============================================================================
+# DQNPERCPUState — CPU buffer container for DQN+PER
+# =============================================================================
+
+
+struct DQNPERCPUState[
+    Q_Model: Model,
+    Q_Opt: Optimizer,
+    buffer_capacity: Int,
+    obs_dim: Int,
+    batch_size: Int,
+](Movable, OffPolicyDiscreteState):
+    """CPU-resident state for DQN+PER training.
+
+    Holds online network, target network, and prioritized replay buffer.
+
+    Parameters:
+        Q_Model: Q-network model type.
+        Q_Opt: Q-network optimizer type.
+        buffer_capacity: Replay buffer capacity.
+        obs_dim: Observation space dimension.
+        batch_size: Training batch size.
+    """
+
+    comptime BUFFER_DTYPE = dtype
+
+    var online: NetworkState[Self.Q_Model, Self.Q_Opt]
+    var target: NetworkState[Self.Q_Model, Self.Q_Opt]
+    var buffer: PrioritizedReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, 1, dtype
+    ]
+
+    fn __init__(out self, alpha: Float64 = 0.6, beta: Float64 = 0.4):
+        """Allocate networks and prioritized replay buffer."""
+        self.online = NetworkState[Self.Q_Model, Self.Q_Opt]()
+        self.online.initialize[Kaiming]()
+        self.target = NetworkState[Self.Q_Model, Self.Q_Opt](copy=self.online)
+        self.buffer = PrioritizedReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, 1, dtype
+        ](
+            alpha=Scalar[dtype](alpha),
+            beta=Scalar[dtype](beta),
+        )
+
+    fn __init__(out self, *, deinit take: Self):
+        self.online = take.online^
+        self.target = take.target^
+        self.buffer = take.buffer^
+
+    fn store[
+        dtype: DType
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push one discrete transition into the prioritized replay buffer."""
+        var obs_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        var next_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        for i in range(Self.obs_dim):
+            obs_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(obs[i]))
+            next_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(next_obs[i]))
+        var action_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], 1](
+            fill=Scalar[Self.BUFFER_DTYPE](action)
+        )
+        self.buffer.add(
+            obs_arr,
+            action_arr,
+            Scalar[Self.BUFFER_DTYPE](reward),
+            next_arr,
+            done,
+        )
+
+    fn is_ready(self) -> Bool:
+        return self.buffer.is_ready[Self.batch_size]()
 
 
 # =============================================================================
@@ -66,7 +154,7 @@ struct DQNPERAgent[
     batch_size: Int = 64,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
-](OffPolicyAgent):
+](OffPolicyDiscreteAgent):
     """DQN Agent with Prioritized Experience Replay using NetworkState architecture.
 
     PER samples transitions proportionally to their TD error magnitude, which
@@ -103,14 +191,17 @@ struct DQNPERAgent[
     ]
     comptime Q_Network = Network[Self.Q_Model, Adam[Self.lr]]
 
-    # Network states (heap-allocated params + grads + optimizer state)
-    var q_network: NetworkState[Self.Q_Model, Adam[Self.lr]]
-    var target_network: NetworkState[Self.Q_Model, Adam[Self.lr]]
-
-    # Prioritized Replay Buffer (action_dim=1 for discrete actions stored as scalar)
-    var buffer: PrioritizedReplayBuffer[
-        Self.buffer_capacity, Self.obs_dim, 1, dtype
+    # CPU state type (networks + prioritized replay buffer)
+    comptime CPUStateType = DQNPERCPUState[
+        Self.Q_Model,
+        Adam[Self.lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.batch_size,
     ]
+
+    # CPU state: persistent for evaluate() and checkpointing
+    var state: Self.CPUStateType
 
     # Standard DQN hyperparameters
     var gamma: Float64
@@ -159,15 +250,7 @@ struct DQNPERAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
         """
-        self.q_network = NetworkState[Self.Q_Model, Adam[Self.lr]]()
-        self.q_network.initialize[Kaiming]()
-        self.target_network = NetworkState[Self.Q_Model, Adam[Self.lr]](
-            copy=self.q_network
-        )
-
-        self.buffer = PrioritizedReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, 1, dtype
-        ](alpha=Scalar[dtype](alpha), beta=Scalar[dtype](beta_start))
+        self.state = Self.CPUStateType(alpha=alpha, beta=beta_start)
 
         self.gamma = gamma
         self.tau = tau
@@ -188,20 +271,13 @@ struct DQNPERAgent[
     # Action Selection
     # =========================================================================
 
-    fn select_action(
+    fn _select_action_inline(
         self,
+        cpu_state: Self.CPUStateType,
         obs: InlineArray[Scalar[dtype], Self.OBS],
-        greedy: Bool = False,
+        greedy: Bool,
     ) -> Int:
-        """Select action using epsilon-greedy policy.
-
-        Args:
-            obs: Current observation.
-            greedy: If True, always select argmax (ignore epsilon).
-
-        Returns:
-            Selected action index.
-        """
+        """Internal greedy/epsilon-greedy action selection."""
         if not greedy and random_float64() < self.epsilon:
             return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
@@ -212,7 +288,7 @@ struct DQNPERAgent[
         var q_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](q_arr.unsafe_ptr())
-        var p = self.q_network.params_view()
+        var p = cpu_state.online.params_view()
         Self.Q_Network.forward[1](obs_t, q_t, p)
 
         var best_action = 0
@@ -223,39 +299,20 @@ struct DQNPERAgent[
                 best_action = a
         return best_action
 
-    fn store_transition(
-        mut self,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
-        action: Int,
-        reward: Float64,
-        next_obs: InlineArray[Scalar[dtype], Self.OBS],
-        done: Bool,
-    ):
-        """Store transition in prioritized replay buffer with max priority."""
-        var action_arr = InlineArray[Scalar[dtype], 1](
-            fill=Scalar[dtype](action)
-        )
-        self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
-        self.total_steps += 1
-
-        # Anneal beta towards 1.0
-        var progress = Float64(self.total_steps) / Float64(self.beta_frames)
-        if progress > 1.0:
-            progress = 1.0
-        self.beta = self.beta_start + progress * (1.0 - self.beta_start)
-        self.buffer.set_beta(Scalar[dtype](self.beta))
-
     # =========================================================================
     # CPU Training Step
     # =========================================================================
 
-    fn train_step(mut self) -> Float64:
+    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Perform one training step with PER.
+
+        Args:
+            cpu_state: CPU state with prioritized replay buffer and networks.
 
         Returns:
             TD loss value (0 if buffer not ready).
         """
-        if not self.buffer.is_ready[Self.BATCH]():
+        if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
         # --- Phase 1: Sample batch with importance sampling weights ---
@@ -279,7 +336,7 @@ struct DQNPERAgent[
         )
         var batch_indices = InlineArray[Int, Self.BATCH](uninitialized=True)
 
-        self.buffer.sample[Self.BATCH](
+        cpu_state.buffer.sample[Self.BATCH](
             batch_obs,
             batch_act1,
             batch_rewards,
@@ -298,7 +355,7 @@ struct DQNPERAgent[
         ](batch_next_obs.unsafe_ptr())
 
         # --- Phase 2: Compute TD targets ---
-        var p_target = self.target_network.params_view()
+        var p_target = cpu_state.target.params_view()
         var next_q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
@@ -307,7 +364,7 @@ struct DQNPERAgent[
         ](next_q_arr.unsafe_ptr())
         Self.Q_Network.forward[Self.BATCH](next_obs_t, next_q_t, p_target)
 
-        var p_online = self.q_network.params_view()
+        var p_online = cpu_state.online.params_view()
         var max_next_q = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
@@ -403,19 +460,19 @@ struct DQNPERAgent[
         var grad_in_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](grad_in_arr.unsafe_ptr())
-        var g = self.q_network.grads_view()
+        var g = cpu_state.online.grads_view()
 
-        self.q_network.zero_grads()
+        cpu_state.online.zero_grads()
         Self.Q_Network.backward[Self.BATCH](
             dq_t, grad_in_t, p_online, cache_t, g
         )
-        self.q_network.optimizer_step()
+        cpu_state.online.optimizer_step()
 
         # --- Phase 6: Update priorities ---
-        self.buffer.update_priorities[Self.BATCH](batch_indices, td_errors)
+        cpu_state.buffer.update_priorities[Self.BATCH](batch_indices, td_errors)
 
         # --- Phase 7: Soft update target ---
-        self.target_network.soft_update_from(self.q_network, self.tau)
+        cpu_state.target.soft_update_from(cpu_state.online, self.tau)
         self.train_step_count += 1
 
         return loss
@@ -437,38 +494,30 @@ struct DQNPERAgent[
         return self.train_step_count
 
     # =========================================================================
-    # OffPolicyAgent trait conformance
+    # OffPolicyDiscreteAgent trait conformance
     # =========================================================================
 
-    fn select_action_list[
-        dt: DType
-    ](mut self, obs: List[Scalar[dt]]) -> List[Scalar[dt]]:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var action = self.select_action(obs_inline)
-        var result = List[Scalar[dt]]()
-        result.append(Scalar[dt](action))
-        return result^
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        return Self.CPUStateType(alpha=0.6, beta=self.beta_start)
 
-    fn store_list_transition[
+    fn select_action[
+        dt: DType
+    ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[dt]]) -> Int:
+        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
+        return self._select_action_inline(cpu_state, obs_inline, greedy=False)
+
+    fn store_transition[
         dt: DType
     ](
         mut self,
+        mut cpu_state: Self.CPUStateType,
         obs: List[Scalar[dt]],
-        action: List[Scalar[dt]],
+        action: Int,
         reward: Float64,
         next_obs: List[Scalar[dt]],
         done: Bool,
     ) -> None:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var next_inline = obs_to_inline[Self.OBS, dt](next_obs)
-        var action_int = Int(Float64(action[0]))
-        self.store_transition(obs_inline, action_int, reward, next_inline, done)
-
-    fn is_ready(self) -> Bool:
-        return self.buffer.is_ready[Self.BATCH]()
-
-    fn do_train_step(mut self) -> Float64:
-        return self.train_step()
+        cpu_state.store[dt](obs, action, reward, next_obs, done)
 
     fn decay_explore(mut self) -> None:
         self.decay_epsilon()
@@ -476,21 +525,14 @@ struct DQNPERAgent[
     fn get_explore_rate(self) -> Float64:
         return self.epsilon
 
-    fn random_action_list[dt: DType](self) -> List[Scalar[dt]]:
-        var result = List[Scalar[dt]]()
-        result.append(
-            Scalar[dt](
-                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
-            )
-        )
-        return result^
+    fn random_action(self) -> Int:
+        return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    fn select_greedy_action(
+        self, cpu_state: Self.CPUStateType, obs: List[Float64]
+    ) -> Int:
         var obs_inline = obs_to_inline[Self.OBS, DType.float64](obs)
-        var action = self.select_action(obs_inline, greedy=True)
-        var result = List[Float64]()
-        result.append(Float64(action))
-        return result^
+        return self._select_action_inline(cpu_state, obs_inline, greedy=True)
 
     # =========================================================================
     # High-level CPU Training and Evaluation
@@ -524,8 +566,10 @@ struct DQNPERAgent[
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        return run_offpolicy_discrete_train(
+        var cpu_state = Self.CPUStateType(alpha=0.6, beta=self.beta_start)
+        var metrics = run_offpolicy_discrete_train(
             self,
+            cpu_state,
             env,
             num_episodes,
             max_steps_per_episode,
@@ -536,6 +580,8 @@ struct DQNPERAgent[
             environment_name,
             "DQN + PER",
         )
+        self.state = cpu_state^
+        return metrics
 
     fn evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
@@ -563,55 +609,17 @@ struct DQNPERAgent[
         Returns:
             Average reward over evaluation episodes.
         """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-
-        for episode in range(num_episodes):
-            if quit_requested:
-                break
-
-            fill_inline(env.reset_obs_list(), obs)
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for _ in range(max_steps):
-                var action = self.select_action(obs, greedy=greedy)
-                var result = env.step_obs(action)
-                fill_inline(result[0], obs)
-                episode_reward += Float64(result[1])
-                episode_steps += 1
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                if result[2]:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode "
-                    + String(episode + 1)
-                    + " | Reward: "
-                    + String(episode_reward)[:10]
-                    + " | Steps: "
-                    + String(episode_steps)
-                )
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
+        var metrics = run_offpolicy_discrete_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
 
     # =========================================================================
     # Checkpoint Save / Load
@@ -634,8 +642,8 @@ struct DQNPERAgent[
             Self.Q_Model.PARAM_SIZE,
             Self.Q_Model.PARAM_SIZE,
         )
-        content += self.q_network.write_sections("online_")
-        content += self.target_network.write_sections("target_")
+        content += self.state.online.write_sections("online_")
+        content += self.state.target.write_sections("target_")
         var metadata = List[String]()
         metadata.append("epsilon=" + String(self.epsilon))
         metadata.append("beta=" + String(self.beta))
@@ -657,8 +665,8 @@ struct DQNPERAgent[
         )
 
         var content = read_checkpoint_file(filepath)
-        self.q_network.read_sections(content, "online_")
-        self.target_network.read_sections(content, "target_")
+        self.state.online.read_sections(content, "online_")
+        self.state.target.read_sections(content, "target_")
         var metadata = read_metadata_section(content)
         var eps_str = get_metadata_value(metadata, "epsilon")
         if len(eps_str) > 0:

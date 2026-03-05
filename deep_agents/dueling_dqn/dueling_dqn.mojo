@@ -40,18 +40,124 @@ from std.random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, LinearReLU, Sequential
-from nn.optimizer import Adam
+from nn.model import Linear, LinearReLU, Sequential, Model
+from nn.optimizer import Adam, Optimizer
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState
 from nn.replay import ReplayBuffer
 from deep_agents.core import (
     fill_inline,
     obs_to_inline,
-    OffPolicyAgent,
+    OffPolicyDiscreteState,
+    OffPolicyDiscreteAgent,
     run_offpolicy_discrete_train,
+    run_offpolicy_discrete_eval,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+
+
+# =============================================================================
+# DuelingDQNCPUState — CPU buffer container for Dueling DQN
+# =============================================================================
+
+
+struct DuelingDQNCPUState[
+    BackboneModel: Model,
+    ValueModel: Model,
+    AdvModel: Model,
+    Opt: Optimizer,
+    buffer_capacity: Int,
+    obs_dim: Int,
+    batch_size: Int,
+](Movable, OffPolicyDiscreteState):
+    """CPU-resident state for Dueling DQN training.
+
+    Holds all six network states (backbone/value/adv × online/target) and replay buffer.
+
+    Parameters:
+        BackboneModel: Shared backbone model type.
+        ValueModel: Value stream model type.
+        AdvModel: Advantage stream model type.
+        Opt: Optimizer type (same for all networks).
+        buffer_capacity: Replay buffer capacity.
+        obs_dim: Observation space dimension.
+        batch_size: Training batch size.
+    """
+
+    comptime BUFFER_DTYPE = dtype
+
+    var backbone_online: NetworkState[Self.BackboneModel, Self.Opt]
+    var backbone_target: NetworkState[Self.BackboneModel, Self.Opt]
+    var value_online: NetworkState[Self.ValueModel, Self.Opt]
+    var value_target: NetworkState[Self.ValueModel, Self.Opt]
+    var adv_online: NetworkState[Self.AdvModel, Self.Opt]
+    var adv_target: NetworkState[Self.AdvModel, Self.Opt]
+    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
+
+    fn __init__(out self):
+        """Allocate and Kaiming-initialize all networks; copy online → target."""
+        self.backbone_online = NetworkState[Self.BackboneModel, Self.Opt]()
+        self.backbone_online.initialize[Kaiming]()
+        self.value_online = NetworkState[Self.ValueModel, Self.Opt]()
+        self.value_online.initialize[Kaiming]()
+        self.adv_online = NetworkState[Self.AdvModel, Self.Opt]()
+        self.adv_online.initialize[Kaiming]()
+
+        self.backbone_target = NetworkState[Self.BackboneModel, Self.Opt](
+            copy=self.backbone_online
+        )
+        self.value_target = NetworkState[Self.ValueModel, Self.Opt](
+            copy=self.value_online
+        )
+        self.adv_target = NetworkState[Self.AdvModel, Self.Opt](
+            copy=self.adv_online
+        )
+
+        self.buffer = ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]()
+
+    fn __init__(out self, *, deinit take: Self):
+        self.backbone_online = take.backbone_online^
+        self.backbone_target = take.backbone_target^
+        self.value_online = take.value_online^
+        self.value_target = take.value_target^
+        self.adv_online = take.adv_online^
+        self.adv_target = take.adv_target^
+        self.buffer = take.buffer^
+
+    fn store[
+        dtype: DType
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[dtype]],
+        done: Bool,
+    ) -> None:
+        """Push one discrete transition into the replay buffer."""
+        comptime BUFFER_DTYPE = Self.BUFFER_DTYPE
+        var obs_arr = InlineArray[Scalar[BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        var next_arr = InlineArray[Scalar[BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        for i in range(Self.obs_dim):
+            obs_arr[i] = Scalar[BUFFER_DTYPE](Float64(obs[i]))
+            next_arr[i] = Scalar[BUFFER_DTYPE](Float64(next_obs[i]))
+        var action_arr = InlineArray[Scalar[BUFFER_DTYPE], 1](
+            fill=Scalar[BUFFER_DTYPE](action)
+        )
+        self.buffer.add(
+            obs_arr,
+            action_arr,
+            Scalar[BUFFER_DTYPE](reward),
+            next_arr,
+            done,
+        )
+
+    fn is_ready(self) -> Bool:
+        return self.buffer.is_ready[Self.batch_size]()
 
 
 # =============================================================================
@@ -68,7 +174,7 @@ struct DuelingDQNAgent[
     batch_size: Int = 64,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
-](OffPolicyAgent):
+](OffPolicyDiscreteAgent):
     """Deep Dueling DQN Agent using NetworkState architecture.
 
     Dueling DQN separates the Q-network into two streams:
@@ -120,16 +226,19 @@ struct DuelingDQNAgent[
     ]
     comptime AdvNet = Network[Self.AdvModel, Adam[Self.lr]]
 
-    # Network states
-    var backbone_online: NetworkState[Self.BackboneModel, Adam[Self.lr]]
-    var backbone_target: NetworkState[Self.BackboneModel, Adam[Self.lr]]
-    var value_online: NetworkState[Self.ValueModel, Adam[Self.lr]]
-    var value_target: NetworkState[Self.ValueModel, Adam[Self.lr]]
-    var adv_online: NetworkState[Self.AdvModel, Adam[Self.lr]]
-    var adv_target: NetworkState[Self.AdvModel, Adam[Self.lr]]
+    # CPU state type (all 6 networks + replay buffer)
+    comptime CPUStateType = DuelingDQNCPUState[
+        Self.BackboneModel,
+        Self.ValueModel,
+        Self.AdvModel,
+        Adam[Self.lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.batch_size,
+    ]
 
-    # Replay buffer (action_dim=1 for discrete actions stored as scalar)
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
+    # CPU state: persistent for evaluate() and checkpointing
+    var state: Self.CPUStateType
 
     # Hyperparameters
     var gamma: Float64
@@ -167,28 +276,7 @@ struct DuelingDQNAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
         """
-        # Initialize online networks
-        self.backbone_online = NetworkState[Self.BackboneModel, Adam[Self.lr]]()
-        self.backbone_online.initialize[Kaiming]()
-        self.value_online = NetworkState[Self.ValueModel, Adam[Self.lr]]()
-        self.value_online.initialize[Kaiming]()
-        self.adv_online = NetworkState[Self.AdvModel, Adam[Self.lr]]()
-        self.adv_online.initialize[Kaiming]()
-
-        # Initialize target networks as copies of online
-        self.backbone_target = NetworkState[Self.BackboneModel, Adam[Self.lr]](
-            copy=self.backbone_online
-        )
-        self.value_target = NetworkState[Self.ValueModel, Adam[Self.lr]](
-            copy=self.value_online
-        )
-        self.adv_target = NetworkState[Self.AdvModel, Adam[Self.lr]](
-            copy=self.adv_online
-        )
-
-        self.buffer = ReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, 1, dtype
-        ]()
+        self.state = Self.CPUStateType()
 
         self.gamma = gamma
         self.tau = tau
@@ -209,6 +297,7 @@ struct DuelingDQNAgent[
         BATCH_N: Int
     ](
         self,
+        cpu_state: Self.CPUStateType,
         obs: InlineArray[Scalar[dtype], BATCH_N * Self.OBS],
         mut q_values: InlineArray[Scalar[dtype], BATCH_N * Self.ACTIONS],
         use_target: Bool = False,
@@ -216,6 +305,7 @@ struct DuelingDQNAgent[
         """Forward pass through dueling network: Q(s,a) = V(s) + (A(s,a) - mean(A)).
 
         Args:
+            cpu_state: CPU state holding all network states.
             obs: Observations [BATCH_N * OBS].
             q_values: Output Q-values [BATCH_N * ACTIONS] (written in-place).
             use_target: If True, use target networks; else use online networks.
@@ -233,10 +323,10 @@ struct DuelingDQNAgent[
         ](h2_arr.unsafe_ptr())
 
         if use_target:
-            var pb = self.backbone_target.params_view()
+            var pb = cpu_state.backbone_target.params_view()
             Self.BackboneNet.forward[BATCH_N](obs_t, h2_t, pb)
         else:
-            var pb = self.backbone_online.params_view()
+            var pb = cpu_state.backbone_online.params_view()
             Self.BackboneNet.forward[BATCH_N](obs_t, h2_t, pb)
 
         # Value head forward
@@ -246,10 +336,10 @@ struct DuelingDQNAgent[
         ](v_arr.unsafe_ptr())
 
         if use_target:
-            var pv = self.value_target.params_view()
+            var pv = cpu_state.value_target.params_view()
             Self.ValueNet.forward[BATCH_N](h2_t, v_t, pv)
         else:
-            var pv = self.value_online.params_view()
+            var pv = cpu_state.value_online.params_view()
             Self.ValueNet.forward[BATCH_N](h2_t, v_t, pv)
 
         # Advantage head forward
@@ -261,10 +351,10 @@ struct DuelingDQNAgent[
         ](adv_arr.unsafe_ptr())
 
         if use_target:
-            var pa = self.adv_target.params_view()
+            var pa = cpu_state.adv_target.params_view()
             Self.AdvNet.forward[BATCH_N](h2_t, adv_t, pa)
         else:
-            var pa = self.adv_online.params_view()
+            var pa = cpu_state.adv_online.params_view()
             Self.AdvNet.forward[BATCH_N](h2_t, adv_t, pa)
 
         # Combine: Q(s,a) = V(s) + (A(s,a) - mean(A))
@@ -283,14 +373,16 @@ struct DuelingDQNAgent[
     # Action Selection
     # =========================================================================
 
-    fn select_action(
+    fn _select_action_inline(
         self,
+        cpu_state: Self.CPUStateType,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         greedy: Bool = False,
     ) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
+            cpu_state: CPU state with networks.
             obs: Current observation.
             greedy: If True, always select argmax (ignore epsilon).
 
@@ -304,7 +396,7 @@ struct DuelingDQNAgent[
         var obs_batch = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
             obs_batch[i] = obs[i]
-        self._dueling_forward_inline[1](obs_batch, q_arr, use_target=False)
+        self._dueling_forward_inline[1](cpu_state, obs_batch, q_arr, use_target=False)
 
         var best_action = 0
         var best_q = q_arr[0]
@@ -314,32 +406,22 @@ struct DuelingDQNAgent[
                 best_action = a
         return best_action
 
-    fn store_transition(
-        mut self,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
-        action: Int,
-        reward: Float64,
-        next_obs: InlineArray[Scalar[dtype], Self.OBS],
-        done: Bool,
-    ):
-        """Store a transition in the replay buffer."""
-        var action_arr = InlineArray[Scalar[dtype], 1](
-            fill=Scalar[dtype](action)
-        )
-        self.buffer.add(obs, action_arr, Scalar[dtype](reward), next_obs, done)
-        self.total_steps += 1
-
     # =========================================================================
     # CPU Training Step
     # =========================================================================
 
-    fn train_step(mut self) -> Float64:
+    fn do_cpu_train_step(
+        mut self, mut cpu_state: Self.CPUStateType
+    ) -> Float64:
         """Perform one training step.
+
+        Args:
+            cpu_state: CPU state with networks and replay buffer.
 
         Returns:
             TD loss value (0 if buffer not ready).
         """
-        if not self.buffer.is_ready[Self.BATCH]():
+        if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
         # --- Phase 1: Sample batch ---
@@ -362,7 +444,7 @@ struct DuelingDQNAgent[
         var batch_act_flat = InlineArray[Scalar[dtype], Self.BATCH * 1](
             uninitialized=True
         )
-        self.buffer.sample[Self.BATCH](
+        cpu_state.buffer.sample[Self.BATCH](
             batch_obs,
             batch_act_flat,
             batch_rewards,
@@ -385,10 +467,10 @@ struct DuelingDQNAgent[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
             self._dueling_forward_inline[Self.BATCH](
-                batch_next_obs, online_next_q, use_target=False
+                cpu_state, batch_next_obs, online_next_q, use_target=False
             )
             self._dueling_forward_inline[Self.BATCH](
-                batch_next_obs, target_next_q, use_target=True
+                cpu_state, batch_next_obs, target_next_q, use_target=True
             )
             for b in range(Self.BATCH):
                 var best_action = 0
@@ -404,7 +486,7 @@ struct DuelingDQNAgent[
                 uninitialized=True
             )
             self._dueling_forward_inline[Self.BATCH](
-                batch_next_obs, next_q, use_target=True
+                cpu_state, batch_next_obs, next_q, use_target=True
             )
             for b in range(Self.BATCH):
                 var best_q = next_q[b * Self.ACTIONS]
@@ -442,7 +524,7 @@ struct DuelingDQNAgent[
             Layout.row_major(Self.BATCH, Self.BackboneModel.CACHE_SIZE),
             MutAnyOrigin,
         ](backbone_cache_arr.unsafe_ptr())
-        var pb = self.backbone_online.params_view()
+        var pb = cpu_state.backbone_online.params_view()
         Self.BackboneNet.forward_with_cache[Self.BATCH](
             obs_t, h2_t, pb, backbone_cache_t
         )
@@ -460,7 +542,7 @@ struct DuelingDQNAgent[
             Layout.row_major(Self.BATCH, Self.ValueModel.CACHE_SIZE),
             MutAnyOrigin,
         ](value_cache_arr.unsafe_ptr())
-        var pv = self.value_online.params_view()
+        var pv = cpu_state.value_online.params_view()
         Self.ValueNet.forward_with_cache[Self.BATCH](
             h2_t, v_t, pv, value_cache_t
         )
@@ -480,7 +562,7 @@ struct DuelingDQNAgent[
             Layout.row_major(Self.BATCH, Self.AdvModel.CACHE_SIZE),
             MutAnyOrigin,
         ](adv_cache_arr.unsafe_ptr())
-        var pa = self.adv_online.params_view()
+        var pa = cpu_state.adv_online.params_view()
         Self.AdvNet.forward_with_cache[Self.BATCH](h2_t, adv_t, pa, adv_cache_t)
 
         # Compute Q-values from V + A
@@ -542,12 +624,12 @@ struct DuelingDQNAgent[
         var dh2_from_v_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
         ](dh2_from_v_arr.unsafe_ptr())
-        var gv = self.value_online.grads_view()
-        self.value_online.zero_grads()
+        var gv = cpu_state.value_online.grads_view()
+        cpu_state.value_online.zero_grads()
         Self.ValueNet.backward[Self.BATCH](
             dv_t, dh2_from_v_t, pv, value_cache_t, gv
         )
-        self.value_online.optimizer_step()
+        cpu_state.value_online.optimizer_step()
 
         # Backward advantage head: dh2_from_a
         var da_t = LayoutTensor[
@@ -559,12 +641,12 @@ struct DuelingDQNAgent[
         var dh2_from_a_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.HIDDEN), MutAnyOrigin
         ](dh2_from_a_arr.unsafe_ptr())
-        var ga = self.adv_online.grads_view()
-        self.adv_online.zero_grads()
+        var ga = cpu_state.adv_online.grads_view()
+        cpu_state.adv_online.zero_grads()
         Self.AdvNet.backward[Self.BATCH](
             da_t, dh2_from_a_t, pa, adv_cache_t, ga
         )
-        self.adv_online.optimizer_step()
+        cpu_state.adv_online.optimizer_step()
 
         # Combine gradients from both streams for backbone backward
         var dh2_combined_arr = InlineArray[
@@ -583,17 +665,19 @@ struct DuelingDQNAgent[
         var dobs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](dobs_arr.unsafe_ptr())
-        var gb = self.backbone_online.grads_view()
-        self.backbone_online.zero_grads()
+        var gb = cpu_state.backbone_online.grads_view()
+        cpu_state.backbone_online.zero_grads()
         Self.BackboneNet.backward[Self.BATCH](
             dh2_combined_t, dobs_t, pb, backbone_cache_t, gb
         )
-        self.backbone_online.optimizer_step()
+        cpu_state.backbone_online.optimizer_step()
 
         # --- Phase 6: Soft update target networks ---
-        self.backbone_target.soft_update_from(self.backbone_online, self.tau)
-        self.value_target.soft_update_from(self.value_online, self.tau)
-        self.adv_target.soft_update_from(self.adv_online, self.tau)
+        cpu_state.backbone_target.soft_update_from(
+            cpu_state.backbone_online, self.tau
+        )
+        cpu_state.value_target.soft_update_from(cpu_state.value_online, self.tau)
+        cpu_state.adv_target.soft_update_from(cpu_state.adv_online, self.tau)
 
         self.train_step_count += 1
 
@@ -612,38 +696,30 @@ struct DuelingDQNAgent[
         return self.train_step_count
 
     # =========================================================================
-    # OffPolicyAgent trait conformance
+    # OffPolicyDiscreteAgent trait conformance
     # =========================================================================
 
-    fn select_action_list[
-        dt: DType
-    ](mut self, obs: List[Scalar[dt]]) -> List[Scalar[dt]]:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var action = self.select_action(obs_inline)
-        var result = List[Scalar[dt]]()
-        result.append(Scalar[dt](action))
-        return result^
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        return Self.CPUStateType()
 
-    fn store_list_transition[
+    fn select_action[
+        dt: DType
+    ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[dt]]) -> Int:
+        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
+        return self._select_action_inline(cpu_state, obs_inline, greedy=False)
+
+    fn store_transition[
         dt: DType
     ](
         mut self,
+        mut cpu_state: Self.CPUStateType,
         obs: List[Scalar[dt]],
-        action: List[Scalar[dt]],
+        action: Int,
         reward: Float64,
         next_obs: List[Scalar[dt]],
         done: Bool,
     ) -> None:
-        var obs_inline = obs_to_inline[Self.OBS, dt](obs)
-        var next_inline = obs_to_inline[Self.OBS, dt](next_obs)
-        var action_int = Int(Float64(action[0]))
-        self.store_transition(obs_inline, action_int, reward, next_inline, done)
-
-    fn is_ready(self) -> Bool:
-        return self.buffer.is_ready[Self.BATCH]()
-
-    fn do_train_step(mut self) -> Float64:
-        return self.train_step()
+        cpu_state.store[dt](obs, action, reward, next_obs, done)
 
     fn decay_explore(mut self) -> None:
         self.decay_epsilon()
@@ -651,21 +727,14 @@ struct DuelingDQNAgent[
     fn get_explore_rate(self) -> Float64:
         return self.epsilon
 
-    fn random_action_list[dt: DType](self) -> List[Scalar[dt]]:
-        var result = List[Scalar[dt]]()
-        result.append(
-            Scalar[dt](
-                Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
-            )
-        )
-        return result^
+    fn random_action(self) -> Int:
+        return Int(random_float64() * Float64(Self.ACTIONS)) % Self.ACTIONS
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    fn select_greedy_action(
+        self, cpu_state: Self.CPUStateType, obs: List[Float64]
+    ) -> Int:
         var obs_inline = obs_to_inline[Self.OBS, DType.float64](obs)
-        var action = self.select_action(obs_inline, greedy=True)
-        var result = List[Float64]()
-        result.append(Float64(action))
-        return result^
+        return self._select_action_inline(cpu_state, obs_inline, greedy=True)
 
     # =========================================================================
     # High-level CPU Training and Evaluation
@@ -699,8 +768,10 @@ struct DuelingDQNAgent[
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
-        return run_offpolicy_discrete_train(
+        var cpu_state = Self.CPUStateType()
+        var metrics = run_offpolicy_discrete_train(
             self,
+            cpu_state,
             env,
             num_episodes,
             max_steps_per_episode,
@@ -711,6 +782,8 @@ struct DuelingDQNAgent[
             environment_name,
             "Deep Dueling DQN",
         )
+        self.state = cpu_state^
+        return metrics
 
     fn evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
@@ -738,55 +811,17 @@ struct DuelingDQNAgent[
         Returns:
             Average reward over evaluation episodes.
         """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-
-        for episode in range(num_episodes):
-            if quit_requested:
-                break
-
-            fill_inline(env.reset_obs_list(), obs)
-            var episode_reward: Float64 = 0.0
-            var episode_steps = 0
-
-            for _ in range(max_steps):
-                var action = self.select_action(obs, greedy=greedy)
-                var result = env.step_obs(action)
-                fill_inline(result[0], obs)
-                episode_reward += Float64(result[1])
-                episode_steps += 1
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                if result[2]:
-                    break
-
-            total_reward += episode_reward
-
-            if verbose:
-                print(
-                    "Eval Episode "
-                    + String(episode + 1)
-                    + " | Reward: "
-                    + String(episode_reward)[:10]
-                    + " | Steps: "
-                    + String(episode_steps)
-                )
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
+        var metrics = run_offpolicy_discrete_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
 
     # =========================================================================
     # Checkpoint Save / Load
@@ -812,12 +847,12 @@ struct DuelingDQNAgent[
         var content = write_checkpoint_header(
             "dueling_dqn", param_size, param_size
         )
-        content += self.backbone_online.write_sections("backbone_online_")
-        content += self.backbone_target.write_sections("backbone_target_")
-        content += self.value_online.write_sections("value_online_")
-        content += self.value_target.write_sections("value_target_")
-        content += self.adv_online.write_sections("adv_online_")
-        content += self.adv_target.write_sections("adv_target_")
+        content += self.state.backbone_online.write_sections("backbone_online_")
+        content += self.state.backbone_target.write_sections("backbone_target_")
+        content += self.state.value_online.write_sections("value_online_")
+        content += self.state.value_target.write_sections("value_target_")
+        content += self.state.adv_online.write_sections("adv_online_")
+        content += self.state.adv_target.write_sections("adv_target_")
         var metadata = List[String]()
         metadata.append("epsilon=" + String(self.epsilon))
         metadata.append("total_steps=" + String(self.total_steps))
@@ -837,12 +872,12 @@ struct DuelingDQNAgent[
         )
 
         var content = read_checkpoint_file(filepath)
-        self.backbone_online.read_sections(content, "backbone_online_")
-        self.backbone_target.read_sections(content, "backbone_target_")
-        self.value_online.read_sections(content, "value_online_")
-        self.value_target.read_sections(content, "value_target_")
-        self.adv_online.read_sections(content, "adv_online_")
-        self.adv_target.read_sections(content, "adv_target_")
+        self.state.backbone_online.read_sections(content, "backbone_online_")
+        self.state.backbone_target.read_sections(content, "backbone_target_")
+        self.state.value_online.read_sections(content, "value_online_")
+        self.state.value_target.read_sections(content, "value_target_")
+        self.state.adv_online.read_sections(content, "adv_online_")
+        self.state.adv_target.read_sections(content, "adv_target_")
         var metadata = read_metadata_section(content)
         var eps_str = get_metadata_value(metadata, "epsilon")
         if len(eps_str) > 0:

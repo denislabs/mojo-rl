@@ -13,6 +13,8 @@ from .utils import (
 from .offpolicy_train import (
     OffPolicyState,
     OffPolicyContinuousAgent,
+    OffPolicyDiscreteState,
+    OffPolicyDiscreteAgent,
     OffPolicyAgent,
     run_offpolicy_discrete_train,
     run_offpolicy_continuous_train,

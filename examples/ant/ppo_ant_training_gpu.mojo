@@ -52,7 +52,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 50_000
+comptime NUM_EPISODES = 1_024
 
 comptime dtype = DType.float32
 
@@ -82,12 +82,12 @@ fn main() raises:
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
             clip_value=True,
+            actor_lr=0.0003,  # CleanRL: 3e-4
+            critic_lr=0.0003,  # CleanRL: 3e-4
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # CleanRL: 3e-4
-            critic_lr=0.0003,  # CleanRL: 3e-4
             entropy_coef=0.0,  # CleanRL: 0 for MuJoCo
             value_loss_coef=0.5,
             num_epochs=10,  # CleanRL default

@@ -396,7 +396,9 @@ struct BipedalWalker[
         self._generate_terrain_cpu(Int(combined_seed))
 
         # Create walker
-        var init_x = BWConstants.TERRAIN_STARTPAD * BWConstants.TERRAIN_STEP
+        var init_x = Float64(BWConstants.TERRAIN_STARTPAD) * Float64(
+            BWConstants.TERRAIN_STEP
+        )
         var init_y = BWConstants.TERRAIN_HEIGHT + 2.0 * BWConstants.LEG_H
         self._create_walker_cpu(init_x, init_y, rng)
 
