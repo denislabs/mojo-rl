@@ -49,6 +49,7 @@ Usage:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
+from .checkpoint_trait import Checkpointable
 from core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
 from nn.constants import dtype
 
@@ -234,7 +235,7 @@ trait GPUOffPolicyAgent:
 
 fn run_offpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
-    A: GPUOffPolicyAgent,
+    A: GPUOffPolicyAgent & Checkpointable,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -242,6 +243,8 @@ fn run_offpolicy_continuous_train_gpu[
     warmup_steps: Int = 1000,
     train_every: Int = 1,
     sync_every: Int = 50,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 50,
     environment_name: String = "Environment",
@@ -383,6 +386,14 @@ fn run_offpolicy_continuous_train_gpu[
         if total_steps % sync_every == 0:
             agent.download_from_gpu(gpu_state, ctx)
 
+        # Periodic checkpoint
+        if checkpoint_every > 0 and total_steps % checkpoint_every == 0:
+            if total_steps % sync_every != 0:  # avoid double download
+                agent.download_from_gpu(gpu_state, ctx)
+            agent.save_checkpoint(
+                checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
+            )
+
         total_steps += 1
         step_seed += 1
 
@@ -409,7 +420,7 @@ fn run_offpolicy_continuous_train_gpu[
 
 fn run_offpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
-    A: GPUOffPolicyAgent,
+    A: GPUOffPolicyAgent & Checkpointable,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -417,6 +428,8 @@ fn run_offpolicy_discrete_train_gpu[
     warmup_steps: Int = 1000,
     train_every: Int = 1,
     sync_every: Int = 100,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 100,
     environment_name: String = "Environment",
@@ -523,6 +536,14 @@ fn run_offpolicy_discrete_train_gpu[
 
         if total_steps % sync_every == 0:
             agent.download_from_gpu(gpu_state, ctx)
+
+        # Periodic checkpoint
+        if checkpoint_every > 0 and total_steps % checkpoint_every == 0:
+            if total_steps % sync_every != 0:  # avoid double download
+                agent.download_from_gpu(gpu_state, ctx)
+            agent.save_checkpoint(
+                checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
+            )
 
         total_steps += 1
         step_seed += 1

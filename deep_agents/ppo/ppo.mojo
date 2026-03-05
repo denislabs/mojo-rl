@@ -90,6 +90,7 @@ from deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyDiscreteAgent,
     run_onpolicy_discrete_train_gpu,
 )
+from deep_agents.core.checkpoint_trait import Checkpointable
 from deep_agents.core.eval import (
     run_onpolicy_discrete_eval,
     run_onpolicy_continuous_eval,
@@ -127,7 +128,7 @@ struct DeepPPOAgent[
     gpu_minibatch_size: Int = 256,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-](OnPolicyDiscreteAgent, OnPolicyAgent, GPUOnPolicyDiscreteAgent):
+](OnPolicyDiscreteAgent, OnPolicyAgent, GPUOnPolicyDiscreteAgent, Checkpointable):
     """Deep Proximal Policy Optimization Agent using new trait-based architecture.
 
     Uses clipped surrogate objective for stable policy updates:

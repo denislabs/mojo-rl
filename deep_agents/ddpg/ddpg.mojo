@@ -66,6 +66,7 @@ from deep_agents.core import (
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_eval,
     run_offpolicy_continuous_train_gpu,
+    Checkpointable,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
@@ -108,7 +109,7 @@ struct DeepDDPGAgent[
     actor_lr: Float64 = 0.001,
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
-](OffPolicyContinuousAgent & GPUOffPolicyAgent):
+](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Deterministic Policy Gradient agent — unified CPU + GPU.
 
     DDPG is an off-policy actor-critic algorithm that uses a deterministic

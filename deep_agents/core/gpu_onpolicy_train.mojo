@@ -53,6 +53,7 @@ Usage:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
+from .checkpoint_trait import Checkpointable
 from core import (
     TrainingMetrics,
     GPUDiscreteEnv,
@@ -382,12 +383,14 @@ trait GPUOnPolicyContinuousAgent:
 
 fn run_onpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
-    A: GPUOnPolicyDiscreteAgent,
+    A: GPUOnPolicyDiscreteAgent & Checkpointable,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
     sync_every: Int = 50,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
@@ -656,6 +659,14 @@ fn run_onpolicy_discrete_train_gpu[
         if update % sync_every == 0:
             agent.download_from_gpu(gpu_state, ctx)
 
+        # Periodic checkpoint (after sync)
+        if checkpoint_every > 0 and update % checkpoint_every == 0:
+            if update % sync_every != 0:  # avoid double download
+                agent.download_from_gpu(gpu_state, ctx)
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update) + ".ckpt"
+            )
+
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
@@ -688,7 +699,7 @@ fn run_onpolicy_discrete_train_gpu[
 
 fn run_onpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
-    A: GPUOnPolicyContinuousAgent,
+    A: GPUOnPolicyContinuousAgent & Checkpointable,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
 ](
     mut agent: A,
@@ -697,6 +708,8 @@ fn run_onpolicy_continuous_train_gpu[
     target_episodes: Int = 0,
     target_total_steps: Int = 0,
     sync_every: Int = 50,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
@@ -956,6 +969,14 @@ fn run_onpolicy_continuous_train_gpu[
 
         if update % sync_every == 0:
             agent.download_from_gpu(gpu_state, ctx)
+
+        # Periodic checkpoint (after sync)
+        if checkpoint_every > 0 and update % checkpoint_every == 0:
+            if update % sync_every != 0:  # avoid double download
+                agent.download_from_gpu(gpu_state, ctx)
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update) + ".ckpt"
+            )
 
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(

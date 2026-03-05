@@ -52,6 +52,7 @@ from deep_agents.core import (
     OffPolicyDiscreteAgent,
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
+    Checkpointable,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
@@ -174,7 +175,7 @@ struct DuelingDQNAgent[
     batch_size: Int = 64,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
-](OffPolicyDiscreteAgent):
+](OffPolicyDiscreteAgent & Checkpointable):
     """Deep Dueling DQN Agent using NetworkState architecture.
 
     Dueling DQN separates the Q-network into two streams:

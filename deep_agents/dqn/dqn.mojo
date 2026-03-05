@@ -58,6 +58,7 @@ from deep_agents.core import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
     run_offpolicy_discrete_train_gpu,
+    Checkpointable,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.checkpoint import (
@@ -97,7 +98,7 @@ struct DQNAgent[
     n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.001,
-](OffPolicyDiscreteAgent & GPUOffPolicyAgent):
+](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Q-Network agent — unified CPU + GPU.
 
     DQN is an off-policy value-based algorithm for discrete action spaces.

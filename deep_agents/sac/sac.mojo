@@ -65,6 +65,7 @@ from deep_agents.core import (
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_eval,
     run_offpolicy_continuous_train_gpu,
+    Checkpointable,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 
@@ -112,7 +113,7 @@ struct DeepSACAgent[
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.0003,
     max_n_envs: Int = 64,
-](OffPolicyContinuousAgent & GPUOffPolicyAgent):
+](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Soft Actor-Critic agent using the new trait-based architecture.
 
     SAC is an off-policy actor-critic algorithm based on the maximum entropy

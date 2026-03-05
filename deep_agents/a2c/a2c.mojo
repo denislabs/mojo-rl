@@ -57,7 +57,7 @@ from core import (
     RenderableEnv,
 )
 from core.utils.gae import compute_gae_inline
-from deep_agents.core import OnPolicyAgent, run_onpolicy_discrete_train
+from deep_agents.core import OnPolicyAgent, run_onpolicy_discrete_train, Checkpointable
 from core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
@@ -78,7 +78,7 @@ struct DeepA2CAgent[
     rollout_len: Int = 128,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-](OnPolicyAgent):
+](OnPolicyAgent & Checkpointable):
     """Deep Advantage Actor-Critic Agent using the new stateless architecture.
 
     Uses separate actor and critic NetworkStates with heap-allocated params.

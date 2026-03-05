@@ -36,6 +36,7 @@ Usage — original OnPolicyAgent style (A2C):
 """
 
 from core import TrainingMetrics, BoxDiscreteActionEnv, BoxContinuousActionEnv
+from .checkpoint_trait import Checkpointable
 
 
 # =============================================================================
@@ -121,16 +122,18 @@ trait OnPolicyAgent:
 
 
 fn run_onpolicy_discrete_train[
-    E: BoxDiscreteActionEnv, A: OnPolicyAgent
+    E: BoxDiscreteActionEnv, A: OnPolicyAgent & Checkpointable
 ](
     mut agent: A,
     mut env: E,
     num_updates: Int,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Shared on-policy discrete loop: collect → advantages → update × num_updates.
 
     Eliminates the boilerplate outer loop in A2C.train() and PPO.train()
@@ -139,12 +142,14 @@ fn run_onpolicy_discrete_train[
 
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
-        A: Agent type implementing OnPolicyAgent.
+        A: Agent type implementing OnPolicyAgent and Checkpointable.
 
     Args:
         agent: On-policy agent (updated in-place).
         env: Discrete-action environment.
         num_updates: Number of collect+update cycles.
+        checkpoint_every: Save checkpoint every N updates (default: 0 = disabled).
+        checkpoint_path: Base path for checkpoint files (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -171,6 +176,11 @@ fn run_onpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
+            )
+
         if verbose and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
             print(
@@ -191,28 +201,32 @@ fn run_onpolicy_discrete_train[
 
 
 fn run_onpolicy_continuous_train[
-    E: BoxContinuousActionEnv, A: OnPolicyAgent
+    E: BoxContinuousActionEnv, A: OnPolicyAgent & Checkpointable
 ](
     mut agent: A,
     mut env: E,
     num_updates: Int,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Shared on-policy continuous loop: collect → advantages → update × num_updates.
 
     Continuous-action variant (PPO with Gaussian policy, SAC on-policy variant).
 
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
-        A: Agent type implementing OnPolicyAgent.
+        A: Agent type implementing OnPolicyAgent and Checkpointable.
 
     Args:
         agent: On-policy agent (updated in-place).
         env: Continuous-action environment.
         num_updates: Number of collect+update cycles.
+        checkpoint_every: Save checkpoint every N updates (default: 0 = disabled).
+        checkpoint_path: Base path for checkpoint files (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -237,6 +251,11 @@ fn run_onpolicy_continuous_train[
             A.ROLLOUT_LEN,
             agent.get_explore_rate(),
         )
+
+        if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
+            )
 
         if verbose and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
@@ -426,17 +445,19 @@ trait OnPolicyContinuousAgent:
 
 
 fn run_onpolicy_discrete_train[
-    E: BoxDiscreteActionEnv, A: OnPolicyDiscreteAgent
+    E: BoxDiscreteActionEnv, A: OnPolicyDiscreteAgent & Checkpointable
 ](
     mut agent: A,
     mut cpu_state: A.CPUStateType,
     mut env: E,
     num_updates: Int,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Shared on-policy discrete loop with explicit state: collect → advantages → update.
 
     The caller creates state via agent.make_cpu_state() and holds it across
@@ -444,13 +465,15 @@ fn run_onpolicy_discrete_train[
 
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
-        A: Agent type implementing OnPolicyDiscreteAgent.
+        A: Agent type implementing OnPolicyDiscreteAgent and Checkpointable.
 
     Args:
         agent: On-policy agent (hyperparameters + update logic).
         cpu_state: CPU buffer container (networks + rollout buffers).
         env: Discrete-action environment.
         num_updates: Number of collect+update cycles.
+        checkpoint_every: Save checkpoint every N updates (default: 0 = disabled).
+        checkpoint_path: Base path for checkpoint files (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -475,6 +498,11 @@ fn run_onpolicy_discrete_train[
             0,
             agent.get_explore_rate(),
         )
+
+        if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
+            )
 
         if verbose and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
@@ -496,17 +524,19 @@ fn run_onpolicy_discrete_train[
 
 
 fn run_onpolicy_continuous_train[
-    E: BoxContinuousActionEnv, A: OnPolicyContinuousAgent
+    E: BoxContinuousActionEnv, A: OnPolicyContinuousAgent & Checkpointable
 ](
     mut agent: A,
     mut cpu_state: A.CPUStateType,
     mut env: E,
     num_updates: Int,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Shared on-policy continuous loop with explicit state: collect → advantages → update.
 
     Continuous-action variant (PPO Gaussian policy). Same structure as the
@@ -514,13 +544,15 @@ fn run_onpolicy_continuous_train[
 
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
-        A: Agent type implementing OnPolicyContinuousAgent.
+        A: Agent type implementing OnPolicyContinuousAgent and Checkpointable.
 
     Args:
         agent: On-policy agent (hyperparameters + update logic).
         cpu_state: CPU buffer container (networks + rollout buffers).
         env: Continuous-action environment.
         num_updates: Number of collect+update cycles.
+        checkpoint_every: Save checkpoint every N updates (default: 0 = disabled).
+        checkpoint_path: Base path for checkpoint files (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -545,6 +577,11 @@ fn run_onpolicy_continuous_train[
             0,
             agent.get_explore_rate(),
         )
+
+        if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
+            )
 
         if verbose and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)

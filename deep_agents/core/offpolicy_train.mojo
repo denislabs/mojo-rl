@@ -35,6 +35,7 @@ Usage — OffPolicyContinuousAgent style (DDPG / TD3 / SAC):
 from std.math import exp
 from std.random import random_float64, seed
 from core import TrainingMetrics, BoxDiscreteActionEnv, BoxContinuousActionEnv
+from .checkpoint_trait import Checkpointable
 
 
 # =============================================================================
@@ -476,7 +477,7 @@ trait OffPolicyAgent:
 
 
 fn run_offpolicy_discrete_train[
-    E: BoxDiscreteActionEnv, A: OffPolicyAgent
+    E: BoxDiscreteActionEnv, A: OffPolicyAgent & Checkpointable
 ](
     mut agent: A,
     mut env: E,
@@ -484,11 +485,13 @@ fn run_offpolicy_discrete_train[
     max_steps_per_episode: Int = 500,
     warmup_steps: Int = 1000,
     train_every: Int = 4,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
 
     Shared implementation used by DQN, DQN+PER, and DuelingDQN to eliminate
@@ -571,6 +574,11 @@ fn run_offpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
+            )
+
         if verbose and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
             print(
@@ -593,7 +601,7 @@ fn run_offpolicy_discrete_train[
 
 
 fn run_offpolicy_discrete_train[
-    E: BoxDiscreteActionEnv, A: OffPolicyDiscreteAgent
+    E: BoxDiscreteActionEnv, A: OffPolicyDiscreteAgent & Checkpointable
 ](
     mut agent: A,
     mut cpu_state: A.CPUStateType,
@@ -602,11 +610,13 @@ fn run_offpolicy_discrete_train[
     max_steps_per_episode: Int = 500,
     warmup_steps: Int = 1000,
     train_every: Int = 4,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
 
     Symmetric with run_offpolicy_continuous_train (OffPolicyContinuousAgent):
@@ -694,6 +704,11 @@ fn run_offpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
+            )
+
         if verbose and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
             print(
@@ -716,7 +731,7 @@ fn run_offpolicy_discrete_train[
 
 
 fn run_offpolicy_continuous_train[
-    E: BoxContinuousActionEnv, A: OffPolicyAgent
+    E: BoxContinuousActionEnv, A: OffPolicyAgent & Checkpointable
 ](
     mut agent: A,
     mut env: E,
@@ -724,11 +739,13 @@ fn run_offpolicy_continuous_train[
     max_steps_per_episode: Int = 1000,
     warmup_steps: Int = 1000,
     train_every: Int = 1,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
 
     Shared implementation used by DDPG, TD3, and SAC.
@@ -816,6 +833,11 @@ fn run_offpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
+        if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
+            )
+
         if verbose and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
             print(
@@ -838,7 +860,7 @@ fn run_offpolicy_continuous_train[
 
 
 fn run_offpolicy_continuous_train[
-    E: BoxContinuousActionEnv, A: OffPolicyContinuousAgent
+    E: BoxContinuousActionEnv, A: OffPolicyContinuousAgent & Checkpointable
 ](
     mut agent: A,
     mut cpu_state: A.CPUStateType,
@@ -847,11 +869,13 @@ fn run_offpolicy_continuous_train[
     max_steps_per_episode: Int = 1000,
     warmup_steps: Int = 1000,
     train_every: Int = 1,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     verbose: Bool = False,
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-) -> TrainingMetrics:
+) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 
     Symmetric with run_offpolicy_continuous_train_gpu:
@@ -944,6 +968,11 @@ fn run_offpolicy_continuous_train[
             episode_steps,
             agent.get_explore_rate(),
         )
+
+        if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
+            agent.save_checkpoint(
+                checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
+            )
 
         if verbose and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)

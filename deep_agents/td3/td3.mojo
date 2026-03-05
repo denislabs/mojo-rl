@@ -73,6 +73,7 @@ from deep_agents.core import (
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_eval,
     run_offpolicy_continuous_train_gpu,
+    Checkpointable,
 )
 from nn.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
@@ -115,7 +116,7 @@ struct DeepTD3Agent[
     actor_lr: Float64 = 0.001,
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
-](OffPolicyContinuousAgent & GPUOffPolicyAgent):
+](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Twin Delayed DDPG agent — unified CPU + GPU.
 
     TD3 improves upon DDPG by addressing function approximation error through

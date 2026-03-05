@@ -119,6 +119,7 @@ from deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyContinuousAgent,
     run_onpolicy_continuous_train_gpu,
 )
+from deep_agents.core.checkpoint_trait import Checkpointable
 
 # =============================================================================
 # Deep PPO Continuous Agent
@@ -135,7 +136,7 @@ struct DeepPPOContinuousAgent[
     clip_value: Bool = True,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-](GPUOnPolicyContinuousAgent, OnPolicyAgent, OnPolicyContinuousAgent):
+](GPUOnPolicyContinuousAgent, OnPolicyAgent, OnPolicyContinuousAgent, Checkpointable):
     """Deep Proximal Policy Optimization Agent for Continuous Action Spaces.
 
     Uses an unbounded Gaussian policy (CleanRL-style) - actions clipped at env boundary.

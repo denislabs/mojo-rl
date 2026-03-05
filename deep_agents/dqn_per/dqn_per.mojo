@@ -53,6 +53,7 @@ from deep_agents.core import (
     OffPolicyDiscreteAgent,
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
+    Checkpointable,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
@@ -154,7 +155,7 @@ struct DQNPERAgent[
     batch_size: Int = 64,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
-](OffPolicyDiscreteAgent):
+](OffPolicyDiscreteAgent & Checkpointable):
     """DQN Agent with Prioritized Experience Replay using NetworkState architecture.
 
     PER samples transitions proportionally to their TD error magnitude, which

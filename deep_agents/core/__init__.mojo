@@ -1,3 +1,4 @@
+from .checkpoint_trait import Checkpointable
 from .offpolicy_helpers import (
     deterministic_select_action,
     greedy_continuous_action,
