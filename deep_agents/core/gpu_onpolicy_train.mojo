@@ -84,6 +84,10 @@ trait GPUOnPolicyState(ImplicitlyDestructible):
     Algorithm-specific logic (advantages, epochs) lives on the agent.
     """
 
+    fn gpu_rollout_reset(mut self) -> None:
+        """Reset the rollout write pointer to 0 for the next update cycle."""
+        ...
+
     fn gpu_store_pre_step[
         N_ENVS: Int
     ](
@@ -223,6 +227,7 @@ trait GPUOnPolicyDiscreteAgent:
         mut actions_buf: DeviceBuffer[dtype],
         mut log_probs_buf: DeviceBuffer[dtype],
         mut values_buf: DeviceBuffer[dtype],
+        rng_seed: UInt32 = 0,
     ) raises -> None:
         """Forward actor + critic on GPU for all N_ENVS environments.
 
@@ -237,6 +242,7 @@ trait GPUOnPolicyDiscreteAgent:
             actions_buf: Output sampled actions [N_ENVS].
             log_probs_buf: Output log probabilities [N_ENVS].
             values_buf: Output critic values [N_ENVS].
+            rng_seed: Per-step RNG seed for action sampling.
         """
         ...
 
@@ -335,6 +341,7 @@ trait GPUOnPolicyContinuousAgent:
         mut actions_buf: DeviceBuffer[dtype],
         mut log_probs_buf: DeviceBuffer[dtype],
         mut values_buf: DeviceBuffer[dtype],
+        rng_seed: UInt32 = 0,
     ) raises -> None:
         """Forward actor + critic for continuous actions.
 
@@ -499,10 +506,17 @@ fn run_onpolicy_discrete_train_gpu[
         # ==================================================================
         # Phase 1: Collect rollout (ROLLOUT_LEN steps across n_envs envs)
         # ==================================================================
+        gpu_state.gpu_rollout_reset()
         for _t in range(A.ROLLOUT_LEN):
             # Select actions (actor + critic forward + sampling)
             agent.select_actions_with_meta_gpu[n_envs](
-                ctx, gpu_state, obs_buf, actions_buf, log_probs_buf, values_buf
+                ctx,
+                gpu_state,
+                obs_buf,
+                actions_buf,
+                log_probs_buf,
+                values_buf,
+                rng_seed=step_seed,
             )
 
             # Store pre-step data (obs, actions, log_probs, values) BEFORE env step
@@ -673,6 +687,7 @@ fn run_onpolicy_continuous_train_gpu[
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
+    target_episodes: Int = 0,
     sync_every: Int = 50,
     verbose: Bool = False,
     print_every: Int = 10,
@@ -692,6 +707,7 @@ fn run_onpolicy_continuous_train_gpu[
         agent: On-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_updates: Number of rollout + update cycles.
+        target_episodes: Target number of episodes to complete (default: 0 = unlimited).
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
@@ -746,18 +762,11 @@ fn run_onpolicy_continuous_train_gpu[
         ctx.synchronize()
 
     # ------------------------------------------------------------------
-    # Initial reset
+    # Initial reset + extract initial observations
     # ------------------------------------------------------------------
     E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
-    E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
-        ctx,
-        states_buf,
-        actions_buf,
-        rewards_buf,
-        dones_buf,
-        obs_buf,
-        rng_seed=0,
-        workspace_ptr=workspace_buf.unsafe_ptr(),
+    E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+        ctx, states_buf, obs_buf
     )
     ctx.synchronize()
 
@@ -782,10 +791,19 @@ fn run_onpolicy_continuous_train_gpu[
     var completed_episodes = 0
 
     for update in range(num_updates):
+        if target_episodes > 0 and completed_episodes >= target_episodes:
+            break
         # Phase 1: Collect rollout
+        gpu_state.gpu_rollout_reset()
         for _t in range(A.ROLLOUT_LEN):
             agent.select_actions_with_meta_gpu[n_envs](
-                ctx, gpu_state, obs_buf, actions_buf, log_probs_buf, values_buf
+                ctx,
+                gpu_state,
+                obs_buf,
+                actions_buf,
+                log_probs_buf,
+                values_buf,
+                rng_seed=step_seed,
             )
 
             # Store pre-step data BEFORE env step (obs_buf = current obs)
@@ -891,9 +909,21 @@ fn run_onpolicy_continuous_train_gpu[
                 dones_buf,
                 rng_seed=UInt64(step_seed + 1),
             )
+            # Update obs_buf for reset environments — must happen after selective_reset
+            # so that the next step's actor sees the initial obs of the new episode,
+            # not the terminal obs of the previous one.
+            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                ctx, states_buf, obs_buf
+            )
 
             total_steps += n_envs
-            step_seed += 2
+            # Increment seed by the full action-sampling range width + 2 (for env reset seed).
+            # Each step uses seeds [step_seed, step_seed + n_envs*E.ACTION_DIM - 1].
+            # With step_seed += 2, consecutive steps had ~1534 seed collisions (range overlap),
+            # causing correlated action noise across timesteps and biased PPO gradients.
+            # Increment must be >= n_envs * E.ACTION_DIM to ensure non-overlapping ranges.
+            comptime seed_stride = n_envs * E.ACTION_DIM + 2
+            step_seed += UInt32(seed_stride)
 
         # Phase 2: Compute advantages
         agent.compute_advantages_gpu(ctx, gpu_state, obs_buf)
@@ -908,14 +938,15 @@ fn run_onpolicy_continuous_train_gpu[
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
+            var ep_progress = String(completed_episodes) + (
+                " / " + String(target_episodes) if target_episodes > 0 else ""
+            )
             print(
                 algorithm_name
-                + " | Update "
-                + String(update + 1)
-                + " / "
-                + String(num_updates)
                 + " | Episodes: "
-                + String(completed_episodes)
+                + ep_progress
+                + " | Update: "
+                + String(update + 1)
                 + " | AvgR(100): "
                 + String(avg_reward)[:7]
                 + " | Steps: "

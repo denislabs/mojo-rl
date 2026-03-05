@@ -1738,6 +1738,7 @@ struct DeepPPOAgent[
         mut actions_buf: DeviceBuffer[dtype],
         mut log_probs_buf: DeviceBuffer[dtype],
         mut values_buf: DeviceBuffer[dtype],
+        rng_seed: UInt32 = 0,
     ) raises -> None:
         """Forward actor + critic on GPU and sample actions."""
         comptime blocks = (N_ENVS + TPB - 1) // TPB
@@ -1781,12 +1782,11 @@ struct DeepPPOAgent[
         comptime sample_wrapper = _sample_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS
         ]
-        var seed = UInt32(self.train_step_count * 2654435761)
         ctx.enqueue_function[sample_wrapper, sample_wrapper](
             logits_t,
             actions_t,
             log_probs_t,
-            Scalar[DType.uint32](seed),
+            Scalar[DType.uint32](rng_seed),
             grid_dim=(blocks,),
             block_dim=(TPB,),
         )

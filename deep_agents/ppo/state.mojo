@@ -256,11 +256,20 @@ struct PPOContinuousState[
     var _indices: List[Int]                  # [rollout_len]
 
     fn __init__(out self):
-        """Allocate networks (Kaiming init for ReLU/Tanh), rollout buffers, scratch."""
+        """Allocate networks (actor Kaiming init only), rollout buffers, scratch.
+
+        IMPORTANT: Only the actor is initialized here. The critic is left
+        uninitialized (raw allocation only) so that the owning agent can
+        initialize it AFTER calling init_params_small on the actor head.
+        This preserves the correct RNG ordering:
+            actor_kaiming → init_params_small → critic_kaiming
+        which matches DeepPPOContinuousAgentOld and produces stable initial
+        gradient magnitudes. Do NOT call critic.initialize[Kaiming]() here.
+        """
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
         self.actor.initialize[Kaiming]()
         self.critic = NetworkState[Self.CriticModel, Self.CriticOpt]()
-        self.critic.initialize[Kaiming]()
+        # NOTE: critic intentionally NOT initialized here. See docstring above.
 
         self.buffer_obs = List[Scalar[dtype]](
             capacity=Self.ROLLOUT * Self.OBS
@@ -658,6 +667,10 @@ struct PPODiscreteGPUState[
         """Return True when rollout_len steps have been stored."""
         return self.rollout_step >= Self.ROLLOUT
 
+    fn gpu_rollout_reset(mut self) -> None:
+        """Reset rollout write pointer to 0 for the next update cycle."""
+        self.rollout_step = 0
+
 
 # =============================================================================
 # PPOContinuousGPUState — GPU state container for continuous-action PPO
@@ -944,6 +957,7 @@ struct PPOContinuousGPUState[
         )
 
     fn gpu_store_post_step[
+
         N_ENVS: Int
     ](
         mut self,
@@ -980,3 +994,7 @@ struct PPOContinuousGPUState[
     fn gpu_rollout_is_full(self) -> Bool:
         """Return True when rollout_len steps have been stored."""
         return self.rollout_step >= Self.ROLLOUT
+
+    fn gpu_rollout_reset(mut self) -> None:
+        """Reset rollout write pointer to 0 for the next update cycle."""
+        self.rollout_step = 0

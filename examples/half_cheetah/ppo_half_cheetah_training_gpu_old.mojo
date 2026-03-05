@@ -25,7 +25,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
+from deep_agents.ppo import DeepPPOContinuousAgentOld
 from envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -72,7 +72,7 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = DeepPPOContinuousAgent[
+        var agent = DeepPPOContinuousAgentOld[
             obs_dim=OBS_DIM,
             action_dim=ACTION_DIM,
             hidden_dim=HIDDEN_DIM,
