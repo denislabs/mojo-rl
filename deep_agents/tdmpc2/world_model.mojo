@@ -33,7 +33,7 @@ from nn.model import (
 )
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
-from nn.training import Network
+from nn.training import Network, NetworkState
 from nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
@@ -79,7 +79,7 @@ struct WorldModel[
     comptime ZA_DIM: Int = Self.LATENT_DIM + Self.ACTION_DIM
 
     # -------------------------------------------------------------------------
-    # Network type definitions
+    # Model type definitions
     # -------------------------------------------------------------------------
 
     # Encoder: OBS_DIM → LATENT_DIM
@@ -89,7 +89,6 @@ struct WorldModel[
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
-
     comptime DynModel = Sequential[
         NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
@@ -105,7 +104,6 @@ struct WorldModel[
     ]
 
     # Termination: LATENT → scalar in (0,1)
-
     comptime TermModel = Sequential[
         NormedLinear[Self.LATENT_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
@@ -127,7 +125,8 @@ struct WorldModel[
         Linear[Self.MLP_DIM, Self.NUM_BINS],
     ]
 
-    # Network wrapper types
+    # Network wrapper type aliases (kept for TDMPC2Agent constant access:
+    # PARAM_SIZE, CACHE_SIZE, WORKSPACE_SIZE_PER_SAMPLE)
     comptime EncoderNet = Network[Self.EncModel, Adam[LR = Self.ENC_LR]]
     comptime DynamicsNet = Network[
         Self.DynModel,
@@ -151,27 +150,27 @@ struct WorldModel[
     ]
 
     # -------------------------------------------------------------------------
-    # Sub-networks
+    # Sub-network states (NetworkState replaces old stateful Network instances)
     # -------------------------------------------------------------------------
-    var encoder: Self.EncoderNet
-    var dynamics: Self.DynamicsNet
-    var reward_head: Self.RewardNet
-    var termination: Self.TermNet
-    var policy: Self.PolicyNet
+    var encoder: NetworkState[Self.EncModel, Adam[LR = Self.ENC_LR]]
+    var dynamics: NetworkState[Self.DynModel, Adam[LR = Self.WM_LR]]
+    var reward_head: NetworkState[Self.RewModel, Adam[LR = Self.WM_LR]]
+    var termination: NetworkState[Self.TermModel, Adam[LR = Self.WM_LR]]
+    var policy: NetworkState[Self.PolModel, Adam[LR = Self.PI_LR]]
 
     # Q-ensemble (NUM_Q=5 networks)
-    var q1: Self.QNet
-    var q2: Self.QNet
-    var q3: Self.QNet
-    var q4: Self.QNet
-    var q5: Self.QNet
+    var q1: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q2: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q3: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q4: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q5: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
 
     # Target Q-networks (no gradient, soft-updated from live Qs)
-    var q1_target: Self.QNet
-    var q2_target: Self.QNet
-    var q3_target: Self.QNet
-    var q4_target: Self.QNet
-    var q5_target: Self.QNet
+    var q1_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q2_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q3_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q4_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q5_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
 
     # Fixed bin values for distributional RL
     var bins: InlineArray[Float32, Self.NUM_BINS]
@@ -180,29 +179,42 @@ struct WorldModel[
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
-        self.encoder = Self.EncoderNet()
-        self.dynamics = Self.DynamicsNet(Adam(lr=wm_lr), Kaiming())
-        self.reward_head = Self.RewardNet(Adam(lr=wm_lr), Kaiming())
-        self.termination = Self.TermNet(Adam(lr=wm_lr), Kaiming())
-        self.policy = Self.PolicyNet(Adam(lr=pi_lr), Kaiming())
+        self.encoder = NetworkState[Self.EncModel, Adam[LR = Self.ENC_LR]]()
+        self.encoder.initialize[Kaiming]()
 
-        self.q1 = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q2 = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q3 = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q4 = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q5 = Self.QNet(Adam(lr=wm_lr), Kaiming())
+        self.dynamics = NetworkState[Self.DynModel, Adam[LR = Self.WM_LR]]()
+        self.dynamics.initialize[Kaiming]()
 
-        self.q1_target = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q2_target = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q3_target = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q4_target = Self.QNet(Adam(lr=wm_lr), Kaiming())
-        self.q5_target = Self.QNet(Adam(lr=wm_lr), Kaiming())
+        self.reward_head = NetworkState[Self.RewModel, Adam[LR = Self.WM_LR]]()
+        self.reward_head.initialize[Kaiming]()
+
+        self.termination = NetworkState[Self.TermModel, Adam[LR = Self.WM_LR]]()
+        self.termination.initialize[Kaiming]()
+
+        self.policy = NetworkState[Self.PolModel, Adam[LR = Self.PI_LR]]()
+        self.policy.initialize[Kaiming]()
+
+        self.q1 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q1.initialize[Kaiming]()
+        self.q2 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q2.initialize[Kaiming]()
+        self.q3 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q3.initialize[Kaiming]()
+        self.q4 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q4.initialize[Kaiming]()
+        self.q5 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q5.initialize[Kaiming]()
 
         # Initialize target Q networks with same weights as live Q networks
+        self.q1_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
         self.q1_target.copy_params_from(self.q1)
+        self.q2_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
         self.q2_target.copy_params_from(self.q2)
+        self.q3_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
         self.q3_target.copy_params_from(self.q3)
+        self.q4_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
         self.q4_target.copy_params_from(self.q4)
+        self.q5_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
         self.q5_target.copy_params_from(self.q5)
 
         # Compute bin values
@@ -211,23 +223,29 @@ struct WorldModel[
         )
 
     # =========================================================================
-    # Forward Methods
+    # Forward Methods (all take UnsafePointers; LayoutTensors created internally)
     # =========================================================================
 
     fn encode[
         BATCH: Int
     ](
         self,
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS_DIM)],
-        z: LayoutTensor[dtype, Layout.row_major(BATCH, Self.LATENT_DIM)],
+        obs_ptr: UnsafePointer[Scalar[dtype]],
+        z_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Encode observations to latent states (no cache, stop-gradient).
 
         Args:
-            obs: Input observations [BATCH * OBS_DIM].
-            z: Output latent states [BATCH * LATENT_DIM] (written).
+            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
+            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
         """
-        Self.EncoderNet.forward[BATCH](obs, z)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ](obs_ptr)
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_ptr)
+        Self.EncoderNet.forward[BATCH](obs_t, z_t, self.encoder.params_view())
 
     fn encode_with_cache[
         BATCH: Int
@@ -244,7 +262,20 @@ struct WorldModel[
             z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
             cache: Pre-allocated cache [BATCH * EncModel.CACHE_SIZE] (written).
         """
-        self.encoder.forward_with_cache_ptr[BATCH](obs_ptr, z_ptr, cache)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ](obs_ptr)
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_ptr)
+        var c_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.EncModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](cache.unsafe_ptr())
+        Self.EncoderNet.forward_with_cache[BATCH](
+            obs_t, z_t, self.encoder.params_view(), c_t
+        )
 
     fn dynamics_forward[
         BATCH: Int
@@ -259,7 +290,15 @@ struct WorldModel[
             z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
             z_next_ptr: Pointer to output next latent state [BATCH * LATENT_DIM] (written).
         """
-        self.dynamics.forward_ptr[BATCH](z_a_ptr, z_next_ptr)
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
+        var z_next_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_next_ptr)
+        Self.DynamicsNet.forward[BATCH](
+            za_t, z_next_t, self.dynamics.params_view()
+        )
 
     fn dynamics_forward_with_cache[
         BATCH: Int
@@ -270,7 +309,20 @@ struct WorldModel[
         mut cache: List[Scalar[dtype]],
     ):
         """Predict next latent state with cache for backprop."""
-        self.dynamics.forward_with_cache_ptr[BATCH](z_a_ptr, z_next_ptr, cache)
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
+        var z_next_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_next_ptr)
+        var c_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.DynModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](cache.unsafe_ptr())
+        Self.DynamicsNet.forward_with_cache[BATCH](
+            za_t, z_next_t, self.dynamics.params_view(), c_t
+        )
 
     fn reward_forward[
         BATCH: Int
@@ -280,7 +332,15 @@ struct WorldModel[
         logits_ptr: UnsafePointer[Scalar[dtype]],
     ):
         """Predict reward distribution logits (no cache)."""
-        self.reward_head.forward_ptr[BATCH](z_a_ptr, logits_ptr)
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits_ptr)
+        Self.RewardNet.forward[BATCH](
+            za_t, logits_t, self.reward_head.params_view()
+        )
 
     fn reward_forward_with_cache[
         BATCH: Int
@@ -291,8 +351,19 @@ struct WorldModel[
         mut cache: List[Scalar[dtype]],
     ):
         """Predict reward distribution logits with cache."""
-        self.reward_head.forward_with_cache_ptr[BATCH](
-            z_a_ptr, logits_ptr, cache
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits_ptr)
+        var c_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.RewModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](cache.unsafe_ptr())
+        Self.RewardNet.forward_with_cache[BATCH](
+            za_t, logits_t, self.reward_head.params_view(), c_t
         )
 
     fn termination_forward[
@@ -300,7 +371,7 @@ struct WorldModel[
     ](
         self,
         z_ptr: UnsafePointer[Scalar[dtype]],
-        term_prob_ptr: UnsafePointer[Scalar[dtype]],
+        term_prob_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         """Predict termination probability (no cache).
 
@@ -308,10 +379,17 @@ struct WorldModel[
             z_ptr: Pointer to latent states [BATCH * LATENT_DIM].
             term_prob_ptr: Pointer to output termination probabilities [BATCH] (written).
         """
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_ptr)
+        # TermModel.OUT_DIM = 1, output is [BATCH, 1]
         var out = List[Scalar[dtype]](capacity=BATCH)
         for _ in range(BATCH):
             out.append(Scalar[dtype](0))
-        self.termination.forward_ptr[BATCH](z_ptr, out.unsafe_ptr())
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](out.unsafe_ptr())
+        Self.TermNet.forward[BATCH](z_t, out_t, self.termination.params_view())
         for b in range(BATCH):
             term_prob_ptr[b] = out[b]
 
@@ -320,8 +398,8 @@ struct WorldModel[
     ](
         self,
         z_ptr: UnsafePointer[Scalar[dtype]],
-        mean_ptr: UnsafePointer[Scalar[dtype]],
-        log_std_ptr: UnsafePointer[Scalar[dtype]],
+        mean_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        log_std_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         """Predict Gaussian policy parameters (no cache).
 
@@ -330,10 +408,16 @@ struct WorldModel[
             mean_ptr: Pointer to output action mean [BATCH * ACTION_DIM] (written).
             log_std_ptr: Pointer to output log std [BATCH * ACTION_DIM] (written).
         """
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_ptr)
         var out = List[Scalar[dtype]](capacity=BATCH * 2 * Self.ACTION_DIM)
         for _ in range(BATCH * 2 * Self.ACTION_DIM):
             out.append(Scalar[dtype](0))
-        self.policy.forward_ptr[BATCH](z_ptr, out.unsafe_ptr())
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
+        ](out.unsafe_ptr())
+        Self.PolicyNet.forward[BATCH](z_t, out_t, self.policy.params_view())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
                 mean_ptr[b * Self.ACTION_DIM + i] = out[
@@ -358,14 +442,27 @@ struct WorldModel[
         mut cache: List[Scalar[dtype]],
     ):
         """Predict policy output with cache for backprop."""
-        self.policy.forward_with_cache_ptr[BATCH](z_ptr, out_ptr, cache)
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ](z_ptr)
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
+        ](out_ptr)
+        var c_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.PolModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](cache.unsafe_ptr())
+        Self.PolicyNet.forward_with_cache[BATCH](
+            z_t, out_t, self.policy.params_view(), c_t
+        )
 
     fn q_forward[
         BATCH: Int
     ](
         self,
         z_a_ptr: UnsafePointer[Scalar[dtype]],
-        q_logits_ptr: UnsafePointer[Scalar[dtype]],
+        q_logits_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         use_target: Bool = False,
     ):
         """Forward pass through all Q-networks.
@@ -375,6 +472,9 @@ struct WorldModel[
             q_logits_ptr: Pointer to output logits [NUM_Q * BATCH * NUM_BINS] (written).
             use_target: If True, use target Q-networks (default: False).
         """
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
         var logits1 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
         var logits2 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
         var logits3 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
@@ -387,18 +487,34 @@ struct WorldModel[
             logits4.append(Scalar[dtype](0))
             logits5.append(Scalar[dtype](0))
 
+        var l1_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits1.unsafe_ptr())
+        var l2_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits2.unsafe_ptr())
+        var l3_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits3.unsafe_ptr())
+        var l4_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits4.unsafe_ptr())
+        var l5_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits5.unsafe_ptr())
+
         if use_target:
-            self.q1_target.forward_ptr[BATCH](z_a_ptr, logits1.unsafe_ptr())
-            self.q2_target.forward_ptr[BATCH](z_a_ptr, logits2.unsafe_ptr())
-            self.q3_target.forward_ptr[BATCH](z_a_ptr, logits3.unsafe_ptr())
-            self.q4_target.forward_ptr[BATCH](z_a_ptr, logits4.unsafe_ptr())
-            self.q5_target.forward_ptr[BATCH](z_a_ptr, logits5.unsafe_ptr())
+            Self.QNet.forward[BATCH](za_t, l1_t, self.q1_target.params_view())
+            Self.QNet.forward[BATCH](za_t, l2_t, self.q2_target.params_view())
+            Self.QNet.forward[BATCH](za_t, l3_t, self.q3_target.params_view())
+            Self.QNet.forward[BATCH](za_t, l4_t, self.q4_target.params_view())
+            Self.QNet.forward[BATCH](za_t, l5_t, self.q5_target.params_view())
         else:
-            self.q1.forward_ptr[BATCH](z_a_ptr, logits1.unsafe_ptr())
-            self.q2.forward_ptr[BATCH](z_a_ptr, logits2.unsafe_ptr())
-            self.q3.forward_ptr[BATCH](z_a_ptr, logits3.unsafe_ptr())
-            self.q4.forward_ptr[BATCH](z_a_ptr, logits4.unsafe_ptr())
-            self.q5.forward_ptr[BATCH](z_a_ptr, logits5.unsafe_ptr())
+            Self.QNet.forward[BATCH](za_t, l1_t, self.q1.params_view())
+            Self.QNet.forward[BATCH](za_t, l2_t, self.q2.params_view())
+            Self.QNet.forward[BATCH](za_t, l3_t, self.q3.params_view())
+            Self.QNet.forward[BATCH](za_t, l4_t, self.q4.params_view())
+            Self.QNet.forward[BATCH](za_t, l5_t, self.q5.params_view())
 
         for b in range(BATCH * Self.NUM_BINS):
             q_logits_ptr[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
@@ -407,12 +523,44 @@ struct WorldModel[
             q_logits_ptr[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
             q_logits_ptr[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
 
+    fn q_forward_single_no_cache[
+        BATCH: Int
+    ](
+        self,
+        q_idx: Int,
+        z_a_ptr: UnsafePointer[Scalar[dtype]],
+        logits_ptr: UnsafePointer[Scalar[dtype]],
+    ):
+        """Forward pass through a single Q-network (no cache).
+
+        Args:
+            q_idx: Index of Q-network (0..4).
+            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
+            logits_ptr: Pointer to output logits [BATCH * NUM_BINS] (written).
+        """
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ](z_a_ptr)
+        var logits_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ](logits_ptr)
+        if q_idx == 0:
+            Self.QNet.forward[BATCH](za_t, logits_t, self.q1.params_view())
+        elif q_idx == 1:
+            Self.QNet.forward[BATCH](za_t, logits_t, self.q2.params_view())
+        elif q_idx == 2:
+            Self.QNet.forward[BATCH](za_t, logits_t, self.q3.params_view())
+        elif q_idx == 3:
+            Self.QNet.forward[BATCH](za_t, logits_t, self.q4.params_view())
+        else:
+            Self.QNet.forward[BATCH](za_t, logits_t, self.q5.params_view())
+
     fn q_min_forward[
         BATCH: Int
     ](
         self,
         z_a_ptr: UnsafePointer[Scalar[dtype]],
-        values_ptr: UnsafePointer[Scalar[dtype]],
+        values_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         use_target: Bool = False,
     ):
         """Compute min Q-value across ensemble for each sample.
@@ -489,19 +637,19 @@ struct WorldModel[
     fn update_world_model_params(mut self):
         """Apply gradient updates to all world model parameters (exc. policy).
         """
-        self.encoder.update()
-        self.dynamics.update()
-        self.reward_head.update()
-        self.termination.update()
-        self.q1.update()
-        self.q2.update()
-        self.q3.update()
-        self.q4.update()
-        self.q5.update()
+        self.encoder.optimizer_step()
+        self.dynamics.optimizer_step()
+        self.reward_head.optimizer_step()
+        self.termination.optimizer_step()
+        self.q1.optimizer_step()
+        self.q2.optimizer_step()
+        self.q3.optimizer_step()
+        self.q4.optimizer_step()
+        self.q5.optimizer_step()
 
     fn update_policy_params(mut self):
         """Apply gradient updates to policy parameters."""
-        self.policy.update()
+        self.policy.optimizer_step()
 
 
 fn decode_value_batch_scalar[

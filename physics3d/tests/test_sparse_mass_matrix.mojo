@@ -29,7 +29,7 @@ from physics3d.dynamics.mass_matrix import (
 )
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 # =============================================================================

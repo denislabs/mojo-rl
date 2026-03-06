@@ -96,7 +96,8 @@ struct DuelingDQNCPUState[
     var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
 
     fn __init__(out self):
-        """Allocate and Kaiming-initialize all networks; copy online → target."""
+        """Allocate and Kaiming-initialize all networks; copy online → target.
+        """
         self.backbone_online = NetworkState[Self.BackboneModel, Self.Opt]()
         self.backbone_online.initialize[Kaiming]()
         self.value_online = NetworkState[Self.ValueModel, Self.Opt]()
@@ -114,7 +115,9 @@ struct DuelingDQNCPUState[
             copy=self.adv_online
         )
 
-        self.buffer = ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]()
+        self.buffer = ReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, 1, dtype
+        ]()
 
     fn __init__(out self, *, deinit take: Self):
         self.backbone_online = take.backbone_online^
@@ -397,7 +400,9 @@ struct DuelingDQNAgent[
         var obs_batch = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
             obs_batch[i] = obs[i]
-        self._dueling_forward_inline[1](cpu_state, obs_batch, q_arr, use_target=False)
+        self._dueling_forward_inline[1](
+            cpu_state, obs_batch, q_arr, use_target=False
+        )
 
         var best_action = 0
         var best_q = q_arr[0]
@@ -411,9 +416,7 @@ struct DuelingDQNAgent[
     # CPU Training Step
     # =========================================================================
 
-    fn do_cpu_train_step(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> Float64:
+    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Perform one training step.
 
         Args:
@@ -677,7 +680,9 @@ struct DuelingDQNAgent[
         cpu_state.backbone_target.soft_update_from(
             cpu_state.backbone_online, self.tau
         )
-        cpu_state.value_target.soft_update_from(cpu_state.value_online, self.tau)
+        cpu_state.value_target.soft_update_from(
+            cpu_state.value_online, self.tau
+        )
         cpu_state.adv_target.soft_update_from(cpu_state.adv_online, self.tau)
 
         self.train_step_count += 1
@@ -753,7 +758,7 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the Dueling DQN agent on a discrete action environment.
 
         Args:

@@ -13,7 +13,7 @@ from std.math import sqrt, pi, sin, cos, abs
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import forward_kinematics
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 fn setup_pendulum(

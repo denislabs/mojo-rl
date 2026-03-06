@@ -7,7 +7,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_qderiv_finite_diff.mojo
 """
 
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 from std.math import abs
 from std.collections import InlineArray
 

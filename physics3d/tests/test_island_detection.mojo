@@ -22,7 +22,7 @@ from physics3d.solver.island_detection import (
     IslandData,
     MAX_ISLANDS,
 )
-from testing import assert_true
+from std.testing import assert_true
 
 
 # ---------------------------------------------------------------------------

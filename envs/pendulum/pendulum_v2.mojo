@@ -98,6 +98,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     comptime ACTION_DIM: Int = PConstants.ACTION_DIM  # 1
     comptime STEP_WS_SHARED: Int = 0
     comptime STEP_WS_PER_ENV: Int = 0
+    comptime NAME: String = "PendulumV2"
 
     # DiscreteEnv trait requirement
     comptime NUM_ACTIONS: Int = 3  # left, none, right

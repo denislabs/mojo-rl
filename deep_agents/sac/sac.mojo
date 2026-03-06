@@ -1662,6 +1662,8 @@ struct DeepSACAgent[
         Returns:
             TrainingMetrics with step-level statistics.
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_offpolicy_continuous_train_gpu[E, Self](
             self,
             ctx,
@@ -1672,7 +1674,9 @@ struct DeepSACAgent[
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
-            algorithm_name="Deep SAC GPU",
+            algorithm_name="SAC (GPU)",
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     # =========================================================================
@@ -1691,7 +1695,7 @@ struct DeepSACAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the SAC agent on a continuous action environment.
 
         Delegates to run_offpolicy_continuous_train which handles warmup,
@@ -1711,6 +1715,8 @@ struct DeepSACAgent[
             TrainingMetrics object with episode rewards and statistics.
         """
         var cpu_state = Self.CPUStateType()
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         var metrics = run_offpolicy_continuous_train(
             self,
             cpu_state,
@@ -1722,7 +1728,9 @@ struct DeepSACAgent[
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
-            algorithm_name="Deep SAC",
+            algorithm_name="SAC (CPU)",
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
         self.state = cpu_state^
         return metrics
@@ -1760,7 +1768,7 @@ struct DeepSACAgent[
             num_episodes=num_episodes,
             max_steps=max_steps,
             verbose=verbose,
-            algorithm_name="Deep SAC",
+            algorithm_name="SAC",
         ).mean_reward()
 
     # =========================================================================

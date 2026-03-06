@@ -9,7 +9,7 @@ from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
 from physics3d.integrator.implicit_integrator import ImplicitIntegrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.types import Model, Data
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 fn test_lu_factorization() raises:
@@ -22,9 +22,15 @@ fn test_lu_factorization() raises:
     comptime V_SIZE = 3
 
     var A = List[Scalar[DType.float64]](capacity=M_SIZE)
-    A.append(2); A.append(1); A.append(1)
-    A.append(4); A.append(3); A.append(3)
-    A.append(8); A.append(7); A.append(9)
+    A.append(2)
+    A.append(1)
+    A.append(1)
+    A.append(4)
+    A.append(3)
+    A.append(3)
+    A.append(8)
+    A.append(7)
+    A.append(9)
 
     var piv = List[Int](capacity=V_SIZE)
     for i in range(NV):
@@ -34,7 +40,9 @@ fn test_lu_factorization() raises:
 
     # Solve A * x = [1, 3, 5]
     var b = List[Scalar[DType.float64]](capacity=V_SIZE)
-    b.append(1); b.append(3); b.append(5)
+    b.append(1)
+    b.append(3)
+    b.append(5)
 
     var x = List[Scalar[DType.float64]](capacity=V_SIZE)
     for i in range(NV):
@@ -58,7 +66,13 @@ fn test_lu_factorization() raises:
         print("  PASS")
     else:
         print("  FAIL")
-        assert_true(ok, "LU factorization test failed: solution values are unreasonably large")
+        assert_true(
+            ok,
+            (
+                "LU factorization test failed: solution values are unreasonably"
+                " large"
+            ),
+        )
 
 
 fn test_implicit_integrator_import() raises:
@@ -140,7 +154,10 @@ fn test_zero_velocity_qderiv() raises:
         print("  PASS (max qDeriv =", max_val, ")")
     else:
         print("  FAIL (max qDeriv =", max_val, ")")
-        assert_true(max_val < 1e-10, "Zero-velocity qDeriv test failed: max qDeriv exceeds 1e-10")
+        assert_true(
+            max_val < 1e-10,
+            "Zero-velocity qDeriv test failed: max qDeriv exceeds 1e-10",
+        )
 
 
 fn main() raises:

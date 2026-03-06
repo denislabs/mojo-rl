@@ -33,6 +33,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TPB
+from nn.optimizer import Adam
 from nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
@@ -245,11 +246,7 @@ struct TDMPC2Agent[
             enc_lr_scale: Encoder LR multiplier (default: 0.3).
             pi_lr: Policy learning rate (default: 3e-4).
         """
-        self.world_model = Self.WM(
-            enc_lr=wm_lr * enc_lr_scale,
-            wm_lr=wm_lr,
-            pi_lr=pi_lr,
-        )
+        self.world_model = Self.WM()
         self.buffer = Self.Buffer()
 
         self.gamma = gamma
@@ -679,26 +676,9 @@ struct TDMPC2Agent[
                 for _ in range(Self.B_BINS):
                     q_logits.append(Scalar[dtype](0))
                 # Use the appropriate Q-network
-                if q_idx == 0:
-                    self.world_model.q1.forward_ptr[Self.BATCH](
-                        za_t.unsafe_ptr(), q_logits.unsafe_ptr()
-                    )
-                elif q_idx == 1:
-                    self.world_model.q2.forward_ptr[Self.BATCH](
-                        za_t.unsafe_ptr(), q_logits.unsafe_ptr()
-                    )
-                elif q_idx == 2:
-                    self.world_model.q3.forward_ptr[Self.BATCH](
-                        za_t.unsafe_ptr(), q_logits.unsafe_ptr()
-                    )
-                elif q_idx == 3:
-                    self.world_model.q4.forward_ptr[Self.BATCH](
-                        za_t.unsafe_ptr(), q_logits.unsafe_ptr()
-                    )
-                else:
-                    self.world_model.q5.forward_ptr[Self.BATCH](
-                        za_t.unsafe_ptr(), q_logits.unsafe_ptr()
-                    )
+                self.world_model.q_forward_single_no_cache[Self.BATCH](
+                    q_idx, za_t.unsafe_ptr(), q_logits.unsafe_ptr()
+                )
 
                 for b in range(Self.BATCH):
                     var max_l = Float32(q_logits[b * Self.BINS])
@@ -874,11 +854,11 @@ struct TDMPC2Agent[
             for _ in range(Self.B_BINS):
                 q_logits1.append(Scalar[dtype](0))
                 q_logits2.append(Scalar[dtype](0))
-            self.world_model.q1.forward_ptr[Self.BATCH](
-                za_pi.unsafe_ptr(), q_logits1.unsafe_ptr()
+            self.world_model.q_forward_single_no_cache[Self.BATCH](
+                0, za_pi.unsafe_ptr(), q_logits1.unsafe_ptr()
             )
-            self.world_model.q2.forward_ptr[Self.BATCH](
-                za_pi.unsafe_ptr(), q_logits2.unsafe_ptr()
+            self.world_model.q_forward_single_no_cache[Self.BATCH](
+                1, za_pi.unsafe_ptr(), q_logits2.unsafe_ptr()
             )
 
             # Decode Q-values and take min
@@ -1099,6 +1079,107 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
         ](enc_params_buf.unsafe_ptr())
 
+        # ── Additional LayoutTensor views for Network static calls ──
+        var enc_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
+        ](enc_cache_buf.unsafe_ptr())
+        var enc_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
+        ](enc_grads_buf.unsafe_ptr())
+        var dyn_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
+        ](dyn_params_buf.unsafe_ptr())
+        var dyn_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.DYN_C), MutAnyOrigin
+        ](dyn_cache_buf.unsafe_ptr())
+        var dyn_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
+        ](dyn_grads_buf.unsafe_ptr())
+        var rew_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
+        ](rew_params_buf.unsafe_ptr())
+        var rew_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.REW_C), MutAnyOrigin
+        ](rew_cache_buf.unsafe_ptr())
+        var rew_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
+        ](rew_grads_buf.unsafe_ptr())
+        var term_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
+        ](term_params_buf.unsafe_ptr())
+        var term_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.TERM_C), MutAnyOrigin
+        ](term_cache_buf.unsafe_ptr())
+        var term_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
+        ](term_grads_buf.unsafe_ptr())
+        var q1_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q1_params_buf.unsafe_ptr())
+        var q1_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](q1_cache_buf.unsafe_ptr())
+        var q1_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q1_grads_buf.unsafe_ptr())
+        var q2_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q2_params_buf.unsafe_ptr())
+        var q2_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](q2_cache_buf.unsafe_ptr())
+        var q2_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q2_grads_buf.unsafe_ptr())
+        var q3_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q3_params_buf.unsafe_ptr())
+        var q3_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](q3_cache_buf.unsafe_ptr())
+        var q3_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q3_grads_buf.unsafe_ptr())
+        var q4_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q4_params_buf.unsafe_ptr())
+        var q4_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](q4_cache_buf.unsafe_ptr())
+        var q4_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q4_grads_buf.unsafe_ptr())
+        var q5_params_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q5_params_buf.unsafe_ptr())
+        var q5_cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](q5_cache_buf.unsafe_ptr())
+        var q5_grads_t = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q5_grads_buf.unsafe_ptr())
+        # TermNet output/grad tensors: OUT_DIM=1 → shape [BATCH, 1]
+        var term_out_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](term_prob_buf.unsafe_ptr())
+        var grad_term_out_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](grad_term_prob_buf.unsafe_ptr())
+        var grad_z_term_2d_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](grad_z_term_buf.unsafe_ptr())
+        # Encoder backward: grad_output [BATCH, LATENT], grad_input [BATCH, OBS]
+        var grad_enc_out_2d_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](grad_enc_out_buf.unsafe_ptr())
+        # Dummy grad views: [BATCH, ZA] for Q/reward backward, [BATCH, OBS] for encoder
+        var dummy_grad_za_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
+        ](dummy_grad_buf.unsafe_ptr())
+        var dummy_grad_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](dummy_grad_buf.unsafe_ptr())
+
         # ── Zero per-step intermediate gradient buffers ──
         ctx.enqueue_memset(grad_z_pred_buf, 0)
         ctx.enqueue_memset(grad_za_buf, 0)
@@ -1153,12 +1234,12 @@ struct TDMPC2Agent[
         )
 
         # ── Dynamics forward with cache → z_pred ──
-        self.world_model.dynamics.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.DynamicsNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            z_pred_buf,
-            dyn_params_buf,
-            dyn_cache_buf,
+            za_tensor,
+            z_pred_tensor,
+            dyn_params_t,
+            dyn_cache_t,
             dyn_batch_ws_buf,
         )
 
@@ -1186,13 +1267,13 @@ struct TDMPC2Agent[
         )
 
         # ── Dynamics backward: grad_z_pred → grad_za ──
-        self.world_model.dynamics.backward_gpu[Self.BATCH](
+        Self.WM.DynamicsNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_z_pred_buf,
-            grad_za_buf,
-            dyn_params_buf,
-            dyn_cache_buf,
-            dyn_grads_buf,
+            grad_z_pred_tensor,
+            grad_za_tensor,
+            dyn_params_t,
+            dyn_cache_t,
+            dyn_grads_t,
             dyn_batch_ws_buf,
         )
         ctx.enqueue_function[
@@ -1210,12 +1291,12 @@ struct TDMPC2Agent[
         )
 
         # ── Reward forward + two-hot grad + backward ──
-        self.world_model.reward_head.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.RewardNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            rew_params_buf,
-            rew_cache_buf,
+            za_tensor,
+            logits_tensor,
+            rew_params_t,
+            rew_cache_t,
             rew_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1234,13 +1315,13 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.reward_head.backward_gpu[Self.BATCH](
+        Self.WM.RewardNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            rew_params_buf,
-            rew_cache_buf,
-            rew_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            rew_params_t,
+            rew_cache_t,
+            rew_grads_t,
             rew_batch_ws_buf,
         )
 
@@ -1250,12 +1331,12 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
         ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
-        self.world_model.q1.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            q1_params_buf,
-            q1_cache_buf,
+            za_tensor,
+            logits_tensor,
+            q1_params_t,
+            q1_cache_t,
             q1_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1270,22 +1351,22 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.q1.backward_gpu[Self.BATCH](
+        Self.WM.QNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            q1_params_buf,
-            q1_cache_buf,
-            q1_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            q1_params_t,
+            q1_cache_t,
+            q1_grads_t,
             q1_batch_ws_buf,
         )
 
-        self.world_model.q2.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            q2_params_buf,
-            q2_cache_buf,
+            za_tensor,
+            logits_tensor,
+            q2_params_t,
+            q2_cache_t,
             q2_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1300,22 +1381,22 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.q2.backward_gpu[Self.BATCH](
+        Self.WM.QNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            q2_params_buf,
-            q2_cache_buf,
-            q2_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            q2_params_t,
+            q2_cache_t,
+            q2_grads_t,
             q2_batch_ws_buf,
         )
 
-        self.world_model.q3.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            q3_params_buf,
-            q3_cache_buf,
+            za_tensor,
+            logits_tensor,
+            q3_params_t,
+            q3_cache_t,
             q3_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1330,22 +1411,22 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.q3.backward_gpu[Self.BATCH](
+        Self.WM.QNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            q3_params_buf,
-            q3_cache_buf,
-            q3_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            q3_params_t,
+            q3_cache_t,
+            q3_grads_t,
             q3_batch_ws_buf,
         )
 
-        self.world_model.q4.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            q4_params_buf,
-            q4_cache_buf,
+            za_tensor,
+            logits_tensor,
+            q4_params_t,
+            q4_cache_t,
             q4_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1360,22 +1441,22 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.q4.backward_gpu[Self.BATCH](
+        Self.WM.QNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            q4_params_buf,
-            q4_cache_buf,
-            q4_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            q4_params_t,
+            q4_cache_t,
+            q4_grads_t,
             q4_batch_ws_buf,
         )
 
-        self.world_model.q5.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            za_buf,
-            logits_buf,
-            q5_params_buf,
-            q5_cache_buf,
+            za_tensor,
+            logits_tensor,
+            q5_params_t,
+            q5_cache_t,
             q5_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_logits_buf, 0)
@@ -1390,23 +1471,23 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.q5.backward_gpu[Self.BATCH](
+        Self.WM.QNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_logits_buf,
-            dummy_grad_buf,
-            q5_params_buf,
-            q5_cache_buf,
-            q5_grads_buf,
+            grad_logits_tensor,
+            dummy_grad_za_t,
+            q5_params_t,
+            q5_cache_t,
+            q5_grads_t,
             q5_batch_ws_buf,
         )
 
         # ── Termination forward + BCE grad + backward ──
-        self.world_model.termination.forward_gpu_with_cache[Self.BATCH](
+        Self.WM.TermNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
-            z_buf,
-            term_prob_buf,
-            term_params_buf,
-            term_cache_buf,
+            z_tensor,
+            term_out_t,
+            term_params_t,
+            term_cache_t,
             term_batch_ws_buf,
         )
         ctx.enqueue_memset(grad_term_prob_buf, 0)
@@ -1422,13 +1503,13 @@ struct TDMPC2Agent[
             grid_dim=(Self.BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        self.world_model.termination.backward_gpu[Self.BATCH](
+        Self.WM.TermNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_term_prob_buf,
-            grad_z_term_buf,
-            term_params_buf,
-            term_cache_buf,
-            term_grads_buf,
+            grad_term_out_t,
+            grad_z_term_2d_t,
+            term_params_t,
+            term_cache_t,
+            term_grads_t,
             term_batch_ws_buf,
         )
 
@@ -1445,13 +1526,13 @@ struct TDMPC2Agent[
         )
 
         # ── Encoder backward ──
-        self.world_model.encoder.backward_gpu[Self.BATCH](
+        Self.WM.EncoderNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_enc_out_buf,
-            dummy_grad_buf,
-            enc_params_buf,
-            enc_cache_buf,
-            enc_grads_buf,
+            grad_enc_out_2d_t,
+            dummy_grad_obs_t,
+            enc_params_tensor,
+            enc_cache_t,
+            enc_grads_t,
             enc_batch_ws_buf,
         )
 
@@ -1984,6 +2065,68 @@ struct TDMPC2Agent[
         var q5t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
         ](q5t_params_buf.unsafe_ptr())
+        # Missing params tensors
+        var rew_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
+        ](rew_params_buf.unsafe_ptr())
+        var term_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
+        ](term_params_buf.unsafe_ptr())
+        var q3_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q3_params_buf.unsafe_ptr())
+        var q4_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q4_params_buf.unsafe_ptr())
+        var q5_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+        ](q5_params_buf.unsafe_ptr())
+
+        # Optimizer state tensors (for Adam.step_gpu: [PARAM_SIZE, STATE_PER_PARAM=2])
+        var enc_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.ENC_P, 2), MutAnyOrigin
+        ](enc_state_buf.unsafe_ptr())
+        var dyn_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_P, 2), MutAnyOrigin
+        ](dyn_state_buf.unsafe_ptr())
+        var rew_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.REW_P, 2), MutAnyOrigin
+        ](rew_state_buf.unsafe_ptr())
+        var term_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.TERM_P, 2), MutAnyOrigin
+        ](term_state_buf.unsafe_ptr())
+        var pol_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.POL_P, 2), MutAnyOrigin
+        ](pol_state_buf.unsafe_ptr())
+        var q1_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+        ](q1_state_buf.unsafe_ptr())
+        var q2_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+        ](q2_state_buf.unsafe_ptr())
+        var q3_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+        ](q3_state_buf.unsafe_ptr())
+        var q4_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+        ](q4_state_buf.unsafe_ptr())
+        var q5_state_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+        ](q5_state_buf.unsafe_ptr())
+
+        # Cache tensors for forward_with_cache calls
+        var enc_cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
+        ](enc_cache_buf.unsafe_ptr())
+        var pol_cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.POL_C), MutAnyOrigin
+        ](pol_cache_buf.unsafe_ptr())
+
+        # Dummy grad [BATCH, LATENT] for policy backward input grad
+        var dummy_grad_latent_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](dummy_grad_buf.unsafe_ptr())
+
         # n_envs-sized tensors for data collection phase
         var env_z_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
@@ -2014,32 +2157,129 @@ struct TDMPC2Agent[
         # =================================================================
         # Initialize GPU network params + optimizer state from CPU
         # =================================================================
-        self.world_model.encoder.copy_params_to_device(ctx, enc_params_buf)
-        self.world_model.encoder.copy_state_to_device(ctx, enc_state_buf)
-        self.world_model.dynamics.copy_params_to_device(ctx, dyn_params_buf)
-        self.world_model.dynamics.copy_state_to_device(ctx, dyn_state_buf)
-        self.world_model.reward_head.copy_params_to_device(ctx, rew_params_buf)
-        self.world_model.reward_head.copy_state_to_device(ctx, rew_state_buf)
-        self.world_model.termination.copy_params_to_device(ctx, term_params_buf)
-        self.world_model.termination.copy_state_to_device(ctx, term_state_buf)
-        self.world_model.policy.copy_params_to_device(ctx, pol_params_buf)
-        self.world_model.policy.copy_state_to_device(ctx, pol_state_buf)
-        self.world_model.q1.copy_params_to_device(ctx, q1_params_buf)
-        self.world_model.q1.copy_state_to_device(ctx, q1_state_buf)
-        self.world_model.q2.copy_params_to_device(ctx, q2_params_buf)
-        self.world_model.q2.copy_state_to_device(ctx, q2_state_buf)
-        self.world_model.q3.copy_params_to_device(ctx, q3_params_buf)
-        self.world_model.q3.copy_state_to_device(ctx, q3_state_buf)
-        self.world_model.q4.copy_params_to_device(ctx, q4_params_buf)
-        self.world_model.q4.copy_state_to_device(ctx, q4_state_buf)
-        self.world_model.q5.copy_params_to_device(ctx, q5_params_buf)
-        self.world_model.q5.copy_state_to_device(ctx, q5_state_buf)
-        # Target Q networks (initialized from live Q params)
-        self.world_model.q1_target.copy_params_to_device(ctx, q1t_params_buf)
-        self.world_model.q2_target.copy_params_to_device(ctx, q2t_params_buf)
-        self.world_model.q3_target.copy_params_to_device(ctx, q3t_params_buf)
-        self.world_model.q4_target.copy_params_to_device(ctx, q4t_params_buf)
-        self.world_model.q5_target.copy_params_to_device(ctx, q5t_params_buf)
+        # Encoder
+        var _enc_p_host = ctx.enqueue_create_host_buffer[dtype](Self.ENC_P)
+        for i in range(Self.ENC_P):
+            _enc_p_host[i] = self.world_model.encoder.params[i]
+        ctx.enqueue_copy(enc_params_buf, _enc_p_host)
+        var _enc_s_host = ctx.enqueue_create_host_buffer[dtype](Self.ENC_P * 2)
+        for i in range(Self.ENC_P * 2):
+            _enc_s_host[i] = self.world_model.encoder.optimizer_state[i]
+        ctx.enqueue_copy(enc_state_buf, _enc_s_host)
+
+        # Dynamics
+        var _dyn_p_host = ctx.enqueue_create_host_buffer[dtype](Self.DYN_P)
+        for i in range(Self.DYN_P):
+            _dyn_p_host[i] = self.world_model.dynamics.params[i]
+        ctx.enqueue_copy(dyn_params_buf, _dyn_p_host)
+        var _dyn_s_host = ctx.enqueue_create_host_buffer[dtype](Self.DYN_P * 2)
+        for i in range(Self.DYN_P * 2):
+            _dyn_s_host[i] = self.world_model.dynamics.optimizer_state[i]
+        ctx.enqueue_copy(dyn_state_buf, _dyn_s_host)
+
+        # Reward head
+        var _rew_p_host = ctx.enqueue_create_host_buffer[dtype](Self.REW_P)
+        for i in range(Self.REW_P):
+            _rew_p_host[i] = self.world_model.reward_head.params[i]
+        ctx.enqueue_copy(rew_params_buf, _rew_p_host)
+        var _rew_s_host = ctx.enqueue_create_host_buffer[dtype](Self.REW_P * 2)
+        for i in range(Self.REW_P * 2):
+            _rew_s_host[i] = self.world_model.reward_head.optimizer_state[i]
+        ctx.enqueue_copy(rew_state_buf, _rew_s_host)
+
+        # Termination
+        var _term_p_host = ctx.enqueue_create_host_buffer[dtype](Self.TERM_P)
+        for i in range(Self.TERM_P):
+            _term_p_host[i] = self.world_model.termination.params[i]
+        ctx.enqueue_copy(term_params_buf, _term_p_host)
+        var _term_s_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.TERM_P * 2
+        )
+        for i in range(Self.TERM_P * 2):
+            _term_s_host[i] = self.world_model.termination.optimizer_state[i]
+        ctx.enqueue_copy(term_state_buf, _term_s_host)
+
+        # Policy
+        var _pol_p_host = ctx.enqueue_create_host_buffer[dtype](Self.POL_P)
+        for i in range(Self.POL_P):
+            _pol_p_host[i] = self.world_model.policy.params[i]
+        ctx.enqueue_copy(pol_params_buf, _pol_p_host)
+        var _pol_s_host = ctx.enqueue_create_host_buffer[dtype](Self.POL_P * 2)
+        for i in range(Self.POL_P * 2):
+            _pol_s_host[i] = self.world_model.policy.optimizer_state[i]
+        ctx.enqueue_copy(pol_state_buf, _pol_s_host)
+
+        # Q1
+        var _q1_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q1_p_host[i] = self.world_model.q1.params[i]
+        ctx.enqueue_copy(q1_params_buf, _q1_p_host)
+        var _q1_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
+        for i in range(Self.Q_P * 2):
+            _q1_s_host[i] = self.world_model.q1.optimizer_state[i]
+        ctx.enqueue_copy(q1_state_buf, _q1_s_host)
+
+        # Q2
+        var _q2_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q2_p_host[i] = self.world_model.q2.params[i]
+        ctx.enqueue_copy(q2_params_buf, _q2_p_host)
+        var _q2_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
+        for i in range(Self.Q_P * 2):
+            _q2_s_host[i] = self.world_model.q2.optimizer_state[i]
+        ctx.enqueue_copy(q2_state_buf, _q2_s_host)
+
+        # Q3
+        var _q3_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q3_p_host[i] = self.world_model.q3.params[i]
+        ctx.enqueue_copy(q3_params_buf, _q3_p_host)
+        var _q3_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
+        for i in range(Self.Q_P * 2):
+            _q3_s_host[i] = self.world_model.q3.optimizer_state[i]
+        ctx.enqueue_copy(q3_state_buf, _q3_s_host)
+
+        # Q4
+        var _q4_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q4_p_host[i] = self.world_model.q4.params[i]
+        ctx.enqueue_copy(q4_params_buf, _q4_p_host)
+        var _q4_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
+        for i in range(Self.Q_P * 2):
+            _q4_s_host[i] = self.world_model.q4.optimizer_state[i]
+        ctx.enqueue_copy(q4_state_buf, _q4_s_host)
+
+        # Q5
+        var _q5_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q5_p_host[i] = self.world_model.q5.params[i]
+        ctx.enqueue_copy(q5_params_buf, _q5_p_host)
+        var _q5_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
+        for i in range(Self.Q_P * 2):
+            _q5_s_host[i] = self.world_model.q5.optimizer_state[i]
+        ctx.enqueue_copy(q5_state_buf, _q5_s_host)
+
+        # Target Q networks (params only — soft-updated on GPU, no optimizer state)
+        var _q1t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q1t_host[i] = self.world_model.q1_target.params[i]
+        ctx.enqueue_copy(q1t_params_buf, _q1t_host)
+        var _q2t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q2t_host[i] = self.world_model.q2_target.params[i]
+        ctx.enqueue_copy(q2t_params_buf, _q2t_host)
+        var _q3t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q3t_host[i] = self.world_model.q3_target.params[i]
+        ctx.enqueue_copy(q3t_params_buf, _q3t_host)
+        var _q4t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q4t_host[i] = self.world_model.q4_target.params[i]
+        ctx.enqueue_copy(q4t_params_buf, _q4t_host)
+        var _q5t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        for i in range(Self.Q_P):
+            _q5t_host[i] = self.world_model.q5_target.params[i]
+        ctx.enqueue_copy(q5t_params_buf, _q5t_host)
 
         # Upload fixed bins to GPU
         var bins_host = ctx.enqueue_create_host_buffer[dtype](Self.BINS)
@@ -2072,6 +2312,8 @@ struct TDMPC2Agent[
         var completed_episodes = 0
         var total_steps = 0
         var grad_norm_max = Scalar[dtype](10.0)
+        var gpu_wm_step: Int = 0  # Adam step counter for world model networks
+        var gpu_pi_step: Int = 0  # Adam step counter for policy network
 
         # =================================================================
         # Main Training Loop
@@ -2536,12 +2778,12 @@ struct TDMPC2Agent[
                     grid_dim=(Self.BATCH_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.encoder.forward_gpu_with_cache[Self.BATCH](
+                Self.WM.EncoderNet.forward_gpu_with_cache[Self.BATCH](
                     ctx,
-                    obs_step_buf,
-                    z_buf,
-                    enc_params_buf,
-                    enc_cache_buf,
+                    obs_step_tensor,
+                    z_tensor,
+                    enc_params_tensor,
+                    enc_cache_tensor,
                     enc_batch_ws_buf,
                 )
 
@@ -2643,8 +2885,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.ENC_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.encoder.update_gpu(
-                    ctx, enc_params_buf, enc_grads_buf, enc_state_buf
+                gpu_wm_step += 1
+                Adam[LR = Self.WM.ENC_LR].step_gpu[Self.ENC_P](
+                    ctx,
+                    enc_params_tensor,
+                    enc_grads_tensor,
+                    enc_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2674,8 +2922,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.DYN_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.dynamics.update_gpu(
-                    ctx, dyn_params_buf, dyn_grads_buf, dyn_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.DYN_P](
+                    ctx,
+                    dyn_params_tensor,
+                    dyn_grads_tensor,
+                    dyn_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2705,8 +2958,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.REW_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.reward_head.update_gpu(
-                    ctx, rew_params_buf, rew_grads_buf, rew_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.REW_P](
+                    ctx,
+                    rew_params_tensor,
+                    rew_grads_tensor,
+                    rew_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2736,8 +2994,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.TERM_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.termination.update_gpu(
-                    ctx, term_params_buf, term_grads_buf, term_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.TERM_P](
+                    ctx,
+                    term_params_tensor,
+                    term_grads_tensor,
+                    term_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 # Q1..Q5 grad clip + update (reuse shared q_grad_ps_buf)
@@ -2768,8 +3031,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.q1.update_gpu(
-                    ctx, q1_params_buf, q1_grads_buf, q1_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.Q_P](
+                    ctx,
+                    q1_params_tensor,
+                    q1_grads_tensor,
+                    q1_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2799,8 +3067,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.q2.update_gpu(
-                    ctx, q2_params_buf, q2_grads_buf, q2_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.Q_P](
+                    ctx,
+                    q2_params_tensor,
+                    q2_grads_tensor,
+                    q2_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2830,8 +3103,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.q3.update_gpu(
-                    ctx, q3_params_buf, q3_grads_buf, q3_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.Q_P](
+                    ctx,
+                    q3_params_tensor,
+                    q3_grads_tensor,
+                    q3_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2861,8 +3139,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.q4.update_gpu(
-                    ctx, q4_params_buf, q4_grads_buf, q4_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.Q_P](
+                    ctx,
+                    q4_params_tensor,
+                    q4_grads_tensor,
+                    q4_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2892,8 +3175,13 @@ struct TDMPC2Agent[
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.q5.update_gpu(
-                    ctx, q5_params_buf, q5_grads_buf, q5_state_buf
+                Adam[LR = Self.WM.WM_LR].step_gpu[Self.Q_P](
+                    ctx,
+                    q5_params_tensor,
+                    q5_grads_tensor,
+                    q5_state_tensor,
+                    gpu_wm_step,
+                    1.0,
                 )
 
                 # ──────────────────────────────────────────────────────────────
@@ -2919,12 +3207,12 @@ struct TDMPC2Agent[
                     ctx.enqueue_memset(grad_pi_out_buf, 0)
 
                     # Policy forward with cache → pi_out
-                    self.world_model.policy.forward_gpu_with_cache[Self.BATCH](
+                    Self.WM.PolicyNet.forward_gpu_with_cache[Self.BATCH](
                         ctx,
-                        z_buf,
-                        pi_out_buf,
-                        pol_params_buf,
-                        pol_cache_buf,
+                        z_tensor,
+                        pi_out_tensor,
+                        pol_params_tensor,
+                        pol_cache_tensor,
                         pol_batch_ws_buf,
                     )
 
@@ -3012,13 +3300,13 @@ struct TDMPC2Agent[
                     )
 
                     # Policy backward → accumulate pol_grads
-                    self.world_model.policy.backward_gpu[Self.BATCH](
+                    Self.WM.PolicyNet.backward_gpu[Self.BATCH](
                         ctx,
-                        grad_pi_out_buf,
-                        dummy_grad_buf,  # grad_input = dummy (z is stop-grad)
-                        pol_params_buf,
-                        pol_cache_buf,
-                        pol_grads_buf,
+                        grad_pi_out_tensor,
+                        dummy_grad_latent_t,  # grad_input = dummy (z is stop-grad)
+                        pol_params_tensor,
+                        pol_cache_tensor,
+                        pol_grads_tensor,
                         pol_batch_ws_buf,
                     )
 
@@ -3073,8 +3361,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.POL_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                self.world_model.policy.update_gpu(
-                    ctx, pol_params_buf, pol_grads_buf, pol_state_buf
+                gpu_pi_step += 1
+                Adam[LR = Self.WM.PI_LR].step_gpu[Self.POL_P](
+                    ctx,
+                    pol_params_tensor,
+                    pol_grads_tensor,
+                    pol_state_tensor,
+                    gpu_pi_step,
+                    1.0,
                 )
 
                 # ──────────────────────────────────────────────────────────────
@@ -3166,21 +3460,47 @@ struct TDMPC2Agent[
             self.train_step_count += 1
 
         # Sync GPU params back to CPU before returning
+        var enc_dl = ctx.enqueue_create_host_buffer[dtype](Self.ENC_P)
+        var dyn_dl = ctx.enqueue_create_host_buffer[dtype](Self.DYN_P)
+        var rew_dl = ctx.enqueue_create_host_buffer[dtype](Self.REW_P)
+        var term_dl = ctx.enqueue_create_host_buffer[dtype](Self.TERM_P)
+        var pol_dl = ctx.enqueue_create_host_buffer[dtype](Self.POL_P)
+        var q1_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        var q2_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        var q3_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        var q4_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        var q5_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        ctx.enqueue_copy(enc_dl, enc_params_buf)
+        ctx.enqueue_copy(dyn_dl, dyn_params_buf)
+        ctx.enqueue_copy(rew_dl, rew_params_buf)
+        ctx.enqueue_copy(term_dl, term_params_buf)
+        ctx.enqueue_copy(pol_dl, pol_params_buf)
+        ctx.enqueue_copy(q1_dl, q1_params_buf)
+        ctx.enqueue_copy(q2_dl, q2_params_buf)
+        ctx.enqueue_copy(q3_dl, q3_params_buf)
+        ctx.enqueue_copy(q4_dl, q4_params_buf)
+        ctx.enqueue_copy(q5_dl, q5_params_buf)
         ctx.synchronize()
-        self.world_model.encoder.copy_params_from_device(ctx, enc_params_buf)
-        self.world_model.dynamics.copy_params_from_device(ctx, dyn_params_buf)
-        self.world_model.reward_head.copy_params_from_device(
-            ctx, rew_params_buf
-        )
-        self.world_model.termination.copy_params_from_device(
-            ctx, term_params_buf
-        )
-        self.world_model.policy.copy_params_from_device(ctx, pol_params_buf)
-        self.world_model.q1.copy_params_from_device(ctx, q1_params_buf)
-        self.world_model.q2.copy_params_from_device(ctx, q2_params_buf)
-        self.world_model.q3.copy_params_from_device(ctx, q3_params_buf)
-        self.world_model.q4.copy_params_from_device(ctx, q4_params_buf)
-        self.world_model.q5.copy_params_from_device(ctx, q5_params_buf)
+        for i in range(Self.ENC_P):
+            self.world_model.encoder.params[i] = enc_dl[i]
+        for i in range(Self.DYN_P):
+            self.world_model.dynamics.params[i] = dyn_dl[i]
+        for i in range(Self.REW_P):
+            self.world_model.reward_head.params[i] = rew_dl[i]
+        for i in range(Self.TERM_P):
+            self.world_model.termination.params[i] = term_dl[i]
+        for i in range(Self.POL_P):
+            self.world_model.policy.params[i] = pol_dl[i]
+        for i in range(Self.Q_P):
+            self.world_model.q1.params[i] = q1_dl[i]
+        for i in range(Self.Q_P):
+            self.world_model.q2.params[i] = q2_dl[i]
+        for i in range(Self.Q_P):
+            self.world_model.q3.params[i] = q3_dl[i]
+        for i in range(Self.Q_P):
+            self.world_model.q4.params[i] = q4_dl[i]
+        for i in range(Self.Q_P):
+            self.world_model.q5.params[i] = q5_dl[i]
 
         return metrics
 

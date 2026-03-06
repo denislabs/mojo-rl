@@ -16,7 +16,7 @@ from physics3d.integrator.rk4_integrator import RK4Integrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 # Pendulum model setup:

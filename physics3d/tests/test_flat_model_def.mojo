@@ -23,7 +23,7 @@ from physics3d.parser import ParsedModel, parse_xml
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 # =============================================================================
 # Flat data structs — must be ImplicitlyCopyable for use in InlineArray

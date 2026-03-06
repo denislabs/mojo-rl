@@ -10,7 +10,7 @@ Run with:
 from std.python import Python, PythonObject
 from std.math import abs, pi
 from std.collections import InlineArray
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics

@@ -19,7 +19,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_rk4_step_vs_mujoco.mojo
 """
 
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray

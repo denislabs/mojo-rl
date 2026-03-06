@@ -13,7 +13,7 @@ from std.math import sqrt, pi, abs
 from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.kinematics.quat_math import quat_rotate
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 fn test_fk_identity() raises:

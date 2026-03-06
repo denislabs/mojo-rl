@@ -129,6 +129,7 @@ struct BipedalWalker[
     comptime dtype = Self.DTYPE
     comptime StateType = BipedalWalkerState[Self.dtype]
     comptime ActionType = BipedalWalkerAction[Self.dtype]
+    comptime NAME: String = "BipedalWalker"
 
     # Body index constants
     comptime BODY_HULL: Int = BWConstants.BODY_HULL

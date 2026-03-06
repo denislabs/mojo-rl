@@ -660,7 +660,7 @@ struct DeepTD3Agent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the TD3 agent on a continuous action environment.
 
         Delegates to run_offpolicy_continuous_train which handles warmup,
@@ -680,6 +680,8 @@ struct DeepTD3Agent[
             TrainingMetrics object with episode rewards and statistics.
         """
         var cpu_state = Self.CPUStateType()
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         var metrics = run_offpolicy_continuous_train(
             self,
             cpu_state,
@@ -690,8 +692,9 @@ struct DeepTD3Agent[
             train_every=train_every,
             verbose=verbose,
             print_every=print_every,
-            environment_name=environment_name,
-            algorithm_name="Deep TD3",
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+            algorithm_name="TD3 (CPU)",
         )
         self.state = cpu_state^
         return metrics
@@ -1301,7 +1304,6 @@ struct DeepTD3Agent[
         sync_every: Int = 50,
         verbose: Bool = False,
         print_every: Int = 50,
-        environment_name: String = "Environment",
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
 
@@ -1321,11 +1323,13 @@ struct DeepTD3Agent[
             sync_every: Download GPU→CPU every N steps (default: 50).
             verbose: Print progress (default: False).
             print_every: Print every N steps if verbose (default: 50).
-            environment_name: Name for metrics labeling.
+
 
         Returns:
             TrainingMetrics with step-level statistics.
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_offpolicy_continuous_train_gpu[E, Self](
             self,
             ctx,
@@ -1335,8 +1339,10 @@ struct DeepTD3Agent[
             sync_every=sync_every,
             verbose=verbose,
             print_every=print_every,
-            environment_name=environment_name,
-            algorithm_name="Deep TD3 GPU",
+            algorithm_name="TD3 (GPU)",
+            environment_name=E.NAME,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     # =========================================================================

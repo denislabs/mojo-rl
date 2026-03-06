@@ -23,7 +23,7 @@ from physics3d.parser import parse_xml_full
 from physics3d.parser.xml_parser import parse_xml_model_data
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 # =============================================================================

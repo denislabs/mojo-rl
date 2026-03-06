@@ -475,6 +475,8 @@ trait GPUContinuousEnv:
     comptime STEP_WS_SHARED: Int  # Shared buffer (e.g. model) — same across envs
     comptime STEP_WS_PER_ENV: Int  # Per-env buffer (e.g. physics workspace)
 
+    comptime NAME: String
+
     @staticmethod
     fn step_kernel_gpu[
         BATCH_SIZE: Int,

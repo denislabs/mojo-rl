@@ -9,7 +9,7 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_solver_forces_vs_mujoco.mojo
 """
 
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs, sqrt
 from std.collections import InlineArray

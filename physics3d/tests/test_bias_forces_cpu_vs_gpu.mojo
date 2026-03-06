@@ -10,7 +10,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_bias_forces_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true
+from std.testing import assert_true
 from std.math import abs
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor

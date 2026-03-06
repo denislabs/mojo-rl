@@ -1,5 +1,5 @@
 from io.file import open
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 fn read_file(path: String) -> String:

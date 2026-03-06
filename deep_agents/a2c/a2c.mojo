@@ -57,7 +57,11 @@ from core import (
     RenderableEnv,
 )
 from core.utils.gae import compute_gae_inline
-from deep_agents.core import OnPolicyAgent, run_onpolicy_discrete_train, Checkpointable
+from deep_agents.core import (
+    OnPolicyAgent,
+    run_onpolicy_discrete_train,
+    Checkpointable,
+)
 from core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
@@ -548,7 +552,9 @@ struct DeepA2CAgent[
             var done = result[2]
 
             # Copy to local to avoid aliasing self while calling mut self method
-            var obs_copy = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+            var obs_copy = InlineArray[Scalar[dtype], Self.OBS](
+                uninitialized=True
+            )
             for _i in range(Self.OBS):
                 obs_copy[_i] = self._current_obs[_i]
             self.store_transition(
@@ -813,10 +819,14 @@ struct DeepA2CAgent[
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_onpolicy_discrete_train(
             self,
             env,
             num_updates,
+            checkpoint_path,
+            checkpoint_every,
             verbose,
             print_every,
             environment_name,

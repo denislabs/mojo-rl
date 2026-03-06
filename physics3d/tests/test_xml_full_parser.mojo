@@ -30,7 +30,7 @@ from physics3d.parser import parse_xml_full
 from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
-from testing import assert_true, TestSuite
+from std.testing import assert_true, TestSuite
 
 
 # =============================================================================

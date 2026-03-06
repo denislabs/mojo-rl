@@ -551,7 +551,7 @@ struct DQNPERAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the DQN+PER agent on a discrete action environment.
 
         Args:

@@ -12,7 +12,7 @@ Run with:
     pixi run -e apple mojo run physics3d/tests/test_pendulum_gpu.mojo
 """
 
-from testing import assert_true
+from std.testing import assert_true
 from std.math import sqrt, sin, cos, pi
 from std.gpu.host import DeviceContext, DeviceBuffer
 

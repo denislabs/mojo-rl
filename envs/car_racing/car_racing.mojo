@@ -121,6 +121,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     comptime STEP_WS_PER_ENV: Int = 0
     comptime StateType = CarRacingState[Self.DTYPE]
     comptime ActionType = CarRacingAction[Self.DTYPE]
+    comptime NAME: String = "CarRacing"
 
     # Track generator (Float64 for precision)
     var track: TrackGenerator[DType.float64]

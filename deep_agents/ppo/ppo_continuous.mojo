@@ -136,7 +136,12 @@ struct DeepPPOContinuousAgent[
     clip_value: Bool = True,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-](GPUOnPolicyContinuousAgent, OnPolicyAgent, OnPolicyContinuousAgent, Checkpointable):
+](
+    Checkpointable,
+    GPUOnPolicyContinuousAgent,
+    OnPolicyAgent,
+    OnPolicyContinuousAgent,
+):
     """Deep Proximal Policy Optimization Agent for Continuous Action Spaces.
 
     Uses an unbounded Gaussian policy (CleanRL-style) - actions clipped at env boundary.
@@ -933,7 +938,7 @@ struct DeepPPOContinuousAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the PPO continuous agent on a continuous action environment.
 
         Delegates to the shared on-policy continuous training loop.
@@ -949,14 +954,18 @@ struct DeepPPOContinuousAgent[
         Returns:
             TrainingMetrics with one entry per update (reward = policy loss).
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_onpolicy_continuous_train(
             self,
             env,
             num_episodes,
+            checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,
-            "Deep PPO Continuous",
+            "PPO Continuous (GPU)",
         )
 
     # =========================================================================
@@ -2479,12 +2488,18 @@ struct DeepPPOContinuousAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_onpolicy_continuous_train_gpu[EnvType, Self, CurriculumType](
             self,
             ctx,
             num_updates=10_000_000,
             target_episodes=num_episodes,
             target_total_steps=self.target_total_steps,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+            algorithm_name="PPO Continuous (GPU)",
+            environment_name=EnvType.NAME,
             verbose=verbose,
             print_every=print_every,
         )

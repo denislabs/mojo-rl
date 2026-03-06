@@ -160,6 +160,7 @@ struct LunarLander[
     comptime dtype = Self.DTYPE
     comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
+    comptime NAME: String = "LunarLander"
 
     # Type alias for static method calls (includes all compile-time params)
     comptime SelfType = LunarLander[

@@ -11,7 +11,7 @@ Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_constraint_params_cpu_vs_gpu.mojo
 """
 
-from testing import assert_true
+from std.testing import assert_true
 from std.math import abs, sqrt, pow
 from std.collections import InlineArray
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer

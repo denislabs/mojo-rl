@@ -11,8 +11,8 @@ Expected output for the inline HalfCheetah XML:
 """
 
 from physics3d.parser import ParsedModel, parse_xml
-from io.file import open
-from testing import assert_true, TestSuite
+from std.io.file import open
+from std.testing import assert_true, TestSuite
 
 comptime half_cheetah_xml = """
 <mujoco model="cheetah">

@@ -88,6 +88,7 @@ struct Phyics3dEnv[
     comptime dtype = Self.DTYPE
     comptime StateType = ObsState[Self.MODEL_DEF.OBS_DIM]
     comptime ActionType = ContAction[Self.MODEL_DEF.ACTION_DIM]
+    comptime NAME: String = "Physics3dEnv"
 
     # Layout constants
     comptime OBS_DIM: Int = Self.MODEL_DEF.OBS_DIM
