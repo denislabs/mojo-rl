@@ -147,8 +147,6 @@ struct TD3CPUState[
         self._d_act = List[Scalar[dtype]](capacity=Self.BATCH * Self.ACTIONS)
         self._d_obs = List[Scalar[dtype]](capacity=Self.BATCH * Self.OBS)
 
-        print("TD3CPUState.fill_scratch")
-
         # Fill scratch with zeros so LayoutTensor views are valid from the start
         for _ in range(Self.BATCH * Self.OBS):
             self._batch_obs.append(Scalar[dtype](0))
@@ -181,8 +179,6 @@ struct TD3CPUState[
             self._q2_cache.append(Scalar[dtype](0))
         for _ in range(Self.BATCH * Self.ActorModel.CACHE_SIZE):
             self._actor_cache.append(Scalar[dtype](0))
-
-        print("TD3CPUState.fill_scratch done")
 
     fn store[
         dtype: DType
