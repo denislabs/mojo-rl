@@ -13,6 +13,8 @@ Reference: Hansen et al., 2023 — TD-MPC2
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
 
+from layout import Layout, LayoutTensor
+
 from nn.constants import dtype
 from .world_model import WorldModel, decode_value_batch_scalar
 
@@ -121,11 +123,16 @@ fn plan[
                 var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](
                     uninitialized=True
                 )
-                wm.policy_forward[1](
-                    z_in.unsafe_ptr(),
-                    pi_mean.unsafe_ptr(),
-                    pi_log_std.unsafe_ptr(),
-                )
+                var z_in_v = LayoutTensor[
+                    dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin
+                ](z_in.unsafe_ptr())
+                var pi_mean_v = LayoutTensor[
+                    dtype, Layout.row_major(1, ACTION_DIM), MutAnyOrigin
+                ](pi_mean.unsafe_ptr())
+                var pi_log_std_v = LayoutTensor[
+                    dtype, Layout.row_major(1, ACTION_DIM), MutAnyOrigin
+                ](pi_log_std.unsafe_ptr())
+                wm.policy_forward[1](z_in_v, pi_mean_v, pi_log_std_v)
 
                 var base = s * HORIZON * ACTION_DIM + t * ACTION_DIM
                 for a in range(ACTION_DIM):
@@ -144,7 +151,15 @@ fn plan[
                     za[i] = z_curr[i]
                 for a in range(ACTION_DIM):
                     za[LATENT_DIM + a] = Scalar[dtype](actions[base + a])
-                wm.dynamics_forward[1](za.unsafe_ptr(), z_curr.unsafe_ptr())
+                var za_v = LayoutTensor[
+                    dtype,
+                    Layout.row_major(1, LATENT_DIM + ACTION_DIM),
+                    MutAnyOrigin,
+                ](za.unsafe_ptr())
+                var z_curr_v = LayoutTensor[
+                    dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin
+                ](z_curr.unsafe_ptr())
+                wm.dynamics_forward[1](za_v, z_curr_v)
 
         # Step 2: Sample NUM_SAMPLES trajectories from the MPPI distribution
         for s in range(NUM_PI_TRAJS, TOTAL_SAMPLES):
@@ -185,7 +200,15 @@ fn plan[
                 var rew_logits = InlineArray[Scalar[dtype], NUM_BINS](
                     uninitialized=True
                 )
-                wm.reward_forward[1](za.unsafe_ptr(), rew_logits.unsafe_ptr())
+                var za_v2 = LayoutTensor[
+                    dtype,
+                    Layout.row_major(1, LATENT_DIM + ACTION_DIM),
+                    MutAnyOrigin,
+                ](za.unsafe_ptr())
+                var rew_logits_v = LayoutTensor[
+                    dtype, Layout.row_major(1, NUM_BINS), MutAnyOrigin
+                ](rew_logits.unsafe_ptr())
+                wm.reward_forward[1](za_v2, rew_logits_v)
                 var rew_logits_f32 = InlineArray[Float32, NUM_BINS](
                     uninitialized=True
                 )
@@ -198,7 +221,15 @@ fn plan[
                 discount *= gamma
 
                 # Advance latent state
-                wm.dynamics_forward[1](za.unsafe_ptr(), z_curr.unsafe_ptr())
+                var za_v3 = LayoutTensor[
+                    dtype,
+                    Layout.row_major(1, LATENT_DIM + ACTION_DIM),
+                    MutAnyOrigin,
+                ](za.unsafe_ptr())
+                var z_curr_v2 = LayoutTensor[
+                    dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin
+                ](z_curr.unsafe_ptr())
+                wm.dynamics_forward[1](za_v3, z_curr_v2)
 
             # Bootstrap terminal value: min_Q(z_H, π(z_H))
             var pi_mean = InlineArray[Scalar[dtype], ACTION_DIM](
@@ -207,11 +238,16 @@ fn plan[
             var pi_log_std = InlineArray[Scalar[dtype], ACTION_DIM](
                 uninitialized=True
             )
-            wm.policy_forward[1](
-                z_curr.unsafe_ptr(),
-                pi_mean.unsafe_ptr(),
-                pi_log_std.unsafe_ptr(),
-            )
+            var z_curr_pv = LayoutTensor[
+                dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin
+            ](z_curr.unsafe_ptr())
+            var pi_mean_pv = LayoutTensor[
+                dtype, Layout.row_major(1, ACTION_DIM), MutAnyOrigin
+            ](pi_mean.unsafe_ptr())
+            var pi_log_std_pv = LayoutTensor[
+                dtype, Layout.row_major(1, ACTION_DIM), MutAnyOrigin
+            ](pi_log_std.unsafe_ptr())
+            wm.policy_forward[1](z_curr_pv, pi_mean_pv, pi_log_std_pv)
 
             var za_terminal = InlineArray[
                 Scalar[dtype], LATENT_DIM + ACTION_DIM
@@ -227,9 +263,15 @@ fn plan[
             var terminal_values = InlineArray[Scalar[dtype], 1](
                 uninitialized=True
             )
-            wm.q_min_forward[1](
-                za_terminal.unsafe_ptr(), terminal_values.unsafe_ptr(), True
-            )  # use targets
+            var za_term_v = LayoutTensor[
+                dtype,
+                Layout.row_major(1, LATENT_DIM + ACTION_DIM),
+                MutAnyOrigin,
+            ](za_terminal.unsafe_ptr())
+            var term_val_v = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](terminal_values.unsafe_ptr())
+            wm.q_min_forward[1](za_term_v, term_val_v, True)  # use targets
             G += discount * Float64(terminal_values[0])
 
             returns[s] = G

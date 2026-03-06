@@ -54,6 +54,7 @@ from deep_agents.ppo.kernels import (
     gradient_reduce_apply_fused_kernel,
 )
 
+from .state import TDMPC2GPUState, TDMPC2CPUState
 from .world_model import WorldModel, decode_value_batch_scalar
 from .mppi import plan
 from .kernels import (
@@ -127,7 +128,7 @@ struct TDMPC2Agent[
     comptime BINS = Self.num_bins
     comptime ZA = Self.LATENT + Self.ACT
 
-    comptime WM = WorldModel[
+    comptime CPUStateType = TDMPC2CPUState[
         Self.OBS,
         Self.ACT,
         Self.LATENT,
@@ -137,10 +138,12 @@ struct TDMPC2Agent[
         Self.simplex_dim,
         Self.v_min,
         Self.v_max,
+        buffer_capacity = Self.buffer_capacity,
+        batch_size = Self.batch_size,
+        horizon = Self.horizon,
     ]
-    comptime Buffer = SequenceReplayBuffer[
-        Self.buffer_capacity, Self.OBS, Self.ACT, dtype
-    ]
+    # WM alias now derives from CPUStateType so GPU code's type references still work
+    comptime WM = Self.CPUStateType.WM
 
     # ── Network parameter / cache / workspace sizes ──────────────────────
     # Lifted to struct level so train_gpu[ENV, n_envs] doesn't re-instantiate
@@ -193,8 +196,14 @@ struct TDMPC2Agent[
     comptime Q_GRAD_BLOCKS = (Self.Q_P + TPB - 1) // TPB
     comptime DUMMY_SIZE = max(Self.B_ZA, Self.B_OBS)
 
-    var world_model: Self.WM
-    var buffer: Self.Buffer
+    # GPU state type alias (parameterized without n_envs/env_state_size;
+    # those are filled in by train_gpu[] which knows ENV).
+    # Use make_gpu_state[n_envs, env_state_size](ctx) to construct.
+    comptime EncOpt = Adam[LR = Self.WM.ENC_LR]
+    comptime WMOpt = Adam[LR = Self.WM.WM_LR]
+    comptime PIOpt = Adam[LR = Self.WM.PI_LR]
+
+    var state: Self.CPUStateType
 
     # Hyperparameters
     var gamma: Float64
@@ -246,8 +255,7 @@ struct TDMPC2Agent[
             enc_lr_scale: Encoder LR multiplier (default: 0.3).
             pi_lr: Policy learning rate (default: 3e-4).
         """
-        self.world_model = Self.WM()
-        self.buffer = Self.Buffer()
+        self.state = Self.CPUStateType()
 
         self.gamma = gamma
         self.rho = rho
@@ -297,7 +305,13 @@ struct TDMPC2Agent[
         for i in range(Self.OBS):
             obs_arr[i] = obs[i]
         var z = InlineArray[Scalar[dtype], 1 * Self.LATENT](uninitialized=True)
-        self.world_model.encode[1](obs_arr.unsafe_ptr(), z.unsafe_ptr())
+        var obs_t = LayoutTensor[dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin](
+            obs_arr.unsafe_ptr()
+        )
+        var z_t = LayoutTensor[dtype, Layout.row_major(1, Self.LATENT), MutAnyOrigin](
+            z.unsafe_ptr()
+        )
+        self.state.world_model.encode[1](obs_t, z_t)
 
         # Extract z0 as single-sample array
         var z0 = InlineArray[Scalar[dtype], Self.LATENT](uninitialized=True)
@@ -321,7 +335,7 @@ struct TDMPC2Agent[
             Self.num_iterations,
         ](
             z0,
-            self.world_model,
+            self.state.world_model,
             self.gamma,
             self.temperature,
             self.action_scale,
@@ -347,7 +361,7 @@ struct TDMPC2Agent[
             reward: Reward received.
             done: Whether the episode ended.
         """
-        self.buffer.add(obs, action, Scalar[dtype](reward), done)
+        self.state.observe(obs, action, Scalar[dtype](reward), done)
         self.total_steps += 1
 
     # =========================================================================
@@ -360,54 +374,34 @@ struct TDMPC2Agent[
         Returns:
             Total world model loss for this step.
         """
-        if not self.buffer.is_ready[Self.BATCH + Self.H + 1]():
+        if not self.state.is_ready():
             return 0.0
 
-        # Sample a batch of sequences from the replay buffer
-        var batch_obs = List[Scalar[dtype]](
-            capacity=Self.BATCH * (Self.H + 1) * Self.OBS
-        )
-        var batch_actions = List[Scalar[dtype]](
-            capacity=Self.BATCH * Self.H * Self.ACT
-        )
-        var batch_rewards = List[Scalar[dtype]](capacity=Self.BATCH * Self.H)
-        var batch_dones = List[Scalar[dtype]](capacity=Self.BATCH * Self.H)
-
-        # Pre-allocate with zeros
-        for _ in range(Self.BATCH * (Self.H + 1) * Self.OBS):
-            batch_obs.append(Scalar[dtype](0))
-        for _ in range(Self.BATCH * Self.H * Self.ACT):
-            batch_actions.append(Scalar[dtype](0))
-        for _ in range(Self.BATCH * Self.H):
-            batch_rewards.append(Scalar[dtype](0))
-            batch_dones.append(Scalar[dtype](0))
-
-        self.buffer.sample_sequences[Self.BATCH, Self.H](
-            batch_obs, batch_actions, batch_rewards, batch_dones
+        # Sample into pre-allocated batch buffers
+        self.state.buffer.sample_sequences[Self.BATCH, Self.H](
+            self.state._batch_obs,
+            self.state._batch_actions,
+            self.state._batch_rewards,
+            self.state._batch_dones,
         )
 
         # World model update
-        var wm_loss = self._update_world_model(
-            batch_obs, batch_actions, batch_rewards, batch_dones
-        )
+        var wm_loss = self._update_world_model()
 
         # Policy update
-        self._update_policy(batch_obs, batch_dones)
+        self._update_policy()
 
         # Soft update target Q-networks
-        self.world_model.soft_update_q_targets(self.tau)
+        self.state.world_model.soft_update_q_targets(self.tau)
 
         self.train_step_count += 1
         return wm_loss
 
-    fn _update_world_model(
-        mut self,
-        batch_obs: List[Scalar[dtype]],
-        batch_actions: List[Scalar[dtype]],
-        batch_rewards: List[Scalar[dtype]],
-        batch_dones: List[Scalar[dtype]],
-    ) -> Float64:
+    fn _update_world_model(mut self) -> Float64:
         """Compute and apply world model gradient update.
+
+        Uses pre-allocated scratch buffers from self.state instead of
+        per-call List allocations.
 
         Losses computed:
           L_consistency: MSE between predicted and encoded next latent states
@@ -423,64 +417,88 @@ struct TDMPC2Agent[
             Float32(Self.v_min), Float32(Self.v_max)
         )
 
+        # ── LayoutTensor views over pre-allocated state buffers ──
+        var next_obs_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](self.state._next_obs.unsafe_ptr())
+        var z_enc_next_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](self.state._z_enc_next.unsafe_ptr())
+        var a_next_mean_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+        ](self.state._a_next_mean.unsafe_ptr())
+        var a_next_log_std_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+        ](self.state._a_next_log_std.unsafe_ptr())
+        var za_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
+        ](self.state._za.unsafe_ptr())
+        var obs_0_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](self.state._obs_0.unsafe_ptr())
+        var z_current_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](self.state._z_current.unsafe_ptr())
+        var z_pred_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](self.state._z_pred.unsafe_ptr())
+        var enc_cache_v = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CPUStateType.ENC_CACHE_SIZE),
+            MutAnyOrigin,
+        ](self.state._enc_cache.unsafe_ptr())
+        var dyn_cache_v = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CPUStateType.DYN_CACHE_SIZE),
+            MutAnyOrigin,
+        ](self.state._dyn_cache.unsafe_ptr())
+        var rew_logits_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+        ](self.state._rew_logits.unsafe_ptr())
+        var q_logits_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+        ](self.state._q_logits.unsafe_ptr())
+
         # -------------------------------------------------------------------------
         # Step 1: Compute TD targets (stop-gradient)
         # td_target_dist[t, b, k]: two-hot target for Q at step t, sample b
         # -------------------------------------------------------------------------
-        var td_targets = List[Float32](capacity=Self.H * Self.BATCH * Self.BINS)
-        for _ in range(Self.H * Self.BATCH * Self.BINS):
-            td_targets.append(Float32(0))
+        # Zero td_targets
+        for i in range(Self.H * Self.BATCH * Self.BINS):
+            self.state._td_targets[i] = Scalar[dtype](0)
 
         for t in range(Self.H):
-            # Get next observations for this horizon step
-            var next_obs_t = List[Scalar[dtype]](capacity=Self.B_OBS)
-            for _ in range(Self.B_OBS):
-                next_obs_t.append(Scalar[dtype](0))
+            # Get next observations for this horizon step → _next_obs
             for b in range(Self.BATCH):
                 var obs_offset = (
                     b * (Self.H + 1) * Self.OBS + (t + 1) * Self.OBS
                 )
                 for i in range(Self.OBS):
-                    next_obs_t[b * Self.OBS + i] = batch_obs[obs_offset + i]
+                    self.state._next_obs[b * Self.OBS + i] = self.state._batch_obs[obs_offset + i]
 
-            # Encode next observations (stop-gradient: no cache)
-            var z_next = List[Scalar[dtype]](capacity=Self.B_LATENT)
-            for _ in range(Self.B_LATENT):
-                z_next.append(Scalar[dtype](0))
-            self.world_model.encode[Self.BATCH](
-                next_obs_t.unsafe_ptr(), z_next.unsafe_ptr()
-            )
+            # Encode next observations (stop-gradient: no cache) → _z_enc_next
+            self.state.world_model.encode[Self.BATCH](next_obs_v, z_enc_next_v)
 
-            # Sample next actions from policy
-            var a_next_mean = List[Scalar[dtype]](capacity=Self.B_ACT)
-            var a_next_log_std = List[Scalar[dtype]](capacity=Self.B_ACT)
-            for _ in range(Self.B_ACT):
-                a_next_mean.append(Scalar[dtype](0))
-                a_next_log_std.append(Scalar[dtype](0))
-            self.world_model.policy_forward[Self.BATCH](
-                z_next.unsafe_ptr(),
-                a_next_mean.unsafe_ptr(),
-                a_next_log_std.unsafe_ptr(),
+            # Sample next actions from policy → _a_next_mean, _a_next_log_std
+            self.state.world_model.policy_forward[Self.BATCH](
+                z_enc_next_v, a_next_mean_v, a_next_log_std_v,
             )
 
             # Clamp actions to valid range
             for i in range(Self.B_ACT):
-                var a = Float64(a_next_mean[i])
+                var a = Float64(self.state._a_next_mean[i])
                 if a < -1.0:
                     a = -1.0
                 if a > 1.0:
                     a = 1.0
-                a_next_mean[i] = Scalar[dtype](a)
+                self.state._a_next_mean[i] = Scalar[dtype](a)
 
-            # Build z_a for next state
-            var za_next = List[Scalar[dtype]](capacity=Self.B_ZA)
-            for _ in range(Self.B_ZA):
-                za_next.append(Scalar[dtype](0))
+            # Build z_a for next state → _za
             for b in range(Self.BATCH):
                 for i in range(Self.LATENT):
-                    za_next[b * Self.ZA + i] = z_next[b * Self.LATENT + i]
+                    self.state._za[b * Self.ZA + i] = self.state._z_enc_next[b * Self.LATENT + i]
                 for a in range(Self.ACT):
-                    za_next[b * Self.ZA + Self.LATENT + a] = a_next_mean[
+                    self.state._za[b * Self.ZA + Self.LATENT + a] = self.state._a_next_mean[
                         b * Self.ACT + a
                     ]
 
@@ -488,14 +506,17 @@ struct TDMPC2Agent[
             var q_next_values = InlineArray[Scalar[dtype], Self.BATCH](
                 uninitialized=True
             )
-            self.world_model.q_min_forward[Self.BATCH](
-                za_next.unsafe_ptr(), q_next_values.unsafe_ptr(), True
+            var q_next_v = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+            ](q_next_values.unsafe_ptr())
+            self.state.world_model.q_min_forward[Self.BATCH](
+                za_v, q_next_v, True
             )
 
             # TD target: r + gamma * (1 - done) * V_next
             for b in range(Self.BATCH):
-                var r = Float64(batch_rewards[t * Self.BATCH + b])
-                var done = Float64(batch_dones[t * Self.BATCH + b])
+                var r = Float64(self.state._batch_rewards[t * Self.BATCH + b])
+                var done = Float64(self.state._batch_dones[t * Self.BATCH + b])
                 var v_next = Float64(q_next_values[b])
                 var td_target = r + self.gamma * (1.0 - done) * v_next
 
@@ -522,34 +543,24 @@ struct TDMPC2Agent[
                 )
 
                 var base = t * Self.BATCH * Self.BINS + b * Self.BINS
-                td_targets[base + k] = upper_w
-                td_targets[base + k + 1] = Float32(1.0) - upper_w
+                self.state._td_targets[base + k] = Scalar[dtype](upper_w)
+                self.state._td_targets[base + k + 1] = Scalar[dtype](Float32(1.0) - upper_w)
 
         # -------------------------------------------------------------------------
         # Step 2: Latent rollout + loss computation
         # -------------------------------------------------------------------------
-        self.world_model.zero_all_grads()
+        self.state.world_model.zero_all_grads()
 
-        # Encode obs_0 with cache for backprop
-        var obs_0 = List[Scalar[dtype]](capacity=Self.B_OBS)
-        for _ in range(Self.B_OBS):
-            obs_0.append(Scalar[dtype](0))
+        # Extract obs_0 from batch → _obs_0
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                obs_0[b * Self.OBS + i] = batch_obs[
+                self.state._obs_0[b * Self.OBS + i] = self.state._batch_obs[
                     b * (Self.H + 1) * Self.OBS + i
                 ]
 
-        var enc_cache_size = Self.BATCH * Self.WM.EncModel.CACHE_SIZE
-        var enc_cache = List[Scalar[dtype]](capacity=enc_cache_size)
-        for _ in range(enc_cache_size):
-            enc_cache.append(Scalar[dtype](0))
-
-        var z_current = List[Scalar[dtype]](capacity=Self.B_LATENT)
-        for _ in range(Self.B_LATENT):
-            z_current.append(Scalar[dtype](0))
-        self.world_model.encode_with_cache[Self.BATCH](
-            obs_0.unsafe_ptr(), z_current.unsafe_ptr(), enc_cache
+        # Encode obs_0 with cache for backprop → _z_current, _enc_cache
+        self.state.world_model.encode_with_cache[Self.BATCH](
+            obs_0_v, z_current_v, enc_cache_v
         )
 
         # Accumulated losses (scalar)
@@ -561,55 +572,38 @@ struct TDMPC2Agent[
         var rho_t: Float64 = 1.0  # rho^t, starts at 1.0 (t=0)
 
         for t in range(Self.H):
-            # Build z_a for this step
-            var za_t = List[Scalar[dtype]](capacity=Self.B_ZA)
-            for _ in range(Self.B_ZA):
-                za_t.append(Scalar[dtype](0))
+            # Build z_a for this step → _za
             for b in range(Self.BATCH):
                 for i in range(Self.LATENT):
-                    za_t[b * Self.ZA + i] = z_current[b * Self.LATENT + i]
+                    self.state._za[b * Self.ZA + i] = self.state._z_current[b * Self.LATENT + i]
                 for a in range(Self.ACT):
-                    za_t[b * Self.ZA + Self.LATENT + a] = batch_actions[
+                    self.state._za[b * Self.ZA + Self.LATENT + a] = self.state._batch_actions[
                         t * Self.BATCH * Self.ACT + b * Self.ACT + a
                     ]
 
-            # Predict next latent state (with cache for backprop)
-            var dyn_cache_size = Self.BATCH * Self.WM.DynModel.CACHE_SIZE
-            var dyn_cache = List[Scalar[dtype]](capacity=dyn_cache_size)
-            for _ in range(dyn_cache_size):
-                dyn_cache.append(Scalar[dtype](0))
-
-            var z_pred = List[Scalar[dtype]](capacity=Self.B_LATENT)
-            for _ in range(Self.B_LATENT):
-                z_pred.append(Scalar[dtype](0))
-            self.world_model.dynamics_forward_with_cache[Self.BATCH](
-                za_t.unsafe_ptr(), z_pred.unsafe_ptr(), dyn_cache
+            # Predict next latent state (with cache for backprop) → _z_pred, _dyn_cache
+            self.state.world_model.dynamics_forward_with_cache[Self.BATCH](
+                za_v, z_pred_v, dyn_cache_v
             )
 
-            # Encode next observations (stop-gradient target for consistency)
-            var next_obs_t = List[Scalar[dtype]](capacity=Self.B_OBS)
-            for _ in range(Self.B_OBS):
-                next_obs_t.append(Scalar[dtype](0))
+            # Encode next observations (stop-gradient target for consistency) → _next_obs, _z_enc_next
             for b in range(Self.BATCH):
                 var obs_offset = (
                     b * (Self.H + 1) * Self.OBS + (t + 1) * Self.OBS
                 )
                 for i in range(Self.OBS):
-                    next_obs_t[b * Self.OBS + i] = batch_obs[obs_offset + i]
+                    self.state._next_obs[b * Self.OBS + i] = self.state._batch_obs[obs_offset + i]
 
-            var z_enc_next = List[Scalar[dtype]](capacity=Self.B_LATENT)
-            for _ in range(Self.B_LATENT):
-                z_enc_next.append(Scalar[dtype](0))
-            self.world_model.encode[Self.BATCH](
-                next_obs_t.unsafe_ptr(), z_enc_next.unsafe_ptr()
+            self.state.world_model.encode[Self.BATCH](
+                next_obs_v, z_enc_next_v
             )  # stop-grad
 
             # Consistency loss: MSE(z_pred, z_enc_next)
             var consistency_loss: Float64 = 0.0
             for b in range(Self.BATCH):
                 for i in range(Self.LATENT):
-                    var diff = Float64(z_pred[b * Self.LATENT + i]) - Float64(
-                        z_enc_next[b * Self.LATENT + i]
+                    var diff = Float64(self.state._z_pred[b * Self.LATENT + i]) - Float64(
+                        self.state._z_enc_next[b * Self.LATENT + i]
                     )
                     consistency_loss += diff * diff
             consistency_loss = (
@@ -617,27 +611,24 @@ struct TDMPC2Agent[
             )
             total_consistency_loss += consistency_loss
 
-            # Reward loss: soft_CE(reward_head(z, a), two_hot(r_t))
-            var rew_logits = List[Scalar[dtype]](capacity=Self.B_BINS)
-            for _ in range(Self.B_BINS):
-                rew_logits.append(Scalar[dtype](0))
-            self.world_model.reward_forward[Self.BATCH](
-                za_t.unsafe_ptr(), rew_logits.unsafe_ptr()
+            # Reward loss: soft_CE(reward_head(z, a), two_hot(r_t)) → _rew_logits
+            self.state.world_model.reward_forward[Self.BATCH](
+                za_v, rew_logits_v
             )
 
             var reward_loss: Float64 = 0.0
             for b in range(Self.BATCH):
-                var r = Float32(batch_rewards[t * Self.BATCH + b])
+                var r = Float32(self.state._batch_rewards[t * Self.BATCH + b])
                 # Compute log-softmax of reward logits
-                var max_l = Float32(rew_logits[b * Self.BINS])
+                var max_l = Float32(self.state._rew_logits[b * Self.BINS])
                 for i in range(1, Self.BINS):
-                    var v = Float32(rew_logits[b * Self.BINS + i])
+                    var v = Float32(self.state._rew_logits[b * Self.BINS + i])
                     if v > max_l:
                         max_l = v
                 var sum_exp = Float32(0.0)
                 for i in range(Self.BINS):
                     sum_exp += exp(
-                        Float32(rew_logits[b * Self.BINS + i]) - max_l
+                        Float32(self.state._rew_logits[b * Self.BINS + i]) - max_l
                     )
                 var log_sum_exp = max_l + log(sum_exp)
 
@@ -658,10 +649,10 @@ struct TDMPC2Agent[
                 var lower_w = Float32(1.0) - upper_w
 
                 var log_s_k = Float64(
-                    Float32(rew_logits[b * Self.BINS + k]) - log_sum_exp
+                    Float32(self.state._rew_logits[b * Self.BINS + k]) - log_sum_exp
                 )
                 var log_s_k1 = Float64(
-                    Float32(rew_logits[b * Self.BINS + k + 1]) - log_sum_exp
+                    Float32(self.state._rew_logits[b * Self.BINS + k + 1]) - log_sum_exp
                 )
                 reward_loss -= (
                     Float64(upper_w) * log_s_k + Float64(lower_w) * log_s_k1
@@ -669,27 +660,24 @@ struct TDMPC2Agent[
             reward_loss = rho_t * reward_loss / Float64(Self.BATCH)
             total_reward_loss += reward_loss
 
-            # Value loss: soft_CE(Q(z, a), two_hot(Q_target))
+            # Value loss: soft_CE(Q(z, a), two_hot(Q_target)) → _q_logits
             var value_loss: Float64 = 0.0
             for q_idx in range(Self.num_q):
-                var q_logits = List[Scalar[dtype]](capacity=Self.B_BINS)
-                for _ in range(Self.B_BINS):
-                    q_logits.append(Scalar[dtype](0))
                 # Use the appropriate Q-network
-                self.world_model.q_forward_single_no_cache[Self.BATCH](
-                    q_idx, za_t.unsafe_ptr(), q_logits.unsafe_ptr()
+                self.state.world_model.q_forward_single_no_cache[Self.BATCH](
+                    q_idx, za_v, q_logits_v
                 )
 
                 for b in range(Self.BATCH):
-                    var max_l = Float32(q_logits[b * Self.BINS])
+                    var max_l = Float32(self.state._q_logits[b * Self.BINS])
                     for i in range(1, Self.BINS):
-                        var v = Float32(q_logits[b * Self.BINS + i])
+                        var v = Float32(self.state._q_logits[b * Self.BINS + i])
                         if v > max_l:
                             max_l = v
                     var sum_exp = Float32(0.0)
                     for i in range(Self.BINS):
                         sum_exp += exp(
-                            Float32(q_logits[b * Self.BINS + i]) - max_l
+                            Float32(self.state._q_logits[b * Self.BINS + i]) - max_l
                         )
                     var log_sum_exp = max_l + log(sum_exp)
 
@@ -697,10 +685,10 @@ struct TDMPC2Agent[
                     var tgt_base = t * Self.BATCH * Self.BINS + b * Self.BINS
                     var sample_loss = Float64(0.0)
                     for i in range(Self.BINS):
-                        var tgt = Float64(td_targets[tgt_base + i])
+                        var tgt = Float64(self.state._td_targets[tgt_base + i])
                         if tgt > Float64(0.0):
                             var log_s = Float64(
-                                Float32(q_logits[b * Self.BINS + i])
+                                Float32(self.state._q_logits[b * Self.BINS + i])
                                 - log_sum_exp
                             )
                             sample_loss -= tgt * log_s
@@ -713,8 +701,11 @@ struct TDMPC2Agent[
             var term_prob = InlineArray[Scalar[dtype], Self.BATCH](
                 uninitialized=True
             )
-            self.world_model.termination_forward[Self.BATCH](
-                z_current.unsafe_ptr(), term_prob.unsafe_ptr()
+            var term_prob_v = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+            ](term_prob.unsafe_ptr())
+            self.state.world_model.termination_forward[Self.BATCH](
+                z_current_v, term_prob_v
             )
 
             var terminal_loss: Float64 = 0.0
@@ -724,14 +715,14 @@ struct TDMPC2Agent[
                     p = 1e-7
                 if p > 1.0 - 1e-7:
                     p = 1.0 - 1e-7
-                var d = Float64(batch_dones[t * Self.BATCH + b])
+                var d = Float64(self.state._batch_dones[t * Self.BATCH + b])
                 terminal_loss -= d * log(p) + (1.0 - d) * log(1.0 - p)
             terminal_loss = rho_t * terminal_loss / Float64(Self.BATCH)
             total_terminal_loss += terminal_loss
 
-            # Advance latent state
+            # Advance latent state: _z_current ← _z_pred
             for i in range(Self.BATCH * Self.LATENT):
-                z_current[i] = z_pred[i]
+                self.state._z_current[i] = self.state._z_pred[i]
 
             rho_t *= self.rho
 
@@ -752,70 +743,78 @@ struct TDMPC2Agent[
         # Apply gradient updates (after accumulating gradients from loss)
         # The backward passes for each network are performed inline above.
         # Here we apply the Adam updates to all sub-networks.
-        self.world_model.update_world_model_params()
+        self.state.world_model.update_world_model_params()
 
         return total_loss
 
-    fn _update_policy(
-        mut self,
-        batch_obs: List[Scalar[dtype]],
-        batch_dones: List[Scalar[dtype]],
-    ):
+    fn _update_policy(mut self):
         """Update policy to maximize Q-value + entropy.
+
+        Uses pre-allocated scratch buffers from self.state instead of
+        per-call List allocations.
 
         Policy loss:
           L_pi = -sum_t rho^t * (min_Q(z_t, a_pi_t) + entropy_coef * H(pi))
 
         where a_pi_t ~ policy(z_t) and z_t uses stop-gradient from dynamics.
         """
-        self.world_model.zero_policy_grads()
+        self.state.world_model.zero_policy_grads()
 
-        # Extract obs_0
-        var obs_0 = List[Scalar[dtype]](capacity=Self.B_OBS)
-        for _ in range(Self.B_OBS):
-            obs_0.append(Scalar[dtype](0))
+        # ── LayoutTensor views over pre-allocated state buffers ──
+        var obs_0_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](self.state._obs_0.unsafe_ptr())
+        var z_current_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](self.state._z_current.unsafe_ptr())
+        var pi_out_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
+        ](self.state._pi_out.unsafe_ptr())
+        var pi_cache_v = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.CPUStateType.POL_CACHE_SIZE),
+            MutAnyOrigin,
+        ](self.state._pi_cache.unsafe_ptr())
+        var za_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
+        ](self.state._za.unsafe_ptr())
+        var q_logits_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+        ](self.state._q_logits.unsafe_ptr())
+        var q_logits2_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+        ](self.state._q_logits2.unsafe_ptr())
+        var z_pred_v = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
+        ](self.state._z_pred.unsafe_ptr())
+
+        # Extract obs_0 from batch → _obs_0
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                obs_0[b * Self.OBS + i] = batch_obs[
+                self.state._obs_0[b * Self.OBS + i] = self.state._batch_obs[
                     b * (Self.H + 1) * Self.OBS + i
                 ]
 
-        # Encode with stop-gradient (no cache, no backprop through encoder)
-        var z_sg = List[Scalar[dtype]](capacity=Self.B_LATENT)
-        for _ in range(Self.B_LATENT):
-            z_sg.append(Scalar[dtype](0))
-        self.world_model.encode[Self.BATCH](
-            obs_0.unsafe_ptr(), z_sg.unsafe_ptr()
-        )
+        # Encode with stop-gradient (no cache, no backprop through encoder) → _z_current
+        self.state.world_model.encode[Self.BATCH](obs_0_v, z_current_v)
 
         var policy_loss: Float64 = 0.0
         var rho_t: Float64 = 1.0
 
         for t in range(Self.H):
-            # Sample action from policy (with cache for backprop)
-            var pi_cache_size = Self.BATCH * Self.WM.PolModel.CACHE_SIZE
-            var pi_cache = List[Scalar[dtype]](capacity=pi_cache_size)
-            for _ in range(pi_cache_size):
-                pi_cache.append(Scalar[dtype](0))
-
-            var pi_out = List[Scalar[dtype]](capacity=Self.BATCH * 2 * Self.ACT)
-            for _ in range(Self.BATCH * 2 * Self.ACT):
-                pi_out.append(Scalar[dtype](0))
-            self.world_model.policy_forward_with_cache[Self.BATCH](
-                z_sg.unsafe_ptr(), pi_out.unsafe_ptr(), pi_cache
+            # Sample action from policy (with cache for backprop) → _pi_out, _pi_cache
+            self.state.world_model.policy_forward_with_cache[Self.BATCH](
+                z_current_v, pi_out_v, pi_cache_v
             )
 
-            # Extract mean and log_std, compute entropy and action
-            var a_pi = List[Scalar[dtype]](capacity=Self.B_ACT)
-            for _ in range(Self.B_ACT):
-                a_pi.append(Scalar[dtype](0))
+            # Extract mean and log_std, compute entropy and action → _a_pi
             var entropy: Float64 = 0.0
 
             for b in range(Self.BATCH):
                 for a in range(Self.ACT):
-                    var mean_val = Float64(pi_out[b * 2 * Self.ACT + a])
+                    var mean_val = Float64(self.state._pi_out[b * 2 * Self.ACT + a])
                     var log_std = Float64(
-                        pi_out[b * 2 * Self.ACT + Self.ACT + a]
+                        self.state._pi_out[b * 2 * Self.ACT + Self.ACT + a]
                     )
                     if log_std < -10.0:
                         log_std = -10.0
@@ -830,35 +829,27 @@ struct TDMPC2Agent[
                         act_val = -1.0
                     if act_val > 1.0:
                         act_val = 1.0
-                    a_pi[b * Self.ACT + a] = Scalar[dtype](act_val)
+                    self.state._a_pi[b * Self.ACT + a] = Scalar[dtype](act_val)
                     # Entropy of tanh-squashed Gaussian
                     var log_pi = log_std + 0.5 + log(2.0 * 3.14159265) * 0.5
                     log_pi -= log(1.0 - act_val * act_val + 1e-6)
                     entropy -= log_pi / Float64(Self.BATCH * Self.ACT)
 
-            # Compute Q-value for policy actions (subsample 2 of 5 Q-networks)
-            var za_pi = List[Scalar[dtype]](capacity=Self.B_ZA)
-            for _ in range(Self.B_ZA):
-                za_pi.append(Scalar[dtype](0))
+            # Compute Q-value for policy actions (subsample 2 of 5 Q-networks) → _za, _q_logits, _q_logits2
             for b in range(Self.BATCH):
                 for i in range(Self.LATENT):
-                    za_pi[b * Self.ZA + i] = z_sg[b * Self.LATENT + i]
+                    self.state._za[b * Self.ZA + i] = self.state._z_current[b * Self.LATENT + i]
                 for a in range(Self.ACT):
-                    za_pi[b * Self.ZA + Self.LATENT + a] = a_pi[
+                    self.state._za[b * Self.ZA + Self.LATENT + a] = self.state._a_pi[
                         b * Self.ACT + a
                     ]
 
             # Use 2 randomly-selected Q-networks for policy gradient
-            var q_logits1 = List[Scalar[dtype]](capacity=Self.B_BINS)
-            var q_logits2 = List[Scalar[dtype]](capacity=Self.B_BINS)
-            for _ in range(Self.B_BINS):
-                q_logits1.append(Scalar[dtype](0))
-                q_logits2.append(Scalar[dtype](0))
-            self.world_model.q_forward_single_no_cache[Self.BATCH](
-                0, za_pi.unsafe_ptr(), q_logits1.unsafe_ptr()
+            self.state.world_model.q_forward_single_no_cache[Self.BATCH](
+                0, za_v, q_logits_v
             )
-            self.world_model.q_forward_single_no_cache[Self.BATCH](
-                1, za_pi.unsafe_ptr(), q_logits2.unsafe_ptr()
+            self.state.world_model.q_forward_single_no_cache[Self.BATCH](
+                1, za_v, q_logits2_v
             )
 
             # Decode Q-values and take min
@@ -870,16 +861,16 @@ struct TDMPC2Agent[
                     uninitialized=True
                 )
                 for i in range(Self.BINS):
-                    logits1_b[i] = Float32(q_logits1[b * Self.BINS + i])
-                    logits2_b[i] = Float32(q_logits2[b * Self.BINS + i])
+                    logits1_b[i] = Float32(self.state._q_logits[b * Self.BINS + i])
+                    logits2_b[i] = Float32(self.state._q_logits2[b * Self.BINS + i])
                 var v1 = Float64(
                     decode_value_batch_scalar[Self.BINS](
-                        logits1_b, self.world_model.bins
+                        logits1_b, self.state.world_model.bins
                     )
                 )
                 var v2 = Float64(
                     decode_value_batch_scalar[Self.BINS](
-                        logits2_b, self.world_model.bins
+                        logits2_b, self.state.world_model.bins
                     )
                 )
                 var min_q = v1 if v1 < v2 else v2
@@ -887,20 +878,17 @@ struct TDMPC2Agent[
 
             policy_loss -= rho_t * self.entropy_coef * entropy
 
-            # Advance latent state with stop-gradient dynamics
-            var z_next = List[Scalar[dtype]](capacity=Self.B_LATENT)
-            for _ in range(Self.B_LATENT):
-                z_next.append(Scalar[dtype](0))
-            self.world_model.dynamics_forward[Self.BATCH](
-                za_pi.unsafe_ptr(), z_next.unsafe_ptr()
+            # Advance latent state with stop-gradient dynamics → _z_pred, then copy to _z_current
+            self.state.world_model.dynamics_forward[Self.BATCH](
+                za_v, z_pred_v
             )
             for i in range(Self.BATCH * Self.LATENT):
-                z_sg[i] = z_next[i]
+                self.state._z_current[i] = self.state._z_pred[i]
 
             rho_t *= self.rho
 
         # Apply policy gradient update
-        self.world_model.update_policy_params()
+        self.state.world_model.update_policy_params()
 
     # =========================================================================
     # GPU World-Model Horizon Step (separated for compilation)
@@ -910,282 +898,188 @@ struct TDMPC2Agent[
     # accumulate in a single giant function body.
     # =========================================================================
 
-    fn _wm_horizon_step_gpu(
+    fn _wm_horizon_step_gpu[
+        n_envs: Int, env_state_size: Int,
+    ](
         mut self,
         ctx: DeviceContext,
         t: Int,
         rho_t: Scalar[dtype],
-        # ── Batch data (flat) ──
-        mut batch_obs_flat_buf: DeviceBuffer[dtype],
-        mut batch_act_flat_buf: DeviceBuffer[dtype],
-        mut batch_rew_flat_buf: DeviceBuffer[dtype],
-        mut batch_done_flat_buf: DeviceBuffer[dtype],
-        mut td_targets_buf: DeviceBuffer[dtype],
-        # ── Encoder ──
-        mut enc_params_buf: DeviceBuffer[dtype],
-        mut enc_cache_buf: DeviceBuffer[dtype],
-        mut enc_grads_buf: DeviceBuffer[dtype],
-        mut enc_batch_ws_buf: DeviceBuffer[dtype],
-        # ── Dynamics ──
-        mut dyn_params_buf: DeviceBuffer[dtype],
-        mut dyn_cache_buf: DeviceBuffer[dtype],
-        mut dyn_grads_buf: DeviceBuffer[dtype],
-        mut dyn_batch_ws_buf: DeviceBuffer[dtype],
-        # ── Reward head ──
-        mut rew_params_buf: DeviceBuffer[dtype],
-        mut rew_cache_buf: DeviceBuffer[dtype],
-        mut rew_grads_buf: DeviceBuffer[dtype],
-        mut rew_batch_ws_buf: DeviceBuffer[dtype],
-        # ── Termination head ──
-        mut term_params_buf: DeviceBuffer[dtype],
-        mut term_cache_buf: DeviceBuffer[dtype],
-        mut term_grads_buf: DeviceBuffer[dtype],
-        mut term_batch_ws_buf: DeviceBuffer[dtype],
-        # ── Q networks (5×) ──
-        mut q1_params_buf: DeviceBuffer[dtype],
-        mut q1_cache_buf: DeviceBuffer[dtype],
-        mut q1_grads_buf: DeviceBuffer[dtype],
-        mut q1_batch_ws_buf: DeviceBuffer[dtype],
-        mut q2_params_buf: DeviceBuffer[dtype],
-        mut q2_cache_buf: DeviceBuffer[dtype],
-        mut q2_grads_buf: DeviceBuffer[dtype],
-        mut q2_batch_ws_buf: DeviceBuffer[dtype],
-        mut q3_params_buf: DeviceBuffer[dtype],
-        mut q3_cache_buf: DeviceBuffer[dtype],
-        mut q3_grads_buf: DeviceBuffer[dtype],
-        mut q3_batch_ws_buf: DeviceBuffer[dtype],
-        mut q4_params_buf: DeviceBuffer[dtype],
-        mut q4_cache_buf: DeviceBuffer[dtype],
-        mut q4_grads_buf: DeviceBuffer[dtype],
-        mut q4_batch_ws_buf: DeviceBuffer[dtype],
-        mut q5_params_buf: DeviceBuffer[dtype],
-        mut q5_cache_buf: DeviceBuffer[dtype],
-        mut q5_grads_buf: DeviceBuffer[dtype],
-        mut q5_batch_ws_buf: DeviceBuffer[dtype],
-        # ── Working latent / logit buffers ──
-        mut z_buf: DeviceBuffer[dtype],
-        mut z_pred_buf: DeviceBuffer[dtype],
-        mut z_next_buf: DeviceBuffer[dtype],
-        mut za_buf: DeviceBuffer[dtype],
-        mut logits_buf: DeviceBuffer[dtype],
-        mut term_prob_buf: DeviceBuffer[dtype],
-        # ── Per-step extracted data ──
-        mut obs_step_buf: DeviceBuffer[dtype],
-        mut obs_next_step_buf: DeviceBuffer[dtype],
-        mut act_step_buf: DeviceBuffer[dtype],
-        mut rew_step_buf: DeviceBuffer[dtype],
-        mut done_step_buf: DeviceBuffer[dtype],
-        # ── Gradient buffers ──
-        mut grad_z_pred_buf: DeviceBuffer[dtype],
-        mut grad_za_buf: DeviceBuffer[dtype],
-        mut grad_z_dyn_buf: DeviceBuffer[dtype],
-        mut grad_z_term_buf: DeviceBuffer[dtype],
-        mut grad_enc_out_buf: DeviceBuffer[dtype],
-        mut grad_logits_buf: DeviceBuffer[dtype],
-        mut grad_term_prob_buf: DeviceBuffer[dtype],
-        mut dummy_grad_buf: DeviceBuffer[dtype],
-        mut bins_buf: DeviceBuffer[dtype],
+        mut gpu_state: TDMPC2GPUState[
+            Self.WM.EncModel, Self.EncOpt,
+            Self.WM.DynModel, Self.WMOpt,
+            Self.WM.RewModel, Self.WMOpt,
+            Self.WM.TermModel, Self.WMOpt,
+            Self.WM.PolModel, Self.PIOpt,
+            Self.WM.QModel, Self.WMOpt,
+            Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
+            Self.BATCH, Self.H, n_envs, env_state_size,
+        ],
     ) raises -> Scalar[dtype]:
         """One horizon step of the world-model gradient computation.
 
         Computes forward+backward for encoder/dynamics/reward/termination/Q×5
         at step t, accumulates gradients, and returns the decayed rho for t+1.
         """
-        # ── Reconstruct LayoutTensor views ──
+        # ── Reconstruct LayoutTensor views from gpu_state buffers ──
         var batch_obs_flat_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH * (Self.H + 1) * Self.OBS),
             MutAnyOrigin,
-        ](batch_obs_flat_buf.unsafe_ptr())
+        ](gpu_state.batch_obs_buf.unsafe_ptr())
         var batch_act_flat_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH * Self.H * Self.ACT),
             MutAnyOrigin,
-        ](batch_act_flat_buf.unsafe_ptr())
+        ](gpu_state.batch_act_buf.unsafe_ptr())
         var batch_rew_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH * Self.H), MutAnyOrigin
-        ](batch_rew_flat_buf.unsafe_ptr())
+        ](gpu_state.batch_rew_buf.unsafe_ptr())
         var batch_done_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH * Self.H), MutAnyOrigin
-        ](batch_done_flat_buf.unsafe_ptr())
+        ](gpu_state.batch_done_buf.unsafe_ptr())
 
         var z_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_buf.unsafe_ptr())
+        ](gpu_state.z_buf.unsafe_ptr())
         var z_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](z_buf.unsafe_ptr())
+        ](gpu_state.z_buf.unsafe_ptr())
         var z_pred_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_pred_buf.unsafe_ptr())
+        ](gpu_state.z_pred_buf.unsafe_ptr())
         var z_pred_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](z_pred_buf.unsafe_ptr())
+        ](gpu_state.z_pred_buf.unsafe_ptr())
         var z_next_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_next_buf.unsafe_ptr())
+        ](gpu_state.z_next_buf.unsafe_ptr())
         var za_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](za_buf.unsafe_ptr())
+        ](gpu_state.za_buf.unsafe_ptr())
         var logits_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](logits_buf.unsafe_ptr())
+        ](gpu_state.logits_buf.unsafe_ptr())
         var term_prob_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](term_prob_buf.unsafe_ptr())
+        ](gpu_state.term_prob_buf.unsafe_ptr())
 
         var obs_next_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](obs_next_step_buf.unsafe_ptr())
+        ](gpu_state.obs_next_step_buf.unsafe_ptr())
         var act_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-        ](act_step_buf.unsafe_ptr())
+        ](gpu_state.act_step_buf.unsafe_ptr())
         var rew_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](rew_step_buf.unsafe_ptr())
+        ](gpu_state.rew_step_buf.unsafe_ptr())
         var done_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](done_step_buf.unsafe_ptr())
+        ](gpu_state.done_step_buf.unsafe_ptr())
 
         var grad_z_pred_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_pred_buf.unsafe_ptr())
+        ](gpu_state.grad_z_pred_buf.unsafe_ptr())
         var grad_za_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](grad_za_buf.unsafe_ptr())
+        ](gpu_state.grad_za_buf.unsafe_ptr())
         var grad_z_dyn_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](grad_z_dyn_buf.unsafe_ptr())
+        ](gpu_state.grad_z_dyn_buf.unsafe_ptr())
         var grad_z_dyn_2d_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_dyn_buf.unsafe_ptr())
+        ](gpu_state.grad_z_dyn_buf.unsafe_ptr())
         var grad_z_term_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](grad_z_term_buf.unsafe_ptr())
+        ](gpu_state.grad_z_term_buf.unsafe_ptr())
         var grad_enc_out_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](grad_enc_out_buf.unsafe_ptr())
+        ](gpu_state.grad_enc_out_buf.unsafe_ptr())
         var grad_logits_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](grad_logits_buf.unsafe_ptr())
+        ](gpu_state.grad_logits_buf.unsafe_ptr())
         var grad_term_prob_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](grad_term_prob_buf.unsafe_ptr())
+        ](gpu_state.grad_term_prob_buf.unsafe_ptr())
 
         var bins_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BINS), MutAnyOrigin
-        ](bins_buf.unsafe_ptr())
-        var enc_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
-        ](enc_params_buf.unsafe_ptr())
+        ](gpu_state.bins_buf.unsafe_ptr())
+        var enc_params_tensor = gpu_state.enc.params_view()
 
         # ── Additional LayoutTensor views for Network static calls ──
         var enc_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
-        ](enc_cache_buf.unsafe_ptr())
-        var enc_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
-        ](enc_grads_buf.unsafe_ptr())
-        var dyn_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
-        ](dyn_params_buf.unsafe_ptr())
+        ](gpu_state.enc_cache_buf.unsafe_ptr())
+        var enc_grads_t = gpu_state.enc.grads_view()
+        var dyn_params_t = gpu_state.dyn.params_view()
         var dyn_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.DYN_C), MutAnyOrigin
-        ](dyn_cache_buf.unsafe_ptr())
-        var dyn_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
-        ](dyn_grads_buf.unsafe_ptr())
-        var rew_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
-        ](rew_params_buf.unsafe_ptr())
+        ](gpu_state.dyn_cache_buf.unsafe_ptr())
+        var dyn_grads_t = gpu_state.dyn.grads_view()
+        var rew_params_t = gpu_state.rew.params_view()
         var rew_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.REW_C), MutAnyOrigin
-        ](rew_cache_buf.unsafe_ptr())
-        var rew_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
-        ](rew_grads_buf.unsafe_ptr())
-        var term_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
-        ](term_params_buf.unsafe_ptr())
+        ](gpu_state.rew_cache_buf.unsafe_ptr())
+        var rew_grads_t = gpu_state.rew.grads_view()
+        var term_params_t = gpu_state.term.params_view()
         var term_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.TERM_C), MutAnyOrigin
-        ](term_cache_buf.unsafe_ptr())
-        var term_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
-        ](term_grads_buf.unsafe_ptr())
-        var q1_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q1_params_buf.unsafe_ptr())
+        ](gpu_state.term_cache_buf.unsafe_ptr())
+        var term_grads_t = gpu_state.term.grads_view()
+        var q1_params_t = gpu_state.q1.params_view()
         var q1_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
-        ](q1_cache_buf.unsafe_ptr())
-        var q1_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q1_grads_buf.unsafe_ptr())
-        var q2_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q2_params_buf.unsafe_ptr())
+        ](gpu_state.q1_cache_buf.unsafe_ptr())
+        var q1_grads_t = gpu_state.q1.grads_view()
+        var q2_params_t = gpu_state.q2.params_view()
         var q2_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
-        ](q2_cache_buf.unsafe_ptr())
-        var q2_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q2_grads_buf.unsafe_ptr())
-        var q3_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q3_params_buf.unsafe_ptr())
+        ](gpu_state.q2_cache_buf.unsafe_ptr())
+        var q2_grads_t = gpu_state.q2.grads_view()
+        var q3_params_t = gpu_state.q3.params_view()
         var q3_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
-        ](q3_cache_buf.unsafe_ptr())
-        var q3_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q3_grads_buf.unsafe_ptr())
-        var q4_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q4_params_buf.unsafe_ptr())
+        ](gpu_state.q3_cache_buf.unsafe_ptr())
+        var q3_grads_t = gpu_state.q3.grads_view()
+        var q4_params_t = gpu_state.q4.params_view()
         var q4_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
-        ](q4_cache_buf.unsafe_ptr())
-        var q4_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q4_grads_buf.unsafe_ptr())
-        var q5_params_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q5_params_buf.unsafe_ptr())
+        ](gpu_state.q4_cache_buf.unsafe_ptr())
+        var q4_grads_t = gpu_state.q4.grads_view()
+        var q5_params_t = gpu_state.q5.params_view()
         var q5_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
-        ](q5_cache_buf.unsafe_ptr())
-        var q5_grads_t = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q5_grads_buf.unsafe_ptr())
+        ](gpu_state.q5_cache_buf.unsafe_ptr())
+        var q5_grads_t = gpu_state.q5.grads_view()
         # TermNet output/grad tensors: OUT_DIM=1 → shape [BATCH, 1]
         var term_out_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](term_prob_buf.unsafe_ptr())
+        ](gpu_state.term_prob_buf.unsafe_ptr())
         var grad_term_out_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
-        ](grad_term_prob_buf.unsafe_ptr())
+        ](gpu_state.grad_term_prob_buf.unsafe_ptr())
         var grad_z_term_2d_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_term_buf.unsafe_ptr())
+        ](gpu_state.grad_z_term_buf.unsafe_ptr())
         # Encoder backward: grad_output [BATCH, LATENT], grad_input [BATCH, OBS]
         var grad_enc_out_2d_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_enc_out_buf.unsafe_ptr())
+        ](gpu_state.grad_enc_out_buf.unsafe_ptr())
         # Dummy grad views: [BATCH, ZA] for Q/reward backward, [BATCH, OBS] for encoder
         var dummy_grad_za_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](dummy_grad_buf.unsafe_ptr())
+        ](gpu_state.dummy_grad_buf.unsafe_ptr())
         var dummy_grad_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](dummy_grad_buf.unsafe_ptr())
+        ](gpu_state.dummy_grad_buf.unsafe_ptr())
 
         # ── Zero per-step intermediate gradient buffers ──
-        ctx.enqueue_memset(grad_z_pred_buf, 0)
-        ctx.enqueue_memset(grad_za_buf, 0)
-        ctx.enqueue_memset(grad_z_dyn_buf, 0)
-        ctx.enqueue_memset(grad_z_term_buf, 0)
-        ctx.enqueue_memset(grad_enc_out_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_z_pred_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_za_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_z_dyn_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_z_term_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_enc_out_buf, 0)
 
         # ── Extract step data ──
         ctx.enqueue_function[
@@ -1240,7 +1134,7 @@ struct TDMPC2Agent[
             z_pred_tensor,
             dyn_params_t,
             dyn_cache_t,
-            dyn_batch_ws_buf,
+            gpu_state.dyn_batch_ws_buf,
         )
 
         # ── Consistency target: encode obs_{t+1} (stop-grad) ──
@@ -1249,7 +1143,7 @@ struct TDMPC2Agent[
             z_next_tensor,
             obs_next_step_tensor,
             enc_params_tensor,
-            enc_batch_ws_buf,
+            gpu_state.enc_batch_ws_buf,
         )
 
         # ── Consistency loss gradient → grad_z_pred ──
@@ -1274,7 +1168,7 @@ struct TDMPC2Agent[
             dyn_params_t,
             dyn_cache_t,
             dyn_grads_t,
-            dyn_batch_ws_buf,
+            gpu_state.dyn_batch_ws_buf,
         )
         ctx.enqueue_function[
             tdmpc2_extract_z_from_za_grad_kernel[
@@ -1297,13 +1191,13 @@ struct TDMPC2Agent[
             logits_tensor,
             rew_params_t,
             rew_cache_t,
-            rew_batch_ws_buf,
+            gpu_state.rew_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         var rew_rho = rho_t * Scalar[dtype](self.reward_coef)
         var tgt_t_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+        ](gpu_state.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1322,14 +1216,14 @@ struct TDMPC2Agent[
             rew_params_t,
             rew_cache_t,
             rew_grads_t,
-            rew_batch_ws_buf,
+            gpu_state.rew_batch_ws_buf,
         )
 
         # ── Q1..Q5 forward + two-hot grad + backward ──
         var q_rho = rho_t * Scalar[dtype](self.value_coef / Float64(Self.num_q))
         var tgt_t_tensor_q = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+        ](gpu_state.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
         Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
             ctx,
@@ -1337,9 +1231,9 @@ struct TDMPC2Agent[
             logits_tensor,
             q1_params_t,
             q1_cache_t,
-            q1_batch_ws_buf,
+            gpu_state.q1_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1358,7 +1252,7 @@ struct TDMPC2Agent[
             q1_params_t,
             q1_cache_t,
             q1_grads_t,
-            q1_batch_ws_buf,
+            gpu_state.q1_batch_ws_buf,
         )
 
         Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
@@ -1367,9 +1261,9 @@ struct TDMPC2Agent[
             logits_tensor,
             q2_params_t,
             q2_cache_t,
-            q2_batch_ws_buf,
+            gpu_state.q2_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1388,7 +1282,7 @@ struct TDMPC2Agent[
             q2_params_t,
             q2_cache_t,
             q2_grads_t,
-            q2_batch_ws_buf,
+            gpu_state.q2_batch_ws_buf,
         )
 
         Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
@@ -1397,9 +1291,9 @@ struct TDMPC2Agent[
             logits_tensor,
             q3_params_t,
             q3_cache_t,
-            q3_batch_ws_buf,
+            gpu_state.q3_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1418,7 +1312,7 @@ struct TDMPC2Agent[
             q3_params_t,
             q3_cache_t,
             q3_grads_t,
-            q3_batch_ws_buf,
+            gpu_state.q3_batch_ws_buf,
         )
 
         Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
@@ -1427,9 +1321,9 @@ struct TDMPC2Agent[
             logits_tensor,
             q4_params_t,
             q4_cache_t,
-            q4_batch_ws_buf,
+            gpu_state.q4_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1448,7 +1342,7 @@ struct TDMPC2Agent[
             q4_params_t,
             q4_cache_t,
             q4_grads_t,
-            q4_batch_ws_buf,
+            gpu_state.q4_batch_ws_buf,
         )
 
         Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
@@ -1457,9 +1351,9 @@ struct TDMPC2Agent[
             logits_tensor,
             q5_params_t,
             q5_cache_t,
-            q5_batch_ws_buf,
+            gpu_state.q5_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_logits_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
         ctx.enqueue_function[
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
             tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
@@ -1478,7 +1372,7 @@ struct TDMPC2Agent[
             q5_params_t,
             q5_cache_t,
             q5_grads_t,
-            q5_batch_ws_buf,
+            gpu_state.q5_batch_ws_buf,
         )
 
         # ── Termination forward + BCE grad + backward ──
@@ -1488,9 +1382,9 @@ struct TDMPC2Agent[
             term_out_t,
             term_params_t,
             term_cache_t,
-            term_batch_ws_buf,
+            gpu_state.term_batch_ws_buf,
         )
-        ctx.enqueue_memset(grad_term_prob_buf, 0)
+        ctx.enqueue_memset(gpu_state.grad_term_prob_buf, 0)
         var term_rho = rho_t * Scalar[dtype](self.terminal_coef)
         ctx.enqueue_function[
             tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
@@ -1510,7 +1404,7 @@ struct TDMPC2Agent[
             term_params_t,
             term_cache_t,
             term_grads_t,
-            term_batch_ws_buf,
+            gpu_state.term_batch_ws_buf,
         )
 
         # ── Combine encoder gradients: grad_enc_out += grad_z_dyn + grad_z_term ──
@@ -1533,7 +1427,7 @@ struct TDMPC2Agent[
             enc_params_tensor,
             enc_cache_t,
             enc_grads_t,
-            enc_batch_ws_buf,
+            gpu_state.enc_batch_ws_buf,
         )
 
         # ── Advance current z ← z_pred (for next horizon step) ──
@@ -1610,531 +1504,211 @@ struct TDMPC2Agent[
             env_bufs.append(PerEnvBuf())
 
         # =================================================================
-        # GPU Network buffers (params / grads / optimizer-state / cache / ws)
+        # GPU State (all device + host buffers in one struct)
         # =================================================================
-        # Encoder
-        var enc_params_buf = ctx.enqueue_create_buffer[dtype](Self.ENC_P)
-        var enc_grads_buf = ctx.enqueue_create_buffer[dtype](Self.ENC_P)
-        var enc_state_buf = ctx.enqueue_create_buffer[dtype](Self.ENC_P * 2)
-        var enc_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.ENC_C
-        )
-        var enc_batch_ws_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ENC_BATCH_WS
-        )
-        var enc_env_ws_buf = ctx.enqueue_create_buffer[dtype](ENC_ENV_WS)
-        var enc_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ENC_GRAD_BLOCKS
-        )
-
-        # Dynamics
-        var dyn_params_buf = ctx.enqueue_create_buffer[dtype](Self.DYN_P)
-        var dyn_grads_buf = ctx.enqueue_create_buffer[dtype](Self.DYN_P)
-        var dyn_state_buf = ctx.enqueue_create_buffer[dtype](Self.DYN_P * 2)
-        var dyn_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.DYN_C
-        )
-        var dyn_batch_ws_buf = ctx.enqueue_create_buffer[dtype](
-            Self.DYN_BATCH_WS
-        )
-        var dyn_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.DYN_GRAD_BLOCKS
-        )
-
-        # Reward head
-        var rew_params_buf = ctx.enqueue_create_buffer[dtype](Self.REW_P)
-        var rew_grads_buf = ctx.enqueue_create_buffer[dtype](Self.REW_P)
-        var rew_state_buf = ctx.enqueue_create_buffer[dtype](Self.REW_P * 2)
-        var rew_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.REW_C
-        )
-        var rew_batch_ws_buf = ctx.enqueue_create_buffer[dtype](
-            Self.REW_BATCH_WS
-        )
-        var rew_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.REW_GRAD_BLOCKS
-        )
-
-        # Termination
-        var term_params_buf = ctx.enqueue_create_buffer[dtype](Self.TERM_P)
-        var term_grads_buf = ctx.enqueue_create_buffer[dtype](Self.TERM_P)
-        var term_state_buf = ctx.enqueue_create_buffer[dtype](Self.TERM_P * 2)
-        var term_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.TERM_C
-        )
-        var term_batch_ws_buf = ctx.enqueue_create_buffer[dtype](
-            Self.TERM_BATCH_WS
-        )
-        var term_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.TERM_GRAD_BLOCKS
-        )
-
-        # Policy
-        var pol_params_buf = ctx.enqueue_create_buffer[dtype](Self.POL_P)
-        var pol_grads_buf = ctx.enqueue_create_buffer[dtype](Self.POL_P)
-        var pol_state_buf = ctx.enqueue_create_buffer[dtype](Self.POL_P * 2)
-        var pol_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.POL_C
-        )
-        var pol_batch_ws_buf = ctx.enqueue_create_buffer[dtype](
-            Self.POL_BATCH_WS
-        )
-        var pol_env_ws_buf = ctx.enqueue_create_buffer[dtype](POL_ENV_WS)
-        var pol_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.POL_GRAD_BLOCKS
-        )
-
-        # Q networks (live) — 5 networks, identical sizes
-        var q1_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q1_grads_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q1_state_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P * 2)
-        var q1_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.Q_C
-        )
-        var q1_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
-
-        var q2_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q2_grads_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q2_state_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P * 2)
-        var q2_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.Q_C
-        )
-        var q2_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
-
-        var q3_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q3_grads_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q3_state_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P * 2)
-        var q3_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.Q_C
-        )
-        var q3_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
-
-        var q4_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q4_grads_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q4_state_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P * 2)
-        var q4_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.Q_C
-        )
-        var q4_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
-
-        var q5_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q5_grads_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q5_state_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P * 2)
-        var q5_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.Q_C
-        )
-        var q5_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
-
-        # Shared partial-sum buffer for Q gradient clipping (same size for all Qs)
-        var q_grad_ps_buf = ctx.enqueue_create_buffer[dtype](Self.Q_GRAD_BLOCKS)
-
-        # Target Q networks (params only — soft-updated, no grads/state needed)
-        var q1t_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q2t_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q3t_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q4t_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        var q5t_params_buf = ctx.enqueue_create_buffer[dtype](Self.Q_P)
-        # Shared workspace for target Q no-grad forward passes
-        var qt_batch_ws_buf = ctx.enqueue_create_buffer[dtype](Self.Q_BATCH_WS)
+        comptime GPUState = TDMPC2GPUState[
+            Self.WM.EncModel, Self.EncOpt,
+            Self.WM.DynModel, Self.WMOpt,
+            Self.WM.RewModel, Self.WMOpt,
+            Self.WM.TermModel, Self.WMOpt,
+            Self.WM.PolModel, Self.PIOpt,
+            Self.WM.QModel, Self.WMOpt,
+            Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
+            Self.BATCH, Self.H, n_envs, ENV.STATE_SIZE,
+        ]
+        var gs = GPUState(ctx)
 
         # =================================================================
-        # Intermediate GPU buffers
+        # LayoutTensor views (constructed from gpu_state buffers)
         # =================================================================
-        var z_buf = ctx.enqueue_create_buffer[dtype](
-            Self.B_LATENT
-        )  # current z_t
-        var z_next_buf = ctx.enqueue_create_buffer[dtype](
-            Self.B_LATENT
-        )  # enc(obs_{t+1}) stop-grad
-        var z_pred_buf = ctx.enqueue_create_buffer[dtype](
-            Self.B_LATENT
-        )  # dynamics(za_t)
-        var za_buf = ctx.enqueue_create_buffer[dtype](Self.B_ZA)  # [z_t, a_t]
-        var pi_out_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * 2 * Self.ACT
-        )
-        var pi_act_buf = ctx.enqueue_create_buffer[dtype](
-            Self.B_ACT
-        )  # tanh(mean) actions
-        var logits_buf = ctx.enqueue_create_buffer[dtype](
-            Self.B_BINS
-        )  # shared Q/rew logits
-        var term_prob_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        var q_min_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        # Per-step extracted data slices
-        var obs_step_buf = ctx.enqueue_create_buffer[dtype](Self.B_OBS)
-        var obs_next_step_buf = ctx.enqueue_create_buffer[dtype](Self.B_OBS)
-        var act_step_buf = ctx.enqueue_create_buffer[dtype](Self.B_ACT)
-        var rew_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        var done_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        var tgt_step_buf = ctx.enqueue_create_buffer[dtype](Self.B_BINS)
-
-        # Gradient accumulation buffers (per-step intermediate)
-        var grad_z_pred_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
-        var grad_za_buf = ctx.enqueue_create_buffer[dtype](Self.B_ZA)
-        var grad_z_dyn_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
-        var grad_z_term_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
-        var grad_enc_out_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
-        var grad_logits_buf = ctx.enqueue_create_buffer[dtype](Self.B_BINS)
-        var grad_term_prob_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        var grad_pi_out_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * 2 * Self.ACT
-        )
-        var dummy_grad_buf = ctx.enqueue_create_buffer[dtype](Self.DUMMY_SIZE)
-
-        # TD targets [H * BATCH * BINS]
-        var td_targets_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH_TGTS_FLAT
-        )
-
-        # Fixed bins (uploaded once from CPU)
-        var bins_buf = ctx.enqueue_create_buffer[dtype](Self.BINS)
-
-        # =================================================================
-        # Batch data GPU buffers (CPU→GPU per training step)
-        # =================================================================
-        var batch_obs_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH_OBS_FLAT
-        )
-        var batch_act_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH_ACT_FLAT
-        )
-        var batch_rew_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH_SCALAR_FLAT
-        )
-        var batch_done_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH_SCALAR_FLAT
-        )
-
-        # =================================================================
-        # Environment GPU buffers
-        # =================================================================
-        var states_buf = ctx.enqueue_create_buffer[dtype](ENV_STATE)
-        var env_obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS)
-        var env_act_buf = ctx.enqueue_create_buffer[dtype](ENV_ACT)
-        var env_rew_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var env_done_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var env_z_buf = ctx.enqueue_create_buffer[dtype](ENV_LATENT)
-        var env_pi_out_buf = ctx.enqueue_create_buffer[dtype](ENV_PI_OUT)
-
-        # Episode tracking (GPU)
-        var ep_rew_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var ep_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var completed_rew_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var completed_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-        var completed_mask_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-
-        # =================================================================
-        # Host (CPU) buffers
-        # =================================================================
-        # Per-step env download (n_envs transitions)
-        var env_obs_host = ctx.enqueue_create_host_buffer[dtype](ENV_OBS)
-        var env_act_host = ctx.enqueue_create_host_buffer[dtype](ENV_ACT)
-        var env_rew_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
-        var env_done_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
-
-        # Episode tracking download
-        var completed_rew_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
-        var completed_steps_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
-        var completed_mask_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
-
-        # Batch data upload (CPU replay buffer → GPU)
-        var batch_obs_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH_OBS_FLAT
-        )
-        var batch_act_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH_ACT_FLAT
-        )
-        var batch_rew_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH_SCALAR_FLAT
-        )
-        var batch_done_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH_SCALAR_FLAT
-        )
-
-        # =================================================================
-        # LayoutTensor views (for kernel calls)
-        # =================================================================
+        # Environment tensors
         var env_obs_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.OBS), MutAnyOrigin
-        ](env_obs_buf.unsafe_ptr())
+        ](gs.env_obs_buf.unsafe_ptr())
         var env_act_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.ACT), MutAnyOrigin
-        ](env_act_buf.unsafe_ptr())
+        ](gs.env_act_buf.unsafe_ptr())
         var env_rew_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](env_rew_buf.unsafe_ptr())
+        ](gs.env_rew_buf.unsafe_ptr())
         var env_done_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](env_done_buf.unsafe_ptr())
+        ](gs.env_done_buf.unsafe_ptr())
         var env_pi_out_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, 2 * Self.ACT), MutAnyOrigin
-        ](env_pi_out_buf.unsafe_ptr())
+        ](gs.env_pi_out_buf.unsafe_ptr())
 
         var ep_rew_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](ep_rew_buf.unsafe_ptr())
+        ](gs.ep_rew_buf.unsafe_ptr())
         var ep_steps_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](ep_steps_buf.unsafe_ptr())
+        ](gs.ep_steps_buf.unsafe_ptr())
         var completed_rew_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](completed_rew_buf.unsafe_ptr())
+        ](gs.completed_rew_buf.unsafe_ptr())
         var completed_steps_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](completed_steps_buf.unsafe_ptr())
+        ](gs.completed_steps_buf.unsafe_ptr())
         var completed_mask_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](completed_mask_buf.unsafe_ptr())
+        ](gs.completed_mask_buf.unsafe_ptr())
 
-        # Flat 1D views of batch data (for extract kernels)
+        # Flat 1D views of batch data
         var batch_obs_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH_OBS_FLAT), MutAnyOrigin
-        ](batch_obs_buf.unsafe_ptr())
-        var batch_act_flat_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH_ACT_FLAT), MutAnyOrigin
-        ](batch_act_buf.unsafe_ptr())
+        ](gs.batch_obs_buf.unsafe_ptr())
         var batch_rew_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH_SCALAR_FLAT), MutAnyOrigin
-        ](batch_rew_buf.unsafe_ptr())
+        ](gs.batch_rew_buf.unsafe_ptr())
         var batch_done_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH_SCALAR_FLAT), MutAnyOrigin
-        ](batch_done_buf.unsafe_ptr())
+        ](gs.batch_done_buf.unsafe_ptr())
 
         # 2D intermediate tensors
         var z_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_buf.unsafe_ptr())
+        ](gs.z_buf.unsafe_ptr())
         var z_next_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_next_buf.unsafe_ptr())
+        ](gs.z_next_buf.unsafe_ptr())
         var z_pred_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](z_pred_buf.unsafe_ptr())
+        ](gs.z_pred_buf.unsafe_ptr())
         var za_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](za_buf.unsafe_ptr())
+        ](gs.za_buf.unsafe_ptr())
         var pi_out_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
-        ](pi_out_buf.unsafe_ptr())
+        ](gs.pi_out_buf.unsafe_ptr())
         var pi_act_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-        ](pi_act_buf.unsafe_ptr())
+        ](gs.pi_act_buf.unsafe_ptr())
         var logits_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](logits_buf.unsafe_ptr())
-        var term_prob_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](term_prob_buf.unsafe_ptr())
+        ](gs.logits_buf.unsafe_ptr())
         var q_min_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](q_min_buf.unsafe_ptr())
+        ](gs.q_min_buf.unsafe_ptr())
         var bins_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BINS), MutAnyOrigin
-        ](bins_buf.unsafe_ptr())
+        ](gs.bins_buf.unsafe_ptr())
 
         var obs_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](obs_step_buf.unsafe_ptr())
+        ](gs.obs_step_buf.unsafe_ptr())
         var obs_next_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](obs_next_step_buf.unsafe_ptr())
-        var act_step_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-        ](act_step_buf.unsafe_ptr())
+        ](gs.obs_next_step_buf.unsafe_ptr())
         var rew_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](rew_step_buf.unsafe_ptr())
+        ](gs.rew_step_buf.unsafe_ptr())
         var done_step_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](done_step_buf.unsafe_ptr())
+        ](gs.done_step_buf.unsafe_ptr())
 
-        # 2D gradient tensors
-        var grad_z_pred_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_pred_buf.unsafe_ptr())
-        var grad_za_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](grad_za_buf.unsafe_ptr())
-        var grad_z_dyn_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_dyn_buf.unsafe_ptr())
-        var grad_z_term_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_z_term_buf.unsafe_ptr())
-        var grad_enc_out_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](grad_enc_out_buf.unsafe_ptr())
-        var grad_logits_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](grad_logits_buf.unsafe_ptr())
-        var grad_term_prob_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH), MutAnyOrigin
-        ](grad_term_prob_buf.unsafe_ptr())
+        # Gradient tensors
         var grad_pi_out_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
-        ](grad_pi_out_buf.unsafe_ptr())
-
-        # 1D grad tensors for param grad clipping
-        var enc_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
-        ](enc_grads_buf.unsafe_ptr())
-        var dyn_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
-        ](dyn_grads_buf.unsafe_ptr())
-        var rew_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
-        ](rew_grads_buf.unsafe_ptr())
-        var term_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
-        ](term_grads_buf.unsafe_ptr())
-        var pol_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.POL_P), MutAnyOrigin
-        ](pol_grads_buf.unsafe_ptr())
-        var q1_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q1_grads_buf.unsafe_ptr())
-        var q2_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q2_grads_buf.unsafe_ptr())
-        var q3_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q3_grads_buf.unsafe_ptr())
-        var q4_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q4_grads_buf.unsafe_ptr())
-        var q5_grads_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q5_grads_buf.unsafe_ptr())
-
-        var enc_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_GRAD_BLOCKS), MutAnyOrigin
-        ](enc_grad_ps_buf.unsafe_ptr())
-        var dyn_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_GRAD_BLOCKS), MutAnyOrigin
-        ](dyn_grad_ps_buf.unsafe_ptr())
-        var rew_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_GRAD_BLOCKS), MutAnyOrigin
-        ](rew_grad_ps_buf.unsafe_ptr())
-        var term_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_GRAD_BLOCKS), MutAnyOrigin
-        ](term_grad_ps_buf.unsafe_ptr())
-        var pol_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.POL_GRAD_BLOCKS), MutAnyOrigin
-        ](pol_grad_ps_buf.unsafe_ptr())
-        var q_grad_ps_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_GRAD_BLOCKS), MutAnyOrigin
-        ](q_grad_ps_buf.unsafe_ptr())
+        ](gs.grad_pi_out_buf.unsafe_ptr())
 
         # Flat 1D views for copy kernel (z advance)
         var z_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](z_buf.unsafe_ptr())
+        ](gs.z_buf.unsafe_ptr())
         var z_pred_flat_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-        ](z_pred_buf.unsafe_ptr())
+        ](gs.z_pred_buf.unsafe_ptr())
 
-        # Params LayoutTensor views (for forward_gpu_no_cache calls)
-        var enc_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_P), MutAnyOrigin
-        ](enc_params_buf.unsafe_ptr())
-        var pol_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.POL_P), MutAnyOrigin
-        ](pol_params_buf.unsafe_ptr())
-        var dyn_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_P), MutAnyOrigin
-        ](dyn_params_buf.unsafe_ptr())
-        var q1_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q1_params_buf.unsafe_ptr())
-        var q2_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q2_params_buf.unsafe_ptr())
+        # Network params/grads/state views (via GPUNetworkState)
+        var enc_params_tensor = gs.enc.params_view()
+        var enc_grads_tensor = gs.enc.grads_view()
+        var enc_state_tensor = gs.enc.state_view()
+        var dyn_params_tensor = gs.dyn.params_view()
+        var dyn_grads_tensor = gs.dyn.grads_view()
+        var dyn_state_tensor = gs.dyn.state_view()
+        var rew_params_tensor = gs.rew.params_view()
+        var rew_grads_tensor = gs.rew.grads_view()
+        var rew_state_tensor = gs.rew.state_view()
+        var term_params_tensor = gs.term.params_view()
+        var term_grads_tensor = gs.term.grads_view()
+        var term_state_tensor = gs.term.state_view()
+        var pol_params_tensor = gs.pol.params_view()
+        var pol_grads_tensor = gs.pol.grads_view()
+        var pol_state_tensor = gs.pol.state_view()
+        var q1_params_tensor = gs.q1.params_view()
+        var q1_grads_tensor = gs.q1.grads_view()
+        var q1_state_tensor = gs.q1.state_view()
+        var q2_params_tensor = gs.q2.params_view()
+        var q2_grads_tensor = gs.q2.grads_view()
+        var q2_state_tensor = gs.q2.state_view()
+        var q3_params_tensor = gs.q3.params_view()
+        var q3_grads_tensor = gs.q3.grads_view()
+        var q3_state_tensor = gs.q3.state_view()
+        var q4_params_tensor = gs.q4.params_view()
+        var q4_grads_tensor = gs.q4.grads_view()
+        var q4_state_tensor = gs.q4.state_view()
+        var q5_params_tensor = gs.q5.params_view()
+        var q5_grads_tensor = gs.q5.grads_view()
+        var q5_state_tensor = gs.q5.state_view()
+
+        # Target Q param views
         var q1t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q1t_params_buf.unsafe_ptr())
+        ](gs.q1t_params_buf.unsafe_ptr())
         var q2t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q2t_params_buf.unsafe_ptr())
+        ](gs.q2t_params_buf.unsafe_ptr())
         var q3t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q3t_params_buf.unsafe_ptr())
+        ](gs.q3t_params_buf.unsafe_ptr())
         var q4t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q4t_params_buf.unsafe_ptr())
+        ](gs.q4t_params_buf.unsafe_ptr())
         var q5t_params_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q5t_params_buf.unsafe_ptr())
-        # Missing params tensors
-        var rew_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_P), MutAnyOrigin
-        ](rew_params_buf.unsafe_ptr())
-        var term_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_P), MutAnyOrigin
-        ](term_params_buf.unsafe_ptr())
-        var q3_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q3_params_buf.unsafe_ptr())
-        var q4_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q4_params_buf.unsafe_ptr())
-        var q5_params_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-        ](q5_params_buf.unsafe_ptr())
+        ](gs.q5t_params_buf.unsafe_ptr())
 
-        # Optimizer state tensors (for Adam.step_gpu: [PARAM_SIZE, STATE_PER_PARAM=2])
-        var enc_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.ENC_P, 2), MutAnyOrigin
-        ](enc_state_buf.unsafe_ptr())
-        var dyn_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.DYN_P, 2), MutAnyOrigin
-        ](dyn_state_buf.unsafe_ptr())
-        var rew_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.REW_P, 2), MutAnyOrigin
-        ](rew_state_buf.unsafe_ptr())
-        var term_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.TERM_P, 2), MutAnyOrigin
-        ](term_state_buf.unsafe_ptr())
-        var pol_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.POL_P, 2), MutAnyOrigin
-        ](pol_state_buf.unsafe_ptr())
-        var q1_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-        ](q1_state_buf.unsafe_ptr())
-        var q2_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-        ](q2_state_buf.unsafe_ptr())
-        var q3_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-        ](q3_state_buf.unsafe_ptr())
-        var q4_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-        ](q4_state_buf.unsafe_ptr())
-        var q5_state_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-        ](q5_state_buf.unsafe_ptr())
+        # Gradient norm partial-sum views
+        var enc_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.ENC_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.enc_grad_ps_buf.unsafe_ptr())
+        var dyn_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.dyn_grad_ps_buf.unsafe_ptr())
+        var rew_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.REW_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.rew_grad_ps_buf.unsafe_ptr())
+        var term_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.TERM_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.term_grad_ps_buf.unsafe_ptr())
+        var pol_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.POL_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.pol_grad_ps_buf.unsafe_ptr())
+        var q_grad_ps_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.Q_GRAD_BLOCKS), MutAnyOrigin
+        ](gs.q_grad_ps_buf.unsafe_ptr())
 
-        # Cache tensors for forward_with_cache calls
+        # Cache tensors
         var enc_cache_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
-        ](enc_cache_buf.unsafe_ptr())
+        ](gs.enc_cache_buf.unsafe_ptr())
         var pol_cache_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.POL_C), MutAnyOrigin
-        ](pol_cache_buf.unsafe_ptr())
+        ](gs.pol_cache_buf.unsafe_ptr())
 
         # Dummy grad [BATCH, LATENT] for policy backward input grad
         var dummy_grad_latent_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](dummy_grad_buf.unsafe_ptr())
+        ](gs.dummy_grad_buf.unsafe_ptr())
 
         # n_envs-sized tensors for data collection phase
         var env_z_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
-        ](env_z_buf.unsafe_ptr())
-        # Encoder output reusing env_pi_out_buf (n_envs x LATENT view, temp)
+        ](gs.env_z_buf.unsafe_ptr())
         var env_pi_enc_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
-        ](env_pi_out_buf.unsafe_ptr())
+        ](gs.env_pi_out_buf.unsafe_ptr())
 
         # =================================================================
         # n_envs-dependent kernel wrappers (all others live at struct level)
@@ -2157,141 +1731,48 @@ struct TDMPC2Agent[
         # =================================================================
         # Initialize GPU network params + optimizer state from CPU
         # =================================================================
-        # Encoder
-        var _enc_p_host = ctx.enqueue_create_host_buffer[dtype](Self.ENC_P)
-        for i in range(Self.ENC_P):
-            _enc_p_host[i] = self.world_model.encoder.params[i]
-        ctx.enqueue_copy(enc_params_buf, _enc_p_host)
-        var _enc_s_host = ctx.enqueue_create_host_buffer[dtype](Self.ENC_P * 2)
-        for i in range(Self.ENC_P * 2):
-            _enc_s_host[i] = self.world_model.encoder.optimizer_state[i]
-        ctx.enqueue_copy(enc_state_buf, _enc_s_host)
-
-        # Dynamics
-        var _dyn_p_host = ctx.enqueue_create_host_buffer[dtype](Self.DYN_P)
-        for i in range(Self.DYN_P):
-            _dyn_p_host[i] = self.world_model.dynamics.params[i]
-        ctx.enqueue_copy(dyn_params_buf, _dyn_p_host)
-        var _dyn_s_host = ctx.enqueue_create_host_buffer[dtype](Self.DYN_P * 2)
-        for i in range(Self.DYN_P * 2):
-            _dyn_s_host[i] = self.world_model.dynamics.optimizer_state[i]
-        ctx.enqueue_copy(dyn_state_buf, _dyn_s_host)
-
-        # Reward head
-        var _rew_p_host = ctx.enqueue_create_host_buffer[dtype](Self.REW_P)
-        for i in range(Self.REW_P):
-            _rew_p_host[i] = self.world_model.reward_head.params[i]
-        ctx.enqueue_copy(rew_params_buf, _rew_p_host)
-        var _rew_s_host = ctx.enqueue_create_host_buffer[dtype](Self.REW_P * 2)
-        for i in range(Self.REW_P * 2):
-            _rew_s_host[i] = self.world_model.reward_head.optimizer_state[i]
-        ctx.enqueue_copy(rew_state_buf, _rew_s_host)
-
-        # Termination
-        var _term_p_host = ctx.enqueue_create_host_buffer[dtype](Self.TERM_P)
-        for i in range(Self.TERM_P):
-            _term_p_host[i] = self.world_model.termination.params[i]
-        ctx.enqueue_copy(term_params_buf, _term_p_host)
-        var _term_s_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.TERM_P * 2
-        )
-        for i in range(Self.TERM_P * 2):
-            _term_s_host[i] = self.world_model.termination.optimizer_state[i]
-        ctx.enqueue_copy(term_state_buf, _term_s_host)
-
-        # Policy
-        var _pol_p_host = ctx.enqueue_create_host_buffer[dtype](Self.POL_P)
-        for i in range(Self.POL_P):
-            _pol_p_host[i] = self.world_model.policy.params[i]
-        ctx.enqueue_copy(pol_params_buf, _pol_p_host)
-        var _pol_s_host = ctx.enqueue_create_host_buffer[dtype](Self.POL_P * 2)
-        for i in range(Self.POL_P * 2):
-            _pol_s_host[i] = self.world_model.policy.optimizer_state[i]
-        ctx.enqueue_copy(pol_state_buf, _pol_s_host)
-
-        # Q1
-        var _q1_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        for i in range(Self.Q_P):
-            _q1_p_host[i] = self.world_model.q1.params[i]
-        ctx.enqueue_copy(q1_params_buf, _q1_p_host)
-        var _q1_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
-        for i in range(Self.Q_P * 2):
-            _q1_s_host[i] = self.world_model.q1.optimizer_state[i]
-        ctx.enqueue_copy(q1_state_buf, _q1_s_host)
-
-        # Q2
-        var _q2_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        for i in range(Self.Q_P):
-            _q2_p_host[i] = self.world_model.q2.params[i]
-        ctx.enqueue_copy(q2_params_buf, _q2_p_host)
-        var _q2_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
-        for i in range(Self.Q_P * 2):
-            _q2_s_host[i] = self.world_model.q2.optimizer_state[i]
-        ctx.enqueue_copy(q2_state_buf, _q2_s_host)
-
-        # Q3
-        var _q3_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        for i in range(Self.Q_P):
-            _q3_p_host[i] = self.world_model.q3.params[i]
-        ctx.enqueue_copy(q3_params_buf, _q3_p_host)
-        var _q3_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
-        for i in range(Self.Q_P * 2):
-            _q3_s_host[i] = self.world_model.q3.optimizer_state[i]
-        ctx.enqueue_copy(q3_state_buf, _q3_s_host)
-
-        # Q4
-        var _q4_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        for i in range(Self.Q_P):
-            _q4_p_host[i] = self.world_model.q4.params[i]
-        ctx.enqueue_copy(q4_params_buf, _q4_p_host)
-        var _q4_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
-        for i in range(Self.Q_P * 2):
-            _q4_s_host[i] = self.world_model.q4.optimizer_state[i]
-        ctx.enqueue_copy(q4_state_buf, _q4_s_host)
-
-        # Q5
-        var _q5_p_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        for i in range(Self.Q_P):
-            _q5_p_host[i] = self.world_model.q5.params[i]
-        ctx.enqueue_copy(q5_params_buf, _q5_p_host)
-        var _q5_s_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P * 2)
-        for i in range(Self.Q_P * 2):
-            _q5_s_host[i] = self.world_model.q5.optimizer_state[i]
-        ctx.enqueue_copy(q5_state_buf, _q5_s_host)
+        gs.enc.upload_from(self.state.world_model.encoder, ctx)
+        gs.dyn.upload_from(self.state.world_model.dynamics, ctx)
+        gs.rew.upload_from(self.state.world_model.reward_head, ctx)
+        gs.term.upload_from(self.state.world_model.termination, ctx)
+        gs.pol.upload_from(self.state.world_model.policy, ctx)
+        gs.q1.upload_from(self.state.world_model.q1, ctx)
+        gs.q2.upload_from(self.state.world_model.q2, ctx)
+        gs.q3.upload_from(self.state.world_model.q3, ctx)
+        gs.q4.upload_from(self.state.world_model.q4, ctx)
+        gs.q5.upload_from(self.state.world_model.q5, ctx)
 
         # Target Q networks (params only — soft-updated on GPU, no optimizer state)
         var _q1t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q1t_host[i] = self.world_model.q1_target.params[i]
-        ctx.enqueue_copy(q1t_params_buf, _q1t_host)
+            _q1t_host[i] = self.state.world_model.q1_target.params[i]
+        ctx.enqueue_copy(gs.q1t_params_buf, _q1t_host)
         var _q2t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q2t_host[i] = self.world_model.q2_target.params[i]
-        ctx.enqueue_copy(q2t_params_buf, _q2t_host)
+            _q2t_host[i] = self.state.world_model.q2_target.params[i]
+        ctx.enqueue_copy(gs.q2t_params_buf, _q2t_host)
         var _q3t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q3t_host[i] = self.world_model.q3_target.params[i]
-        ctx.enqueue_copy(q3t_params_buf, _q3t_host)
+            _q3t_host[i] = self.state.world_model.q3_target.params[i]
+        ctx.enqueue_copy(gs.q3t_params_buf, _q3t_host)
         var _q4t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q4t_host[i] = self.world_model.q4_target.params[i]
-        ctx.enqueue_copy(q4t_params_buf, _q4t_host)
+            _q4t_host[i] = self.state.world_model.q4_target.params[i]
+        ctx.enqueue_copy(gs.q4t_params_buf, _q4t_host)
         var _q5t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q5t_host[i] = self.world_model.q5_target.params[i]
-        ctx.enqueue_copy(q5t_params_buf, _q5t_host)
+            _q5t_host[i] = self.state.world_model.q5_target.params[i]
+        ctx.enqueue_copy(gs.q5t_params_buf, _q5t_host)
 
         # Upload fixed bins to GPU
         var bins_host = ctx.enqueue_create_host_buffer[dtype](Self.BINS)
         for i in range(Self.BINS):
-            bins_host[i] = Scalar[dtype](self.world_model.bins[i])
-        ctx.enqueue_copy(bins_buf, bins_host)
+            bins_host[i] = Scalar[dtype](self.state.world_model.bins[i])
+        ctx.enqueue_copy(gs.bins_buf, bins_host)
 
         # =================================================================
         # Initialize environments
         # =================================================================
-        ctx.enqueue_memset(ep_rew_buf, 0)
-        ctx.enqueue_memset(ep_steps_buf, 0)
 
         comptime TOTAL_WS = (ENV.STEP_WS_SHARED + n_envs * ENV.STEP_WS_PER_ENV)
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
@@ -2299,10 +1780,10 @@ struct TDMPC2Agent[
         ENV.init_step_workspace_gpu[n_envs](ctx, step_ws_buf)
         ctx.synchronize()
 
-        ENV.reset_kernel_gpu[n_envs, ENV.STATE_SIZE](ctx, states_buf)
+        ENV.reset_kernel_gpu[n_envs, ENV.STATE_SIZE](ctx, gs.states_buf)
         ctx.synchronize()
         ENV.extract_obs_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS](
-            ctx, states_buf, env_obs_buf
+            ctx, gs.states_buf, gs.env_obs_buf
         )
         ctx.synchronize()
 
@@ -2339,7 +1820,7 @@ struct TDMPC2Agent[
                     env_pi_enc_tensor,  # temp: use pi_out buf as output (n_envs x LATENT)
                     env_obs_tensor,
                     enc_params_tensor,
-                    enc_env_ws_buf,
+                    gs.enc_env_ws_buf,
                 )
                 # Actually encode obs → z (not pi_out) — reuse env_z_buf
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
@@ -2347,14 +1828,14 @@ struct TDMPC2Agent[
                     env_z_tensor,
                     env_obs_tensor,
                     enc_params_tensor,
-                    enc_env_ws_buf,
+                    gs.enc_env_ws_buf,
                 )
                 Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
                     env_pi_out_tensor,
                     env_z_tensor,
                     pol_params_tensor,
-                    pol_env_ws_buf,
+                    gs.pol_env_ws_buf,
                 )
                 ctx.enqueue_function[sample_act_wrapper, sample_act_wrapper](
                     env_pi_out_tensor,
@@ -2370,11 +1851,11 @@ struct TDMPC2Agent[
             comptime if TOTAL_WS > 0:
                 ENV.step_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS, Self.ACT](
                     ctx,
-                    states_buf,
-                    env_act_buf,
-                    env_rew_buf,
-                    env_done_buf,
-                    env_obs_buf,
+                    gs.states_buf,
+                    gs.env_act_buf,
+                    gs.env_rew_buf,
+                    gs.env_done_buf,
+                    gs.env_obs_buf,
                     env_seed,
                     List[Scalar[dtype]](),
                     step_ws_buf.unsafe_ptr(),
@@ -2382,11 +1863,11 @@ struct TDMPC2Agent[
             else:
                 ENV.step_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS, Self.ACT](
                     ctx,
-                    states_buf,
-                    env_act_buf,
-                    env_rew_buf,
-                    env_done_buf,
-                    env_obs_buf,
+                    gs.states_buf,
+                    gs.env_act_buf,
+                    gs.env_rew_buf,
+                    gs.env_done_buf,
+                    gs.env_obs_buf,
                     env_seed,
                     List[Scalar[dtype]](),
                 )
@@ -2417,20 +1898,20 @@ struct TDMPC2Agent[
             )
 
             # Download obs/act/rew/done + episode info to CPU
-            ctx.enqueue_copy(env_obs_host, env_obs_buf)
-            ctx.enqueue_copy(env_act_host, env_act_buf)
-            ctx.enqueue_copy(env_rew_host, env_rew_buf)
-            ctx.enqueue_copy(env_done_host, env_done_buf)
-            ctx.enqueue_copy(completed_rew_host, completed_rew_buf)
-            ctx.enqueue_copy(completed_steps_host, completed_steps_buf)
-            ctx.enqueue_copy(completed_mask_host, completed_mask_buf)
+            ctx.enqueue_copy(gs.env_obs_host, gs.env_obs_buf)
+            ctx.enqueue_copy(gs.env_act_host, gs.env_act_buf)
+            ctx.enqueue_copy(gs.env_rew_host, gs.env_rew_buf)
+            ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)
+            ctx.enqueue_copy(gs.completed_rew_host, gs.completed_rew_buf)
+            ctx.enqueue_copy(gs.completed_steps_host, gs.completed_steps_buf)
+            ctx.enqueue_copy(gs.completed_mask_host, gs.completed_mask_buf)
             ctx.synchronize()
 
             # CPU: log completed episodes + push transitions to per-env buffers
             for env_idx in range(n_envs):
-                if Float64(completed_mask_host[env_idx]) > 0.5:
-                    var ep_r = Float64(completed_rew_host[env_idx])
-                    var ep_s = Int(completed_steps_host[env_idx])
+                if Float64(gs.completed_mask_host[env_idx]) > 0.5:
+                    var ep_r = Float64(gs.completed_rew_host[env_idx])
+                    var ep_s = Int(gs.completed_steps_host[env_idx])
                     metrics.log_episode(completed_episodes, ep_r, ep_s, 0.0)
                     completed_episodes += 1
                     if verbose and completed_episodes % print_every == 0:
@@ -2449,11 +1930,11 @@ struct TDMPC2Agent[
                 var obs_arr = InlineArray[Scalar[dtype], Self.OBS](fill=0)
                 var act_arr = InlineArray[Scalar[dtype], Self.ACT](fill=0)
                 for k in range(Self.OBS):
-                    obs_arr[k] = env_obs_host[env_idx * Self.OBS + k]
+                    obs_arr[k] = gs.env_obs_host[env_idx * Self.OBS + k]
                 for k in range(Self.ACT):
-                    act_arr[k] = env_act_host[env_idx * Self.ACT + k]
-                var rew_val = Scalar[dtype](env_rew_host[env_idx])
-                var done_val = Float64(env_done_host[env_idx]) > 0.5
+                    act_arr[k] = gs.env_act_host[env_idx * Self.ACT + k]
+                var rew_val = Scalar[dtype](gs.env_rew_host[env_idx])
+                var done_val = Float64(gs.env_done_host[env_idx]) > 0.5
                 env_bufs[env_idx].add(obs_arr, act_arr, rew_val, done_val)
 
             total_steps += n_envs
@@ -2470,12 +1951,12 @@ struct TDMPC2Agent[
             )
             ENV.selective_reset_kernel_gpu[n_envs, ENV.STATE_SIZE](
                 ctx,
-                states_buf,
-                env_done_buf,
+                gs.states_buf,
+                gs.env_done_buf,
                 UInt64(total_steps * 1013904223 + 2654435761),
             )
             ENV.extract_obs_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS](
-                ctx, states_buf, env_obs_buf
+                ctx, gs.states_buf, gs.env_obs_buf
             )
 
             # ==============================================================
@@ -2526,21 +2007,21 @@ struct TDMPC2Agent[
                     # Copy into host upload buffers at offset b_offset
                     var b = b_offset + seq_idx
                     for k in range((Self.H + 1) * Self.OBS):
-                        batch_obs_host[
+                        gs.batch_obs_host[
                             b * (Self.H + 1) * Self.OBS + k
                         ] = seq_obs[k]
                     for k in range(Self.H * Self.ACT):
-                        batch_act_host[b * Self.H * Self.ACT + k] = seq_act[k]
+                        gs.batch_act_host[b * Self.H * Self.ACT + k] = seq_act[k]
                     for k in range(Self.H):
-                        batch_rew_host[b * Self.H + k] = seq_rew[k]
-                        batch_done_host[b * Self.H + k] = seq_done[k]
+                        gs.batch_rew_host[b * Self.H + k] = seq_rew[k]
+                        gs.batch_done_host[b * Self.H + k] = seq_done[k]
                 b_offset += n_seqs
 
             # Upload batch to GPU
-            ctx.enqueue_copy(batch_obs_buf, batch_obs_host)
-            ctx.enqueue_copy(batch_act_buf, batch_act_host)
-            ctx.enqueue_copy(batch_rew_buf, batch_rew_host)
-            ctx.enqueue_copy(batch_done_buf, batch_done_host)
+            ctx.enqueue_copy(gs.batch_obs_buf, gs.batch_obs_host)
+            ctx.enqueue_copy(gs.batch_act_buf, gs.batch_act_host)
+            ctx.enqueue_copy(gs.batch_rew_buf, gs.batch_rew_host)
+            ctx.enqueue_copy(gs.batch_done_buf, gs.batch_done_host)
 
             # ──────────────────────────────────────────────────────────────
             # Step 2a: Compute TD targets (stop-gradient)
@@ -2591,7 +2072,7 @@ struct TDMPC2Agent[
                     z_next_tensor,
                     obs_next_step_tensor,
                     enc_params_tensor,
-                    enc_batch_ws_buf,
+                    gs.enc_batch_ws_buf,
                 )
 
                 # Policy forward (stop-grad) on z_next → pi_out
@@ -2600,7 +2081,7 @@ struct TDMPC2Agent[
                     pi_out_tensor,
                     z_next_tensor,
                     pol_params_tensor,
-                    pol_batch_ws_buf,
+                    gs.pol_batch_ws_buf,
                 )
 
                 # Apply tanh to mean → deterministic next action
@@ -2636,7 +2117,7 @@ struct TDMPC2Agent[
                     logits_tensor,
                     za_tensor,
                     q1t_params_tensor,
-                    qt_batch_ws_buf,
+                    gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
                     tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
@@ -2655,7 +2136,7 @@ struct TDMPC2Agent[
                     logits_tensor,
                     za_tensor,
                     q2t_params_tensor,
-                    qt_batch_ws_buf,
+                    gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
@@ -2673,7 +2154,7 @@ struct TDMPC2Agent[
                     logits_tensor,
                     za_tensor,
                     q3t_params_tensor,
-                    qt_batch_ws_buf,
+                    gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
@@ -2691,7 +2172,7 @@ struct TDMPC2Agent[
                     logits_tensor,
                     za_tensor,
                     q4t_params_tensor,
-                    qt_batch_ws_buf,
+                    gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
@@ -2709,7 +2190,7 @@ struct TDMPC2Agent[
                     logits_tensor,
                     za_tensor,
                     q5t_params_tensor,
-                    qt_batch_ws_buf,
+                    gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
                     tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
@@ -2725,7 +2206,7 @@ struct TDMPC2Agent[
                 # Compute two-hot TD target and store at step t's offset
                 var tgt_t_tensor = LayoutTensor[
                     dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-                ](td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+                ](gs.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
                 ctx.enqueue_function[
                     tdmpc2_compute_td_targets_kernel[
@@ -2753,15 +2234,15 @@ struct TDMPC2Agent[
                 # ──────────────────────────────────────────────────────────────
 
                 # Zero all network parameter grad buffers (accumulated across H)
-                ctx.enqueue_memset(enc_grads_buf, 0)
-                ctx.enqueue_memset(dyn_grads_buf, 0)
-                ctx.enqueue_memset(rew_grads_buf, 0)
-                ctx.enqueue_memset(term_grads_buf, 0)
-                ctx.enqueue_memset(q1_grads_buf, 0)
-                ctx.enqueue_memset(q2_grads_buf, 0)
-                ctx.enqueue_memset(q3_grads_buf, 0)
-                ctx.enqueue_memset(q4_grads_buf, 0)
-                ctx.enqueue_memset(q5_grads_buf, 0)
+                gs.enc.zero_grads(ctx)
+                gs.dyn.zero_grads(ctx)
+                gs.rew.zero_grads(ctx)
+                gs.term.zero_grads(ctx)
+                gs.q1.zero_grads(ctx)
+                gs.q2.zero_grads(ctx)
+                gs.q3.zero_grads(ctx)
+                gs.q4.zero_grads(ctx)
+                gs.q5.zero_grads(ctx)
 
                 # Encode obs_0 with cache (encoder backward uses this cache for all H steps)
                 ctx.enqueue_function[
@@ -2784,78 +2265,15 @@ struct TDMPC2Agent[
                     z_tensor,
                     enc_params_tensor,
                     enc_cache_tensor,
-                    enc_batch_ws_buf,
+                    gs.enc_batch_ws_buf,
                 )
 
                 var rho_t = Scalar[dtype](1.0)
 
                 for t in range(Self.H):
-                    rho_t = self._wm_horizon_step_gpu(
-                        ctx,
-                        t,
-                        rho_t,
-                        batch_obs_buf,
-                        batch_act_buf,
-                        batch_rew_buf,
-                        batch_done_buf,
-                        td_targets_buf,
-                        enc_params_buf,
-                        enc_cache_buf,
-                        enc_grads_buf,
-                        enc_batch_ws_buf,
-                        dyn_params_buf,
-                        dyn_cache_buf,
-                        dyn_grads_buf,
-                        dyn_batch_ws_buf,
-                        rew_params_buf,
-                        rew_cache_buf,
-                        rew_grads_buf,
-                        rew_batch_ws_buf,
-                        term_params_buf,
-                        term_cache_buf,
-                        term_grads_buf,
-                        term_batch_ws_buf,
-                        q1_params_buf,
-                        q1_cache_buf,
-                        q1_grads_buf,
-                        q1_batch_ws_buf,
-                        q2_params_buf,
-                        q2_cache_buf,
-                        q2_grads_buf,
-                        q2_batch_ws_buf,
-                        q3_params_buf,
-                        q3_cache_buf,
-                        q3_grads_buf,
-                        q3_batch_ws_buf,
-                        q4_params_buf,
-                        q4_cache_buf,
-                        q4_grads_buf,
-                        q4_batch_ws_buf,
-                        q5_params_buf,
-                        q5_cache_buf,
-                        q5_grads_buf,
-                        q5_batch_ws_buf,
-                        z_buf,
-                        z_pred_buf,
-                        z_next_buf,
-                        za_buf,
-                        logits_buf,
-                        term_prob_buf,
-                        obs_step_buf,
-                        obs_next_step_buf,
-                        act_step_buf,
-                        rew_step_buf,
-                        done_step_buf,
-                        grad_z_pred_buf,
-                        grad_za_buf,
-                        grad_z_dyn_buf,
-                        grad_z_term_buf,
-                        grad_enc_out_buf,
-                        grad_logits_buf,
-                        grad_term_prob_buf,
-                        dummy_grad_buf,
-                        bins_buf,
-                    )
+                    rho_t = self._wm_horizon_step_gpu[
+                        n_envs, ENV.STATE_SIZE
+                    ](ctx, t, rho_t, gs)
 
                 # ── Gradient clipping + optimizer step for all world model networks ──
                 ctx.enqueue_function[
@@ -3188,7 +2606,7 @@ struct TDMPC2Agent[
                 # Step 2c: Policy update (maximize Q + entropy)
                 # Policy uses stop-gradient z from encoder (no grad to encoder)
                 # ──────────────────────────────────────────────────────────────
-                ctx.enqueue_memset(pol_grads_buf, 0)
+                gs.pol.zero_grads(ctx)
 
                 # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
@@ -3196,7 +2614,7 @@ struct TDMPC2Agent[
                     z_tensor,
                     obs_step_tensor,
                     enc_params_tensor,
-                    enc_batch_ws_buf,
+                    gs.enc_batch_ws_buf,
                 )
                 # obs_step_buf still contains obs_0 from the world model step
 
@@ -3204,7 +2622,7 @@ struct TDMPC2Agent[
                 var entropy_coef_scalar = Scalar[dtype](self.entropy_coef)
 
                 for t in range(Self.H):
-                    ctx.enqueue_memset(grad_pi_out_buf, 0)
+                    ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
 
                     # Policy forward with cache → pi_out
                     Self.WM.PolicyNet.forward_gpu_with_cache[Self.BATCH](
@@ -3213,7 +2631,7 @@ struct TDMPC2Agent[
                         pi_out_tensor,
                         pol_params_tensor,
                         pol_cache_tensor,
-                        pol_batch_ws_buf,
+                        gs.pol_batch_ws_buf,
                     )
 
                     # Apply tanh to mean → deterministic actions for Q evaluation
@@ -3249,7 +2667,7 @@ struct TDMPC2Agent[
                         logits_tensor,
                         za_tensor,
                         q1_params_tensor,
-                        q1_batch_ws_buf,
+                        gs.q1_batch_ws_buf,
                     )
                     ctx.enqueue_function[
                         tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
@@ -3268,7 +2686,7 @@ struct TDMPC2Agent[
                         logits_tensor,
                         za_tensor,
                         q2_params_tensor,
-                        q2_batch_ws_buf,
+                        gs.q2_batch_ws_buf,
                     )
                     ctx.enqueue_function[
                         tdmpc2_decode_and_min_kernel[
@@ -3307,7 +2725,7 @@ struct TDMPC2Agent[
                         pol_params_tensor,
                         pol_cache_tensor,
                         pol_grads_tensor,
-                        pol_batch_ws_buf,
+                        gs.pol_batch_ws_buf,
                     )
 
                     # Advance z_sg via dynamics (stop-grad)
@@ -3319,7 +2737,7 @@ struct TDMPC2Agent[
                             z_pred_tensor,
                             za_tensor,
                             dyn_params_tensor,
-                            dyn_batch_ws_buf,
+                            gs.dyn_batch_ws_buf,
                         )
                         ctx.enqueue_function[
                             copy_buffer_kernel[dtype, Self.B_LATENT],
@@ -3375,43 +2793,13 @@ struct TDMPC2Agent[
                 # Step 2d: Soft update target Q networks
                 # ──────────────────────────────────────────────────────────────
                 var tau_scalar = Scalar[dtype](self.tau)
-                var q1t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q1t_params_buf.unsafe_ptr())
-                var q1_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q1_params_buf.unsafe_ptr())
-                var q2t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q2t_params_buf.unsafe_ptr())
-                var q2_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q2_params_buf.unsafe_ptr())
-                var q3t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q3t_params_buf.unsafe_ptr())
-                var q3_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q3_params_buf.unsafe_ptr())
-                var q4t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q4t_params_buf.unsafe_ptr())
-                var q4_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q4_params_buf.unsafe_ptr())
-                var q5t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q5t_params_buf.unsafe_ptr())
-                var q5_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](q5_params_buf.unsafe_ptr())
 
                 ctx.enqueue_function[
                     soft_update_kernel[dtype, Self.Q_P],
                     soft_update_kernel[dtype, Self.Q_P],
                 ](
-                    q1t_tensor,
-                    q1_tensor,
+                    q1t_params_tensor,
+                    q1_params_tensor,
                     tau_scalar,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
@@ -3420,8 +2808,8 @@ struct TDMPC2Agent[
                     soft_update_kernel[dtype, Self.Q_P],
                     soft_update_kernel[dtype, Self.Q_P],
                 ](
-                    q2t_tensor,
-                    q2_tensor,
+                    q2t_params_tensor,
+                    q2_params_tensor,
                     tau_scalar,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
@@ -3430,8 +2818,8 @@ struct TDMPC2Agent[
                     soft_update_kernel[dtype, Self.Q_P],
                     soft_update_kernel[dtype, Self.Q_P],
                 ](
-                    q3t_tensor,
-                    q3_tensor,
+                    q3t_params_tensor,
+                    q3_params_tensor,
                     tau_scalar,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
@@ -3440,8 +2828,8 @@ struct TDMPC2Agent[
                     soft_update_kernel[dtype, Self.Q_P],
                     soft_update_kernel[dtype, Self.Q_P],
                 ](
-                    q4t_tensor,
-                    q4_tensor,
+                    q4t_params_tensor,
+                    q4_params_tensor,
                     tau_scalar,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
@@ -3450,8 +2838,8 @@ struct TDMPC2Agent[
                     soft_update_kernel[dtype, Self.Q_P],
                     soft_update_kernel[dtype, Self.Q_P],
                 ](
-                    q5t_tensor,
-                    q5_tensor,
+                    q5t_params_tensor,
+                    q5_params_tensor,
                     tau_scalar,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
@@ -3470,37 +2858,37 @@ struct TDMPC2Agent[
         var q3_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         var q4_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         var q5_dl = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
-        ctx.enqueue_copy(enc_dl, enc_params_buf)
-        ctx.enqueue_copy(dyn_dl, dyn_params_buf)
-        ctx.enqueue_copy(rew_dl, rew_params_buf)
-        ctx.enqueue_copy(term_dl, term_params_buf)
-        ctx.enqueue_copy(pol_dl, pol_params_buf)
-        ctx.enqueue_copy(q1_dl, q1_params_buf)
-        ctx.enqueue_copy(q2_dl, q2_params_buf)
-        ctx.enqueue_copy(q3_dl, q3_params_buf)
-        ctx.enqueue_copy(q4_dl, q4_params_buf)
-        ctx.enqueue_copy(q5_dl, q5_params_buf)
+        ctx.enqueue_copy(enc_dl, gs.enc.params_buf)
+        ctx.enqueue_copy(dyn_dl, gs.dyn.params_buf)
+        ctx.enqueue_copy(rew_dl, gs.rew.params_buf)
+        ctx.enqueue_copy(term_dl, gs.term.params_buf)
+        ctx.enqueue_copy(pol_dl, gs.pol.params_buf)
+        ctx.enqueue_copy(q1_dl, gs.q1.params_buf)
+        ctx.enqueue_copy(q2_dl, gs.q2.params_buf)
+        ctx.enqueue_copy(q3_dl, gs.q3.params_buf)
+        ctx.enqueue_copy(q4_dl, gs.q4.params_buf)
+        ctx.enqueue_copy(q5_dl, gs.q5.params_buf)
         ctx.synchronize()
         for i in range(Self.ENC_P):
-            self.world_model.encoder.params[i] = enc_dl[i]
+            self.state.world_model.encoder.params[i] = enc_dl[i]
         for i in range(Self.DYN_P):
-            self.world_model.dynamics.params[i] = dyn_dl[i]
+            self.state.world_model.dynamics.params[i] = dyn_dl[i]
         for i in range(Self.REW_P):
-            self.world_model.reward_head.params[i] = rew_dl[i]
+            self.state.world_model.reward_head.params[i] = rew_dl[i]
         for i in range(Self.TERM_P):
-            self.world_model.termination.params[i] = term_dl[i]
+            self.state.world_model.termination.params[i] = term_dl[i]
         for i in range(Self.POL_P):
-            self.world_model.policy.params[i] = pol_dl[i]
+            self.state.world_model.policy.params[i] = pol_dl[i]
         for i in range(Self.Q_P):
-            self.world_model.q1.params[i] = q1_dl[i]
+            self.state.world_model.q1.params[i] = q1_dl[i]
         for i in range(Self.Q_P):
-            self.world_model.q2.params[i] = q2_dl[i]
+            self.state.world_model.q2.params[i] = q2_dl[i]
         for i in range(Self.Q_P):
-            self.world_model.q3.params[i] = q3_dl[i]
+            self.state.world_model.q3.params[i] = q3_dl[i]
         for i in range(Self.Q_P):
-            self.world_model.q4.params[i] = q4_dl[i]
+            self.state.world_model.q4.params[i] = q4_dl[i]
         for i in range(Self.Q_P):
-            self.world_model.q5.params[i] = q5_dl[i]
+            self.state.world_model.q5.params[i] = q5_dl[i]
 
         return metrics
 

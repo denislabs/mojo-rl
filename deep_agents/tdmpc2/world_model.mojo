@@ -54,7 +54,7 @@ struct WorldModel[
     ENC_LR: Float64 = 9e-5,  # encoder LR = 0.3 * world_model_lr
     WM_LR: Float64 = 3e-4,  # world model (non-encoder) LR
     PI_LR: Float64 = 3e-4,  # policy LR
-]:
+](Movable):
     """World model for TDMPC2 with encoder, dynamics, reward, termination,
     policy, and Q-function ensemble.
 
@@ -223,165 +223,154 @@ struct WorldModel[
         )
 
     # =========================================================================
-    # Forward Methods (all take UnsafePointers; LayoutTensors created internally)
+    # Forward Methods
     # =========================================================================
 
     fn encode[
         BATCH: Int
     ](
         self,
-        obs_ptr: UnsafePointer[Scalar[dtype]],
-        z_ptr: UnsafePointer[Scalar[dtype]],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ],
+        mut z: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ],
     ):
         """Encode observations to latent states (no cache, stop-gradient).
 
         Args:
-            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
-            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
+            obs: Input observations [BATCH * OBS_DIM].
+            z: Output latent states [BATCH * LATENT_DIM] (written).
         """
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
-        ](obs_ptr)
-        var z_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_ptr)
-        Self.EncoderNet.forward[BATCH](obs_t, z_t, self.encoder.params_view())
+
+        Self.EncoderNet.forward[BATCH](obs, z, self.encoder.params_view())
 
     fn encode_with_cache[
         BATCH: Int
     ](
         self,
-        obs_ptr: UnsafePointer[Scalar[dtype]],
-        z_ptr: UnsafePointer[Scalar[dtype]],
-        mut cache: List[Scalar[dtype]],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ],
+        mut z: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.EncModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ],
     ):
         """Encode with cache for backpropagation.
 
         Args:
-            obs_ptr: Pointer to input observations [BATCH * OBS_DIM].
-            z_ptr: Pointer to output latent states [BATCH * LATENT_DIM] (written).
+            obs: Input observations [BATCH * OBS_DIM].
+            z: Output latent states [BATCH * LATENT_DIM] (written).
             cache: Pre-allocated cache [BATCH * EncModel.CACHE_SIZE] (written).
         """
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
-        ](obs_ptr)
-        var z_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_ptr)
-        var c_t = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.EncModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](cache.unsafe_ptr())
+
         Self.EncoderNet.forward_with_cache[BATCH](
-            obs_t, z_t, self.encoder.params_view(), c_t
+            obs, z, self.encoder.params_view(), cache
         )
 
     fn dynamics_forward[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        z_next_ptr: UnsafePointer[Scalar[dtype]],
+        z_a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ],
+        mut z_next: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ],
     ):
         """Predict next latent state (no cache).
 
         Args:
-            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
-            z_next_ptr: Pointer to output next latent state [BATCH * LATENT_DIM] (written).
+            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
+            z_next: Output next latent state [BATCH * LATENT_DIM] (written).
         """
-        var za_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
-        var z_next_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_next_ptr)
         Self.DynamicsNet.forward[BATCH](
-            za_t, z_next_t, self.dynamics.params_view()
+            z_a, z_next, self.dynamics.params_view()
         )
 
     fn dynamics_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        z_next_ptr: UnsafePointer[Scalar[dtype]],
-        mut cache: List[Scalar[dtype]],
-    ):
-        """Predict next latent state with cache for backprop."""
-        var za_t = LayoutTensor[
+        z_a: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
-        var z_next_t = LayoutTensor[
+        ],
+        mut z_next: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_next_ptr)
-        var c_t = LayoutTensor[
+        ],
+        mut cache: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.DynModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](cache.unsafe_ptr())
+        ],
+    ):
+        """Predict next latent state with cache for backprop."""
         Self.DynamicsNet.forward_with_cache[BATCH](
-            za_t, z_next_t, self.dynamics.params_view(), c_t
+            z_a, z_next, self.dynamics.params_view(), cache
         )
 
     fn reward_forward[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        logits_ptr: UnsafePointer[Scalar[dtype]],
+        z_a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ],
+        mut logits: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ],
     ):
         """Predict reward distribution logits (no cache)."""
-        var za_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
-        var logits_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
-        ](logits_ptr)
         Self.RewardNet.forward[BATCH](
-            za_t, logits_t, self.reward_head.params_view()
+            z_a, logits, self.reward_head.params_view()
         )
 
     fn reward_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        logits_ptr: UnsafePointer[Scalar[dtype]],
-        mut cache: List[Scalar[dtype]],
-    ):
-        """Predict reward distribution logits with cache."""
-        var za_t = LayoutTensor[
+        z_a: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
-        var logits_t = LayoutTensor[
+        ],
+        mut logits: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
-        ](logits_ptr)
-        var c_t = LayoutTensor[
+        ],
+        mut cache: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.RewModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](cache.unsafe_ptr())
+        ],
+    ):
+        """Predict reward distribution logits with cache."""
         Self.RewardNet.forward_with_cache[BATCH](
-            za_t, logits_t, self.reward_head.params_view(), c_t
+            z_a, logits, self.reward_head.params_view(), cache
         )
 
     fn termination_forward[
         BATCH: Int
     ](
         self,
-        z_ptr: UnsafePointer[Scalar[dtype]],
-        term_prob_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        z: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        mut term_prob: LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ],
     ):
         """Predict termination probability (no cache).
 
         Args:
-            z_ptr: Pointer to latent states [BATCH * LATENT_DIM].
-            term_prob_ptr: Pointer to output termination probabilities [BATCH] (written).
+            z: Latent states [BATCH * LATENT_DIM].
+            term_prob: Output termination probabilities [BATCH] (written).
         """
-        var z_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_ptr)
+
         # TermModel.OUT_DIM = 1, output is [BATCH, 1]
         var out = List[Scalar[dtype]](capacity=BATCH)
         for _ in range(BATCH):
@@ -389,40 +378,42 @@ struct WorldModel[
         var out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out.unsafe_ptr())
-        Self.TermNet.forward[BATCH](z_t, out_t, self.termination.params_view())
+        Self.TermNet.forward[BATCH](z, out_t, self.termination.params_view())
         for b in range(BATCH):
-            term_prob_ptr[b] = out[b]
+            term_prob[b, 0] = out[b]
 
     fn policy_forward[
         BATCH: Int
     ](
         self,
-        z_ptr: UnsafePointer[Scalar[dtype]],
-        mean_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        log_std_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        z: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        mut mean: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTION_DIM), MutAnyOrigin
+        ],
+        mut log_std: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTION_DIM), MutAnyOrigin
+        ],
     ):
         """Predict Gaussian policy parameters (no cache).
 
         Args:
-            z_ptr: Pointer to latent states [BATCH * LATENT_DIM].
-            mean_ptr: Pointer to output action mean [BATCH * ACTION_DIM] (written).
-            log_std_ptr: Pointer to output log std [BATCH * ACTION_DIM] (written).
+            z: Latent states [BATCH * LATENT_DIM].
+            mean: Output action mean [BATCH * ACTION_DIM] (written).
+            log_std: Output log std [BATCH * ACTION_DIM] (written).
         """
-        var z_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_ptr)
+
         var out = List[Scalar[dtype]](capacity=BATCH * 2 * Self.ACTION_DIM)
         for _ in range(BATCH * 2 * Self.ACTION_DIM):
             out.append(Scalar[dtype](0))
         var out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
         ](out.unsafe_ptr())
-        Self.PolicyNet.forward[BATCH](z_t, out_t, self.policy.params_view())
+        Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
-                mean_ptr[b * Self.ACTION_DIM + i] = out[
-                    b * 2 * Self.ACTION_DIM + i
-                ]
+                mean[b, i] = out[b * 2 * Self.ACTION_DIM + i]
                 # Clamp log_std to [-10, 2] for numerical stability
                 var ls = Float64(
                     out[b * 2 * Self.ACTION_DIM + Self.ACTION_DIM + i]
@@ -431,50 +422,51 @@ struct WorldModel[
                     ls = -10.0
                 if ls > 2.0:
                     ls = 2.0
-                log_std_ptr[b * Self.ACTION_DIM + i] = Scalar[dtype](ls)
+                log_std[b, i] = Scalar[dtype](ls)
 
     fn policy_forward_with_cache[
         BATCH: Int
     ](
         self,
-        z_ptr: UnsafePointer[Scalar[dtype]],
-        out_ptr: UnsafePointer[Scalar[dtype]],
-        mut cache: List[Scalar[dtype]],
-    ):
-        """Predict policy output with cache for backprop."""
-        var z_t = LayoutTensor[
+        z: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
-        ](z_ptr)
-        var out_t = LayoutTensor[
+        ],
+        mut out: LayoutTensor[
             dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
-        ](out_ptr)
-        var c_t = LayoutTensor[
+        ],
+        mut cache: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.PolModel.CACHE_SIZE),
             MutAnyOrigin,
-        ](cache.unsafe_ptr())
+        ],
+    ):
+        """Predict policy output with cache for backprop."""
         Self.PolicyNet.forward_with_cache[BATCH](
-            z_t, out_t, self.policy.params_view(), c_t
+            z, out, self.policy.params_view(), cache
         )
 
     fn q_forward[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        q_logits_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        z_a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ],
+        mut q_logits: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.NUM_Q * BATCH * Self.NUM_BINS),
+            MutAnyOrigin,
+        ],
         use_target: Bool = False,
     ):
         """Forward pass through all Q-networks.
 
         Args:
-            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
-            q_logits_ptr: Pointer to output logits [NUM_Q * BATCH * NUM_BINS] (written).
+            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
+            q_logits: Output logits [NUM_Q * BATCH * NUM_BINS] (written).
             use_target: If True, use target Q-networks (default: False).
         """
-        var za_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
+
         var logits1 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
         var logits2 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
         var logits3 = List[Scalar[dtype]](capacity=BATCH * Self.NUM_BINS)
@@ -504,70 +496,72 @@ struct WorldModel[
         ](logits5.unsafe_ptr())
 
         if use_target:
-            Self.QNet.forward[BATCH](za_t, l1_t, self.q1_target.params_view())
-            Self.QNet.forward[BATCH](za_t, l2_t, self.q2_target.params_view())
-            Self.QNet.forward[BATCH](za_t, l3_t, self.q3_target.params_view())
-            Self.QNet.forward[BATCH](za_t, l4_t, self.q4_target.params_view())
-            Self.QNet.forward[BATCH](za_t, l5_t, self.q5_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l1_t, self.q1_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l2_t, self.q2_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l3_t, self.q3_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l4_t, self.q4_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l5_t, self.q5_target.params_view())
         else:
-            Self.QNet.forward[BATCH](za_t, l1_t, self.q1.params_view())
-            Self.QNet.forward[BATCH](za_t, l2_t, self.q2.params_view())
-            Self.QNet.forward[BATCH](za_t, l3_t, self.q3.params_view())
-            Self.QNet.forward[BATCH](za_t, l4_t, self.q4.params_view())
-            Self.QNet.forward[BATCH](za_t, l5_t, self.q5.params_view())
+            Self.QNet.forward[BATCH](z_a, l1_t, self.q1.params_view())
+            Self.QNet.forward[BATCH](z_a, l2_t, self.q2.params_view())
+            Self.QNet.forward[BATCH](z_a, l3_t, self.q3.params_view())
+            Self.QNet.forward[BATCH](z_a, l4_t, self.q4.params_view())
+            Self.QNet.forward[BATCH](z_a, l5_t, self.q5.params_view())
 
         for b in range(BATCH * Self.NUM_BINS):
-            q_logits_ptr[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
-            q_logits_ptr[1 * BATCH * Self.NUM_BINS + b] = logits2[b]
-            q_logits_ptr[2 * BATCH * Self.NUM_BINS + b] = logits3[b]
-            q_logits_ptr[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
-            q_logits_ptr[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
+            q_logits[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
+            q_logits[1 * BATCH * Self.NUM_BINS + b] = logits2[b]
+            q_logits[2 * BATCH * Self.NUM_BINS + b] = logits3[b]
+            q_logits[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
+            q_logits[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
 
     fn q_forward_single_no_cache[
         BATCH: Int
     ](
         self,
         q_idx: Int,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        logits_ptr: UnsafePointer[Scalar[dtype]],
+        z_a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ],
+        mut logits: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
+        ],
     ):
         """Forward pass through a single Q-network (no cache).
 
         Args:
             q_idx: Index of Q-network (0..4).
-            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
-            logits_ptr: Pointer to output logits [BATCH * NUM_BINS] (written).
+            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
+            logits: Output logits [BATCH * NUM_BINS] (written).
         """
-        var za_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
-        ](z_a_ptr)
-        var logits_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.NUM_BINS), MutAnyOrigin
-        ](logits_ptr)
         if q_idx == 0:
-            Self.QNet.forward[BATCH](za_t, logits_t, self.q1.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q1.params_view())
         elif q_idx == 1:
-            Self.QNet.forward[BATCH](za_t, logits_t, self.q2.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q2.params_view())
         elif q_idx == 2:
-            Self.QNet.forward[BATCH](za_t, logits_t, self.q3.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q3.params_view())
         elif q_idx == 3:
-            Self.QNet.forward[BATCH](za_t, logits_t, self.q4.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q4.params_view())
         else:
-            Self.QNet.forward[BATCH](za_t, logits_t, self.q5.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q5.params_view())
 
     fn q_min_forward[
         BATCH: Int
     ](
         self,
-        z_a_ptr: UnsafePointer[Scalar[dtype]],
-        values_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        z_a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ZA_DIM), MutAnyOrigin
+        ],
+        mut values: LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ],
         use_target: Bool = False,
     ):
         """Compute min Q-value across ensemble for each sample.
 
         Args:
-            z_a_ptr: Pointer to concatenated (latent, action) [BATCH * ZA_DIM].
-            values_ptr: Pointer to output min Q-values [BATCH] (written).
+            z_a: Concatenated (latent, action) [BATCH * ZA_DIM].
+            values: Output min Q-values [BATCH] (written).
             use_target: If True, use target Q-networks.
         """
         var all_logits = List[Scalar[dtype]](
@@ -575,11 +569,16 @@ struct WorldModel[
         )
         for _ in range(Self.NUM_Q * BATCH * Self.NUM_BINS):
             all_logits.append(Scalar[dtype](0))
-        self.q_forward[BATCH](z_a_ptr, all_logits.unsafe_ptr(), use_target)
+        var all_logits_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.NUM_Q * BATCH * Self.NUM_BINS),
+            MutAnyOrigin,
+        ](all_logits.unsafe_ptr())
+        self.q_forward[BATCH](z_a, all_logits_t, use_target)
 
         # Decode scalar values and take min across ensemble
         for b in range(BATCH):
-            var min_val = Float32(1e10)
+            var min_val: values.element_type = 1e10
             for q_idx in range(Self.NUM_Q):
                 var base = q_idx * BATCH * Self.NUM_BINS + b * Self.NUM_BINS
                 var logits_b = InlineArray[Float32, Self.NUM_BINS](
@@ -587,12 +586,12 @@ struct WorldModel[
                 )
                 for i in range(Self.NUM_BINS):
                     logits_b[i] = Float32(all_logits[base + i])
-                var val = decode_value_batch_scalar[Self.NUM_BINS](
-                    logits_b, self.bins
-                )
+                var val: values.element_type = decode_value_batch_scalar[
+                    Self.NUM_BINS
+                ](logits_b, self.bins)
                 if val < min_val:
                     min_val = val
-            values_ptr[b] = Scalar[dtype](min_val)
+            values[b, 0] = min_val
 
     # =========================================================================
     # Soft Update for Target Networks
