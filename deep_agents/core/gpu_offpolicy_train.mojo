@@ -20,6 +20,11 @@ Design principles:
     CPU struct and GPU buffers live in the state — mirroring the Env/State pattern.
   - comptime MAX_N_ENVS on the agent fixes buffer sizes at compile time.
 
+Step counting:
+  - total_steps counts TOTAL env transitions (n_envs per loop iteration),
+    matching on-policy convention.  num_steps, warmup_steps, print_every,
+    sync_every, checkpoint_every are all in transition units.
+
 Usage:
     # 1. Define a GPU state container
     struct MyGPUState[...](GPUOffPolicyState):
@@ -44,7 +49,7 @@ Usage:
 
     # 3. Train
     var metrics = run_offpolicy_continuous_train_gpu[MyEnv, MyAgent](
-        agent, ctx, num_steps=100000, warmup_steps=2000,
+        agent, ctx, num_steps=1_000_000, warmup_steps=25_000,
     )
 """
 
@@ -52,6 +57,11 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
 from core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
 from nn.constants import dtype
+from deep_agents.core.kernels import (
+    accumulate_rewards_kernel,
+    increment_steps_kernel,
+    log_and_reset_completed_kernel,
+)
 
 
 # =============================================================================
@@ -241,12 +251,12 @@ fn run_offpolicy_continuous_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     warmup_steps: Int = 1000,
-    train_every: Int = 1,
-    sync_every: Int = 50,
+    gradient_steps: Int = 0,
+    sync_every: Int = 5000,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     verbose: Bool = False,
-    print_every: Int = 50,
+    print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
 ) raises -> TrainingMetrics:
@@ -261,6 +271,14 @@ fn run_offpolicy_continuous_train_gpu[
     The number of parallel environments is fixed at compile time as A.MAX_N_ENVS,
     so env buffer sizes are fully known without runtime heap allocation.
 
+    Step counting uses total env transitions (n_envs per loop iteration),
+    matching on-policy convention. All step-based parameters use this unit.
+
+    Each iteration collects n_envs transitions, then performs `gradient_steps`
+    training steps to maintain the correct replay ratio. Default (0) uses
+    n_envs gradient steps per iteration, matching the 1:1 replay ratio of
+    single-env CleanRL implementations.
+
     Parameters:
         E: GPU environment type implementing GPUContinuousEnv.
         A: Agent type implementing GPUOffPolicyAgent.
@@ -268,17 +286,20 @@ fn run_offpolicy_continuous_train_gpu[
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
-        num_steps: Total number of environment steps.
-        warmup_steps: Steps using random/noisy actions before training (default: 1000).
-        train_every: Perform one train step every N env steps (default: 1).
-        sync_every: GPU→CPU parameter sync interval in steps (default: 50).
+        num_steps: Total env transitions across all parallel envs.
+        warmup_steps: Transitions before training starts (default: 1000).
+        gradient_steps: Training steps per env collection iteration.
+            Default 0 = n_envs (1:1 replay ratio with CleanRL convention).
+        sync_every: GPU→CPU parameter sync interval in transitions (default: 5000).
+        checkpoint_every: Checkpoint interval in transitions (0 to disable).
+        checkpoint_path: Path prefix for checkpoints.
         verbose: Print progress (default: False).
-        print_every: Print every N steps if verbose (default: 50).
+        print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
 
     Returns:
-        TrainingMetrics with step-level statistics.
+        TrainingMetrics with episode-level statistics.
     """
     comptime n_envs = A.MAX_N_ENVS
 
@@ -302,6 +323,16 @@ fn run_offpolicy_continuous_train_gpu[
     var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+    # Episode tracking: per-env accumulators + GPU-side stats
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Workspace buffer (shared model state for physics envs)
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
@@ -327,10 +358,41 @@ fn run_offpolicy_continuous_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
-    var total_steps = 0
-    var step_seed: UInt32 = 42
+    # Initialize episode tracking
+    ctx.enqueue_memset(episode_rewards_buf, 0)
+    ctx.enqueue_memset(episode_steps_buf, 0)
+    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+    ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-    for _ in range(num_steps):
+    # ------------------------------------------------------------------
+    # Kernel wrappers (defined once outside the loop)
+    # ------------------------------------------------------------------
+    comptime tpb = 256
+    comptime env_blocks = (n_envs + tpb - 1) // tpb
+
+    comptime accum_rewards_wrapper = accumulate_rewards_kernel[dtype, n_envs]
+    comptime incr_steps_wrapper = increment_steps_kernel[dtype, n_envs]
+    comptime log_reset_wrapper = log_and_reset_completed_kernel[dtype, n_envs]
+
+    from layout import Layout, LayoutTensor
+
+    # Resolve gradient_steps: 0 means n_envs (1:1 replay ratio)
+    var grad_steps = gradient_steps
+    if grad_steps <= 0:
+        grad_steps = n_envs
+
+    var total_steps = 0
+    var total_train_steps = 0
+    var step_seed: UInt32 = 42
+    var completed_episodes = 0
+    var last_avg_reward: Float64 = 0.0
+
+    # Threshold-based triggers (avoids modular alignment issues with n_envs)
+    var next_print = print_every
+    var next_sync = sync_every
+    var next_checkpoint = checkpoint_every
+
+    while total_steps < num_steps:
         # ------------------------------------------------------------------
         # Save current obs as prev_obs (before environment step)
         # ------------------------------------------------------------------
@@ -363,6 +425,51 @@ fn run_offpolicy_continuous_train_gpu[
         )
 
         # ------------------------------------------------------------------
+        # Accumulate episode rewards/steps + log completed (all on GPU)
+        # ------------------------------------------------------------------
+        var episode_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](episode_rewards_buf.unsafe_ptr())
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var episode_steps_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](episode_steps_buf.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var reward_sum_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_reward_sum_buf.unsafe_ptr())
+        var episode_count_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_episode_count_buf.unsafe_ptr())
+
+        ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+            episode_rewards_t,
+            rewards_t,
+            grid_dim=(env_blocks,),
+            block_dim=(tpb,),
+        )
+        ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+            episode_steps_t,
+            grid_dim=(env_blocks,),
+            block_dim=(tpb,),
+        )
+
+        # Log completed episodes to GPU-side stats and reset per-env counters
+        ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+            dones_t,
+            episode_rewards_t,
+            episode_steps_t,
+            reward_sum_t,
+            episode_count_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
+        # ------------------------------------------------------------------
         # Reset done environments
         # ------------------------------------------------------------------
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
@@ -370,44 +477,89 @@ fn run_offpolicy_continuous_train_gpu[
         )
 
         # ------------------------------------------------------------------
-        # Training step
+        # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
         if (
             total_steps >= warmup_steps
-            and total_steps % train_every == 0
             and gpu_state.gpu_buffer_is_ready()
         ):
-            agent.do_gpu_train_step(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+            for _ in range(grad_steps):
+                agent.do_gpu_train_step(ctx, gpu_state)
+                agent.soft_update_targets_gpu(ctx, gpu_state)
+            total_train_steps += grad_steps
 
         # ------------------------------------------------------------------
         # Periodic GPU→CPU sync (for evaluate() and checkpointing)
         # ------------------------------------------------------------------
-        if total_steps % sync_every == 0:
+        if total_steps >= next_sync:
             agent.download_from_gpu(gpu_state, ctx)
+            next_sync += sync_every
 
         # Periodic checkpoint
-        if checkpoint_every > 0 and total_steps % checkpoint_every == 0:
-            if total_steps % sync_every != 0:  # avoid double download
+        if checkpoint_every > 0 and total_steps >= next_checkpoint:
+            if total_steps < next_sync - sync_every + n_envs:
                 agent.download_from_gpu(gpu_state, ctx)
             agent.save_checkpoint(
                 checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
             )
+            next_checkpoint += checkpoint_every
 
-        total_steps += 1
+        total_steps += n_envs
         step_seed += 1
 
-        if verbose and total_steps % print_every == 0:
+        # ------------------------------------------------------------------
+        # Print progress (only sync for episode stats at print boundaries)
+        # ------------------------------------------------------------------
+        if verbose and total_steps >= next_print:
+            # Download GPU-side episode stats (only sync point for tracking)
+            ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+            ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            ctx.synchronize()
+
+            var recent_count = Int(host_episode_count[0])
+            var recent_sum = Float64(host_reward_sum[0])
+            completed_episodes += recent_count
+
+            if recent_count > 0:
+                last_avg_reward = recent_sum / Float64(recent_count)
+                # Log synthetic episodes for TrainingMetrics
+                for _ in range(recent_count):
+                    metrics.log_episode(
+                        completed_episodes, last_avg_reward, 0, 0.0
+                    )
+
+            # Reset GPU-side accumulators for next interval
+            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+            ctx.enqueue_memset(gpu_episode_count_buf, 0)
+
             print(
                 algorithm_name
                 + " | Step "
                 + String(total_steps)
                 + " / "
                 + String(num_steps)
+                + " | Ep: "
+                + String(completed_episodes)
+                + " | AvgR: "
+                + String(last_avg_reward)[:7]
+                + " | Train: "
+                + String(total_train_steps)
             )
+            next_print += print_every
 
-    # Final sync to ensure CPU params are up to date after training
+    # Final sync: download episode stats + params
+    ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+    ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
     ctx.synchronize()
+
+    var final_count = Int(host_episode_count[0])
+    var final_sum = Float64(host_reward_sum[0])
+    completed_episodes += final_count
+    if final_count > 0:
+        var final_avg = final_sum / Float64(final_count)
+        for _ in range(final_count):
+            metrics.log_episode(completed_episodes, final_avg, 0, 0.0)
+
     agent.download_from_gpu(gpu_state, ctx)
 
     return metrics^
@@ -426,12 +578,12 @@ fn run_offpolicy_discrete_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     warmup_steps: Int = 1000,
-    train_every: Int = 1,
-    sync_every: Int = 100,
+    gradient_steps: Int = 0,
+    sync_every: Int = 5000,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     verbose: Bool = False,
-    print_every: Int = 100,
+    print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
 ) raises -> TrainingMetrics:
@@ -440,6 +592,8 @@ fn run_offpolicy_discrete_train_gpu[
     Same pattern as run_offpolicy_continuous_train_gpu but for
     GPUDiscreteEnv + discrete actions (actions stored as Float32 indices).
 
+    Step counting uses total env transitions (n_envs per loop iteration).
+
     Parameters:
         E: GPU environment type implementing GPUDiscreteEnv.
         A: Agent type implementing GPUOffPolicyAgent.
@@ -447,17 +601,20 @@ fn run_offpolicy_discrete_train_gpu[
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
-        num_steps: Total number of environment steps.
-        warmup_steps: Steps using random actions before training (default: 1000).
-        train_every: Perform one train step every N env steps (default: 1).
-        sync_every: GPU→CPU parameter sync interval in steps (default: 100).
+        num_steps: Total env transitions across all parallel envs.
+        warmup_steps: Transitions before training starts (default: 1000).
+        gradient_steps: Training steps per env collection iteration.
+            Default 0 = n_envs (1:1 replay ratio with CleanRL convention).
+        sync_every: GPU→CPU parameter sync interval in transitions (default: 5000).
+        checkpoint_every: Checkpoint interval in transitions (0 to disable).
+        checkpoint_path: Path prefix for checkpoints.
         verbose: Print progress (default: False).
-        print_every: Print every N steps if verbose (default: 100).
+        print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
 
     Returns:
-        TrainingMetrics with step-level statistics.
+        TrainingMetrics with episode-level statistics.
     """
     comptime n_envs = A.MAX_N_ENVS
 
@@ -479,6 +636,16 @@ fn run_offpolicy_discrete_train_gpu[
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
+    # Episode tracking: per-env accumulators + GPU-side stats
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
@@ -499,10 +666,39 @@ fn run_offpolicy_discrete_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
-    var total_steps = 0
-    var step_seed: UInt32 = 42
+    # Initialize episode tracking
+    ctx.enqueue_memset(episode_rewards_buf, 0)
+    ctx.enqueue_memset(episode_steps_buf, 0)
+    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+    ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-    for _ in range(num_steps):
+    # Kernel wrappers
+    comptime tpb = 256
+    comptime env_blocks = (n_envs + tpb - 1) // tpb
+
+    comptime accum_rewards_wrapper = accumulate_rewards_kernel[dtype, n_envs]
+    comptime incr_steps_wrapper = increment_steps_kernel[dtype, n_envs]
+    comptime log_reset_wrapper = log_and_reset_completed_kernel[dtype, n_envs]
+
+    from layout import Layout, LayoutTensor
+
+    # Resolve gradient_steps: 0 means n_envs (1:1 replay ratio)
+    var grad_steps = gradient_steps
+    if grad_steps <= 0:
+        grad_steps = n_envs
+
+    var total_steps = 0
+    var total_train_steps = 0
+    var step_seed: UInt32 = 42
+    var completed_episodes = 0
+    var last_avg_reward: Float64 = 0.0
+
+    # Threshold-based triggers
+    var next_print = print_every
+    var next_sync = sync_every
+    var next_checkpoint = checkpoint_every
+
+    while total_steps < num_steps:
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
         agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
@@ -522,42 +718,129 @@ fn run_offpolicy_discrete_train_gpu[
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
 
+        # ------------------------------------------------------------------
+        # Accumulate episode rewards/steps + log completed (all on GPU)
+        # ------------------------------------------------------------------
+        var episode_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](episode_rewards_buf.unsafe_ptr())
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var episode_steps_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](episode_steps_buf.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var reward_sum_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_reward_sum_buf.unsafe_ptr())
+        var episode_count_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_episode_count_buf.unsafe_ptr())
+
+        ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+            episode_rewards_t,
+            rewards_t,
+            grid_dim=(env_blocks,),
+            block_dim=(tpb,),
+        )
+        ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+            episode_steps_t,
+            grid_dim=(env_blocks,),
+            block_dim=(tpb,),
+        )
+
+        ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+            dones_t,
+            episode_rewards_t,
+            episode_steps_t,
+            reward_sum_t,
+            episode_count_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
             ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1)
         )
 
+        # ------------------------------------------------------------------
+        # Training steps (gradient_steps per env collection iteration)
+        # ------------------------------------------------------------------
         if (
             total_steps >= warmup_steps
-            and total_steps % train_every == 0
             and gpu_state.gpu_buffer_is_ready()
         ):
-            agent.do_gpu_train_step(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+            for _ in range(grad_steps):
+                agent.do_gpu_train_step(ctx, gpu_state)
+                agent.soft_update_targets_gpu(ctx, gpu_state)
+            total_train_steps += grad_steps
 
-        if total_steps % sync_every == 0:
+        if total_steps >= next_sync:
             agent.download_from_gpu(gpu_state, ctx)
+            next_sync += sync_every
 
         # Periodic checkpoint
-        if checkpoint_every > 0 and total_steps % checkpoint_every == 0:
-            if total_steps % sync_every != 0:  # avoid double download
+        if checkpoint_every > 0 and total_steps >= next_checkpoint:
+            if total_steps < next_sync - sync_every + n_envs:
                 agent.download_from_gpu(gpu_state, ctx)
             agent.save_checkpoint(
                 checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
             )
+            next_checkpoint += checkpoint_every
 
-        total_steps += 1
+        total_steps += n_envs
         step_seed += 1
 
-        if verbose and total_steps % print_every == 0:
+        if verbose and total_steps >= next_print:
+            ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+            ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            ctx.synchronize()
+
+            var recent_count = Int(host_episode_count[0])
+            var recent_sum = Float64(host_reward_sum[0])
+            completed_episodes += recent_count
+
+            if recent_count > 0:
+                last_avg_reward = recent_sum / Float64(recent_count)
+                for _ in range(recent_count):
+                    metrics.log_episode(
+                        completed_episodes, last_avg_reward, 0, 0.0
+                    )
+
+            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+            ctx.enqueue_memset(gpu_episode_count_buf, 0)
+
             print(
                 algorithm_name
                 + " | Step "
                 + String(total_steps)
                 + " / "
                 + String(num_steps)
+                + " | Ep: "
+                + String(completed_episodes)
+                + " | AvgR: "
+                + String(last_avg_reward)[:7]
+                + " | Train: "
+                + String(total_train_steps)
             )
+            next_print += print_every
 
+    # Final sync
+    ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+    ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
     ctx.synchronize()
+
+    var final_count = Int(host_episode_count[0])
+    var final_sum = Float64(host_reward_sum[0])
+    completed_episodes += final_count
+    if final_count > 0:
+        var final_avg = final_sum / Float64(final_count)
+        for _ in range(final_count):
+            metrics.log_episode(completed_episodes, final_avg, 0, 0.0)
+
     agent.download_from_gpu(gpu_state, ctx)
 
     return metrics^

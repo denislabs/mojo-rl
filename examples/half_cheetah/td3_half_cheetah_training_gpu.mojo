@@ -45,9 +45,9 @@ comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 64
 
-# Training duration (off-policy uses steps, not episodes)
+# Training duration (total env transitions across all parallel envs)
 comptime NUM_STEPS = 1_000_000
-comptime WARMUP_STEPS = 10_000
+comptime WARMUP_STEPS = 25_000
 
 comptime dtype = DType.float32
 
@@ -109,7 +109,7 @@ fn main() raises:
         print("    - Exploration noise: 0.1 (decaying)")
         print("    - Policy delay: 2")
         print("    - Target noise: 0.2 (clip 0.5)")
-        print("    - Warmup steps: " + String(WARMUP_STEPS))
+        print("    - Warmup transitions: " + String(WARMUP_STEPS))
         print()
         print("HalfCheetah specifics:")
         print("  - Generalized Coordinates (GC) physics engine")
@@ -135,10 +135,10 @@ fn main() raises:
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
-                train_every=1,
-                sync_every=50,
+                # gradient_steps=0 uses n_envs (1:1 replay ratio)
+                sync_every=5_000,
                 verbose=True,
-                print_every=50,
+                print_every=10_000,
             )
 
             var end_time = perf_counter_ns()

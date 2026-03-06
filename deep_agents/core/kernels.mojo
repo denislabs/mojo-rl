@@ -236,6 +236,48 @@ fn selective_reset_tracking_kernel[
         episode_steps[i] = Scalar[dtype](0.0)
 
 
+@always_inline
+fn log_and_reset_completed_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+](
+    dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    episode_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    episode_steps: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    reward_sum: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    episode_count: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+):
+    """Single-threaded kernel: accumulate completed episode stats and reset.
+
+    For done environments, adds the episode reward to a running sum,
+    increments the episode count, and resets per-env accumulators.
+    Single-threaded to avoid atomics (N_ENVS is small).
+
+    Args:
+        dones: Done flags for each environment.
+        episode_rewards: Running episode reward totals (reset for done envs).
+        episode_steps: Running step counters (reset for done envs).
+        reward_sum: Running sum of completed episode rewards [1].
+        episode_count: Running count of completed episodes [1].
+    """
+    if thread_idx.x != 0 or block_idx.x != 0:
+        return
+    var s = reward_sum[0]
+    var c = episode_count[0]
+    for i in range(N_ENVS):
+        if dones[i] > Scalar[dtype](0.5):
+            s += episode_rewards[i]
+            c += Scalar[dtype](1.0)
+            episode_rewards[i] = Scalar[dtype](0.0)
+            episode_steps[i] = Scalar[dtype](0.0)
+    reward_sum[0] = s
+    episode_count[0] = c
+
+
 # =============================================================================
 # Replay Buffer Operations
 # =============================================================================

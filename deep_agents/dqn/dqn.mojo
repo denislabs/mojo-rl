@@ -886,10 +886,10 @@ struct DQNAgent[
         ctx: DeviceContext,
         num_steps: Int,
         warmup_steps: Int = 1000,
-        train_every: Int = 1,
-        sync_every: Int = 100,
+        gradient_steps: Int = 0,
+        sync_every: Int = 5000,
         verbose: Bool = False,
-        print_every: Int = 100,
+        print_every: Int = 50_000,
         environment_name: String = "Environment",
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
@@ -899,25 +899,25 @@ struct DQNAgent[
         After this call self.state.online / target hold the trained GPU weights,
         so evaluate() works immediately.
 
-        Note: This is step-based training (num_steps total env steps across
-        n_envs parallel environments). Epsilon is not automatically decayed;
-        call decay_epsilon() manually between stages if needed.
+        All step-based parameters are in total env transitions (n_envs per
+        loop iteration), matching on-policy convention.
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
 
         Args:
             ctx: GPU device context.
-            num_steps: Total number of environment steps.
-            warmup_steps: Random steps before training starts (default: 1000).
-            train_every: Train every N env steps (default: 1).
-            sync_every: GPU→CPU param sync interval in steps (default: 100).
+            num_steps: Total env transitions across all parallel envs.
+            warmup_steps: Transitions before training starts (default: 1000).
+            gradient_steps: Training steps per env collection iteration.
+                0 (default) = n_envs for 1:1 replay ratio.
+            sync_every: GPU→CPU sync interval in transitions (default: 5000).
             verbose: Print progress (default: False).
-            print_every: Print every N steps if verbose (default: 100).
+            print_every: Print interval in transitions (default: 50000).
             environment_name: Name for metrics labeling.
 
         Returns:
-            TrainingMetrics with step-level statistics.
+            TrainingMetrics with episode-level statistics.
         """
         var algo_name = String(
             "DQN (GPU)" if not Self.double_dqn else "Double DQN (GPU)"
@@ -927,7 +927,7 @@ struct DQNAgent[
             ctx,
             num_steps,
             warmup_steps=warmup_steps,
-            train_every=train_every,
+            gradient_steps=gradient_steps,
             sync_every=sync_every,
             verbose=verbose,
             print_every=print_every,

@@ -66,6 +66,7 @@ from .kernels import (
     increment_steps_kernel,
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
+    log_and_reset_completed_kernel,
     store_transitions_kernel,
     sample_indices_kernel,
     gather_batch_kernel,

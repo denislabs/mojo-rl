@@ -1289,10 +1289,10 @@ struct DeepTD3Agent[
         ctx: DeviceContext,
         num_steps: Int,
         warmup_steps: Int = 1000,
-        train_every: Int = 1,
-        sync_every: Int = 50,
+        gradient_steps: Int = 0,
+        sync_every: Int = 5000,
         verbose: Bool = False,
-        print_every: Int = 50,
+        print_every: Int = 50_000,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
 
@@ -1301,21 +1301,24 @@ struct DeepTD3Agent[
         After this call self.actor / critic1 / critic2 (online and target) hold
         the trained GPU weights (synced by download_from_gpu).
 
+        All step-based parameters are in total env transitions (n_envs per
+        loop iteration), matching on-policy convention.
+
         Parameters:
             E: GPU environment type implementing GPUContinuousEnv.
 
         Args:
             ctx: GPU device context.
-            num_steps: Total environment steps.
-            warmup_steps: Random steps before training starts (default: 1000).
-            train_every: Train step every N env steps (default: 1).
-            sync_every: Download GPU→CPU every N steps (default: 50).
+            num_steps: Total env transitions across all parallel envs.
+            warmup_steps: Transitions before training starts (default: 1000).
+            gradient_steps: Training steps per env collection iteration.
+                0 (default) = n_envs for 1:1 replay ratio.
+            sync_every: GPU→CPU sync interval in transitions (default: 5000).
             verbose: Print progress (default: False).
-            print_every: Print every N steps if verbose (default: 50).
-
+            print_every: Print interval in transitions (default: 50000).
 
         Returns:
-            TrainingMetrics with step-level statistics.
+            TrainingMetrics with episode-level statistics.
         """
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
@@ -1324,7 +1327,7 @@ struct DeepTD3Agent[
             ctx,
             num_steps,
             warmup_steps=warmup_steps,
-            train_every=train_every,
+            gradient_steps=gradient_steps,
             sync_every=sync_every,
             verbose=verbose,
             print_every=print_every,
