@@ -157,6 +157,7 @@ fn run_gpu_v1_step(
     var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
+    var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
 
     var host_states = ctx.enqueue_create_host_buffer[gpu_dtype](STATE_SIZE)
     var host_actions = ctx.enqueue_create_host_buffer[gpu_dtype](1)
@@ -170,7 +171,7 @@ fn run_gpu_v1_step(
     ctx.synchronize()
 
     LunarLanderGPU.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states_buf, actions_buf, rewards_buf, dones_buf, UInt64(step_seed)
+        ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, UInt64(step_seed)
     )
     ctx.synchronize()
 
@@ -199,6 +200,7 @@ fn run_gpu_v2_step(
     var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
+    var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
 
     var host_states = ctx.enqueue_create_host_buffer[gpu_dtype](STATE_SIZE)
     var host_actions = ctx.enqueue_create_host_buffer[gpu_dtype](1)
@@ -212,7 +214,7 @@ fn run_gpu_v2_step(
     ctx.synchronize()
 
     LunarLanderGPUv2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states_buf, actions_buf, rewards_buf, dones_buf, UInt64(step_seed)
+        ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, UInt64(step_seed)
     )
     ctx.synchronize()
 

@@ -49,6 +49,7 @@ fn main() raises:
     var actions_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * ACTION_DIM)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+    var terminated_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OBS_DIM)
 
     # Initialize dones buffer to zeros (prevent garbage value issues)
@@ -95,6 +96,7 @@ fn main() raises:
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
             rng_seed=UInt64(step + 1),
         )

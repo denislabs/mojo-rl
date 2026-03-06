@@ -1810,6 +1810,7 @@ struct TDMPC2Agent[
         comptime TOTAL_WS = (ENV.STEP_WS_SHARED + n_envs * ENV.STEP_WS_PER_ENV)
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
         var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
         ENV.init_step_workspace_gpu[n_envs](ctx, step_ws_buf)
         ctx.synchronize()
 
@@ -1908,6 +1909,7 @@ struct TDMPC2Agent[
                     gs.env_act_buf,
                     gs.env_rew_buf,
                     gs.env_done_buf,
+                    terminated_buf,
                     gs.env_obs_buf,
                     env_seed,
                     List[Scalar[dtype]](),
@@ -1920,6 +1922,7 @@ struct TDMPC2Agent[
                     gs.env_act_buf,
                     gs.env_rew_buf,
                     gs.env_done_buf,
+                    terminated_buf,
                     gs.env_obs_buf,
                     env_seed,
                     List[Scalar[dtype]](),

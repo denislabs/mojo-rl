@@ -1037,6 +1037,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
@@ -1059,7 +1060,8 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             states: State buffer [BATCH_SIZE * STATE_SIZE] with embedded track.
             actions: Continuous actions buffer [BATCH_SIZE * ACTION_DIM].
             rewards: Rewards buffer (output) [BATCH_SIZE].
-            dones: Done flags buffer (output) [BATCH_SIZE].
+            dones: Done flags buffer (output) [BATCH_SIZE]. 1.0 if terminated OR truncated.
+            terminated: Terminated flags buffer (output) [BATCH_SIZE]. 1.0 only if truly terminated.
             obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed (unused, track already embedded).
             curriculum_values: Optional curriculum values (unused).
@@ -1081,6 +1083,10 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones.unsafe_ptr())
 
+        var terminated_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated.unsafe_ptr())
+
         var obs_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs.unsafe_ptr())
@@ -1101,6 +1107,9 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dones: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            terminated_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
             ],
@@ -1111,12 +1120,18 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             CarRacing[Self.dtype]._step_env_gpu_embedded[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](env, states, actions, rewards, dones, obs)
+            # CarRacing already stores META_TRUNCATED in state metadata
+            # terminated = done AND NOT truncated
+            var is_done = dones[env]
+            var is_truncated = states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED]
+            terminated_out[env] = is_done * (Scalar[dtype](1.0) - is_truncated)
 
         ctx.enqueue_function[step_embedded_wrapper, step_embedded_wrapper](
             states_tensor,
             actions_tensor,
             rewards_tensor,
             dones_tensor,
+            terminated_tensor,
             obs_tensor,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

@@ -448,6 +448,7 @@ fn run_onpolicy_discrete_train_gpu[
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var values_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking buffers
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
@@ -481,6 +482,7 @@ fn run_onpolicy_discrete_train_gpu[
         actions_buf,
         rewards_buf,
         dones_buf,
+        terminated_buf,
         obs_buf,
         rng_seed=0,
         workspace_ptr=workspace_buf.unsafe_ptr(),
@@ -545,6 +547,7 @@ fn run_onpolicy_discrete_train_gpu[
                 actions_buf,
                 rewards_buf,
                 dones_buf,
+                terminated_buf,
                 obs_buf,
                 rng_seed=UInt64(step_seed),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
@@ -764,6 +767,7 @@ fn run_onpolicy_continuous_train_gpu[
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var values_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
@@ -857,6 +861,7 @@ fn run_onpolicy_continuous_train_gpu[
                 actions_buf,
                 rewards_buf,
                 dones_buf,
+                terminated_buf,
                 obs_buf,
                 rng_seed=UInt64(step_seed),
                 workspace_ptr=workspace_buf.unsafe_ptr(),

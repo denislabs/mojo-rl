@@ -1541,6 +1541,7 @@ struct LunarLander[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: UnsafePointer[
@@ -1590,6 +1591,7 @@ struct LunarLander[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
             Scalar[dtype](LLConstants.GRAVITY_X),
             Scalar[dtype](LLConstants.GRAVITY_Y),
@@ -1612,6 +1614,7 @@ struct LunarLander[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
@@ -1665,6 +1668,7 @@ struct LunarLander[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
             Scalar[dtype](LLConstants.GRAVITY_X),
             Scalar[dtype](LLConstants.GRAVITY_Y),
@@ -2439,6 +2443,9 @@ struct LunarLander[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        terminated_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
     ):
         """Finalize step for single env: obs update + reward + done check."""
         var lander_off = LLConstants.BODIES_OFFSET
@@ -2449,6 +2456,7 @@ struct LunarLander[
         ) > Scalar[dtype](0.5):
             rewards[env] = Scalar[dtype](0)
             dones[env] = Scalar[dtype](1)
+            terminated_out[env] = Scalar[dtype](1)
             return
 
         # Get lander state
@@ -2573,16 +2581,19 @@ struct LunarLander[
 
         # Check termination
         var done = Scalar[dtype](0.0)
+        var is_terminated = Scalar[dtype](0.0)
 
         # Out of bounds
         if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Too high
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Crash: lander body touches ground
@@ -2596,6 +2607,7 @@ struct LunarLander[
 
         if lander_contact:
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Successful landing
@@ -2612,9 +2624,10 @@ struct LunarLander[
             and abs_omega < Scalar[dtype](0.01)
         ):
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
-        # Max steps
+        # Max steps (truncation only, not termination)
         var step_count = rebind[Scalar[dtype]](
             states[
                 env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
@@ -2630,6 +2643,7 @@ struct LunarLander[
         states[env, LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = done
         rewards[env] = reward
         dones[env] = done
+        terminated_out[env] = is_terminated
 
     @staticmethod
     fn _setup_fused_gpu[
@@ -2715,6 +2729,7 @@ struct LunarLander[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         gravity_x: Scalar[dtype],
         gravity_y: Scalar[dtype],
@@ -2764,6 +2779,9 @@ struct LunarLander[
         var dones = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
         var obs = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -2805,6 +2823,9 @@ struct LunarLander[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             obs: LayoutTensor[
@@ -2892,7 +2913,7 @@ struct LunarLander[
 
             # Finalize (writes obs to states at OBS_OFFSET)
             Self.SelfType._finalize_single_env[BATCH_SIZE](
-                env, states, actions, contacts, contact_counts, rewards, dones
+                env, states, actions, contacts, contact_counts, rewards, dones, terminated_out
             )
 
             # Extract observations to separate obs buffer (OBS_OFFSET = 0)
@@ -2911,6 +2932,7 @@ struct LunarLander[
             actions,
             rewards,
             dones,
+            terminated_out,
             obs,
             gravity_x,
             gravity_y,
@@ -3192,6 +3214,7 @@ struct LunarLander[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         gravity_x: Scalar[dtype],
         gravity_y: Scalar[dtype],
@@ -3237,6 +3260,9 @@ struct LunarLander[
         var dones = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
         var obs = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -3278,6 +3304,9 @@ struct LunarLander[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             obs: LayoutTensor[
@@ -3366,7 +3395,7 @@ struct LunarLander[
             # Finalize with continuous action fuel costs
             Self.SelfType._finalize_single_env_continuous[
                 BATCH_SIZE, ACTION_DIM
-            ](env, states, actions, contacts, contact_counts, rewards, dones)
+            ](env, states, actions, contacts, contact_counts, rewards, dones, terminated_out)
 
             # Extract observations to separate obs buffer
             for d in range(OBS_DIM):
@@ -3385,6 +3414,7 @@ struct LunarLander[
             actions,
             rewards,
             dones,
+            terminated_out,
             obs,
             gravity_x,
             gravity_y,
@@ -3426,6 +3456,9 @@ struct LunarLander[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        terminated_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
     ):
         """Finalize step for single env with continuous action fuel costs."""
         var lander_off = LLConstants.BODIES_OFFSET
@@ -3436,6 +3469,7 @@ struct LunarLander[
         ) > Scalar[dtype](0.5):
             rewards[env] = Scalar[dtype](0)
             dones[env] = Scalar[dtype](1)
+            terminated_out[env] = Scalar[dtype](1)
             return
 
         # Get lander state
@@ -3584,16 +3618,19 @@ struct LunarLander[
 
         # Check termination
         var done = Scalar[dtype](0.0)
+        var is_terminated = Scalar[dtype](0.0)
 
         # Out of bounds
         if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Too high
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Crash: lander body touches ground
@@ -3607,6 +3644,7 @@ struct LunarLander[
 
         if lander_contact:
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
 
         # Successful landing
@@ -3623,9 +3661,10 @@ struct LunarLander[
             and abs_omega < Scalar[dtype](0.01)
         ):
             done = Scalar[dtype](1.0)
+            is_terminated = Scalar[dtype](1.0)
             reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
-        # Max steps
+        # Max steps (truncation only, not termination)
         var step_count = rebind[Scalar[dtype]](
             states[
                 env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
@@ -3641,6 +3680,7 @@ struct LunarLander[
         states[env, LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = done
         rewards[env] = reward
         dones[env] = done
+        terminated_out[env] = is_terminated
 
     # =========================================================================
     # Rendering Methods

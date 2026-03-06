@@ -364,6 +364,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     # Host buffers for actions
@@ -440,6 +441,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -548,6 +550,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -588,6 +591,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -642,6 +646,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step + 5),
         )
@@ -682,6 +687,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -752,6 +758,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -828,6 +835,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -899,6 +907,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -1080,6 +1089,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -1346,6 +1356,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -1480,6 +1491,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -1630,6 +1642,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -1741,6 +1754,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -1955,7 +1969,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     # GPU step
     LunarLander[dtype].step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM](
-        ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(0)
+        ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_terminated, gpu_obs, UInt64(0)
     )
     ctx.synchronize()
 
@@ -2058,6 +2072,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -2221,6 +2236,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )

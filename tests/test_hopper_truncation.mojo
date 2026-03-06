@@ -62,6 +62,7 @@ fn main() raises:
         )
         var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
         var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
+        var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
         var obs_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * OBS_DIM)
 
         # =====================================================================
@@ -93,7 +94,7 @@ fn main() raises:
         for step in range(25):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 10
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
+            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -172,7 +173,7 @@ fn main() raises:
         for step in range(200):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
+            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -198,7 +199,7 @@ fn main() raises:
         for step in range(200):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
+            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -231,7 +232,7 @@ fn main() raises:
         for step in range(100):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 50
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
+            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)

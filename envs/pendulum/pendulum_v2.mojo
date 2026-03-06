@@ -232,6 +232,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
@@ -252,6 +253,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             actions: Continuous actions buffer [BATCH_SIZE * ACTION_DIM].
             rewards: Rewards buffer (output) [BATCH_SIZE].
             dones: Done flags buffer (output) [BATCH_SIZE].
+            terminated: Terminated flags buffer (output) [BATCH_SIZE]. Always 0 for Pendulum (only truncates).
             obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed (unused for deterministic physics).
             curriculum_values: Optional curriculum values (unused for Pendulum).
@@ -274,6 +276,10 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones.unsafe_ptr())
 
+        var terminated_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated.unsafe_ptr())
+
         var obs_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs.unsafe_ptr())
@@ -294,6 +300,9 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             dones: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            terminated_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
             ],
@@ -305,12 +314,15 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             PendulumV2[Self.dtype]._step_env_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](states, actions, rewards, dones, obs, env)
+            # Pendulum never terminates, only truncates at max steps
+            terminated_out[env] = Scalar[dtype](0.0)
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
             states_tensor,
             actions_tensor,
             rewards_tensor,
             dones_tensor,
+            terminated_tensor,
             obs_tensor,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

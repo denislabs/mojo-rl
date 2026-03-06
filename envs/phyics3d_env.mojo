@@ -424,6 +424,7 @@ struct Phyics3dEnv[
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
@@ -529,6 +530,7 @@ struct Phyics3dEnv[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
         )
 
@@ -830,6 +832,7 @@ struct Phyics3dEnv[
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
         """Extract observations, compute rewards, check termination."""
@@ -850,6 +853,9 @@ struct Phyics3dEnv[
         var dones = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
         var obs = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -908,6 +914,9 @@ struct Phyics3dEnv[
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            terminated_out: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
@@ -964,17 +973,21 @@ struct Phyics3dEnv[
             rewards[env] = result[0]
 
             # Determine termination
-            var terminated = result[1]
+            var is_terminated = result[1]
 
             comptime if not Self.TERMINATE_ON_UNHEALTHY:
-                terminated = False
+                is_terminated = False
 
             var truncated = step_count >= MAX_STEPS_VAL
 
-            if terminated or truncated:
+            # dones = terminated OR truncated (for episode tracking/resets)
+            if is_terminated or truncated:
                 dones[env] = Scalar[gpu_dtype](1.0)
             else:
                 dones[env] = Scalar[gpu_dtype](0.0)
+
+            # terminated_out = only true termination (for replay buffer TD targets)
+            terminated_out[env] = Scalar[gpu_dtype](1.0) if is_terminated else Scalar[gpu_dtype](0.0)
 
         ctx.enqueue_function[extract_kernel, extract_kernel](
             states,
@@ -982,6 +995,7 @@ struct Phyics3dEnv[
             actions,
             rewards,
             dones,
+            terminated_out,
             obs,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

@@ -751,6 +751,7 @@ struct DeepPPOContinuousAgentOld[
         var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
 
         # Action buffers
         var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
@@ -913,6 +914,7 @@ struct DeepPPOContinuousAgentOld[
                     actions_buf,
                     rewards_buf,
                     dones_buf,
+                    terminated_buf,
                     obs_buf,
                     UInt64(step),
                     List[Scalar[dtype]](),
@@ -927,6 +929,7 @@ struct DeepPPOContinuousAgentOld[
                     actions_buf,
                     rewards_buf,
                     dones_buf,
+                    terminated_buf,
                     obs_buf,
                     UInt64(step),
                 )
@@ -1105,6 +1108,7 @@ struct DeepPPOContinuousAgentOld[
         var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
         var values_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
@@ -1665,6 +1669,7 @@ struct DeepPPOContinuousAgentOld[
                         actions_buf,
                         rewards_buf,
                         dones_buf,
+                        terminated_buf,
                         obs_buf,
                         env_step_seed,
                         List[Scalar[dtype]](),
@@ -1684,6 +1689,7 @@ struct DeepPPOContinuousAgentOld[
                         actions_buf,
                         rewards_buf,
                         dones_buf,
+                        terminated_buf,
                         obs_buf,
                         env_step_seed,
                         curriculum_values,

@@ -992,6 +992,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: UnsafePointer[
@@ -1005,7 +1006,8 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             states_buf: States buffer [BATCH_SIZE * STATE_SIZE].
             actions_buf: Actions buffer [BATCH_SIZE].
             rewards_buf: Rewards buffer [BATCH_SIZE] (written).
-            dones_buf: Dones buffer [BATCH_SIZE] (written).
+            dones_buf: Dones buffer [BATCH_SIZE] (written). 1.0 if terminated OR truncated.
+            terminated_buf: Terminated buffer [BATCH_SIZE] (written). 1.0 only if truly terminated.
             obs_buf: Observations buffer [BATCH_SIZE * OBS_DIM] (written).
             rng_seed: Random seed (unused in CartPole, for trait compatibility).
             workspace_ptr: Optional workspace pointer (unused for CartPole).
@@ -1023,6 +1025,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var dones = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
         var obs = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -1050,6 +1055,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            terminated_out: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
             ],
@@ -1058,9 +1066,11 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Self.step_kernel[BATCH_SIZE, STATE_SIZE](
                 states, actions, rewards, dones, rng_seed
             )
-            # Extract observations (for CartPole, obs == state)
+            # CartPole: all dones are true termination (no truncation in GPU kernel)
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i < BATCH_SIZE:
+                terminated_out[i] = dones[i]
+                # Extract observations (for CartPole, obs == state)
                 for d in range(OBS_DIM):
                     obs[i, d] = states[i, d]
 
@@ -1069,6 +1079,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             actions,
             rewards,
             dones,
+            terminated_out,
             obs,
             seed,
             grid_dim=(BLOCKS,),

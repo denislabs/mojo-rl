@@ -1464,6 +1464,7 @@ struct BipedalWalker[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
@@ -1500,6 +1501,7 @@ struct BipedalWalker[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
         )
 
@@ -2164,6 +2166,7 @@ struct BipedalWalker[
         actions_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
     ) raises:
         """Fused GPU step kernel - uses proper physics matching CPU."""
@@ -2197,6 +2200,9 @@ struct BipedalWalker[
         var dones = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
         var obs = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -2228,6 +2234,9 @@ struct BipedalWalker[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             obs: LayoutTensor[
@@ -2453,26 +2462,30 @@ struct BipedalWalker[
 
             # Check termination conditions
             var done = Scalar[dtype](0.0)
+            var is_terminated = Scalar[dtype](0.0)
             var max_steps = Scalar[dtype](2000)  # Match CPU max_steps
             var new_step_count = step_count + Scalar[dtype](1)
 
-            # Time limit
+            # Time limit (truncation only, not termination)
             if new_step_count >= max_steps:
                 done = Scalar[dtype](1.0)
 
             # Hull touched ground (game over)
             if hull_contact > Scalar[dtype](0.5):
                 done = Scalar[dtype](1.0)
+                is_terminated = Scalar[dtype](1.0)
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
             # Crawling too low (hull almost touching ground)
             if hull_y < critical_height:
                 done = Scalar[dtype](1.0)
+                is_terminated = Scalar[dtype](1.0)
                 reward = Scalar[dtype](-50.0)  # Moderate penalty for crawling
 
             # Out of bounds (fell off left edge)
             if hull_x < Scalar[dtype](0):
                 done = Scalar[dtype](1.0)
+                is_terminated = Scalar[dtype](1.0)
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
             # Success: reached end of terrain
@@ -2481,9 +2494,11 @@ struct BipedalWalker[
             ) * Scalar[dtype](BWConstants.TERRAIN_STEP)
             if hull_x > terrain_end:
                 done = Scalar[dtype](1.0)
+                is_terminated = Scalar[dtype](1.0)
 
             rewards[env] = reward
             dones[env] = done
+            terminated_out[env] = is_terminated
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
             states,
@@ -2493,6 +2508,7 @@ struct BipedalWalker[
             actions,
             rewards,
             dones,
+            terminated_out,
             obs,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

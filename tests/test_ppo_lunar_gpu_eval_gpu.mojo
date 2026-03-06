@@ -96,6 +96,7 @@ fn main() raises:
         var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
         var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
         var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
+        var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](EVAL_ENVS)
 
         # Host buffers for reading results
         var host_states = List[Scalar[gpu_dtype]](capacity=EVAL_ENVS * OBS_DIM)
@@ -148,7 +149,7 @@ fn main() raises:
 
             # Step environments
             LunarLanderGPU.step_kernel_gpu[EVAL_ENVS, OBS_DIM](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf
+                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
             )
             ctx.synchronize()
 

@@ -19,7 +19,7 @@ Usage:
     # GPU mode (batch training)
     PendulumV2[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states)
     PendulumV2[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
-        ctx, states, actions, rewards, dones, obs
+        ctx, states, actions, rewards, dones, terminated, obs
     )
 """
 

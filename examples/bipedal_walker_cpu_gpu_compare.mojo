@@ -363,6 +363,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     # Host buffers
@@ -451,6 +452,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -547,6 +549,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -596,6 +599,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -709,6 +713,7 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
 
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
@@ -754,6 +759,7 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
             gpu_actions,
             gpu_rewards,
             gpu_dones,
+            gpu_terminated,
             gpu_obs,
             UInt64(step),
         )
@@ -898,6 +904,7 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     var gpu_obs_buf = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS_DIM)
     var gpu_rewards = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_dones = ctx.enqueue_create_buffer[dtype](N_ENVS)
+    var gpu_terminated = ctx.enqueue_create_buffer[dtype](N_ENVS)
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
 
     # Set zero actions
@@ -923,6 +930,7 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
         gpu_actions,
         gpu_rewards,
         gpu_dones,
+        gpu_terminated,
         gpu_obs_buf,
         test_seed,
     )

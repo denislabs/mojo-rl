@@ -367,6 +367,7 @@ trait GPUDiscreteEnv:
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: UnsafePointer[
@@ -380,7 +381,8 @@ trait GPUDiscreteEnv:
             states: State buffer on GPU.
             actions: Actions buffer on GPU.
             rewards: Rewards buffer on GPU (output).
-            dones: Done flags buffer on GPU (output).
+            dones: Done flags buffer on GPU (output). 1.0 if terminated OR truncated.
+            terminated: Terminated flags buffer on GPU (output). 1.0 only if truly terminated (not truncated).
             obs: Observations buffer on GPU (output).
             rng_seed: Optional random seed for physics (e.g., engine dispersion).
             workspace_ptr: Optional pre-allocated workspace pointer.
@@ -489,6 +491,7 @@ trait GPUContinuousEnv:
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
@@ -503,7 +506,8 @@ trait GPUContinuousEnv:
             states: State buffer on GPU [BATCH_SIZE * STATE_SIZE].
             actions: Continuous actions buffer on GPU [BATCH_SIZE * ACTION_DIM].
             rewards: Rewards buffer on GPU (output) [BATCH_SIZE].
-            dones: Done flags buffer on GPU (output) [BATCH_SIZE].
+            dones: Done flags buffer on GPU (output) [BATCH_SIZE]. 1.0 if terminated OR truncated.
+            terminated: Terminated flags buffer on GPU (output) [BATCH_SIZE]. 1.0 only if truly terminated (not truncated).
             obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed for physics.
             curriculum_values: Environment-specific curriculum parameters.

@@ -162,6 +162,7 @@ fn main() raises:
     )
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
+    var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * OBS_DIM)
 
     # Initialize GPU state from CPU (ensures identical starting point)
@@ -253,6 +254,7 @@ fn main() raises:
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
         )
         ctx.synchronize()
@@ -296,6 +298,7 @@ fn main() raises:
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
         )
         ctx.synchronize()

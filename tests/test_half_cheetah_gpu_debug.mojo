@@ -119,6 +119,7 @@ fn main() raises:
         var obs_buf = ctx.enqueue_create_buffer[gpu_dtype](TOTAL_OBS)
         var rew_buf = ctx.enqueue_create_buffer[gpu_dtype](N_ENVS)
         var done_buf = ctx.enqueue_create_buffer[gpu_dtype](N_ENVS)
+        var terminated_buf = ctx.enqueue_create_buffer[gpu_dtype](N_ENVS)
         var act_buf = ctx.enqueue_create_buffer[gpu_dtype](TOTAL_ACT)
 
         # CPU-side arrays for readback
@@ -169,6 +170,7 @@ fn main() raises:
                 act_buf,
                 rew_buf,
                 done_buf,
+                terminated_buf,
                 obs_buf,
                 UInt64(step),
             )
@@ -242,6 +244,7 @@ fn main() raises:
                 act_buf,
                 rew_buf,
                 done_buf,
+                terminated_buf,
                 obs_buf,
                 UInt64(step + 100),
             )
@@ -321,6 +324,7 @@ fn main() raises:
                 act_buf,
                 rew_buf,
                 done_buf,
+                terminated_buf,
                 obs_buf,
                 UInt64(step + 200),
             )
@@ -428,6 +432,7 @@ fn main() raises:
                 act_buf,
                 rew_buf,
                 done_buf,
+                terminated_buf,
                 obs_buf,
                 UInt64(step + 300),
             )
@@ -518,6 +523,7 @@ fn main() raises:
                 act_buf,
                 rew_buf,
                 done_buf,
+                terminated_buf,
                 obs_buf,
                 UInt64(step + 400),
             )

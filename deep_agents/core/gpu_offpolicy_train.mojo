@@ -323,6 +323,7 @@ fn run_offpolicy_continuous_train_gpu[
     var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
@@ -353,6 +354,7 @@ fn run_offpolicy_continuous_train_gpu[
         actions_buf,
         rewards_buf,
         dones_buf,
+        terminated_buf,
         obs_buf,
         rng_seed=0,
         workspace_ptr=workspace_buf.unsafe_ptr(),
@@ -412,16 +414,18 @@ fn run_offpolicy_continuous_train_gpu[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
             rng_seed=UInt64(step_seed),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
         # ------------------------------------------------------------------
-        # Store transitions: (prev_obs, action, reward, next_obs, done)
+        # Store transitions: (prev_obs, action, reward, next_obs, terminated)
+        # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
         # ------------------------------------------------------------------
         gpu_state.gpu_store[n_envs](
-            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
         )
 
         # ------------------------------------------------------------------
@@ -635,6 +639,7 @@ fn run_offpolicy_discrete_train_gpu[
     var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
@@ -661,6 +666,7 @@ fn run_offpolicy_discrete_train_gpu[
         actions_buf,
         rewards_buf,
         dones_buf,
+        terminated_buf,
         obs_buf,
         rng_seed=0,
         workspace_ptr=workspace_buf.unsafe_ptr(),
@@ -709,13 +715,15 @@ fn run_offpolicy_discrete_train_gpu[
             actions_buf,
             rewards_buf,
             dones_buf,
+            terminated_buf,
             obs_buf,
             rng_seed=UInt64(step_seed),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
+        # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
         gpu_state.gpu_store[n_envs](
-            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
         )
 
         # ------------------------------------------------------------------
