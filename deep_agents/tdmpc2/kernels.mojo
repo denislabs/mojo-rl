@@ -131,7 +131,7 @@ fn tdmpc2_sample_actions_kernel[
         var rand_vals = philox.step_uniform()
         var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
         var u2 = Scalar[DType.float32](rand_vals[1])
-        var mag = sqrt(-2.0 * log(u1))
+        var mag = sqrt(Float32(-2.0) * log(u1))
         var noise = Scalar[dtype](
             mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
         )

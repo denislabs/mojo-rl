@@ -44,7 +44,7 @@ from nn.model import Linear, LinearReLU, Sequential, Model
 from nn.optimizer import Adam, Optimizer
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState
-from nn.replay import ReplayBuffer
+from deep_agents.core.replay import HeapReplayBuffer
 from deep_agents.core import (
     fill_inline,
     obs_to_inline,
@@ -93,7 +93,7 @@ struct DuelingDQNCPUState[
     var value_target: NetworkState[Self.ValueModel, Self.Opt]
     var adv_online: NetworkState[Self.AdvModel, Self.Opt]
     var adv_target: NetworkState[Self.AdvModel, Self.Opt]
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
+    var buffer: HeapReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
 
     fn __init__(out self):
         """Allocate and Kaiming-initialize all networks; copy online → target.
@@ -115,7 +115,7 @@ struct DuelingDQNCPUState[
             copy=self.adv_online
         )
 
-        self.buffer = ReplayBuffer[
+        self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
         ]()
 

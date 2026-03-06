@@ -47,7 +47,7 @@ fn sac_reparameterize_kernel[
         log π(a|s) = Σ_j [ -0.5*ε_j² - 0.5*log(2π) - log_σ_j
                             - log(1 - tanh²(z_j)) ]  (change-of-variables)
 
-    Uses PhiloxRandom for GPU-safe noise generation (no Float64).
+    Uses PhiloxRandom for GPU-safe noise generation .
     One thread per batch sample.
 
     Args:
@@ -84,10 +84,10 @@ fn sac_reparameterize_kernel[
             offset=0,
         )
         var rand_vals = philox.step_uniform()
-        var u1 = Float32(rand_vals[0]) + Float32(1e-8)
-        var u2 = Float32(rand_vals[1])
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
         var mag = sqrt(-2.0 * log(u1))
-        var eps = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
 
         # Reparameterize: z = μ + σ * ε
         var z = mean[b, a] + std_val * eps
@@ -134,7 +134,7 @@ fn sac_sample_actions_kernel[
 
     Computes: a = tanh(mean + exp(clamp(log_std)) * ε) * action_scale
 
-    Uses PhiloxRandom for GPU-safe noise generation (no Float64).
+    Uses PhiloxRandom for GPU-safe noise generation.
     No eps_cache saved (inference only).
     One thread per environment.
 
@@ -166,10 +166,10 @@ fn sac_sample_actions_kernel[
             offset=0,
         )
         var rand_vals = philox.step_uniform()
-        var u1 = Float32(rand_vals[0]) + Float32(1e-8)
-        var u2 = Float32(rand_vals[1])
-        var mag = sqrt(-2.0 * log(u1))
-        var eps = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
+        var mag = sqrt(Scalar[dtype](-2.0) * log(u1))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
 
         # Reparameterize, squash, scale
         var z = mean_val + std_val * eps
@@ -212,7 +212,7 @@ fn sac_rsample_with_cache_kernel[
         a = tanh(z)
         log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - a_j²)]
 
-    Uses PhiloxRandom for GPU-safe noise generation (no Float64).
+    Uses PhiloxRandom for GPU-safe noise generation.
     One thread per batch sample.
 
     Args:
@@ -247,10 +247,10 @@ fn sac_rsample_with_cache_kernel[
             offset=0,
         )
         var rand_vals = philox.step_uniform()
-        var u1 = Float32(rand_vals[0]) + Float32(1e-8)
-        var u2 = Float32(rand_vals[1])
-        var mag = sqrt(-2.0 * log(u1))
-        var eps = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
+        var mag = sqrt(Scalar[dtype](-2.0) * log(u1))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
 
         # Save eps for backward pass
         eps_cache[b, a] = eps

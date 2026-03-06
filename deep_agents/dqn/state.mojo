@@ -3,7 +3,7 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkState, GPUNetworkState
-from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Kaiming
 from deep_agents.core import GPUOffPolicyState, OffPolicyDiscreteState
@@ -176,14 +176,14 @@ struct DQNCPUState[
 
     var online: NetworkState[Self.Q_Model, Self.Q_Opt]
     var target: NetworkState[Self.Q_Model, Self.Q_Opt]
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
+    var buffer: HeapReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
 
     fn __init__(out self):
         """Allocate and initialize online/target networks and replay buffer."""
         self.online = NetworkState[Self.Q_Model, Self.Q_Opt]()
         self.online.initialize[Kaiming]()
         self.target = NetworkState[Self.Q_Model, Self.Q_Opt](copy=self.online)
-        self.buffer = ReplayBuffer[
+        self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
         ]()
 

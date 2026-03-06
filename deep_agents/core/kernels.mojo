@@ -34,8 +34,6 @@ from std.math import exp, log, tanh, sqrt, max, min, pi, cos
 from std.memory import UnsafePointer
 from std.random.philox import Random as PhiloxRandom
 
-from nn.gpu.random import xorshift32, random_uniform
-
 
 # =============================================================================
 # Network Operations
@@ -320,7 +318,7 @@ fn sample_indices_kernel[
     """Generate random indices for sampling from replay buffer.
 
     Each thread generates one random index in [0, buffer_size).
-    Uses xorshift32 with thread-based seeding for GPU-compatible randomness.
+    Uses PhiloxRandom for GPU-safe randomness (no seed collisions).
 
     Args:
         indices: Output buffer for random indices [SAMPLE_SIZE].
@@ -331,10 +329,14 @@ fn sample_indices_kernel[
     if i >= SAMPLE_SIZE:
         return
 
-    # GPU-compatible random: unique seed per thread
-    var rng = xorshift32(rng_seed + Scalar[DType.uint32](i * 2654435761))
-    var rand_result = random_uniform[DType.float32](rng)
-    var idx = Int(rand_result[0] * Scalar[DType.float32](buffer_size))
+    # PhiloxRandom: unique seed per thread, no collisions
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(i),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u: Scalar[dtype] = Scalar[dtype](rand_vals[0])
+    var idx = Int(u * Scalar[dtype](buffer_size))
     indices[i] = Scalar[DType.int32](idx)
 
 
@@ -807,7 +809,7 @@ fn ddpg_exploration_kernel[
     var rand_vals = philox.step_uniform()
     var u1 = Float32(rand_vals[0]) + Float32(1e-8)
     var u2 = Float32(rand_vals[1])
-    var mag = sqrt(-2.0 * log(u1))
+    var mag = sqrt(Float32(-2.0) * log(u1))
     var z = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
 
     var val = raw_actions[b, a] * action_scale + noise_std * action_scale * z

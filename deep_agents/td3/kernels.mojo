@@ -65,7 +65,7 @@ fn add_gaussian_noise_kernel[
     var rand_vals = philox.step_uniform()
     var u1 = Float32(rand_vals[0]) + Float32(1e-8)
     var u2 = Float32(rand_vals[1])
-    var mag = sqrt(-2.0 * log(u1))
+    var mag = sqrt(Float32(-2.0) * log(u1))
     var z = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
 
     # Scale and clip noise

@@ -227,7 +227,7 @@ struct PrioritizedReplayBuffer[
     - beta: IS exponent (0 = no correction, 1 = full correction).
     - epsilon: Small constant for non-zero priority.
 
-    The sum-tree is implemented inline using InlineArray for O(log n) sampling.
+    The sum-tree is implemented using heap-allocated List for O(log n) sampling.
 
     Parameters:
         capacity: Maximum number of transitions to store.
@@ -257,17 +257,15 @@ struct PrioritizedReplayBuffer[
     comptime ACTION_DIM = Self.action_dim
     comptime DTYPE = Self.dtype
 
-    # Storage arrays
-    var obs: InlineArray[Scalar[Self.DTYPE], Self.capacity * Self.OBS_DIM]
-    var actions: InlineArray[
-        Scalar[Self.DTYPE], Self.capacity * Self.ACTION_DIM
-    ]
-    var rewards: InlineArray[Scalar[Self.DTYPE], Self.capacity]
-    var next_obs: InlineArray[Scalar[Self.DTYPE], Self.capacity * Self.OBS_DIM]
-    var dones: InlineArray[Scalar[Self.DTYPE], Self.capacity]
+    # Storage arrays (heap-allocated to avoid stack overflow with large capacities)
+    var obs: List[Scalar[Self.DTYPE]]
+    var actions: List[Scalar[Self.DTYPE]]
+    var rewards: List[Scalar[Self.DTYPE]]
+    var next_obs: List[Scalar[Self.DTYPE]]
+    var dones: List[Scalar[Self.DTYPE]]
 
     # Sum-tree for priorities (2 * capacity - 1 nodes)
-    var tree: InlineArray[Scalar[Self.DTYPE], 2 * Self.capacity - 1]
+    var tree: List[Scalar[Self.DTYPE]]
 
     # Buffer state
     var size: Int
@@ -290,20 +288,27 @@ struct PrioritizedReplayBuffer[
             beta: Initial IS exponent (should be annealed to 1).
             epsilon: Small constant for non-zero priority.
         """
-        self.obs = InlineArray[
-            Scalar[Self.dtype], Self.capacity * Self.obs_dim
-        ](fill=0)
-        self.actions = InlineArray[
-            Scalar[Self.dtype], Self.capacity * Self.action_dim
-        ](fill=0)
-        self.rewards = InlineArray[Scalar[Self.dtype], Self.capacity](fill=0)
-        self.next_obs = InlineArray[
-            Scalar[Self.dtype], Self.capacity * Self.obs_dim
-        ](fill=0)
-        self.dones = InlineArray[Scalar[Self.dtype], Self.capacity](fill=0)
-        self.tree = InlineArray[Scalar[Self.dtype], 2 * Self.capacity - 1](
-            fill=0
-        )
+        var obs_size = Self.capacity * Self.obs_dim
+        var action_size = Self.capacity * Self.action_dim
+        var tree_size = 2 * Self.capacity - 1
+
+        self.obs = List[Scalar[Self.dtype]](capacity=obs_size)
+        self.actions = List[Scalar[Self.dtype]](capacity=action_size)
+        self.rewards = List[Scalar[Self.dtype]](capacity=Self.capacity)
+        self.next_obs = List[Scalar[Self.dtype]](capacity=obs_size)
+        self.dones = List[Scalar[Self.dtype]](capacity=Self.capacity)
+        self.tree = List[Scalar[Self.dtype]](capacity=tree_size)
+
+        for _ in range(obs_size):
+            self.obs.append(Scalar[Self.dtype](0))
+            self.next_obs.append(Scalar[Self.dtype](0))
+        for _ in range(action_size):
+            self.actions.append(Scalar[Self.dtype](0))
+        for _ in range(Self.capacity):
+            self.rewards.append(Scalar[Self.dtype](0))
+            self.dones.append(Scalar[Self.dtype](0))
+        for _ in range(tree_size):
+            self.tree.append(Scalar[Self.dtype](0))
         self.size = 0
         self.ptr = 0
         self.alpha = alpha
@@ -567,7 +572,7 @@ struct HeapReplayBuffer[
     obs_dim: Int,
     action_dim: Int,
     dtype: DType = DType.float64,
-](ReplayBufferTrait):
+](Movable, ReplayBufferTrait):
     """Heap-allocated replay buffer for large observation/action spaces.
 
     Unlike ReplayBuffer which uses stack-allocated InlineArray, this version

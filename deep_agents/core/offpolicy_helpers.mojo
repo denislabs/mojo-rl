@@ -29,7 +29,7 @@ from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkState
 from .utils import obs_to_inline
-from nn.replay import ReplayBuffer
+from deep_agents.core.replay import HeapReplayBuffer
 from nn.gpu.random import gaussian_noise
 
 
@@ -156,7 +156,7 @@ fn store_continuous_transition[
     ACTIONS: Int,
     CAPACITY: Int,
 ](
-    mut buffer: ReplayBuffer[CAPACITY, OBS, ACTIONS, dtype],
+    mut buffer: HeapReplayBuffer[CAPACITY, OBS, ACTIONS, dtype],
     obs: List[Scalar[DTYPE]],
     action: List[Scalar[DTYPE]],
     reward: Float64,

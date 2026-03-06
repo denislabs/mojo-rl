@@ -67,7 +67,7 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 
 from nn.gpu.random import gaussian_noise
 from deep_agents.core.kernels import (

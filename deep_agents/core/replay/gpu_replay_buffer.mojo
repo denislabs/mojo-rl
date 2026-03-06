@@ -27,7 +27,7 @@ Usage:
 """
 
 from nn.constants import dtype, TPB
-from .replay_buffer import ReplayBuffer
+from .replay_buffer import HeapReplayBuffer
 from ..kernels import (
     store_transitions_kernel,
     sample_indices_kernel,
@@ -106,7 +106,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
     fn upload_from(
         mut self,
-        cpu_buf: ReplayBuffer[
+        cpu_buf: HeapReplayBuffer[
             Self.CAPACITY, Self.OBS_DIM, Self.ACTION_DIM, dtype
         ],
         ctx: DeviceContext,

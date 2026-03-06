@@ -1,7 +1,7 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkPair
-from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Xavier, Kaiming
 from deep_agents.core import GPUOffPolicyState, OffPolicyState
@@ -55,7 +55,7 @@ struct DDPGCPUState[
     var critic: NetworkPair[Self.CriticModel, Self.CriticOpt]
 
     # Replay buffer
-    var buffer: ReplayBuffer[
+    var buffer: HeapReplayBuffer[
         Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
     ]
 
@@ -97,7 +97,7 @@ struct DDPGCPUState[
         self.critic = NetworkPair[Self.CriticModel, Self.CriticOpt]()
         self.critic.initialize[Kaiming]()
 
-        self.buffer = ReplayBuffer[
+        self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()
 

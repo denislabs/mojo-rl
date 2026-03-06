@@ -76,7 +76,7 @@ fn _sample_continuous_actions_kernel[
         var u1_for_log = Float32(u1) + Float32(1e-8)
         var u2_for_cos = Float32(u2)
 
-        var mag = sqrt(-2.0 * log(u1_for_log))
+        var mag = sqrt(Float32(-2.0) * log(u1_for_log))
         var noise = Scalar[dtype](
             mag * cos(u2_for_cos * Float32(6.283185307179586))
         )
@@ -447,7 +447,9 @@ fn ppo_critic_grad_kernel[
     var value = values[b, 0]
     var target = returns[b]
 
-    grad_values[b, 0] = value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+    grad_values[b, 0] = (
+        value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+    )
 
 
 @always_inline
@@ -466,7 +468,8 @@ fn ppo_critic_grad_clipped_kernel[
     value_loss_coef: Scalar[dtype],
     batch_size: Int,
 ):
-    """Compute gradient for PPO critic with value clipping, scaled by value_loss_coef."""
+    """Compute gradient for PPO critic with value clipping, scaled by value_loss_coef.
+    """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= batch_size:
         return
@@ -494,10 +497,15 @@ fn ppo_critic_grad_clipped_kernel[
         elif value - old_value < -clip_epsilon:
             clip_sign = Scalar[dtype](0.0)
         grad_values[b, 0] = (
-            value_loss_coef * clip_sign * (value_clipped - target) / Scalar[dtype](BATCH_SIZE)
+            value_loss_coef
+            * clip_sign
+            * (value_clipped - target)
+            / Scalar[dtype](BATCH_SIZE)
         )
     else:
-        grad_values[b, 0] = value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+        grad_values[b, 0] = (
+            value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+        )
 
 
 @always_inline
@@ -879,7 +887,7 @@ fn clamp_log_std_params_kernel[
 
 @always_inline
 fn add_obs_noise_kernel[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     N_ENVS: Int,
     OBS_DIM: Int,
 ](
@@ -919,10 +927,10 @@ fn add_obs_noise_kernel[
         var u2 = rand_vals[1]
 
         # Box-Muller transform for standard normal
-        var u1_safe = Float32(u1) + Float32(1e-8)
+        var u1_safe = Scalar[dtype](u1) + Scalar[dtype](1e-8)
         var mag = sqrt(-2.0 * log(u1_safe))
         var noise = Scalar[dtype](
-            mag * cos(Float32(u2) * Float32(6.283185307179586))
+            mag * cos(Scalar[dtype](u2) * 6.283185307179586)
         )
 
         # Add scaled noise to observation
