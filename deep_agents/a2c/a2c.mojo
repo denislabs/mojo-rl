@@ -805,7 +805,7 @@ struct DeepA2CAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the A2C agent on a discrete action environment.
 
         Args:
@@ -825,8 +825,8 @@ struct DeepA2CAgent[
             self,
             env,
             num_updates,
-            checkpoint_path,
             checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,

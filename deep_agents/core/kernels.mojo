@@ -863,6 +863,44 @@ fn ddpg_exploration_kernel[
 
 
 # =============================================================================
+# Uniform Random Actions (warmup exploration)
+# =============================================================================
+
+
+@always_inline
+fn uniform_random_actions_kernel[
+    dtype: DType,
+    BATCH: Int,
+    ACTION_DIM: Int,
+](
+    actions_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    action_scale: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Fill actions with uniform random values in [-action_scale, action_scale].
+
+    Used during warmup to match CleanRL's env.action_space.sample() behavior.
+    One thread per (batch, action) element.
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * ACTION_DIM:
+        return
+    var b = tid // ACTION_DIM
+    var a = tid % ACTION_DIM
+
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    # Map [0, 1] -> [-action_scale, action_scale]
+    var u = Scalar[dtype](Float32(rand_vals[0]))
+    actions_out[b, a] = (u * 2 - 1) * action_scale
+
+
+# =============================================================================
 # TD Critic MSE Gradient (shared by DDPG/TD3/SAC)
 # =============================================================================
 

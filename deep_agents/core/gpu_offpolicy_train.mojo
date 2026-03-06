@@ -61,6 +61,7 @@ from deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
     log_and_reset_completed_kernel,
+    uniform_random_actions_kernel,
 )
 
 
@@ -144,6 +145,19 @@ trait GPUOffPolicyAgent:
 
     comptime GPUStateType: GPUOffPolicyState
     """Concrete GPU state type holding all device buffers for this algorithm."""
+
+    fn get_action_scale(self) -> Float64:
+        """Return action range bound [-scale, scale] for warmup random actions.
+        """
+        ...
+
+    fn get_total_steps(self) -> Int:
+        """Return total env transitions collected so far."""
+        ...
+
+    fn set_total_steps(mut self, steps: Int):
+        """Set total env transitions counter (for exploration RNG seeding)."""
+        ...
 
     fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent (networks, replay, scratch).
@@ -394,6 +408,14 @@ fn run_offpolicy_continuous_train_gpu[
     var next_sync = sync_every
     var next_checkpoint = checkpoint_every
 
+    # Warmup kernel wrapper (uniform random actions in [-action_scale, action_scale])
+    comptime act_tpb = 256
+    comptime act_blocks = (n_envs * E.ACTION_DIM + act_tpb - 1) // act_tpb
+    comptime warmup_kernel = uniform_random_actions_kernel[
+        dtype, n_envs, E.ACTION_DIM
+    ]
+    var action_scale_val = Scalar[dtype](agent.get_action_scale())
+
     while total_steps < num_steps:
         # ------------------------------------------------------------------
         # Save current obs as prev_obs (before environment step)
@@ -401,9 +423,30 @@ fn run_offpolicy_continuous_train_gpu[
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
         # ------------------------------------------------------------------
-        # Select actions via agent's GPU policy (reads obs_buf)
+        # Select actions: warmup uses uniform random, then agent's policy
         # ------------------------------------------------------------------
-        agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
+        if total_steps < warmup_steps:
+            # Uniform random actions matching CleanRL's env.action_space.sample()
+            var act_t = LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs, E.ACTION_DIM),
+                MutAnyOrigin,
+            ](actions_buf.unsafe_ptr())
+            var warmup_seed = Scalar[DType.uint32](step_seed)
+            ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                act_t,
+                action_scale_val,
+                warmup_seed,
+                grid_dim=(act_blocks,),
+                block_dim=(act_tpb,),
+            )
+        else:
+            agent.select_actions_gpu[n_envs](
+                ctx, gpu_state, obs_buf, actions_buf
+            )
+
+        # Update agent's total_steps so exploration RNG seed varies each call
+        agent.set_total_steps(agent.get_total_steps() + n_envs)
 
         # ------------------------------------------------------------------
         # Step environment (obs_buf now holds next observations)
@@ -483,10 +526,7 @@ fn run_offpolicy_continuous_train_gpu[
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
-        if (
-            total_steps >= warmup_steps
-            and gpu_state.gpu_buffer_is_ready()
-        ):
+        if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
                 agent.soft_update_targets_gpu(ctx, gpu_state)
@@ -503,9 +543,7 @@ fn run_offpolicy_continuous_train_gpu[
         if checkpoint_every > 0 and total_steps >= next_checkpoint:
             if total_steps < next_sync - sync_every + n_envs:
                 agent.download_from_gpu(gpu_state, ctx)
-            agent.save_checkpoint(
-                checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
-            )
+            agent.save_checkpoint(checkpoint_path)
             next_checkpoint += checkpoint_every
 
         total_steps += n_envs
@@ -777,10 +815,7 @@ fn run_offpolicy_discrete_train_gpu[
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
-        if (
-            total_steps >= warmup_steps
-            and gpu_state.gpu_buffer_is_ready()
-        ):
+        if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
                 agent.soft_update_targets_gpu(ctx, gpu_state)
@@ -794,9 +829,7 @@ fn run_offpolicy_discrete_train_gpu[
         if checkpoint_every > 0 and total_steps >= next_checkpoint:
             if total_steps < next_sync - sync_every + n_envs:
                 agent.download_from_gpu(gpu_state, ctx)
-            agent.save_checkpoint(
-                checkpoint_path + "_step_" + String(total_steps) + ".ckpt"
-            )
+            agent.save_checkpoint(checkpoint_path)
             next_checkpoint += checkpoint_every
 
         total_steps += n_envs

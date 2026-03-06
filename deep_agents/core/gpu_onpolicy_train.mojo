@@ -666,9 +666,7 @@ fn run_onpolicy_discrete_train_gpu[
         if checkpoint_every > 0 and update % checkpoint_every == 0:
             if update % sync_every != 0:  # avoid double download
                 agent.download_from_gpu(gpu_state, ctx)
-            agent.save_checkpoint(
-                checkpoint_path + "_update_" + String(update) + ".ckpt"
-            )
+            agent.save_checkpoint(checkpoint_path)
 
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
@@ -735,6 +733,8 @@ fn run_onpolicy_continuous_train_gpu[
         target_episodes: Target number of episodes to complete (default: 0 = unlimited).
         target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
+        checkpoint_every: Save checkpoint every N updates (default: 0 = disabled).
+        checkpoint_path: Path to save checkpoint (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -979,9 +979,7 @@ fn run_onpolicy_continuous_train_gpu[
         if checkpoint_every > 0 and update % checkpoint_every == 0:
             if update % sync_every != 0:  # avoid double download
                 agent.download_from_gpu(gpu_state, ctx)
-            agent.save_checkpoint(
-                checkpoint_path + "_update_" + String(update) + ".ckpt"
-            )
+            agent.save_checkpoint(checkpoint_path)
 
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(

@@ -777,6 +777,15 @@ struct DQNAgent[
 
         self.train_step_count += 1
 
+    fn get_action_scale(self) -> Float64:
+        return 1.0  # Discrete actions don't use action_scale
+
+    fn get_total_steps(self) -> Int:
+        return self.train_step_count
+
+    fn set_total_steps(mut self, steps: Int):
+        self.train_step_count = steps
+
     fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,

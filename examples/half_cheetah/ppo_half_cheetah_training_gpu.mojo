@@ -95,7 +95,7 @@ fn main() raises:
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
-            checkpoint_every=1_000,
+            checkpoint_every=10,
             checkpoint_path="ppo_half_cheetah.ckpt",
             normalize_rewards=True,
             obs_noise_std=0.0,
@@ -162,7 +162,7 @@ fn main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
-                print_every=1,
+                print_every=10,
             )
 
             var end_time = perf_counter_ns()

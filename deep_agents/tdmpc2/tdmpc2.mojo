@@ -42,10 +42,6 @@ from nn.loss.two_hot import (
 from deep_agents.core.replay.sequence_replay_buffer import SequenceReplayBuffer
 from deep_agents.core.kernels import (
     copy_buffer_kernel,
-    accumulate_rewards_kernel,
-    increment_steps_kernel,
-    extract_completed_episodes_kernel,
-    selective_reset_tracking_kernel,
 )
 from core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from deep_agents.ppo.kernels import (
@@ -1477,7 +1473,7 @@ struct TDMPC2Agent[
         ctx: DeviceContext,
         num_episodes: Int,
         verbose: Bool = True,
-        print_every: Int = 1,
+        print_every: Int = 50_000,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
@@ -1489,7 +1485,7 @@ struct TDMPC2Agent[
             ctx: GPU device context.
             num_episodes: Target number of episodes to complete.
             verbose: Whether to print progress.
-            print_every: Print progress every N episodes.
+            print_every: Print interval in total steps (default: 50000).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
@@ -1561,31 +1557,10 @@ struct TDMPC2Agent[
         var env_act_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.ACT), MutAnyOrigin
         ](gs.env_act_buf.unsafe_ptr())
-        var env_rew_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.env_rew_buf.unsafe_ptr())
-        var env_done_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.env_done_buf.unsafe_ptr())
         var env_pi_out_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, 2 * Self.ACT), MutAnyOrigin
         ](gs.env_pi_out_buf.unsafe_ptr())
 
-        var ep_rew_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.ep_rew_buf.unsafe_ptr())
-        var ep_steps_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.ep_steps_buf.unsafe_ptr())
-        var completed_rew_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.completed_rew_buf.unsafe_ptr())
-        var completed_steps_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.completed_steps_buf.unsafe_ptr())
-        var completed_mask_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](gs.completed_mask_buf.unsafe_ptr())
 
         # Flat 1D views of batch data
         var batch_obs_flat_tensor = LayoutTensor[
@@ -1746,14 +1721,6 @@ struct TDMPC2Agent[
         # =================================================================
         # n_envs-dependent kernel wrappers (all others live at struct level)
         # =================================================================
-        comptime accum_rew_wrapper = accumulate_rewards_kernel[dtype, n_envs]
-        comptime incr_steps_wrapper = increment_steps_kernel[dtype, n_envs]
-        comptime extract_ep_wrapper = extract_completed_episodes_kernel[
-            dtype, n_envs
-        ]
-        comptime reset_tracking_wrapper = selective_reset_tracking_kernel[
-            dtype, n_envs
-        ]
         comptime random_act_wrapper = tdmpc2_random_actions_kernel[
             dtype, n_envs, Self.ACT
         ]
@@ -1826,7 +1793,14 @@ struct TDMPC2Agent[
         # =================================================================
         var completed_episodes = 0
         var total_steps = 0
+        var last_avg_reward: Float64 = 0.0
+        var recent_reward_sum: Float64 = 0.0
+        var recent_episode_count: Int = 0
+        var next_print = print_every
         var grad_norm_max = Scalar[dtype](10.0)
+
+        # CPU-side per-env episode reward accumulators
+        var cpu_ep_rewards = InlineArray[Float64, n_envs](fill=0.0)
         var gpu_wm_step: Int = 0  # Adam step counter for world model networks
         var gpu_pi_step: Int = 0  # Adam step counter for policy network
 
@@ -1928,59 +1902,29 @@ struct TDMPC2Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # Accumulate episode stats on GPU
-            ctx.enqueue_function[accum_rew_wrapper, accum_rew_wrapper](
-                ep_rew_tensor,
-                env_rew_tensor,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
-                ep_steps_tensor,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # Extract completed episodes
-            ctx.enqueue_function[extract_ep_wrapper, extract_ep_wrapper](
-                env_done_tensor,
-                ep_rew_tensor,
-                ep_steps_tensor,
-                completed_rew_tensor,
-                completed_steps_tensor,
-                completed_mask_tensor,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # Download obs/act/rew/done + episode info to CPU
+            # Download obs/act/rew/done to CPU for replay buffer + episode tracking
             ctx.enqueue_copy(gs.env_obs_host, gs.env_obs_buf)
             ctx.enqueue_copy(gs.env_act_host, gs.env_act_buf)
             ctx.enqueue_copy(gs.env_rew_host, gs.env_rew_buf)
             ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)
-            ctx.enqueue_copy(gs.completed_rew_host, gs.completed_rew_buf)
-            ctx.enqueue_copy(gs.completed_steps_host, gs.completed_steps_buf)
-            ctx.enqueue_copy(gs.completed_mask_host, gs.completed_mask_buf)
             ctx.synchronize()
 
-            # CPU: log completed episodes + push transitions to per-env buffers
+            # CPU: push transitions to per-env replay buffers + track episodes
             for env_idx in range(n_envs):
-                if Float64(gs.completed_mask_host[env_idx]) > 0.5:
-                    var ep_r = Float64(gs.completed_rew_host[env_idx])
-                    var ep_s = Int(gs.completed_steps_host[env_idx])
-                    metrics.log_episode(completed_episodes, ep_r, ep_s, 0.0)
+                var rew_val = Scalar[dtype](gs.env_rew_host[env_idx])
+                var done_val = Float64(gs.env_done_host[env_idx]) > 0.5
+
+                # Accumulate per-env episode reward on CPU
+                cpu_ep_rewards[env_idx] += Float64(rew_val)
+
+                if done_val:
+                    # Episode completed — log and reset accumulator
+                    var ep_r = cpu_ep_rewards[env_idx]
+                    metrics.log_episode(completed_episodes, ep_r, 0, 0.0)
                     completed_episodes += 1
-                    if verbose and completed_episodes % print_every == 0:
-                        print(
-                            "Episode",
-                            completed_episodes,
-                            "| reward:",
-                            ep_r,
-                            "| total_steps:",
-                            total_steps,
-                            "| train_steps:",
-                            self.train_step_count,
-                        )
+                    recent_reward_sum += ep_r
+                    recent_episode_count += 1
+                    cpu_ep_rewards[env_idx] = 0.0
 
                 # Build obs/action InlineArrays and add to per-env replay buffer
                 var obs_arr = InlineArray[Scalar[dtype], Self.OBS](fill=0)
@@ -1989,23 +1933,33 @@ struct TDMPC2Agent[
                     obs_arr[k] = gs.env_obs_host[env_idx * Self.OBS + k]
                 for k in range(Self.ACT):
                     act_arr[k] = gs.env_act_host[env_idx * Self.ACT + k]
-                var rew_val = Scalar[dtype](gs.env_rew_host[env_idx])
-                var done_val = Float64(gs.env_done_host[env_idx]) > 0.5
                 env_bufs[env_idx].add(obs_arr, act_arr, rew_val, done_val)
 
             total_steps += n_envs
             t_data_collection += Int(perf_counter_ns() - _t0_dc)
 
+            # Print progress periodically
+            if verbose and total_steps >= next_print:
+                if recent_episode_count > 0:
+                    last_avg_reward = recent_reward_sum / Float64(
+                        recent_episode_count
+                    )
+
+                print(
+                    "TDMPC2 | Step",
+                    total_steps,
+                    "| Ep:",
+                    completed_episodes,
+                    "| AvgR:",
+                    String(last_avg_reward)[:7],
+                    "| Train:",
+                    self.train_step_count,
+                )
+                recent_reward_sum = 0.0
+                recent_episode_count = 0
+                next_print += print_every
+
             # Reset done environments
-            ctx.enqueue_function[
-                reset_tracking_wrapper, reset_tracking_wrapper
-            ](
-                env_done_tensor,
-                ep_rew_tensor,
-                ep_steps_tensor,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
             ENV.selective_reset_kernel_gpu[n_envs, ENV.STATE_SIZE](
                 ctx,
                 gs.states_buf,

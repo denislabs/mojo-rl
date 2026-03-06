@@ -267,21 +267,11 @@ struct TDMPC2GPUState[
     var env_z_buf: DeviceBuffer[dtype]  # [ENV_LATENT]
     var env_pi_out_buf: DeviceBuffer[dtype]  # [ENV_PI_OUT]
 
-    # ── Episode tracking (GPU) ──
-    var ep_rew_buf: DeviceBuffer[dtype]  # [max_n_envs]
-    var ep_steps_buf: DeviceBuffer[dtype]  # [max_n_envs]
-    var completed_rew_buf: DeviceBuffer[dtype]  # [max_n_envs]
-    var completed_steps_buf: DeviceBuffer[dtype]  # [max_n_envs]
-    var completed_mask_buf: DeviceBuffer[dtype]  # [max_n_envs]
-
     # ── Environment host buffers ──
     var env_obs_host: HostBuffer[dtype]
     var env_act_host: HostBuffer[dtype]
     var env_rew_host: HostBuffer[dtype]
     var env_done_host: HostBuffer[dtype]
-    var completed_rew_host: HostBuffer[dtype]
-    var completed_steps_host: HostBuffer[dtype]
-    var completed_mask_host: HostBuffer[dtype]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
@@ -459,23 +449,6 @@ struct TDMPC2GPUState[
         self.env_z_buf = ctx.enqueue_create_buffer[dtype](Self.ENV_LATENT)
         self.env_pi_out_buf = ctx.enqueue_create_buffer[dtype](Self.ENV_PI_OUT)
 
-        # ── Episode tracking ──
-        self.ep_rew_buf = ctx.enqueue_create_buffer[dtype](Self.max_n_envs)
-        self.ep_steps_buf = ctx.enqueue_create_buffer[dtype](Self.max_n_envs)
-        self.completed_rew_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs
-        )
-        self.completed_steps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs
-        )
-        self.completed_mask_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs
-        )
-
-        # Zero episode tracking
-        ctx.enqueue_memset(self.ep_rew_buf, 0)
-        ctx.enqueue_memset(self.ep_steps_buf, 0)
-
         # ── Environment host buffers ──
         self.env_obs_host = ctx.enqueue_create_host_buffer[dtype](Self.ENV_OBS)
         self.env_act_host = ctx.enqueue_create_host_buffer[dtype](Self.ENV_ACT)
@@ -483,15 +456,6 @@ struct TDMPC2GPUState[
             Self.max_n_envs
         )
         self.env_done_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.max_n_envs
-        )
-        self.completed_rew_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.max_n_envs
-        )
-        self.completed_steps_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.max_n_envs
-        )
-        self.completed_mask_host = ctx.enqueue_create_host_buffer[dtype](
             Self.max_n_envs
         )
 

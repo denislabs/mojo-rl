@@ -195,7 +195,6 @@ fn main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
-                print_every=1,
             )
 
             var end_time = perf_counter_ns()

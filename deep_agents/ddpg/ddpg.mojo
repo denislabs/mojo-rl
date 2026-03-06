@@ -904,6 +904,15 @@ struct DeepDDPGAgent[
         )
         gpu_state.actor.online.optimizer_step(ctx)
 
+    fn get_action_scale(self) -> Float64:
+        return self.action_scale
+
+    fn get_total_steps(self) -> Int:
+        return self.total_steps
+
+    fn set_total_steps(mut self, steps: Int):
+        self.total_steps = steps
+
     fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
