@@ -33,7 +33,7 @@ Kernels provided:
 """
 
 from layout import LayoutTensor, Layout
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.math import exp, log, sqrt, cos, tanh
 from std.random.philox import Random as PhiloxRandom
 
@@ -888,6 +888,205 @@ fn tdmpc2_decode_and_min_kernel[
 
 
 @always_inline
+fn tdmpc2_extract_all_build_za_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+    HORIZON: Int,
+](
+    batch_acts_flat: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    batch_obs_flat: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE * (HORIZON + 1) * OBS_DIM),
+        MutAnyOrigin,
+    ],
+    batch_rew_flat: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE * HORIZON), MutAnyOrigin
+    ],
+    batch_done_flat: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE * HORIZON), MutAnyOrigin
+    ],
+    step: Int,
+    acts_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    obs_next_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rew_step: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    done_step: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    z: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, LATENT_DIM), MutAnyOrigin
+    ],
+    za: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE, LATENT_DIM + ACTION_DIM),
+        MutAnyOrigin,
+    ],
+) where dtype.is_floating_point():
+    """Fused: extract act/obs/rew/done at step t AND build za = [z, act].
+
+    Combines 4 sequential kernels into one launch:
+      1. extract_act_step (step t)
+      2. extract_obs_step (step t+1)
+      3. extract_rew_done (step t)
+      4. build_za (z, act → za)
+
+    Safe because each thread i processes only its own row.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    # Extract actions at step t
+    var act_base = i * HORIZON * ACTION_DIM + step * ACTION_DIM
+    for k in range(ACTION_DIM):
+        acts_step[i, k] = batch_acts_flat[act_base + k]
+
+    # Extract obs at step t+1
+    var obs_base = i * (HORIZON + 1) * OBS_DIM + (step + 1) * OBS_DIM
+    for k in range(OBS_DIM):
+        obs_next_step[i, k] = batch_obs_flat[obs_base + k]
+
+    # Extract rew and done at step t
+    var rd_idx = i * HORIZON + step
+    rew_step[i] = batch_rew_flat[rd_idx]
+    done_step[i] = batch_done_flat[rd_idx]
+
+    # Build za = [z, act]
+    for k in range(LATENT_DIM):
+        za[i, k] = z[i, k]
+    for k in range(ACTION_DIM):
+        za[i, LATENT_DIM + k] = acts_step[i, k]
+
+
+@always_inline
+fn tdmpc2_extract_obs_rew_done_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    HORIZON: Int,
+](
+    batch_obs_flat: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE * (HORIZON + 1) * OBS_DIM),
+        MutAnyOrigin,
+    ],
+    batch_rew_flat: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE * HORIZON), MutAnyOrigin
+    ],
+    batch_done_flat: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE * HORIZON), MutAnyOrigin
+    ],
+    step: Int,
+    obs_next_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rew_step: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    done_step: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Fused: extract obs at step t+1 AND rew/done at step t.
+
+    Combines extract_obs_step + extract_rew_done into one launch.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    # Extract obs at step t+1
+    var obs_base = i * (HORIZON + 1) * OBS_DIM + (step + 1) * OBS_DIM
+    for k in range(OBS_DIM):
+        obs_next_step[i, k] = batch_obs_flat[obs_base + k]
+
+    # Extract rew and done at step t
+    var rd_idx = i * HORIZON + step
+    rew_step[i] = batch_rew_flat[rd_idx]
+    done_step[i] = batch_done_flat[rd_idx]
+
+
+@always_inline
+fn tdmpc2_apply_tanh_build_za_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+    ],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    z: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, LATENT_DIM), MutAnyOrigin
+    ],
+    za: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE, LATENT_DIM + ACTION_DIM),
+        MutAnyOrigin,
+    ],
+) where dtype.is_floating_point():
+    """Fused: apply tanh to policy mean AND build za = [z, tanh(mean)].
+
+    Combines apply_tanh_kernel + build_za_kernel into one launch.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    # Apply tanh to mean → actions
+    for j in range(ACTION_DIM):
+        var mean_raw = Scalar[dtype](pi_out[i, j][0])
+        actions[i, j] = Scalar[dtype](tanh(Float32(mean_raw)))
+
+    # Build za = [z, actions]
+    for k in range(LATENT_DIM):
+        za[i, k] = z[i, k]
+    for k in range(ACTION_DIM):
+        za[i, LATENT_DIM + k] = actions[i, k]
+
+
+@always_inline
+fn tdmpc2_soft_update_5q_kernel[
+    dtype: DType,
+    SIZE: Int,
+](
+    target1: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source1: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    target2: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source2: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    target3: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source3: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    target4: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source4: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    target5: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source5: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    tau: Scalar[dtype],
+):
+    """Fused soft update of 5 Q-target networks in one kernel launch.
+
+    target_k = tau * source_k + (1 - tau) * target_k, for k=1..5.
+    Saves 4 kernel launches per training step.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+
+    var one_minus_tau = Scalar[dtype](1.0) - tau
+    target1[i] = tau * source1[i] + one_minus_tau * target1[i]
+    target2[i] = tau * source2[i] + one_minus_tau * target2[i]
+    target3[i] = tau * source3[i] + one_minus_tau * target3[i]
+    target4[i] = tau * source4[i] + one_minus_tau * target4[i]
+    target5[i] = tau * source5[i] + one_minus_tau * target5[i]
+
+
+@always_inline
 fn tdmpc2_add_two_into_kernel[
     dtype: DType,
     SIZE: Int,
@@ -911,3 +1110,364 @@ fn tdmpc2_add_two_into_kernel[
     if i >= SIZE:
         return
     dst[i] = dst[i] + src1[i] + src2[i]
+
+
+# =============================================================================
+# Fused 5Q Gradient Clipping + Adam (15 kernel launches → 3)
+# =============================================================================
+
+
+@always_inline
+fn tdmpc2_gradient_norm_5q_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    partial_sums_5q: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS * 5), MutAnyOrigin
+    ],
+    grads1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    """Compute partial sums of squared gradients for 5 Q networks in one launch.
+
+    Replaces 5 sequential gradient_norm_kernel calls. Each block computes its
+    partial sum for all 5 networks, writing to partial_sums_5q at offsets
+    k * NUM_BLOCKS + block_id (k=0..4).
+
+    Uses shared memory sequentially for each network to avoid 5x shared mem.
+    """
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Network 1
+    if idx < PARAM_SIZE:
+        var g = grads1[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+    barrier()
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        partial_sums_5q[0 * NUM_BLOCKS + block_id] = shared[0]
+
+    # Network 2
+    if idx < PARAM_SIZE:
+        var g = grads2[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        partial_sums_5q[1 * NUM_BLOCKS + block_id] = shared[0]
+
+    # Network 3
+    if idx < PARAM_SIZE:
+        var g = grads3[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        partial_sums_5q[2 * NUM_BLOCKS + block_id] = shared[0]
+
+    # Network 4
+    if idx < PARAM_SIZE:
+        var g = grads4[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        partial_sums_5q[3 * NUM_BLOCKS + block_id] = shared[0]
+
+    # Network 5
+    if idx < PARAM_SIZE:
+        var g = grads5[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        partial_sums_5q[4 * NUM_BLOCKS + block_id] = shared[0]
+
+
+@always_inline
+fn tdmpc2_gradient_reduce_apply_5q_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    grads1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    partial_sums_5q: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS * 5), MutAnyOrigin
+    ],
+    max_grad_norm: Scalar[dtype],
+):
+    """Fused reduce partial sums + clip gradients for 5 Q networks in one launch.
+
+    Replaces 5 sequential gradient_reduce_apply_fused_kernel calls.
+    Each block redundantly reduces all 5 partial sum arrays, computes
+    5 clip scales, and applies them to its portion of gradients.
+
+    Scales are stored at shared[BLOCK_SIZE-5 .. BLOCK_SIZE-1] after each
+    reduction to avoid a second shared allocation (BLOCK_SIZE >= 256).
+    """
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # ── Network 1 ──
+    var local_sum = Scalar[dtype](0.0)
+    var ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums_5q[0 * NUM_BLOCKS + ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+    barrier()
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        var norm = Scalar[dtype](sqrt(rebind[Scalar[dtype]](shared[0])))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[BLOCK_SIZE - 5] = scale
+    barrier()
+
+    # ── Network 2 ──
+    local_sum = Scalar[dtype](0.0)
+    ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums_5q[1 * NUM_BLOCKS + ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        var norm = Scalar[dtype](sqrt(rebind[Scalar[dtype]](shared[0])))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[BLOCK_SIZE - 4] = scale
+    barrier()
+
+    # ── Network 3 ──
+    local_sum = Scalar[dtype](0.0)
+    ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums_5q[2 * NUM_BLOCKS + ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        var norm = Scalar[dtype](sqrt(rebind[Scalar[dtype]](shared[0])))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[BLOCK_SIZE - 3] = scale
+    barrier()
+
+    # ── Network 4 ──
+    local_sum = Scalar[dtype](0.0)
+    ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums_5q[3 * NUM_BLOCKS + ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        var norm = Scalar[dtype](sqrt(rebind[Scalar[dtype]](shared[0])))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[BLOCK_SIZE - 2] = scale
+    barrier()
+
+    # ── Network 5 ──
+    local_sum = Scalar[dtype](0.0)
+    ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums_5q[4 * NUM_BLOCKS + ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+    barrier()
+    stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+    if thread_id == 0:
+        var norm = Scalar[dtype](sqrt(rebind[Scalar[dtype]](shared[0])))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[BLOCK_SIZE - 1] = scale
+    barrier()
+
+    # Apply all 5 scales to gradients
+    if idx < PARAM_SIZE:
+        grads1[idx] = grads1[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 5])
+        grads2[idx] = grads2[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 4])
+        grads3[idx] = grads3[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 3])
+        grads4[idx] = grads4[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 2])
+        grads5[idx] = grads5[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 1])
+
+
+@always_inline
+fn tdmpc2_adam_step_5q_kernel[
+    dtype: DType, PARAM_SIZE: Int
+](
+    params1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    state1: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+    ],
+    params2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    state2: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+    ],
+    params3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    state3: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+    ],
+    params4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    state4: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+    ],
+    params5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    grads5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    state5: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+    ],
+    lr: Scalar[dtype],
+    beta1: Scalar[dtype],
+    beta2: Scalar[dtype],
+    eps: Scalar[dtype],
+    bias_correction1: Scalar[dtype],
+    bias_correction2: Scalar[dtype],
+):
+    """Fused Adam update for 5 Q networks in one kernel launch.
+
+    Replaces 5 sequential Adam.step_gpu calls. Each thread processes
+    the same parameter index across all 5 networks.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= PARAM_SIZE:
+        return
+
+    var one = Scalar[dtype](1.0)
+    var one_minus_b1 = one - beta1
+    var one_minus_b2 = one - beta2
+
+    # Q1
+    var g1 = rebind[Scalar[dtype]](grads1[idx])
+    var m1 = beta1 * rebind[Scalar[dtype]](state1[idx, 0]) + one_minus_b1 * g1
+    var v1 = beta2 * rebind[Scalar[dtype]](state1[idx, 1]) + one_minus_b2 * g1 * g1
+    state1[idx, 0] = m1
+    state1[idx, 1] = v1
+    params1[idx] = rebind[Scalar[dtype]](params1[idx]) - lr * (m1 / bias_correction1) / (sqrt(v1 / bias_correction2) + eps)
+
+    # Q2
+    var g2 = rebind[Scalar[dtype]](grads2[idx])
+    var m2 = beta1 * rebind[Scalar[dtype]](state2[idx, 0]) + one_minus_b1 * g2
+    var v2 = beta2 * rebind[Scalar[dtype]](state2[idx, 1]) + one_minus_b2 * g2 * g2
+    state2[idx, 0] = m2
+    state2[idx, 1] = v2
+    params2[idx] = rebind[Scalar[dtype]](params2[idx]) - lr * (m2 / bias_correction1) / (sqrt(v2 / bias_correction2) + eps)
+
+    # Q3
+    var g3 = rebind[Scalar[dtype]](grads3[idx])
+    var m3 = beta1 * rebind[Scalar[dtype]](state3[idx, 0]) + one_minus_b1 * g3
+    var v3 = beta2 * rebind[Scalar[dtype]](state3[idx, 1]) + one_minus_b2 * g3 * g3
+    state3[idx, 0] = m3
+    state3[idx, 1] = v3
+    params3[idx] = rebind[Scalar[dtype]](params3[idx]) - lr * (m3 / bias_correction1) / (sqrt(v3 / bias_correction2) + eps)
+
+    # Q4
+    var g4 = rebind[Scalar[dtype]](grads4[idx])
+    var m4 = beta1 * rebind[Scalar[dtype]](state4[idx, 0]) + one_minus_b1 * g4
+    var v4 = beta2 * rebind[Scalar[dtype]](state4[idx, 1]) + one_minus_b2 * g4 * g4
+    state4[idx, 0] = m4
+    state4[idx, 1] = v4
+    params4[idx] = rebind[Scalar[dtype]](params4[idx]) - lr * (m4 / bias_correction1) / (sqrt(v4 / bias_correction2) + eps)
+
+    # Q5
+    var g5 = rebind[Scalar[dtype]](grads5[idx])
+    var m5 = beta1 * rebind[Scalar[dtype]](state5[idx, 0]) + one_minus_b1 * g5
+    var v5 = beta2 * rebind[Scalar[dtype]](state5[idx, 1]) + one_minus_b2 * g5 * g5
+    state5[idx, 0] = m5
+    state5[idx, 1] = v5
+    params5[idx] = rebind[Scalar[dtype]](params5[idx]) - lr * (m5 / bias_correction1) / (sqrt(v5 / bias_correction2) + eps)

@@ -22,7 +22,7 @@ from deep_agents.tdmpc2.kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
 )
-from nn.gpu.rl_kernels import (
+from deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
     extract_completed_episodes_kernel,

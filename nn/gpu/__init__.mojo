@@ -30,31 +30,9 @@ This module provides common GPU operations used across deep RL algorithms.
 - gaussian_noise: Standard Gaussian noise (CPU, uses stdlib random)
 - gaussian_noise_pair: Two independent Gaussian samples (CPU)
 - gaussian_noise_gpu: Standard Gaussian noise (GPU, maintains RNG state)
-- gaussian_noise_pair_gpu: Two independent Gaussian samples (GPU)
 
-## RL Kernels (rl_kernels.mojo)
-- soft_update_kernel: Target network soft update
-- zero_buffer_kernel: Zero out a buffer
-- copy_buffer_kernel: Copy one buffer to another
-- accumulate_rewards_kernel: Add step rewards to episode totals
-- increment_steps_kernel: Increment step counters
-- extract_completed_episodes_kernel: Extract completed episode data
-- selective_reset_tracking_kernel: Reset tracking for done envs
-- store_transitions_kernel: Store transitions to GPU replay buffer
-- sample_indices_kernel: Generate random sample indices
-- gather_batch_kernel: Gather sampled transitions into batch
-
-## Continuous Control Kernels (continuous_kernels.mojo)
-- td_target_continuous_kernel: DDPG TD target r + γ*Q_t(s',a')*(1-done)
-- td_target_min_twin_kernel: TD3/SAC TD target with min(Q1,Q2) and optional entropy
-- actor_grad_from_critic_kernel: Extract ∂Q/∂a from critic input gradient
-- add_gaussian_noise_kernel: Clipped Gaussian noise for TD3 exploration
-- sac_reparameterize_kernel: SAC reparameterization trick with Jacobian log-prob
-- sac_sample_actions_kernel: SAC inference from actor_out[N, 2*ACTION_DIM]
-- sac_rsample_with_cache_kernel: SAC training forward — actions + log_prob + eps_cache
-- sac_rsample_bwd_kernel: SAC backward through reparameterization trick
-- a2c_gae_kernel: GAE advantages + returns for A2C GPU training
-- a2c_softmax_sample_kernel: Softmax categorical sampling for parallel A2C envs
+Note: RL-specific kernels have moved to deep_agents.core.kernels and
+agent-specific kernels.mojo files (sac, td3, a2c).
 """
 
 
@@ -91,39 +69,6 @@ from .random import (
     gaussian_noise,
     gaussian_noise_pair,
     gaussian_noise_gpu,
-    gaussian_noise_pair_gpu,
-)
-
-from .rl_kernels import (
-    soft_update_kernel,
-    zero_buffer_kernel,
-    copy_buffer_kernel,
-    accumulate_rewards_kernel,
-    increment_steps_kernel,
-    extract_completed_episodes_kernel,
-    selective_reset_tracking_kernel,
-    store_transitions_kernel,
-    sample_indices_kernel,
-    gather_batch_kernel,
-    store_transitions_kernel_nd,
-    gather_batch_kernel_nd,
-)
-
-from .continuous_kernels import (
-    td_target_continuous_kernel,
-    td_target_min_twin_kernel,
-    actor_grad_from_critic_kernel,
-    add_gaussian_noise_kernel,
-    sac_reparameterize_kernel,
-    sac_sample_actions_kernel,
-    sac_rsample_with_cache_kernel,
-    sac_rsample_bwd_kernel,
-    a2c_gae_kernel,
-    a2c_softmax_sample_kernel,
-    concat_obs_action_kernel,
-    scale_clip_actions_kernel,
-    ddpg_exploration_kernel,
-    td_mse_grad_kernel,
 )
 
 from .gpu_train_scratch import GPUTrainScratch

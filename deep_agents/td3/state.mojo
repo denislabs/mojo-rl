@@ -1,7 +1,7 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkPair
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Xavier, Kaiming
 from deep_agents.core import GPUOffPolicyState, OffPolicyState
@@ -276,9 +276,6 @@ struct TD3GPUState[
     ]
 
     # Exploration buffers (sized by Self.max_n_envs)
-    var rng_states: DeviceBuffer[
-        DType.uint32
-    ]  # [Self.max_n_envs * Self.action_dim]
     var raw_act: DeviceBuffer[dtype]  # [Self.max_n_envs * Self.action_dim]
     var inf_ws: DeviceBuffer[dtype]  # [Self.max_n_envs * ACTOR_WS]
 
@@ -331,11 +328,6 @@ struct TD3GPUState[
     var d_act: DeviceBuffer[dtype]  # [Self.batch_size * Self.action_dim]
     var d_obs: DeviceBuffer[dtype]  # [Self.batch_size * Self.obs_dim]
 
-    # TD3-specific: target policy smoothing RNG (separate from exploration RNG)
-    var td3_noise_rng: DeviceBuffer[
-        DType.uint32
-    ]  # [Self.batch_size * Self.action_dim]
-
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
         self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
@@ -346,9 +338,6 @@ struct TD3GPUState[
         ](ctx)
 
         # Exploration buffers
-        self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
-            Self.max_n_envs * Self.action_dim
-        )
         self.raw_act = ctx.enqueue_create_buffer[dtype](
             Self.max_n_envs * Self.action_dim
         )
@@ -441,43 +430,12 @@ struct TD3GPUState[
             Self.batch_size * Self.obs_dim
         )
 
-        # Target policy smoothing RNG
-        self.td3_noise_rng = ctx.enqueue_create_buffer[DType.uint32](
-            Self.batch_size * Self.action_dim
-        )
-
         # Pre-fill dq with -1/Self.batch_size (constant policy-gradient weight)
         ctx.synchronize()
         var dq_host = ctx.enqueue_create_host_buffer[dtype](Self.batch_size)
         for i in range(Self.batch_size):
             dq_host[i] = Scalar[dtype](-1.0 / Float64(Self.batch_size))
         ctx.enqueue_copy(self.dq, dq_host)
-
-        # Initialize persistent exploration RNG states (xorshift32)
-        ctx.synchronize()
-        var rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            Self.max_n_envs * Self.action_dim
-        )
-        var rng_s: UInt32 = 12345
-        for i in range(Self.max_n_envs * Self.action_dim):
-            rng_s = rng_s ^ (rng_s << 13)
-            rng_s = rng_s ^ (rng_s >> 17)
-            rng_s = rng_s ^ (rng_s << 5)
-            rng_host[i] = rng_s
-        ctx.enqueue_copy(self.rng_states, rng_host)
-
-        # Initialize target-smoothing RNG states (separate seed)
-        ctx.synchronize()
-        var noise_rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            Self.batch_size * Self.action_dim
-        )
-        var noise_s: UInt32 = 54321
-        for i in range(Self.batch_size * Self.action_dim):
-            noise_s = noise_s ^ (noise_s << 13)
-            noise_s = noise_s ^ (noise_s >> 17)
-            noise_s = noise_s ^ (noise_s << 5)
-            noise_rng_host[i] = noise_s
-        ctx.enqueue_copy(self.td3_noise_rng, noise_rng_host)
 
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods

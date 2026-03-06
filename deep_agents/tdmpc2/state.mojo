@@ -14,7 +14,7 @@ from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkState, GPUNetworkState
 from nn.constants import dtype, TPB
-from nn.replay.sequence_replay_buffer import SequenceReplayBuffer
+from deep_agents.core.replay.sequence_replay_buffer import SequenceReplayBuffer
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
@@ -208,7 +208,9 @@ struct TDMPC2GPUState[
     var rew_grad_ps_buf: DeviceBuffer[dtype]
     var term_grad_ps_buf: DeviceBuffer[dtype]
     var pol_grad_ps_buf: DeviceBuffer[dtype]
-    var q_grad_ps_buf: DeviceBuffer[dtype]  # shared for all Q networks
+    var q_grad_ps_buf: DeviceBuffer[
+        dtype
+    ]  # 5 * Q_GRAD_BLOCKS for fused 5Q norm
 
     # ── Intermediate training buffers ──
     var z_buf: DeviceBuffer[dtype]  # [B_LATENT] current z_t
@@ -377,7 +379,7 @@ struct TDMPC2GPUState[
             Self.POL_GRAD_BLOCKS
         )
         self.q_grad_ps_buf = ctx.enqueue_create_buffer[dtype](
-            Self.Q_GRAD_BLOCKS
+            Self.Q_GRAD_BLOCKS * 5
         )
 
         # ── Intermediate training buffers ──
@@ -610,13 +612,17 @@ struct TDMPC2CPUState[
     var _enc_cache: List[Scalar[dtype]]  # [BATCH * ENC_CACHE_SIZE]
     var _z_current: List[Scalar[dtype]]  # [B_LATENT] rolling latent state
     var _z_pred: List[Scalar[dtype]]  # [B_LATENT] dynamics prediction
-    var _z_enc_next: List[Scalar[dtype]]  # [B_LATENT] encoded next obs (stop-grad)
+    var _z_enc_next: List[
+        Scalar[dtype]
+    ]  # [B_LATENT] encoded next obs (stop-grad)
     var _za: List[Scalar[dtype]]  # [B_ZA] concatenated z+a (shared w/ policy)
     var _dyn_cache: List[Scalar[dtype]]  # [BATCH * DYN_CACHE_SIZE]
     var _rew_logits: List[Scalar[dtype]]  # [B_BINS]
     var _rew_cache: List[Scalar[dtype]]  # [BATCH * REW_CACHE_SIZE]
     var _term_cache: List[Scalar[dtype]]  # [BATCH * TERM_CACHE_SIZE]
-    var _q_logits: List[Scalar[dtype]]  # [B_BINS] single Q logits (reused per Q)
+    var _q_logits: List[
+        Scalar[dtype]
+    ]  # [B_BINS] single Q logits (reused per Q)
     var _q_cache: List[Scalar[dtype]]  # [BATCH * Q_CACHE_SIZE]
     var _a_next_mean: List[Scalar[dtype]]  # [B_ACT]
     var _a_next_log_std: List[Scalar[dtype]]  # [B_ACT]
@@ -645,9 +651,7 @@ struct TDMPC2CPUState[
         self._batch_rewards = List[Scalar[dtype]](
             capacity=Self.BATCH_SCALAR_FLAT
         )
-        self._batch_dones = List[Scalar[dtype]](
-            capacity=Self.BATCH_SCALAR_FLAT
-        )
+        self._batch_dones = List[Scalar[dtype]](capacity=Self.BATCH_SCALAR_FLAT)
 
         # WM update scratch
         self._obs_0 = List[Scalar[dtype]](capacity=Self.B_OBS)

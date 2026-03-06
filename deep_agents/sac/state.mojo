@@ -1,7 +1,13 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
-from nn.training import Network, NetworkState, NetworkPair, GPUNetworkState, GPUNetworkPair
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from nn.training import (
+    Network,
+    NetworkState,
+    NetworkPair,
+    GPUNetworkState,
+    GPUNetworkPair,
+)
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Kaiming
 from deep_agents.core import OffPolicyState, GPUOffPolicyState
@@ -302,15 +308,13 @@ struct SACGPUState[
     var critic2: GPUNetworkPair[Self.CriticModel, Self.CriticOpt]
 
     # GPU replay buffer
-    var buffer: GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim]
+    var buffer: GPUReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim
+    ]
 
     # Exploration buffers (inference, sized by max_n_envs)
-    var rng_states: DeviceBuffer[DType.uint32]  # [max_n_envs * action_dim]
     var inf_out: DeviceBuffer[dtype]  # [max_n_envs * ACTOR_OUT]
     var inf_ws: DeviceBuffer[dtype]  # [max_n_envs * ACTOR_WS]
-
-    # Training RNG (separate seed from exploration, for next-state and curr-state sampling)
-    var training_rng: DeviceBuffer[DType.uint32]  # [batch_size * action_dim]
 
     # Training scratch — replay sample output
     var s_obs: DeviceBuffer[dtype]  # [batch_size * obs_dim]
@@ -349,7 +353,9 @@ struct SACGPUState[
     var actor_cache: DeviceBuffer[dtype]  # [batch_size * ACTOR_CS]
     var actor_ws: DeviceBuffer[dtype]  # [batch_size * ACTOR_WS]
     var curr_act: DeviceBuffer[dtype]  # [batch_size * action_dim]
-    var curr_lp: DeviceBuffer[dtype]  # [batch_size] (downloaded for alpha update)
+    var curr_lp: DeviceBuffer[
+        dtype
+    ]  # [batch_size] (downloaded for alpha update)
     var new_ci: DeviceBuffer[dtype]  # [batch_size * CRITIC_IN]
     var new_q: DeviceBuffer[dtype]  # [batch_size * 1]
     var new_q_cache: DeviceBuffer[dtype]  # [batch_size * CRITIC_CS]
@@ -369,9 +375,6 @@ struct SACGPUState[
         ](ctx)
 
         # Exploration buffers
-        self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
-            Self.MAX_N * Self.ACTIONS
-        )
         self.inf_out = ctx.enqueue_create_buffer[dtype](
             Self.MAX_N * Self.ACTOR_OUT
         )
@@ -379,16 +382,9 @@ struct SACGPUState[
             Self.MAX_N * Self.ACTOR_WS
         )
 
-        # Training RNG
-        self.training_rng = ctx.enqueue_create_buffer[DType.uint32](
-            Self.BATCH * Self.ACTIONS
-        )
-
         # Replay sample output
         self.s_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
-        self.s_act = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.ACTIONS
-        )
+        self.s_act = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACTIONS)
         self.s_rew = ctx.enqueue_create_buffer[dtype](Self.BATCH)
         self.s_nobs = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
         self.s_done = ctx.enqueue_create_buffer[dtype](Self.BATCH)
@@ -477,32 +473,6 @@ struct SACGPUState[
             dq_host[i] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
         ctx.enqueue_copy(self.dq, dq_host)
 
-        # Initialize exploration RNG states
-        ctx.synchronize()
-        var rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            Self.MAX_N * Self.ACTIONS
-        )
-        var rng_s: UInt32 = 12345
-        for i in range(Self.MAX_N * Self.ACTIONS):
-            rng_s = rng_s ^ (rng_s << 13)
-            rng_s = rng_s ^ (rng_s >> 17)
-            rng_s = rng_s ^ (rng_s << 5)
-            rng_host[i] = rng_s
-        ctx.enqueue_copy(self.rng_states, rng_host)
-
-        # Initialize training RNG states (separate seed)
-        ctx.synchronize()
-        var trng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            Self.BATCH * Self.ACTIONS
-        )
-        var trng_s: UInt32 = 98765
-        for i in range(Self.BATCH * Self.ACTIONS):
-            trng_s = trng_s ^ (trng_s << 13)
-            trng_s = trng_s ^ (trng_s >> 17)
-            trng_s = trng_s ^ (trng_s << 5)
-            trng_host[i] = trng_s
-        ctx.enqueue_copy(self.training_rng, trng_host)
-
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods
     # -------------------------------------------------------------------------
@@ -524,5 +494,6 @@ struct SACGPUState[
         )
 
     fn gpu_buffer_is_ready(self) -> Bool:
-        """Return True if the GPU replay buffer has at least batch_size samples."""
+        """Return True if the GPU replay buffer has at least batch_size samples.
+        """
         return self.buffer.is_ready[Self.batch_size]()

@@ -57,3 +57,25 @@ from .gpu_onpolicy_train import (
     run_onpolicy_discrete_train_gpu,
     run_onpolicy_continuous_train_gpu,
 )
+
+from .kernels import (
+    soft_update_kernel,
+    zero_buffer_kernel,
+    copy_buffer_kernel,
+    accumulate_rewards_kernel,
+    increment_steps_kernel,
+    extract_completed_episodes_kernel,
+    selective_reset_tracking_kernel,
+    store_transitions_kernel,
+    sample_indices_kernel,
+    gather_batch_kernel,
+    store_transitions_kernel_nd,
+    gather_batch_kernel_nd,
+    td_target_continuous_kernel,
+    td_target_min_twin_kernel,
+    actor_grad_from_critic_kernel,
+    concat_obs_action_kernel,
+    scale_clip_actions_kernel,
+    ddpg_exploration_kernel,
+    td_mse_grad_kernel,
+)

@@ -68,9 +68,8 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from nn.replay import ReplayBuffer, GPUReplayBuffer
-from nn.gpu.random import gaussian_noise
-from nn.gpu import (
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.kernels import (
     concat_obs_action_kernel,
     ddpg_exploration_kernel,
     td_mse_grad_kernel,
@@ -575,11 +574,6 @@ struct DeepDDPGAgent[
         var act_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var rng_t = LayoutTensor[
-            DType.uint32,
-            Layout.row_major(N_ENVS, Self.ACTIONS),
-            MutAnyOrigin,
-        ](gpu_state.rng_states.unsafe_ptr())
 
         var p = gpu_state.actor.online.params_view()
         Self.ActorNet.forward_gpu[N_ENVS](
@@ -588,6 +582,7 @@ struct DeepDDPGAgent[
 
         var noise_std_s = Scalar[dtype](self.noise_std)
         var scale_s = Scalar[dtype](self.action_scale)
+        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
 
         @always_inline
         fn exploration_wrapper(
@@ -601,24 +596,20 @@ struct DeepDDPGAgent[
                 Layout.row_major(N_ENVS, Self.ACTIONS),
                 MutAnyOrigin,
             ],
-            rng_in: LayoutTensor[
-                DType.uint32,
-                Layout.row_major(N_ENVS, Self.ACTIONS),
-                MutAnyOrigin,
-            ],
             ns: Scalar[dtype],
             sc: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             ddpg_exploration_kernel[dtype, N_ENVS, Self.ACTIONS](
-                out_t, raw_in, rng_in, ns, sc
+                out_t, raw_in, ns, sc, rng_seed
             )
 
         ctx.enqueue_function[exploration_wrapper, exploration_wrapper](
             act_t,
             raw_t,
-            rng_t,
             noise_std_s,
             scale_s,
+            rng_seed_s,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

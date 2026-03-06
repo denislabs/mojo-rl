@@ -56,7 +56,8 @@ from nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
-    soft_update_kernel,
+)
+from deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,
@@ -128,7 +129,12 @@ struct DeepPPOAgent[
     gpu_minibatch_size: Int = 256,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
-](OnPolicyDiscreteAgent, OnPolicyAgent, GPUOnPolicyDiscreteAgent, Checkpointable):
+](
+    Checkpointable,
+    GPUOnPolicyDiscreteAgent,
+    OnPolicyAgent,
+    OnPolicyDiscreteAgent,
+):
     """Deep Proximal Policy Optimization Agent using new trait-based architecture.
 
     Uses clipped surrogate objective for stable policy updates:
@@ -1152,10 +1158,9 @@ struct DeepPPOAgent[
     # (Used by run_onpolicy_discrete_train simple overload — no aliasing)
     # =========================================================================
 
-    fn collect_rollout[
-        E: BoxDiscreteActionEnv
-    ](mut self, mut env: E) -> None:
-        """Collect ROLLOUT_LEN steps using self.state (OnPolicyAgent overload)."""
+    fn collect_rollout[E: BoxDiscreteActionEnv](mut self, mut env: E) -> None:
+        """Collect ROLLOUT_LEN steps using self.state (OnPolicyAgent overload).
+        """
         if not self.state._env_initialized:
             var obs_list = env.reset_obs_list()
             for i in range(Self.OBS):
@@ -1216,9 +1221,7 @@ struct DeepPPOAgent[
             if done:
                 var next_obs_list = env.reset_obs_list()
                 for i in range(Self.OBS):
-                    self.state._current_obs[i] = Scalar[dtype](
-                        next_obs_list[i]
-                    )
+                    self.state._current_obs[i] = Scalar[dtype](next_obs_list[i])
             else:
                 for i in range(Self.OBS):
                     self.state._current_obs[i] = Scalar[dtype](result[0][i])
@@ -1259,9 +1262,7 @@ struct DeepPPOAgent[
         )
 
         if self.normalize_advantages and buffer_len > 1:
-            normalize_advantages_list[dtype](
-                self.state._advantages, buffer_len
-            )
+            normalize_advantages_list[dtype](self.state._advantages, buffer_len)
 
     fn update_epochs(mut self) -> Float64:
         """Update actor/critic over num_epochs (OnPolicyAgent overload)."""
@@ -1391,9 +1392,9 @@ struct DeepPPOAgent[
                     var d_logits_tensor = LayoutTensor[
                         dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
                     ](d_logits.unsafe_ptr())
-                    var actor_grad_input = InlineArray[
-                        Scalar[dtype], Self.OBS
-                    ](fill=0)
+                    var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](
+                        fill=0
+                    )
                     var actor_grad_input_tensor = LayoutTensor[
                         dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
                     ](actor_grad_input.unsafe_ptr())
@@ -1503,9 +1504,7 @@ struct DeepPPOAgent[
         self.train_step_count += 1
         return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
 
-    fn select_greedy_action_list(
-        self, obs: List[Float64]
-    ) -> List[Float64]:
+    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select greedy action using self.state (OnPolicyAgent overload)."""
         var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
@@ -1821,10 +1820,18 @@ struct DeepPPOAgent[
         )
 
         # Copy rollout data to host for GAE computation
-        ctx.enqueue_copy(gpu_state.bootstrap_values_host, gpu_state.values_env_buf)
-        ctx.enqueue_copy(gpu_state.rollout_rewards_host, gpu_state.rollout_rewards_buf)
-        ctx.enqueue_copy(gpu_state.rollout_values_host, gpu_state.rollout_values_buf)
-        ctx.enqueue_copy(gpu_state.rollout_dones_host, gpu_state.rollout_dones_buf)
+        ctx.enqueue_copy(
+            gpu_state.bootstrap_values_host, gpu_state.values_env_buf
+        )
+        ctx.enqueue_copy(
+            gpu_state.rollout_rewards_host, gpu_state.rollout_rewards_buf
+        )
+        ctx.enqueue_copy(
+            gpu_state.rollout_values_host, gpu_state.rollout_values_buf
+        )
+        ctx.enqueue_copy(
+            gpu_state.rollout_dones_host, gpu_state.rollout_dones_buf
+        )
         ctx.synchronize()
 
         # GAE computation per environment
@@ -2064,7 +2071,9 @@ struct DeepPPOAgent[
                     gpu_state.mb_indices_host[i] = Int32(
                         indices_list[start_idx + i]
                     )
-                ctx.enqueue_copy(gpu_state.mb_indices_buf, gpu_state.mb_indices_host)
+                ctx.enqueue_copy(
+                    gpu_state.mb_indices_buf, gpu_state.mb_indices_host
+                )
 
                 # Gather minibatch from rollout
                 ctx.enqueue_function[gather_wrapper, gather_wrapper](
@@ -2090,7 +2099,8 @@ struct DeepPPOAgent[
                 # Per-minibatch advantage normalization
                 if self.norm_adv_per_minibatch:
                     ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host, gpu_state.mb_advantages_buf
+                        gpu_state.mb_advantages_host,
+                        gpu_state.mb_advantages_buf,
                     )
                     ctx.synchronize()
                     var adv_mean = Scalar[dtype](0.0)
@@ -2148,7 +2158,8 @@ struct DeepPPOAgent[
 
                 if self.target_kl > 0.0:
                     ctx.enqueue_copy(
-                        gpu_state.kl_divergences_host, gpu_state.kl_divergences_buf
+                        gpu_state.kl_divergences_host,
+                        gpu_state.kl_divergences_buf,
                     )
                     ctx.synchronize()
                     var kl_sum = Scalar[dtype](0.0)

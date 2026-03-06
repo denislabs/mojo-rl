@@ -60,7 +60,7 @@ from deep_agents.core import (
     run_offpolicy_discrete_train_gpu,
     Checkpointable,
 )
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,

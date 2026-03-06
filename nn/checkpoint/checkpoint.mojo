@@ -303,7 +303,7 @@ fn read_float_section_list(
 
     if start_idx < 0:
         # Section not found, return zeros
-        for i in range(size):
+        for _ in range(size):
             result.append(0)
         return result^
 

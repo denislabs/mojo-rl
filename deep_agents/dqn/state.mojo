@@ -3,7 +3,7 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkState, GPUNetworkState
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Kaiming
 from deep_agents.core import GPUOffPolicyState, OffPolicyDiscreteState

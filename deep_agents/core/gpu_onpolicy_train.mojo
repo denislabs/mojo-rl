@@ -62,7 +62,7 @@ from core import (
     NoCurriculumScheduler,
 )
 from nn.constants import dtype
-from nn.gpu import (
+from deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
     extract_completed_episodes_kernel,

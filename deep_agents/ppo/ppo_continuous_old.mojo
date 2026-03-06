@@ -63,7 +63,8 @@ from nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
-    soft_update_kernel,
+)
+from deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,
@@ -134,6 +135,8 @@ struct DeepPPOContinuousAgentOld[
         n_envs: Number of parallel environments for training (default: 64).
         gpu_minibatch_size: Minibatch size for GPU training (default: 256).
         clip_value: Whether to clip value function updates (default: True).
+        actor_lr: Actor learning rate (default: 0.0003).
+        critic_lr: Critic learning rate (default: 0.001).
 
     Note on hybrid training:
         - Neural network computations (forward/backward) run on GPU

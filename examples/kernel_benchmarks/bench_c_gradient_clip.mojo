@@ -24,7 +24,7 @@ from deep_agents.ppo.kernels import (
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
 )
-from nn.gpu.rl_kernels import soft_update_kernel
+from deep_agents.core.kernels import soft_update_kernel
 
 # Exact param sizes matching TDMPC2Agent[17, 6, 256, 256, 101, 5, 8] on HalfCheetah
 comptime ENC_P: Int = 71424

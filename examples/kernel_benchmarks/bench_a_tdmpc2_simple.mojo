@@ -32,7 +32,7 @@ from deep_agents.tdmpc2.kernels import (
     tdmpc2_bce_loss_grad_kernel,
     tdmpc2_policy_grad_kernel,
 )
-from nn.gpu.rl_kernels import copy_buffer_kernel
+from deep_agents.core.kernels import copy_buffer_kernel
 
 # HalfCheetah TDMPC2 dimensions
 comptime BATCH: Int = 256

@@ -75,16 +75,16 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.gpu.random import gaussian_noise
-from nn.gpu import (
+from deep_agents.core.kernels import (
     concat_obs_action_kernel,
     ddpg_exploration_kernel,
     td_mse_grad_kernel,
     actor_grad_from_critic_kernel,
     td_target_min_twin_kernel,
-    add_gaussian_noise_kernel,
 )
+from .kernels import add_gaussian_noise_kernel
 from std.gpu.host import DeviceContext, DeviceBuffer
 from nn.checkpoint import (
     write_checkpoint_header,
@@ -789,11 +789,6 @@ struct DeepTD3Agent[
         var act_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var rng_t = LayoutTensor[
-            DType.uint32,
-            Layout.row_major(N_ENVS, Self.ACTIONS),
-            MutAnyOrigin,
-        ](gpu_state.rng_states.unsafe_ptr())
 
         var p = gpu_state.actor.online.params_view()
         Self.ActorNet.forward_gpu[N_ENVS](
@@ -802,6 +797,7 @@ struct DeepTD3Agent[
 
         var noise_std_s = Scalar[dtype](self.noise_std)
         var scale_s = Scalar[dtype](self.action_scale)
+        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
 
         @always_inline
         fn exploration_wrapper(
@@ -815,24 +811,20 @@ struct DeepTD3Agent[
                 Layout.row_major(N_ENVS, Self.ACTIONS),
                 MutAnyOrigin,
             ],
-            rng_in: LayoutTensor[
-                DType.uint32,
-                Layout.row_major(N_ENVS, Self.ACTIONS),
-                MutAnyOrigin,
-            ],
             ns: Scalar[dtype],
             sc: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             ddpg_exploration_kernel[dtype, N_ENVS, Self.ACTIONS](
-                out_t, raw_in, rng_in, ns, sc
+                out_t, raw_in, ns, sc, rng_seed
             )
 
         ctx.enqueue_function[exploration_wrapper, exploration_wrapper](
             act_t,
             raw_t,
-            rng_t,
             noise_std_s,
             scale_s,
+            rng_seed_s,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -934,9 +926,8 @@ struct DeepTD3Agent[
         var tnc_s = Scalar[dtype](self.target_noise_clip)
         var act_min_s = Scalar[dtype](-self.action_scale)
         var act_max_s = Scalar[dtype](self.action_scale)
-        var noise_rng_t = LayoutTensor[
-            DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-        ](gpu_state.td3_noise_rng.unsafe_ptr())
+        # Use update_count as seed (offset by large value to avoid collision with exploration)
+        var noise_seed_s = Scalar[DType.uint32](self.update_count + 1000000)
 
         @always_inline
         fn smooth_noise(
@@ -946,26 +937,24 @@ struct DeepTD3Agent[
             clean: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
-            rng: LayoutTensor[
-                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ],
             ns: Scalar[dtype],
             nc: Scalar[dtype],
             amin: Scalar[dtype],
             amax: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             add_gaussian_noise_kernel[dtype, BATCH, ACTIONS](
-                noisy, clean, rng, ns, nc, amin, amax
+                noisy, clean, ns, nc, amin, amax, rng_seed
             )
 
         ctx.enqueue_function[smooth_noise, smooth_noise](
             noisy_next_act_t,
             next_act_t,
-            noise_rng_t,
             tns_s,
             tnc_s,
             act_min_s,
             act_max_s,
+            noise_seed_s,
             grid_dim=(ACT_BLOCKS,),
             block_dim=(TPB256,),
         )

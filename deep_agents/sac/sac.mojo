@@ -67,14 +67,16 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 
 from nn.gpu.random import gaussian_noise
-from nn.gpu import (
+from deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
     actor_grad_from_critic_kernel,
     td_target_min_twin_kernel,
+)
+from .kernels import (
     sac_rsample_with_cache_kernel,
     sac_rsample_bwd_kernel,
     sac_sample_actions_kernel,
@@ -1018,9 +1020,6 @@ struct DeepSACAgent[
         var act_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var rng_t = LayoutTensor[
-            DType.uint32, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.rng_states.unsafe_ptr())
 
         var p = gpu_state.actor.params_view()
         Self.ActorNet.forward_gpu[N_ENVS](
@@ -1030,6 +1029,7 @@ struct DeepSACAgent[
         var scale_s = Scalar[dtype](self.action_scale)
         var log_std_min_s = Scalar[dtype](-5.0)
         var log_std_max_s = Scalar[dtype](2.0)
+        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
 
         @always_inline
         fn sample_actions(
@@ -1041,26 +1041,22 @@ struct DeepSACAgent[
                 Layout.row_major(N_ENVS, Self.ACTIONS + Self.ACTIONS),
                 MutAnyOrigin,
             ],
-            rng: LayoutTensor[
-                DType.uint32,
-                Layout.row_major(N_ENVS, Self.ACTIONS),
-                MutAnyOrigin,
-            ],
             sc: Scalar[dtype],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             sac_sample_actions_kernel[dtype, N_ENVS, Self.ACTIONS](
-                acts, ao, rng, sc, lsmin, lsmax
+                acts, ao, sc, lsmin, lsmax, rng_seed
             )
 
         ctx.enqueue_function[sample_actions, sample_actions](
             act_t,
             inf_out_t,
-            rng_t,
             scale_s,
             log_std_min_s,
             log_std_max_s,
+            rng_seed_s,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1126,9 +1122,11 @@ struct DeepSACAgent[
 
         var log_std_min_s = Scalar[dtype](-5.0)
         var log_std_max_s = Scalar[dtype](2.0)
-        var trng_t = LayoutTensor[
-            DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-        ](gpu_state.training_rng.unsafe_ptr())
+        # Use train_step_count as seed; offset next-state vs curr-state to avoid correlation
+        var next_rng_seed_s = Scalar[DType.uint32](self.train_step_count * 2)
+        var curr_rng_seed_s = Scalar[DType.uint32](
+            self.train_step_count * 2 + 1
+        )
 
         # ----- Phase 2: Actor forward on next_obs → next_actor_out -----
         # SAC uses CURRENT actor (no target actor)
@@ -1164,14 +1162,12 @@ struct DeepSACAgent[
                 Layout.row_major(BATCH, ACTIONS + ACTIONS),
                 MutAnyOrigin,
             ],
-            rng: LayoutTensor[
-                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
-                acts, lp, eps, ao, rng, lsmin, lsmax
+                acts, lp, eps, ao, lsmin, lsmax, rng_seed
             )
 
         ctx.enqueue_function[next_rsample, next_rsample](
@@ -1179,9 +1175,9 @@ struct DeepSACAgent[
             next_lp_t,
             eps_cache_t,
             next_actor_out_t,
-            trng_t,
             log_std_min_s,
             log_std_max_s,
+            next_rng_seed_s,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB256,),
         )
@@ -1422,14 +1418,12 @@ struct DeepSACAgent[
                 Layout.row_major(BATCH, ACTIONS + ACTIONS),
                 MutAnyOrigin,
             ],
-            rng: LayoutTensor[
-                DType.uint32, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            rng_seed: Scalar[DType.uint32],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
-                acts, lp, eps, ao, rng, lsmin, lsmax
+                acts, lp, eps, ao, lsmin, lsmax, rng_seed
             )
 
         ctx.enqueue_function[curr_rsample, curr_rsample](
@@ -1437,9 +1431,9 @@ struct DeepSACAgent[
             curr_lp_t,
             eps_cache_t,
             actor_out_t,
-            trng_t,
             log_std_min_s,
             log_std_max_s,
+            curr_rng_seed_s,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB256,),
         )

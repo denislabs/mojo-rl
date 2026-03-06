@@ -1,7 +1,7 @@
 from nn.model import Model
 from nn.optimizer import Optimizer
 from nn.training import Network, NetworkPair
-from nn.replay import ReplayBuffer, GPUReplayBuffer
+from deep_agents.core.replay import ReplayBuffer, GPUReplayBuffer
 from nn.constants import dtype
 from nn.initializer import Xavier, Kaiming
 from deep_agents.core import GPUOffPolicyState, OffPolicyState
@@ -263,9 +263,6 @@ struct DDPGGPUState[
     ]
 
     # Exploration buffers (sized by Self.max_n_envs)
-    var rng_states: DeviceBuffer[
-        DType.uint32
-    ]  # [Self.max_n_envs * Self.action_dim]
     var raw_act: DeviceBuffer[dtype]  # [Self.max_n_envs * Self.action_dim]
     var inf_ws: DeviceBuffer[dtype]  # [Self.max_n_envs * ACTOR_WS]
 
@@ -314,9 +311,6 @@ struct DDPGGPUState[
         ](ctx)
 
         # Exploration buffers
-        self.rng_states = ctx.enqueue_create_buffer[DType.uint32](
-            Self.max_n_envs * Self.action_dim
-        )
         self.raw_act = ctx.enqueue_create_buffer[dtype](
             Self.max_n_envs * Self.action_dim
         )
@@ -398,19 +392,6 @@ struct DDPGGPUState[
         for i in range(Self.batch_size):
             dq_host[i] = Scalar[dtype](-1.0 / Float64(Self.batch_size))
         ctx.enqueue_copy(self.dq, dq_host)
-
-        # Initialize persistent exploration RNG states (xorshift32)
-        ctx.synchronize()
-        var rng_host = ctx.enqueue_create_host_buffer[DType.uint32](
-            Self.max_n_envs * Self.action_dim
-        )
-        var rng_s: UInt32 = 12345
-        for i in range(Self.max_n_envs * Self.action_dim):
-            rng_s = rng_s ^ (rng_s << 13)
-            rng_s = rng_s ^ (rng_s >> 17)
-            rng_s = rng_s ^ (rng_s << 5)
-            rng_host[i] = rng_s
-        ctx.enqueue_copy(self.rng_states, rng_host)
 
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods

@@ -29,10 +29,37 @@ from ..model import Model
 from ..optimizer import Optimizer
 from ..constants import dtype, TPB
 from .network_state import NetworkState
-from ..gpu import soft_update_kernel
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu import block_dim, block_idx, thread_idx
+
+
+@always_inline
+fn soft_update_kernel[
+    dtype: DType,
+    SIZE: Int,
+](
+    target: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    source: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    tau: Scalar[dtype],
+):
+    """Soft update: target = tau * source + (1 - tau) * target.
+
+    Used for target network updates in DQN, DDPG, TD3, SAC.
+
+    Args:
+        target: Target network parameters (updated in-place).
+        source: Source (online) network parameters.
+        tau: Blending factor (typically 0.001 - 0.01).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+
+    var src_val = source[i]
+    var tgt_val = target[i]
+    target[i] = tau * src_val + (Scalar[dtype](1.0) - tau) * tgt_val
 
 
 struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](

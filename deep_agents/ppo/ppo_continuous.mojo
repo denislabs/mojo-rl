@@ -59,19 +59,6 @@ from nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from nn.gpu import (
-    random_range,
-    xorshift32,
-    random_uniform,
-    soft_update_kernel,
-    zero_buffer_kernel,
-    copy_buffer_kernel,
-    accumulate_rewards_kernel,
-    increment_steps_kernel,
-    extract_completed_episodes_kernel,
-    selective_reset_tracking_kernel,
-)
-from nn.gpu.random import gaussian_noise
 from core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
