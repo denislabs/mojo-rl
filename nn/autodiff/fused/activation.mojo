@@ -1,15 +1,15 @@
 """Activation trait for parameterized fused matmul+bias+activation ops.
 
 Each Activation defines:
-- OP_ID: matches the standalone DiffOp OP_ID (RELU=10, TANH=11, SIGMOID=12)
-- FUSED_OP_ID: OP_ID for the fused variant (101, 102, 103)
+- OP_ID: matches the standalone DiffOp OP_ID (RELU=10, TANH=11, SIGMOID=12, MISH=13)
+- FUSED_OP_ID: OP_ID for the fused variant (101, 102, 103, 104)
 - forward(): apply activation to pre-activation scalar
-- cache(): what to store for backward (pre-act for ReLU, output for Tanh/Sigmoid)
+- cache(): what to store for backward (pre-act for ReLU, output for Tanh/Sigmoid, input for Mish)
 - backward(): compute grad_out * activation_derivative from cached value
 """
 
 from ...constants import dtype
-from std.math import tanh, exp
+from std.math import tanh, exp, log
 
 
 trait Activation(Movable & ImplicitlyCopyable):
@@ -124,3 +124,40 @@ struct SigmoidActivation(Activation):
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out * cache_val * (1 - cache_val)
+
+
+struct MishActivation(Activation):
+    """Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x))). Caches input for backward."""
+
+    comptime OP_ID: Int = 13  # OpID.MISH
+    comptime FUSED_OP_ID: Int = 104  # OpID.FUSED_MATMUL_BIAS_MISH
+
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        var sp = log(1.0 + exp(pre_act))
+        return pre_act * tanh(sp)
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        return pre_act  # Need input x for backward
+
+    @staticmethod
+    fn backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        var x = cache_val
+        var sp = log(1.0 + exp(x))
+        var tsp = tanh(sp)
+        var sig = 1.0 / (1.0 + exp(-x))
+        # d/dx[x * tanh(sp(x))] = tanh(sp) + x * sig * (1 - tanh²(sp))
+        var dmish = tsp + x * sig * (1.0 - tsp * tsp)
+        return grad_out * dmish

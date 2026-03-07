@@ -42,6 +42,7 @@ struct OpID:
     comptime FUSED_MATMUL_BIAS_RELU = OpID(101)
     comptime FUSED_MATMUL_BIAS_TANH = OpID(102)
     comptime FUSED_MATMUL_BIAS_SIGMOID = OpID(103)
+    comptime FUSED_MATMUL_BIAS_MISH = OpID(104)
 
     # Combinators (200+)
     comptime RESIDUAL = OpID(200)

@@ -6,10 +6,14 @@ from .activation import (
     ReLUActivation,
     TanhActivation,
     SigmoidActivation,
+    MishActivation,
 )
 from .matmul_bias_act import FusedMatMulBiasActivation
 
-# New activation: Sigmoid fused kernel via parameterized type
+# Convenience aliases via parameterized type
 comptime FusedMatMulBiasSigmoid[i: Int, o: Int] = FusedMatMulBiasActivation[
     i, o, SigmoidActivation
+]
+comptime FusedMatMulBiasMish[i: Int, o: Int] = FusedMatMulBiasActivation[
+    i, o, MishActivation
 ]

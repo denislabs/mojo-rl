@@ -20,13 +20,16 @@ from .fused import (
     FusedMatMulBiasReLU,
     FusedMatMulBiasTanh,
     FusedMatMulBiasSigmoid,
+    FusedMatMulBiasMish,
     FusedMatMulBiasActivation,
     Activation,
     ReLUActivation,
     TanhActivation,
     SigmoidActivation,
+    MishActivation,
 )
 from .fusion import FusionAnalyzer, FusedChain
+from .auto_fused import AutoFused
 from .combinators import Residual, Parallel, Repeat
 
 # Convenience aliases: parameterized type aliases for common patterns.

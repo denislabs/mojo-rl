@@ -219,11 +219,67 @@ Non-sequential topologies using the trait gateway pattern.
 
 ---
 
-## Phase 5: Migration & Polish
+## Phase 5: Automatic Fusion
+
+Compile-time automatic fusion of unfused op chains into fused kernels.
+
+**User writes:** `AutoFused[MatMul[2,4], BiasAdd[4], ReLUOp[4], MatMul[4,1], BiasAdd[1]]`
+**Gets:** A `Model`-conforming struct that internally executes `FusedMBR[2,4] → FusedMB[4,1]`
+
+### 5.1 Spike: validate recursive comptime computation
+- [x] Recursive param size computation — `_fused_param_size[*OPS]()` returns sum via `slice_types` recursion
+- [x] Fused op construction from ops members — `FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM].eval(...)` works
+- [x] Recursive forward execution — threading buffer pointers + offsets through `slice_types` recursion
+- [x] Spike file: `tests/test_auto_fused_spike.mojo`
+
+### 5.2 `AutoFused[*OPS: DiffOp]` struct — core
+- [x] Recursive helpers: `_fused_param_size`, `_fused_cache_size`, `_fused_inter_size`
+- [x] Pattern matching: M+B+R (3 ops), M+B+T (3 ops), M+B+S (3 ops), M+B (2 ops), passthrough (1 op)
+- [x] `AutoFused[*OPS: DiffOp](Model)` struct with compile-time constants
+- [x] File: `nn/autodiff/auto_fused.mojo`
+
+### 5.3 Forward pass — CPU
+- [x] Recursive `_auto_fused_forward[BATCH, *OPS]()` with buffer pointer threading
+- [x] Fused op `.eval[BATCH]()` calls at each recursion level
+- [x] Intermediate buffer management for group boundaries
+
+### 5.4 Backward pass — CPU
+- [x] Recursive `_auto_fused_backward[BATCH, *OPS]()` — recurse first, VJP on return
+- [x] Natural reverse order via recursion (last fused group's VJP runs first)
+- [x] Gradient accumulation with proper offset threading
+
+### 5.5 GPU forward/backward
+- [x] `_auto_fused_forward_gpu[BATCH, *OPS]()` with `DeviceContext`
+- [x] `_auto_fused_backward_gpu[BATCH, *OPS]()` with `DeviceContext`
+
+### 5.6 Wire up exports
+- [x] Add `AutoFused` to `nn/autodiff/__init__.mojo`
+
+### 5.7 Verification — Phase 5
+- [x] Compile-time dimensions: 5-op, 8-op, single-op — all correct
+- [x] Forward: `AutoFused[M,B,R,M,B]` matches `AutoDiffChain[FusedMBR, FusedMB]` (diff = 0.0)
+- [x] Backward: grad_input + grad_params match reference (diff = 0.0)
+- [x] Forward: 8-op M+B+R + M+B+T + M+B matches reference (diff = 0.0)
+- [x] Backward: 8-op grad_input + grad_params match reference (diff = 0.0)
+- [x] XOR training: converges to loss < 1e-12
+- [x] Single op passthrough: `AutoFused[MatMul[3,5]]` matches standalone MatMul
+- [x] Sigmoid fusion: `AutoFused[M,B,S]` matches `FusedMatMulBiasSigmoid`
+- [x] Deep chain: 11-op → 4 fused groups, forward + backward match reference (diff = 0.0)
+- [ ] Integration: `AutoFused` works with `Trainer`, `Residual`, `Parallel`
+- [ ] GPU test: forward/backward match CPU results
+- [ ] Benchmark: `AutoFused` vs hand-composed `AutoDiffChain[FusedOps]` performance
+
+### 5.8 Update AUTOGRAD_TASKS.md
+- [x] Add Phase 5: Automatic Fusion
+- [x] Renumber Migration & Polish → Phase 6
+
+---
+
+## Phase 6: Migration & Polish
 
 Replace hand-coded layers, final integration.
 
-### 5.1 Replace hand-coded layers
+### 6.1 Replace hand-coded layers
 - [ ] Verify `LinearAD` matches `Linear` numerically (forward + backward + GPU)
 - [ ] Verify `LinearReLUAD` matches `LinearReLU` numerically
 - [ ] Verify `LinearTanhAD` matches `LinearTanh` numerically
@@ -231,17 +287,17 @@ Replace hand-coded layers, final integration.
 - [ ] Replace `LinearReLU` usages with `DenseReLU` in RL environments
 - [ ] Keep old implementations in `nn/model/` as reference (don't delete)
 
-### 5.2 StochasticActor migration
+### 6.2 StochasticActor migration
 - [ ] Evaluate: can `StochasticActor` be expressed with `AutoDiffChain` + combinators?
 - [ ] If yes: refactor to use composed primitives
 - [ ] If no: document what additional primitives/combinators would be needed
 
-### 5.3 Documentation
+### 6.3 Documentation
 - [ ] Add docstrings to all public types: DiffOp, AutoDiffChain, OpID, each primitive
 - [ ] Update `AUTOGRAD_IR_DESIGN.md` with lessons learned during implementation
 - [ ] Add usage examples to `nn/autodiff/__init__.mojo`
 
-### 5.4 Benchmarks
+### 6.4 Benchmarks
 - [ ] Benchmark: AutoDiffChain MLP vs hand-coded MLP (CPU throughput)
 - [ ] Benchmark: AutoDiffChain MLP vs hand-coded MLP (GPU throughput)
 - [ ] Benchmark: fused DenseReLU vs unfused AutoDiffChain[MatMul, BiasAdd, ReLU] (GPU kernel launches)
