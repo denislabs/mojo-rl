@@ -128,10 +128,11 @@ Fused GPU kernels + compile-time pattern matching via OP_ID.
 - [x] `_best_fusion_at[idx]` updated: returns "mbr", "mbt", "mbs", "mb", or ""
 - [x] `FusedChain.one_layer_sigmoid` added
 - [x] Prototype `FusedAutoDiffChain` or `auto_fuse` wrapper (depends on variadic type rewriting feasibility)
-  - **Finding**: Variadic type packs CANNOT be built incrementally at compile time. However, `comptime if` branches CAN select different concrete `AutoDiffChain[...]` instantiations based on `FusionAnalyzer` pattern detection. This works for known topologies (e.g., 2-layer MLP).
+  - **Finding**: `Variadic.slice_types` + `comptime assert` enables recursive compile-time fusion on arbitrary-length op chains. A fully generic `greedy_fuse[*OPS]` IS feasible.
   - **Approach**: Use `FusionAnalyzer` struct with `_is_matmul_bias_relu_at[idx]()` etc. Pattern matchers must use `comptime if in_bounds: return (access) else: return False` to avoid compiler crashes from variadic out-of-bounds access in dead code.
   - **Verified**: Multi-layer partial fusion `[MatMul,BiasAdd,ReLU,MatMul,BiasAdd]` → `[FusedMBR,FusedMB]` matches forward+backward numerically (~3e-8 max diff).
-  - **Limitation**: A fully generic `auto_fuse[*OPS]` that returns a new variadic type pack is not feasible with current Mojo. But further exploration warranted — see exploration section below.
+  - **Breakthrough (slice_types + comptime assert)**: `Variadic.slice_types[element_types=ops, start=S, end=E]` slices a variadic type pack. On parametric variadics, `comptime assert Variadic.size(ops) >= E` provides evidence to the constraint checker. Combined with `greedy_fuse[*rest]()` recursive calls, this enables arbitrary-depth fusion. See `tests/test_slice_types.mojo` for 11-op → 4-fused-op recursive demo.
+  - **Caveats**: (1) No transitive inequality — each distinct `end` value needs its own `comptime assert`. (2) Dynamic `end=Variadic.size(ops)` requires tautology assert: `comptime assert Variadic.size(ops) <= Variadic.size(ops)`. (3) `concat_types` returns unusable dependent type — not needed since slice_types suffices.
 
 ### 2.5 Verification — Phase 2
 - [x] Unit test: `FusedMatMulBias` forward + vjp matches unfused `MatMul → BiasAdd`
@@ -254,7 +255,7 @@ Replace hand-coded layers, final integration.
 Items that need investigation before committing to an approach.
 
 - [x] **Variadic type rewriting**: Can Mojo build a new variadic type list from an existing one at compile time? (needed for automatic fusion pass)
-  - **Answer**: No — variadic type packs cannot be built incrementally. But `comptime if` can select between pre-built concrete types based on pattern detection. Sufficient for practical use via explicit fused aliases.
+  - **Answer**: YES — `Variadic.slice_types` + `comptime assert` enables recursive compile-time fusion on arbitrary-length op chains. Key technique: `comptime assert Variadic.size(ops) >= end_value` provides evidence to the constraint checker for `slice_types[element_types=ops, start=S, end=E]`. The sliced result can be unpacked with `*rest` into recursive calls. Proven with 11-op → 4-fused-op recursive greedy fusion in `tests/test_slice_types.mojo`. Note: `concat_types` is broken (returns unusable dependent type) but not needed since slice-and-recurse covers all fusion patterns.
 - [ ] **@always_inline kernel fusion**: Does Mojo actually inline adjacent `@always_inline` GPU kernels into a single kernel launch via `ctx.enqueue_function[]`?
 - [ ] **Compile-time scaling**: Test `comptime for` with 100+ iterations — measure compilation time impact
 - [ ] **Attention primitive**: Design `ScaledDotProductAttention` as a DiffOp — what should its cache look like? Can flash-attention tiling fit the DiffOp interface?

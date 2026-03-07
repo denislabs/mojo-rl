@@ -1411,21 +1411,37 @@ The key differentiator: **everything resolves at compile time into the same zero
 
 ### Still Open
 
-5. **Variadic type rewriting for automatic fusion**: Can we build a NEW variadic
-   type list at compile time from an existing one? For example, scanning
-   `[MatMul, BiasAdd, ReLU, MatMul, BiasAdd]` and producing
-   `[FusedMatMulBiasReLU, FusedMatMulBias]` automatically. Current finding is that
-   variadic type packs cannot be built incrementally, but this deserves further
-   exploration. Possible angles:
-   - **Recursive struct construction**: A struct that peels off 2-3 ops at a time
-     and builds a nested `Seq2[FusedOp, Seq2[FusedOp, ...]]` chain via `comptime if`
-     pattern matching on OP_IDs, similar to how `Sequential` nests `Seq2`.
-   - **Mojo language evolution**: Future Mojo versions may support `comptime` type
-     list construction or `comptime` variadic pack manipulation.
-   - **Hybrid approach**: `FusionAnalyzer` detects patterns at compile time, then a
-     macro-like `comptime fn` emits the fused chain for known sizes (1-8 layers).
-   The pragmatic fallback remains explicit fused aliases (`Dense`, `DenseReLU`,
-   `FusedChain.mlp_relu`, etc.) which already cover common RL architectures well.
+5. **Variadic type rewriting for automatic fusion**: **SOLVED** via
+   `Variadic.slice_types` + `comptime assert` recursive pattern.
+
+   **Technique**: `Variadic.slice_types[element_types=ops, start=S, end=E]` slices
+   a variadic type pack. On parametric variadics (e.g., `fn fuse[*OPS: DiffOp]()`),
+   the constraint checker needs evidence that `end <= size(ops)`. This is provided
+   by `comptime assert Variadic.size(ops) >= E`. The sliced result can be unpacked
+   with `*rest` into a recursive call: `greedy_fuse[*rest]()`.
+
+   **Recursive greedy fusion** (proven in `tests/test_slice_types.mojo`):
+   ```
+   fn greedy_fuse[*OPS: DiffOp]():
+       comptime ops = Variadic.types[T=DiffOp, *OPS]
+       comptime N = Variadic.size(ops)
+       comptime if N >= 3:
+           comptime assert Variadic.size(ops) >= 3
+           comptime assert Variadic.size(ops) <= Variadic.size(ops)  # tautology for dynamic end
+           # match M+B+R → FusedMBR, slice rest, recurse
+           comptime rest = Variadic.slice_types[element_types=ops, start=3, end=Variadic.size(ops)]
+           greedy_fuse[*rest]()
+   ```
+   Verified: 11 ops → 4 fused ops (MBR + MBT + MBR + MB) recursively.
+
+   **Important caveats**:
+   - No transitive inequality: `assert size >= 5` does NOT prove `size >= 3`.
+     Each distinct `end` value needs its own explicit assert.
+   - Dynamic `end=Variadic.size(ops)` requires tautology:
+     `comptime assert Variadic.size(ops) <= Variadic.size(ops)`.
+   - `Variadic.concat_types` returns an unusable dependent type (can't be sized,
+     indexed, or unpacked). Not needed — slice-and-recurse covers all fusion patterns.
+   - See `tests/test_concat_types.mojo` for concat_types minimal repro.
 
 6. **GPU kernel fusion across ops**: `@always_inline` kernels can theoretically
    be inlined into a single kernel by the compiler. Whether Mojo actually does
