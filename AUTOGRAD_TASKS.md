@@ -155,7 +155,7 @@ Expand the primitive catalog for broader model support.
 - [x] `RMSNormOp[dim]` — forward + vjp (CPU + GPU), eps=1e-5 hardcoded
 
 ### 3.2 Arithmetic
-- [ ] `ElemAdd[dim]` — deferred to Phase 4 (binary op, needs Residual combinator)
+- N/A `ElemAdd[dim]` — not needed: `BiasAdd` covers learned additive bias, `Residual` covers skip connections. DiffOp is unary so a true binary add doesn't fit the trait.
 - [x] `ElemMul[dim]` — elementwise multiplication with learned gamma
 - [x] `Scale[dim, numerator, denominator]` — multiply by compile-time constant ratio
 
@@ -180,36 +180,40 @@ Expand the primitive catalog for broader model support.
 Non-sequential topologies using the trait gateway pattern.
 
 ### 4.1 Residual
-- [ ] Implement `Residual[Inner: Model]` — `nn/autodiff/combinators/residual.mojo`
-  - [ ] Conforms to `Model`
-  - [ ] `comptime assert IN_DIM == OUT_DIM`
-  - [ ] Forward: output = Inner.forward(input) + input
-  - [ ] Backward: grad_input = Inner.backward(grad_output) + grad_output
-  - [ ] GPU forward/backward
+- [x] Implement `Residual[Inner: Model]` — `nn/autodiff/combinators/residual.mojo`
+  - [x] Conforms to `Model`
+  - [x] Forward: output = Inner.forward(input) + input
+  - [x] Backward: grad_input = Inner.backward(grad_output) + grad_output
+  - [x] GPU forward/backward
 - [ ] Convenience: `ResBlock[dim]` = `Residual[AutoDiffChain[MatMul, BiasAdd, ReLU, MatMul, BiasAdd]]`
 
-### 4.2 Parallel
-- [ ] Implement `Parallel[BranchA: Model, BranchB: Model]` — `nn/autodiff/combinators/parallel.mojo`
-  - [ ] Conforms to `Model`
-  - [ ] `comptime assert BranchA.IN_DIM == BranchB.IN_DIM`
-  - [ ] Forward: output = concat(BranchA(input), BranchB(input))
-  - [ ] Backward: split grad, backward through each branch
-  - [ ] GPU forward/backward
+### 4.2 Parallel (variadic)
+- [x] Implement `Parallel[*BRANCHES: Model]` — `nn/autodiff/combinators/parallel.mojo`
+  - [x] Conforms to `Model`, variadic N branches via `Variadic.types`
+  - [x] `_sum_out_dim`, `_sum_param_size`, `_sum_cache_size`, `_sum_ws` helpers
+  - [x] `_out_offset[idx]`, `_param_offset[idx]`, `_cache_offset[idx]`, `_ws_branch_offset[idx]` offset helpers
+  - [x] Forward: output = concat(B0(x), B1(x), ..., B_{N-1}(x)) — flat buffer + `comptime for` interleave
+  - [x] Backward: de-interleave grad, flat `N * BATCH * IN_DIM` buffer for per-branch grad_input, sum contributions
+  - [x] GPU forward/backward — per-branch copy/split kernels via `comptime for`
 
 ### 4.3 Repeat
-- [ ] Implement `Repeat[N: Int, Inner: Model]` — `nn/autodiff/combinators/repeat.mojo`
-  - [ ] Conforms to `Model`
-  - [ ] `comptime assert IN_DIM == OUT_DIM`
-  - [ ] Forward: apply Inner N times, cache each iteration
-  - [ ] Backward: reverse N iterations, accumulate to shared grads
-  - [ ] GPU forward/backward
+- [x] Implement `Repeat[N: Int, Inner: Model]` — `nn/autodiff/combinators/repeat.mojo`
+  - [x] Conforms to `Model`
+  - [x] Forward: apply Inner N times, cache each iteration
+  - [x] Backward: reverse N iterations, accumulate to shared grads
+  - [x] GPU forward/backward
 
 ### 4.4 Verification — Phase 4
-- [ ] Unit test: `Residual` forward = inner(x) + x
-- [ ] Unit test: `Residual` backward gradient correctness (finite diff)
-- [ ] Unit test: `Parallel` output dimensions = BranchA.OUT + BranchB.OUT
-- [ ] Unit test: `Repeat[3, Inner]` backward accumulates grads correctly (3x accumulation)
-- [ ] Integration test: build ResNet-style model with `Sequential[LinearAD, ResBlock, ResBlock, LinearAD]`, train on toy problem
+- [x] Unit test: `Residual` forward = inner(x) + x
+- [x] Unit test: `Residual` backward gradient correctness (finite diff)
+- [x] Unit test: `Parallel[Dense[2,3], Dense[2,2]]` output dimensions and forward correctness
+- [x] Unit test: `Parallel[Dense[2,3], Dense[2,2]]` gradient check (input + param)
+- [x] Unit test: `Parallel[Dense[2,3], Dense[2,2], Dense[2,1]]` 3-branch forward + gradient check
+- [x] Unit test: `Repeat[3, Dense[4,4]]` forward matches 3x manual application
+- [x] Unit test: `Repeat[3, Inner]` backward accumulates grads correctly (3x accumulation)
+- [x] Unit test: `Repeat[1, Dense[4,4]]` matches Dense directly
+- [x] Integration test: `Sequential[DenseReLU[2,8], Residual[Dense[8,8]], Dense[8,1]]` trains XOR (loss < 0.05)
+- [x] Integration test: `Residual[Sequential[DenseReLU[4,4], Dense[4,4]]]` nested gradient check
 - [ ] Integration test: `Repeat[N, TransformerBlock]` compiles and trains
 
 ---

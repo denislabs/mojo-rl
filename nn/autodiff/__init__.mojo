@@ -27,6 +27,7 @@ from .fused import (
     SigmoidActivation,
 )
 from .fusion import FusionAnalyzer, FusedChain
+from .combinators import Residual, Parallel, Repeat
 
 # Convenience aliases: parameterized type aliases for common patterns.
 # Usage: var model = LinearAD[4, 64]()

@@ -1137,33 +1137,32 @@ struct Residual[Inner: Model](Model):
 
 
 # ══════════════════════════════════════════════════════════
-#  Parallel — two branches, concatenated output
+#  Parallel — N-branch variadic, concatenated output
 # ══════════════════════════════════════════════════════════
 
-struct Parallel[BranchA: Model, BranchB: Model](Model):
-    """y = concat(f(x), g(x))  where f, g both conform to Model.
+struct Parallel[*BRANCHES: Model](Model):
+    """y = concat(B0(x), B1(x), ..., B_{N-1}(x)).
 
-    Both branches receive the full input. Outputs are concatenated.
-    BranchA and BranchB have already resolved their variadics.
+    All branches receive the same input. Outputs are concatenated
+    along the feature dimension (per row). Uses Variadic.types +
+    comptime for to iterate at compile time, matching AutoDiffChain
+    and Sequential patterns.
     """
-    comptime OP_ID: Int = OpID.PARALLEL._value
+    comptime branch_types = Variadic.types[T=Model, *Self.BRANCHES]
+    comptime N = Variadic.size(Self.branch_types)
 
-    comptime assert Self.BranchA.IN_DIM == Self.BranchB.IN_DIM, (
-        "Parallel branches must have same IN_DIM"
-    )
+    comptime IN_DIM: Int = Self.branch_types[0].IN_DIM
+    comptime OUT_DIM: Int = Self._sum_out_dim()      # sum(branch_types[i].OUT_DIM)
+    comptime PARAM_SIZE: Int = Self._sum_param_size()
+    comptime CACHE_SIZE: Int = Self._sum_cache_size()
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._sum_out_dim() + Self._sum_ws()
 
-    comptime IN_DIM: Int = Self.BranchA.IN_DIM
-    comptime OUT_DIM: Int = Self.BranchA.OUT_DIM + Self.BranchB.OUT_DIM
-    comptime PARAM_SIZE: Int = Self.BranchA.PARAM_SIZE + Self.BranchB.PARAM_SIZE
-    comptime CACHE_SIZE: Int = Self.BranchA.CACHE_SIZE + Self.BranchB.CACHE_SIZE
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.BranchA.WORKSPACE_SIZE_PER_SAMPLE
-        + Self.BranchB.WORKSPACE_SIZE_PER_SAMPLE
-    )
+    # Offset helpers: _out_offset[idx], _param_offset[idx], _cache_offset[idx],
+    #                 _ws_branch_offset[idx]
 
-    # forward: run both branches, concatenate into output
-    # backward: split grad_output, run both branch backwards
-    # (each branch only gets its portion of the output gradient)
+    # forward: comptime for each branch, interleave outputs into concat
+    # backward: de-interleave grad, comptime for each branch backward,
+    #           sum N grad_input contributions
 
 
 # ══════════════════════════════════════════════════════════
