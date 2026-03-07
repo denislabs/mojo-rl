@@ -72,7 +72,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     comptime PARAM_SIZE: Int = Self._sum_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
     # DiffOps don't have per-layer workspace — only inter buffers needed.
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._total_inter()
+    comptime INTER_SIZE_PER_SAMPLE: Int = Self._total_inter()
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
 
     # --- Offset helpers ---
 
@@ -500,7 +501,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU inference forward. Allocates a dummy cache on device."""
+        """GPU inference forward. Dummy cache carved from workspace — no allocation."""
 
         comptime if Self.N == 1:
             var p_v = LayoutTensor[
@@ -508,16 +509,12 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 Layout.row_major(Self.op_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
-            # Allocate minimal dummy cache on device
-            var dummy_cache_size = BATCH * Self.op_types[0].CACHE_SIZE
-            var dummy_cache_buf = ctx.enqueue_create_buffer[dtype](
-                dummy_cache_size if dummy_cache_size > 0 else 1
-            )
+            # Dummy cache from workspace (after inter region)
             var c_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.op_types[0].CACHE_SIZE),
                 MutAnyOrigin,
-            ](dummy_cache_buf.unsafe_ptr())
+            ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
             var out_rb = rebind[
                 LayoutTensor[
                     dtype,
@@ -536,16 +533,12 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 ctx, out_rb, in_rb, p_v, c_v
             )
         else:
-            # Allocate dummy cache for all ops
-            var total_cache = BATCH * Self.CACHE_SIZE
-            var dummy_cache_buf = ctx.enqueue_create_buffer[dtype](
-                total_cache if total_cache > 0 else 1
-            )
+            # Dummy cache from workspace (after inter region)
             var cache_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.CACHE_SIZE),
                 MutAnyOrigin,
-            ](dummy_cache_buf.unsafe_ptr())
+            ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
             # Delegate to the caching forward
             Self.forward_gpu[BATCH](
                 ctx, output, input, params, cache_v, workspace

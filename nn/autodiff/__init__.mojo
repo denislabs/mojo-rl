@@ -44,16 +44,19 @@ comptime LinearTanhAD[in_d: Int, out_d: Int] = AutoDiffChain[
     MatMul[in_d, out_d], BiasAdd[out_d], TanhOp[out_d]
 ]
 
-# Fusion-aware aliases: single fused kernel per layer.
-comptime Dense[in_d: Int, out_d: Int] = AutoDiffChain[
-    FusedMatMulBias[in_d, out_d]
+# Fusion-aware aliases: AutoFused automatically detects and fuses patterns.
+comptime Dense[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d]
 ]
-comptime DenseReLU[in_d: Int, out_d: Int] = AutoDiffChain[
-    FusedMatMulBiasReLU[in_d, out_d]
+comptime DenseReLU[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d], ReLUOp[out_d]
 ]
-comptime DenseTanh[in_d: Int, out_d: Int] = AutoDiffChain[
-    FusedMatMulBiasTanh[in_d, out_d]
+comptime DenseTanh[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d], TanhOp[out_d]
 ]
-comptime DenseSigmoid[in_d: Int, out_d: Int] = AutoDiffChain[
-    FusedMatMulBiasSigmoid[in_d, out_d]
+comptime DenseSigmoid[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d], SigmoidOp[out_d]
+]
+comptime DenseMish[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d], MishOp[out_d]
 ]

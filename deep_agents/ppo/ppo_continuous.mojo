@@ -42,11 +42,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import (
-    Linear,
-    ReLU,
-    LinearReLU,
-    LinearTanh,
+from nn import (
+    Dense,
+    DenseTanh,
     Sequential,
     StochasticActor,
 )
@@ -212,17 +210,17 @@ struct DeepPPOContinuousAgent[
 
     # Actor model and network (stateless ops)
     comptime ActorModel = Sequential[
-        LinearTanh[Self.OBS, Self.HIDDEN],
-        LinearTanh[Self.HIDDEN, Self.HIDDEN],
+        DenseTanh[Self.OBS, Self.HIDDEN],
+        DenseTanh[Self.HIDDEN, Self.HIDDEN],
         StochasticActor[Self.HIDDEN, Self.ACTIONS],
     ]
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
     # Critic model and network (stateless ops)
     comptime CriticModel = Sequential[
-        LinearTanh[Self.OBS, Self.HIDDEN],
-        LinearTanh[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+        DenseTanh[Self.OBS, Self.HIDDEN],
+        DenseTanh[Self.HIDDEN, Self.HIDDEN],
+        Dense[Self.HIDDEN, 1],
     ]
     comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
 

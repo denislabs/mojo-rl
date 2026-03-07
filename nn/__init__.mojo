@@ -1,9 +1,9 @@
 from .constants import dtype
 from .model import (
     Model,
-    seq,
     Linear,
     LinearReLU,
+    Sequential,
     ReLU,
     Tanh,
     Sigmoid,
@@ -18,7 +18,13 @@ from .model import (
 )
 from .loss import LossFunction, MSELoss, HuberLoss, CrossEntropyLoss
 from .optimizer import Optimizer, SGD, Adam, RMSprop, AdamW
-from .training import Trainer, TrainResult, Network, NetworkState, GPUNetworkState
+from .training import (
+    Trainer,
+    TrainResult,
+    Network,
+    NetworkState,
+    GPUNetworkState,
+)
 from .initializer import (
     Initializer,
     Xavier,
@@ -30,7 +36,6 @@ from .initializer import (
     Uniform,
     Normal,
 )
-from .utils import fill_inline, obs_to_inline, concat_obs_action
 from .autodiff import (
     DiffOp,
     FusedOp,

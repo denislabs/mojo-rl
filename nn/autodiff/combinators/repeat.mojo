@@ -29,11 +29,12 @@ struct Repeat[n: Int, Inner: Model](Model):
     comptime OUT_DIM: Int = Self.Inner.OUT_DIM
     comptime PARAM_SIZE: Int = Self.Inner.PARAM_SIZE  # shared weights!
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE * Self.n  # one per iter
-    # Workspace: (n-1) intermediate buffers + Inner's own workspace
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
+    # Workspace: (n-1) intermediate buffers + Inner's own workspace + cache for no_cache inference
+    comptime INTER_SIZE_PER_SAMPLE: Int = (
         Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
         + (Self.n - 1) * Self.Inner.OUT_DIM
     )
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
 
     # --- Offset helpers ---
 
@@ -370,16 +371,12 @@ struct Repeat[n: Int, Inner: Model](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        # Allocate dummy cache on device
-        var total_cache = BATCH * Self.CACHE_SIZE
-        var dummy_cache_buf = ctx.enqueue_create_buffer[dtype](
-            total_cache if total_cache > 0 else 1
-        )
+        # Dummy cache carved from workspace (after inter region) — no allocation.
         var cache_v = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](dummy_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
         Self.forward_gpu[BATCH](ctx, output, input, params, cache_v, workspace)
 
     # =========================================================================

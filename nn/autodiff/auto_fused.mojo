@@ -879,7 +879,8 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     comptime PARAM_SIZE: Int = _fused_param_size[*Self.OPS]()
     comptime CACHE_SIZE: Int = _fused_cache_size[*Self.OPS]()
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = _fused_inter_size[*Self.OPS]()
+    comptime INTER_SIZE_PER_SAMPLE: Int = _fused_inter_size[*Self.OPS]()
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -1037,15 +1038,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        var total_cache = BATCH * Self.CACHE_SIZE
-        var dummy_cache_buf = ctx.enqueue_create_buffer[dtype](
-            total_cache if total_cache > 0 else 1
-        )
+        # Dummy cache carved from workspace (after inter region) — no allocation.
         var cache_v = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](dummy_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
         Self.forward_gpu[BATCH](ctx, output, input, params, cache_v, workspace)
 
     # =========================================================================

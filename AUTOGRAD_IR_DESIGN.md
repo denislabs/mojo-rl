@@ -117,6 +117,8 @@ struct OpID:
     comptime FUSED_MATMUL_BIAS      = OpID(100)
     comptime FUSED_MATMUL_BIAS_RELU = OpID(101)
     comptime FUSED_MATMUL_BIAS_TANH = OpID(102)
+    comptime FUSED_MATMUL_BIAS_SIGMOID = OpID(103)
+    comptime FUSED_MATMUL_BIAS_MISH = OpID(104)
     # Combinators (200+)
     comptime RESIDUAL       = OpID(200)
     comptime PARALLEL       = OpID(201)
@@ -740,6 +742,7 @@ trait Activation(Movable & ImplicitlyCopyable):
 # - ReLUActivation:    forward = max(0,x), cache = pre_act, backward = g if cache>0 else 0
 # - TanhActivation:    forward = tanh(x),  cache = output,  backward = g*(1-cache^2)
 # - SigmoidActivation: forward = σ(x),     cache = output,  backward = g*cache*(1-cache)
+# - MishActivation:    forward = x*tanh(ln(1+exp(x))), cache = pre_act, backward = g*dmish
 ```
 
 The single `FusedMatMulBiasActivation[in_dim, out_dim, ACT: Activation]` struct
@@ -753,8 +756,9 @@ because Mojo nightly doesn't fold `comptime` member constants through parameteri
 type aliases (see "Comptime alias limitation" in Open Questions below).
 
 New activations can now be added with ~30 lines (the `Activation` impl) instead of
-~500 lines (a full fused struct). `FusedMatMulBiasSigmoid` was the first new
-activation added this way.
+~500 lines (a full fused struct). `FusedMatMulBiasSigmoid` and `FusedMatMulBiasMish`
+were added this way. `AutoFused` uses `FusedMatMulBiasActivation` directly for all
+activation fusions, dispatching via `comptime if` on `ops[2].OP_ID`.
 
 #### Example: Fused MatMul + BiasAdd + ReLU
 
@@ -975,9 +979,40 @@ struct auto_fuse[*OPS: DiffOp](Model):
                 Self.ops[_i].eval_gpu[BATCH](ctx, ...)
 ```
 
+### Production Implementation: `AutoFused[*OPS: DiffOp]`
+
+The automatic fusion is fully implemented in `nn/autodiff/auto_fused.mojo` using
+recursive `Variadic.slice_types` + `comptime assert` (see Open Questions #5 below).
+
+```mojo
+# User writes unfused ops — AutoFused fuses automatically at compile time:
+comptime MyModel = AutoFused[
+    MatMul[784, 256], BiasAdd[256], ReLUOp[256],    # → FusedMatMulBiasActivation[..., ReLU]
+    MatMul[256, 128], BiasAdd[128], TanhOp[128],    # → FusedMatMulBiasActivation[..., Tanh]
+    MatMul[128, 10],  BiasAdd[10],                   # → FusedMatMulBias
+]
+# GPU kernel launches: 8 → 3. Auto-generated backward. Model-conforming.
+```
+
+**Pattern matching** (greedy left-to-right):
+- **M+B+Act** (3 ops): MatMul + BiasAdd + any activation (OP_ID 10-19) → `FusedMatMulBiasActivation[in, out, ACT]`
+- **M+B** (2 ops): MatMul + BiasAdd → `FusedMatMulBias[in, out]`
+- **Passthrough** (1 op): unfusible op → delegated directly
+
+Activation detection uses `_is_act(op_id)` range check (`op_id >= 10 and op_id <= 19`)
+instead of explicit per-activation checks, making it extensible to any new activation
+in that range. Dispatch to concrete `Activation` types uses `comptime if` on OP_ID
+(ReLU=10, Tanh=11, Sigmoid=12, else Mish=13).
+
+**Recursive execution**: Forward and backward use `Variadic.slice_types` recursion:
+- `_auto_fused_forward[BATCH, *OPS]()`: construct fused op → `.eval()` → slice rest → recurse
+- `_auto_fused_backward[BATCH, *OPS]()`: recurse first → `.vjp()` on return (natural reverse order)
+
+The `BATCH` parameter must come BEFORE `*OPS` in function signatures (Mojo variadic constraint).
+
 ### Alternative: Explicit Fusion comptimees
 
-A simpler approach that works TODAY with no language extensions:
+A simpler approach that also works, without automatic pattern matching:
 
 ```mojo
 # Provide pre-fused "comptimees" that users can use directly.
@@ -1277,6 +1312,8 @@ nn/
 │   ├── __init__.mojo          # Public API: DiffOp, AutoDiffChain, comptimees
 │   ├── op.mojo                # DiffOp trait definition
 │   ├── chain.mojo             # AutoDiffChain (the autograd engine)
+│   ├── auto_fused.mojo        # AutoFused[*OPS] — automatic compile-time fusion
+│   ├── fusion.mojo            # FusionAnalyzer + FusedChain (pattern detection)
 │   ├── primitives/
 │   │   ├── matmul.mojo        # MatMul
 │   │   ├── bias.mojo          # BiasAdd
@@ -1284,7 +1321,7 @@ nn/
 │   │   ├── norm.mojo          # LayerNormOp, RMSNormOp
 │   │   └── reduce.mojo        # ReduceSum, ReduceMean
 │   ├── fused/
-│   │   ├── activation.mojo          # Activation trait + ReLU/Tanh/Sigmoid activations
+│   │   ├── activation.mojo          # Activation trait + ReLU/Tanh/Sigmoid/Mish activations
 │   │   ├── matmul_bias.mojo         # FusedMatMulBias (no activation, separate)
 │   │   ├── matmul_bias_act.mojo     # FusedMatMulBiasActivation[i, o, ACT] (parameterized)
 │   │   ├── matmul_bias_relu.mojo    # FusedMatMulBiasReLU (thin wrapper)
@@ -1293,7 +1330,7 @@ nn/
 │   │   ├── residual.mojo      # Residual skip connection
 │   │   ├── parallel.mojo      # Parallel branches + concat
 │   │   └── repeat.mojo        # Weight-shared repetition
-│   └── comptimees.mojo           # Dense, DenseReLU, DenseTanh, ResBlock
+│   └── __init__.mojo             # Exports + aliases: Dense, DenseReLU, DenseTanh, DenseSigmoid
 ├── model/                     # Existing layers (untouched)
 ├── optimizer/                 # Existing optimizers (untouched)
 ├── loss/                      # Existing losses (untouched)
@@ -1411,8 +1448,8 @@ The key differentiator: **everything resolves at compile time into the same zero
 
 ### Still Open
 
-5. **Variadic type rewriting for automatic fusion**: **SOLVED** via
-   `Variadic.slice_types` + `comptime assert` recursive pattern.
+5. **Variadic type rewriting for automatic fusion**: **SOLVED and SHIPPED** as
+   `AutoFused[*OPS: DiffOp]` in `nn/autodiff/auto_fused.mojo`.
 
    **Technique**: `Variadic.slice_types[element_types=ops, start=S, end=E]` slices
    a variadic type pack. On parametric variadics (e.g., `fn fuse[*OPS: DiffOp]()`),
@@ -1420,28 +1457,23 @@ The key differentiator: **everything resolves at compile time into the same zero
    by `comptime assert Variadic.size(ops) >= E`. The sliced result can be unpacked
    with `*rest` into a recursive call: `greedy_fuse[*rest]()`.
 
-   **Recursive greedy fusion** (proven in `tests/test_slice_types.mojo`):
-   ```
-   fn greedy_fuse[*OPS: DiffOp]():
-       comptime ops = Variadic.types[T=DiffOp, *OPS]
-       comptime N = Variadic.size(ops)
-       comptime if N >= 3:
-           comptime assert Variadic.size(ops) >= 3
-           comptime assert Variadic.size(ops) <= Variadic.size(ops)  # tautology for dynamic end
-           # match M+B+R → FusedMBR, slice rest, recurse
-           comptime rest = Variadic.slice_types[element_types=ops, start=3, end=Variadic.size(ops)]
-           greedy_fuse[*rest]()
-   ```
-   Verified: 11 ops → 4 fused ops (MBR + MBT + MBR + MB) recursively.
+   **Production implementation** (`AutoFused`):
+   - Recursive `_auto_fused_forward[BATCH, *OPS]()` and `_auto_fused_backward[BATCH, *OPS]()`
+   - Greedy left-to-right fusion: M+B+Act (3 ops, any activation OP_ID 10-19) → `FusedMatMulBiasActivation`,
+     M+B (2 ops) → `FusedMatMulBias`, else passthrough
+   - Uses `_is_act(op_id)` range check for extensible activation detection
+   - All 10 tests pass with zero numerical error (forward + backward)
+   - Conforms to `Model` — works with `Trainer`, `Residual`, `Parallel`
 
    **Important caveats**:
    - No transitive inequality: `assert size >= 5` does NOT prove `size >= 3`.
      Each distinct `end` value needs its own explicit assert.
    - Dynamic `end=Variadic.size(ops)` requires tautology:
      `comptime assert Variadic.size(ops) <= Variadic.size(ops)`.
-   - `Variadic.concat_types` returns an unusable dependent type (can't be sized,
-     indexed, or unpacked). Not needed — slice-and-recurse covers all fusion patterns.
-   - See `tests/test_concat_types.mojo` for concat_types minimal repro.
+   - `BATCH` parameter must come BEFORE `*OPS` in function signatures.
+   - Trailing comma after `Variadic.slice_types[...]` arguments to prevent subscript parsing bug.
+   - `Variadic.concat_types` returns an unusable dependent type — not needed since
+     slice-and-recurse covers all fusion patterns.
 
 6. **GPU kernel fusion across ops**: `@always_inline` kernels can theoretically
    be inlined into a single kernel by the compiler. Whether Mojo actually does

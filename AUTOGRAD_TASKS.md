@@ -99,7 +99,7 @@ Fused GPU kernels + compile-time pattern matching via OP_ID.
 ### 2.2 Parameterized fused activations
 - [x] `Activation` trait — `nn/autodiff/fused/activation.mojo`
   - [x] `forward(pre_act) -> output`, `cache(pre_act, output) -> cache_val`, `backward(cache_val, grad_out) -> masked_grad`
-  - [x] `ReLUActivation`, `TanhActivation`, `SigmoidActivation` implementations
+  - [x] `ReLUActivation`, `TanhActivation`, `SigmoidActivation`, `MishActivation` implementations
 - [x] `FusedMatMulBiasActivation[in_dim, out_dim, ACT: Activation]` — `nn/autodiff/fused/matmul_bias_act.mojo`
   - [x] Single parameterized struct (~500 lines) replacing 3 separate ~500-line files
   - [x] CPU eval/vjp using `ACT.forward()`, `ACT.cache()`, `ACT.backward()`
@@ -112,6 +112,9 @@ Fused GPU kernels + compile-time pattern matching via OP_ID.
 - [x] `FusedMatMulBiasSigmoid` — first new activation added via the parameterized type
   - [x] `FUSED_MATMUL_BIAS_SIGMOID = OpID(103)` added to OpID
   - [x] Forward + backward matches unfused `AutoDiffChain[MatMul, BiasAdd, SigmoidOp]`
+- [x] `FusedMatMulBiasMish` — added via `comptime` alias to `FusedMatMulBiasActivation[i, o, MishActivation]`
+  - [x] `FUSED_MATMUL_BIAS_MISH = OpID(104)` added to OpID
+  - [x] Forward + backward matches unfused `AutoDiffChain[MatMul, BiasAdd, MishOp]`
 
 ### 2.3 Fusion-aware aliases
 - [x] `Dense[i, o]` = `AutoDiffChain[FusedMatMulBias[i, o]]`
@@ -234,7 +237,8 @@ Compile-time automatic fusion of unfused op chains into fused kernels.
 
 ### 5.2 `AutoFused[*OPS: DiffOp]` struct — core
 - [x] Recursive helpers: `_fused_param_size`, `_fused_cache_size`, `_fused_inter_size`
-- [x] Pattern matching: M+B+R (3 ops), M+B+T (3 ops), M+B+S (3 ops), M+B (2 ops), passthrough (1 op)
+- [x] Pattern matching: M+B+Act (3 ops, any activation OP_ID 10-19 via `_is_act()` range check), M+B (2 ops), passthrough (1 op)
+  - Uses `FusedMatMulBiasActivation[in, out, ACT]` directly for all activation fusions (ReLU, Tanh, Sigmoid, Mish)
 - [x] `AutoFused[*OPS: DiffOp](Model)` struct with compile-time constants
 - [x] File: `nn/autodiff/auto_fused.mojo`
 
@@ -264,6 +268,7 @@ Compile-time automatic fusion of unfused op chains into fused kernels.
 - [x] XOR training: converges to loss < 1e-12
 - [x] Single op passthrough: `AutoFused[MatMul[3,5]]` matches standalone MatMul
 - [x] Sigmoid fusion: `AutoFused[M,B,S]` matches `FusedMatMulBiasSigmoid`
+- [x] Mish fusion: `AutoFused[M,B,Mish]` matches `FusedMatMulBiasMish` (diff = 0.0)
 - [x] Deep chain: 11-op → 4 fused groups, forward + backward match reference (diff = 0.0)
 - [ ] Integration: `AutoFused` works with `Trainer`, `Residual`, `Parallel`
 - [ ] GPU test: forward/backward match CPU results
