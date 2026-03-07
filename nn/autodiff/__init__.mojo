@@ -69,18 +69,20 @@ comptime DenseMish[in_d: Int, out_d: Int] = AutoFused[
 ]
 
 # ---------------------------------------------------------------------------
-# Transformer composite aliases (Phase 8)
+# Composite model aliases (Phase 9)
 # ---------------------------------------------------------------------------
-# Note: FFN, TransformerLayer, TransformerEncoder composites require
-# Sequential which lives in nn.model — define them at the nn level or
-# in user code. Example:
-#   comptime FFN[d, ff] = Sequential[DenseReLU[d, ff], Dense[ff, d]]
-#   comptime TransformerLayer[d, h, ff, s] = Sequential[
-#       Residual[AutoDiffChain[
-#           MatMul[s*d, s*d*3], BiasAdd[s*d*3],
-#           ScaledDotProductAttention[d, h, s],
-#       ]],
-#       Residual[FFN[s*d, s*ff]],
-#   ]
-#   comptime TransformerEncoder[d, h, ff, s, n] = Repeat[n, TransformerLayer[d, h, ff, s]]
+# Pre-built architectures are in nn.composites (requires Sequential from
+# nn.model, so can't be defined here). Available:
+#   from nn.composites import ResBlock, ResNet, LeNet8x8, FFN
+#
+# ResBlock[dim]           = Residual[Sequential[DenseReLU[dim,dim], Dense[dim,dim]]]
+# ResNet[in,dim,out,d]    = Sequential[DenseReLU, Repeat[d, ResBlock], Dense]
+# LeNet8x8                = Conv->Pool->Conv->Dense pipeline for 8x8 input
+# FFN[dim, ff_dim]        = Sequential[DenseReLU[dim,ff], Dense[ff,dim]]
+#
+# Transformer/GPT composites: define in user code using these building blocks:
+#   comptime AttnBlock = AutoDiffChain[MatMul[SD, SD*3], BiasAdd[SD*3], SDPA[D,H,S]]
+#   comptime TLayer = Sequential[Residual[AttnBlock], Residual[FFN[SD, FF]]]
+#   comptime Encoder = Repeat[N, TLayer]
+#   comptime GPT = Sequential[Embedding[V, SD], Encoder, Dense[SD, V]]
 # ---------------------------------------------------------------------------

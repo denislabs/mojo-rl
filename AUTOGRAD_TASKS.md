@@ -404,25 +404,28 @@ Unlock transformer architectures. Requires careful cache design for variable-len
 Pre-built model architectures using existing primitives and combinators. No new DiffOps needed — these are purely compositional.
 
 ### 9.1 ResNet variants (works today)
-- [ ] Define `ResBlock[dim]` = `Residual[Sequential[DenseReLU[dim,dim], Dense[dim,dim]]]`
-- [ ] Define `ResNet[in_d, dim, out_d, depth]` = `Sequential[DenseReLU, Repeat[depth, ResBlock], Dense]`
-- [ ] Training test: `ResNet[784, 256, 10, 4]` on synthetic classification
-- [ ] Verify gradient flow through residual connections (no vanishing gradients)
+- [x] Define `ResBlock[dim]` = `Residual[Sequential[DenseReLU[dim,dim], Dense[dim,dim]]]`
+- [x] Define `ResNet[in_d, dim, out_d, depth]` = `Sequential[DenseReLU, Repeat[depth, ResBlock], Dense]`
+- [x] Training test: `ResNet[2, 8, 1, 2]` XOR convergence (loss < 1e-11)
+- [x] Verify gradient flow through residual connections (4 blocks, ratio > 1e-4)
 
 ### 9.2 Multi-head architectures (works today with Parallel)
-- [ ] Define `MultiHead[in_d, specs...]` using `Parallel[Dense, Dense, ...]`
-- [ ] Define `MultiHeadClassifier[in_d, out_d]` = `Sequential[MultiHead, Dense]`
-- [ ] Training test: multi-head model converges
+- [x] Define `MultiHead` using `Parallel[DenseReLU, DenseReLU, ...]` (user-defined, branch specs vary)
+- [x] Define `MultiHeadClassifier` = `Sequential[Parallel[...], DenseReLU, Dense]`
+- [x] Training test: multi-head model converges on XOR (loss < 0.05)
+- [x] 3-branch variant: `Parallel[Dense[4,3], DenseReLU[4,2], DenseTanh[4,1]]` forward + backward
 
 ### 9.3 CNN architectures (needs Phase 7)
-- [ ] Define `LeNet` composite for MNIST
-- [ ] Define `SimpleCNN[in_ch, in_h, in_w, out_d]` generic CNN template
-- [ ] Training test: LeNet on MNIST (or synthetic 28x28 data)
+- [x] Define `LeNet8x8` composite for 8x8 single-channel input (Conv->Pool->Conv->Dense)
+- [x] Define `SimpleCNN` template (Conv->ReLU->Pool->Flatten->Dense)
+- [x] Training test: SimpleCNN on synthetic 8x8 data (loss < 0.3)
+- [x] LeNet forward + backward correctness
 
 ### 9.4 Transformer architectures (needs Phase 8)
-- [ ] Define `GPT[vocab, dim, heads, ff, layers]` composite
-- [ ] Define `BERT[vocab, dim, heads, ff, layers]` composite (bidirectional)
-- [ ] Training test: tiny GPT (vocab=100, dim=32, 2 layers) on character prediction
+- [x] Define GPT composite: `Sequential[Embedding, Repeat[N, TransformerLayer], Dense]`
+- [ ] Define `BERT[vocab, dim, heads, ff, layers]` composite (bidirectional) — needs masked attention
+- [x] Tiny GPT (vocab=8, dim=4, 2 layers) forward + backward correctness
+- [ ] Training test: tiny GPT on character prediction
 
 ---
 

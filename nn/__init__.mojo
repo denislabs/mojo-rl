@@ -73,6 +73,7 @@ from .autodiff import (
     FusionAnalyzer,
     FusedChain,
 )
+from .composites import ResBlock, ResNet, LeNet8x8, FFN
 from .checkpoint import (
     CheckpointHeader,
     write_checkpoint_header,
