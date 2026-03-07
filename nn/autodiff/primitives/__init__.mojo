@@ -7,3 +7,6 @@ from .reduce import ReduceSum, ReduceMean
 from .softmax import SoftmaxOp
 from .layer_norm import LayerNormOp
 from .rms_norm import RMSNormOp
+from .dropout import DropoutOp
+from .reshape import Flatten
+from .embedding import Embedding

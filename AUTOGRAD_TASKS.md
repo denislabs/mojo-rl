@@ -276,15 +276,158 @@ Compile-time automatic fusion of unfused op chains into fused kernels.
 
 ### 5.8 Update AUTOGRAD_TASKS.md
 - [x] Add Phase 5: Automatic Fusion
-- [x] Renumber Migration & Polish → Phase 6
+- [x] Renumber Migration & Polish → Phase 10
 
 ---
 
-## Phase 6: Migration & Polish
+## Phase 6: Regularization & Structural Primitives
+
+New primitives for regularization, reshaping, and expanded model support.
+
+### 6.1 Dropout
+- [x] Add `DROPOUT = OpID(40)` to OpID enum
+- [x] Implement `DropoutOp[dim, RATE_NUM, RATE_DEN]` — `nn/autodiff/primitives/dropout.mojo`
+  - [x] `eval`: generate binary mask from hash(cache_ptr + index), apply mask, scale by `1/(1-rate)`
+  - [x] `vjp`: `grad_input = grad_output * mask` (same mask from cache, already includes scale)
+  - [x] Seed mechanism: derive from cache pointer address (different mask per buffer allocation)
+  - [ ] Inference mode: identity (no masking) — needs a `training: Bool` flag or separate `eval_inference`
+- [x] GPU kernel: elementwise mask + scale
+- [x] Unit test: forward preserves scaling (kept elements scaled by 1/(1-rate))
+- [x] Unit test: backward applies same mask as forward
+- [x] Unit test: dropout rate 0 = identity, rate 1 = zero output
+
+### 6.2 Flatten
+- [x] Add `FLATTEN = OpID(53)` to OpID enum
+- [x] Implement `Flatten[dim]` — `nn/autodiff/primitives/reshape.mojo`
+  - [x] `eval`: identity (output = input)
+  - [x] `vjp`: identity (grad_input = grad_output)
+  - [x] Zero params, zero cache
+- [x] Unit test: forward/backward identity
+- [x] Composition test: `AutoDiffChain[MatMul, Flatten, MatMul, BiasAdd]` compiles with correct dims
+
+### 6.3 Embedding
+- [x] Add `EMBEDDING = OpID(60)` to OpID enum
+- [x] Implement `Embedding[vocab_size, embed_dim]` — `nn/autodiff/primitives/embedding.mojo`
+  - [x] Design decision: one-hot input (fits DiffOp float tensor interface)
+  - [x] `eval`: output = input @ W (equivalent to row lookup for one-hot input)
+  - [x] `vjp`: grad_input = grad_output @ W.T, dW += input.T @ grad_output (scatter)
+- [x] Unit test: forward correctness (one-hot input selects correct embedding rows)
+- [x] Unit test: backward gradient scatter (dW only non-zero at indexed rows)
+
+### 6.4 Verification — Phase 6
+- [x] Finite difference gradient check for Embedding (param gradients, tol 1e-3)
+- [x] `AutoDiffChain[MatMul, BiasAdd, DropoutOp, ReLUOp]` forward/backward (rate 0 matches no-dropout)
+- [ ] Training test: MLP with dropout converges (XOR or MNIST)
+
+---
+
+## Phase 7: Spatial Primitives (Conv2D, Pooling)
+
+Unlock vision models. Major design challenge: DiffOp assumes `(BATCH, DIM)` layout — spatial ops need `(BATCH, C*H*W)` with implicit spatial structure.
+
+### 7.1 Conv2D
+- [ ] Add `CONV2D = OpID(50)` to OpID enum
+- [ ] Implement `Conv2D[in_ch, out_ch, kernel, stride, pad, in_h, in_w]` — `nn/autodiff/primitives/conv2d.mojo`
+  - [ ] Im2col helper: reshape spatial patches into column matrix
+  - [ ] `eval`: im2col(input) → col, output = W @ col + bias, reshape to spatial
+  - [ ] `vjp`: col2im for grad_input, standard matmul backward for dW, sum for db
+  - [ ] Compile-time output spatial dims: `out_h = (in_h + 2*pad - kernel) // stride + 1`
+  - [ ] `PARAM_SIZE = out_ch * (in_ch * kernel * kernel) + out_ch`
+  - [ ] `CACHE_SIZE = in_ch * kernel * kernel * out_h * out_w` (im2col buffer)
+- [ ] GPU kernel: im2col + tiled matmul (reuse existing matmul infrastructure)
+- [ ] Unit test: 1x1 conv = pointwise matmul
+- [ ] Unit test: known 3x3 kernel on 5x5 input
+- [ ] Finite difference gradient check
+
+### 7.2 MaxPool2D
+- [ ] Add `MAX_POOL2D = OpID(51)` to OpID enum
+- [ ] Implement `MaxPool2D[channels, in_h, in_w, pool_size]` — `nn/autodiff/primitives/pool.mojo`
+  - [ ] `eval`: max over each pool window, cache argmax indices
+  - [ ] `vjp`: route gradient to argmax position only
+  - [ ] `IN_DIM = channels * in_h * in_w`, `OUT_DIM = channels * out_h * out_w`
+- [ ] GPU kernel: per-window max reduction
+- [ ] Unit test: known pooling output
+- [ ] Unit test: gradient routing to max element
+
+### 7.3 AvgPool2D (optional)
+- [ ] Add `AVG_POOL2D = OpID(52)` to OpID enum
+- [ ] Implement `AvgPool2D[channels, in_h, in_w, pool_size]`
+  - [ ] `eval`: average over each pool window
+  - [ ] `vjp`: distribute gradient equally across window
+- [ ] Unit test: forward/backward correctness
+
+### 7.4 Verification — Phase 7
+- [ ] Integration test: `Conv2D[1,6,5,1,0,28,28] → ReLU → MaxPool2D → Flatten → Dense` compiles
+- [ ] Integration test: LeNet-5 on MNIST (or synthetic data) converges
+- [ ] GPU vs CPU numerical agreement for Conv2D
+
+---
+
+## Phase 8: Attention & Transformer Primitives
+
+Unlock transformer architectures. Requires careful cache design for variable-length sequences.
+
+### 8.1 ScaledDotProductAttention
+- [ ] Add `SCALED_DOT_PRODUCT_ATTENTION = OpID(70)` to OpID enum
+- [ ] Implement `ScaledDotProductAttention[dim, n_heads]` — `nn/autodiff/primitives/attention.mojo`
+  - [ ] Design decision: fixed seq_len as comptime param vs. max_seq_len with masking
+  - [ ] `IN_DIM = dim * 3` (concatenated Q, K, V projections)
+  - [ ] `OUT_DIM = dim`
+  - [ ] `eval`: split Q/K/V, per-head scaled dot-product, softmax, weighted sum
+  - [ ] `vjp`: attention backward (dQ, dK, dV from grad_output)
+  - [ ] `CACHE_SIZE = dim * 3 + dim` (Q, K, V, attention output; weights re-derived)
+  - [ ] Numerically stable softmax (max subtraction)
+- [ ] GPU kernel: batched matmul for Q@K^T, softmax, attn@V
+- [ ] Unit test: single-head attention matches manual computation
+- [ ] Unit test: multi-head produces correct output shape
+- [ ] Finite difference gradient check
+
+### 8.2 Transformer composites (using existing combinators)
+- [ ] Define `FFN[dim, ff_dim]` composite using `Sequential[DenseReLU, Dense]`
+- [ ] Define `TransformerLayer[dim, heads, ff]` using `Residual + Sequential`
+- [ ] Define `TransformerEncoder[dim, heads, ff, layers]` using `Repeat[N, TransformerLayer]`
+- [ ] Integration test: `TransformerEncoder[64, 4, 256, 2]` compiles and runs forward
+- [ ] Training test: small transformer on sequence prediction task
+
+### 8.3 Verification — Phase 8
+- [ ] Attention forward matches PyTorch `F.scaled_dot_product_attention` on known inputs
+- [ ] Transformer backward gradients match finite differences
+- [ ] GPU vs CPU numerical agreement
+
+---
+
+## Phase 9: Composite Model Library
+
+Pre-built model architectures using existing primitives and combinators. No new DiffOps needed — these are purely compositional.
+
+### 9.1 ResNet variants (works today)
+- [ ] Define `ResBlock[dim]` = `Residual[Sequential[DenseReLU[dim,dim], Dense[dim,dim]]]`
+- [ ] Define `ResNet[in_d, dim, out_d, depth]` = `Sequential[DenseReLU, Repeat[depth, ResBlock], Dense]`
+- [ ] Training test: `ResNet[784, 256, 10, 4]` on synthetic classification
+- [ ] Verify gradient flow through residual connections (no vanishing gradients)
+
+### 9.2 Multi-head architectures (works today with Parallel)
+- [ ] Define `MultiHead[in_d, specs...]` using `Parallel[Dense, Dense, ...]`
+- [ ] Define `MultiHeadClassifier[in_d, out_d]` = `Sequential[MultiHead, Dense]`
+- [ ] Training test: multi-head model converges
+
+### 9.3 CNN architectures (needs Phase 7)
+- [ ] Define `LeNet` composite for MNIST
+- [ ] Define `SimpleCNN[in_ch, in_h, in_w, out_d]` generic CNN template
+- [ ] Training test: LeNet on MNIST (or synthetic 28x28 data)
+
+### 9.4 Transformer architectures (needs Phase 8)
+- [ ] Define `GPT[vocab, dim, heads, ff, layers]` composite
+- [ ] Define `BERT[vocab, dim, heads, ff, layers]` composite (bidirectional)
+- [ ] Training test: tiny GPT (vocab=100, dim=32, 2 layers) on character prediction
+
+---
+
+## Phase 10: Migration & Polish
 
 Replace hand-coded layers, final integration.
 
-### 6.1 Replace hand-coded layers
+### 10.1 Replace hand-coded layers
 - [ ] Verify `LinearAD` matches `Linear` numerically (forward + backward + GPU)
 - [ ] Verify `LinearReLUAD` matches `LinearReLU` numerically
 - [ ] Verify `LinearTanhAD` matches `LinearTanh` numerically
@@ -292,17 +435,17 @@ Replace hand-coded layers, final integration.
 - [ ] Replace `LinearReLU` usages with `DenseReLU` in RL environments
 - [ ] Keep old implementations in `nn/model/` as reference (don't delete)
 
-### 6.2 StochasticActor migration
+### 10.2 StochasticActor migration
 - [ ] Evaluate: can `StochasticActor` be expressed with `AutoDiffChain` + combinators?
 - [ ] If yes: refactor to use composed primitives
 - [ ] If no: document what additional primitives/combinators would be needed
 
-### 6.3 Documentation
+### 10.3 Documentation
 - [ ] Add docstrings to all public types: DiffOp, AutoDiffChain, OpID, each primitive
 - [ ] Update `AUTOGRAD_IR_DESIGN.md` with lessons learned during implementation
 - [ ] Add usage examples to `nn/autodiff/__init__.mojo`
 
-### 6.4 Benchmarks
+### 10.4 Benchmarks
 - [ ] Benchmark: AutoDiffChain MLP vs hand-coded MLP (CPU throughput)
 - [ ] Benchmark: AutoDiffChain MLP vs hand-coded MLP (GPU throughput)
 - [ ] Benchmark: fused DenseReLU vs unfused AutoDiffChain[MatMul, BiasAdd, ReLU] (GPU kernel launches)
@@ -319,5 +462,8 @@ Items that need investigation before committing to an approach.
   - **Answer**: YES — `Variadic.slice_types` + `comptime assert` enables recursive compile-time fusion on arbitrary-length op chains. Key technique: `comptime assert Variadic.size(ops) >= end_value` provides evidence to the constraint checker for `slice_types[element_types=ops, start=S, end=E]`. The sliced result can be unpacked with `*rest` into recursive calls. Proven with 11-op → 4-fused-op recursive greedy fusion in `tests/test_slice_types.mojo`. Note: `concat_types` is broken (returns unusable dependent type) but not needed since slice-and-recurse covers all fusion patterns.
 - [ ] **@always_inline kernel fusion**: Does Mojo actually inline adjacent `@always_inline` GPU kernels into a single kernel launch via `ctx.enqueue_function[]`?
 - [ ] **Compile-time scaling**: Test `comptime for` with 100+ iterations — measure compilation time impact
-- [ ] **Attention primitive**: Design `ScaledDotProductAttention` as a DiffOp — what should its cache look like? Can flash-attention tiling fit the DiffOp interface?
-- [ ] **Conv2D primitive**: Design `Conv2D` as a DiffOp — im2col vs direct convolution, how does the cache work for spatial inputs?
+- [ ] **Attention primitive**: Design `ScaledDotProductAttention` as a DiffOp — what should its cache look like? Can flash-attention tiling fit the DiffOp interface? How to handle variable sequence length with compile-time DIM?
+- [ ] **Conv2D primitive**: Design `Conv2D` as a DiffOp — im2col vs direct convolution, how does the cache work for spatial inputs? Flattened spatial dims in DiffOp's `(BATCH, DIM)` layout vs extended spatial metadata.
+- [ ] **Dropout seed mechanism**: How to pass randomness into DiffOp. Options: (1) extend DiffOp with a seed parameter, (2) reserve cache slots for seed state, (3) thread-local RNG, (4) deterministic mask from step counter. Must ensure same mask in forward/backward.
+- [ ] **Training vs inference mode**: DropoutOp needs to know whether to mask or pass through. Options: (1) separate `eval` vs `eval_inference` in DiffOp trait, (2) a compile-time `TRAINING: Bool` parameter, (3) the existing `forward_gpu_no_cache` path implies inference (no cache = no mask).
+- [ ] **Spatial dimension tracking**: Current DiffOp is 1D `(BATCH, DIM)`. Conv2D/Pool need `(BATCH, C, H, W)`. Options: (1) flatten everything — simple but loses spatial info for fusion, (2) add optional `comptime CHANNELS, HEIGHT, WIDTH` to DiffOp, (3) a separate `SpatialDiffOp` trait extending DiffOp.

@@ -14,6 +14,9 @@ from .primitives import (
     SoftmaxOp,
     LayerNormOp,
     RMSNormOp,
+    DropoutOp,
+    Flatten,
+    Embedding,
 )
 from .fused import (
     FusedMatMulBias,

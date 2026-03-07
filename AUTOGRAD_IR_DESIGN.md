@@ -113,6 +113,18 @@ struct OpID:
     comptime RMS_NORM       = OpID(21)
     comptime REDUCE_SUM     = OpID(30)
     comptime REDUCE_MEAN    = OpID(31)
+    # Regularization (40+)
+    comptime DROPOUT        = OpID(40)
+    # Spatial (50+)
+    comptime CONV2D         = OpID(50)
+    comptime MAX_POOL2D     = OpID(51)
+    comptime AVG_POOL2D     = OpID(52)
+    comptime FLATTEN        = OpID(53)
+    # Embedding (60+)
+    comptime EMBEDDING      = OpID(60)
+    # Attention (70+)
+    comptime SCALED_DOT_PRODUCT_ATTENTION = OpID(70)
+    comptime MULTI_HEAD_PROJECTION        = OpID(71)
     # Fused ops (100+)
     comptime FUSED_MATMUL_BIAS      = OpID(100)
     comptime FUSED_MATMUL_BIAS_RELU = OpID(101)
@@ -417,11 +429,274 @@ Arithmetic:     MatMul, BiasAdd, ElemAdd, ElemMul, Scale
 Activations:    ReLUOp, TanhOp, SigmoidOp, MishOp, SoftmaxOp
 Normalization:  LayerNormOp, RMSNormOp
 Reduction:      ReduceSum, ReduceMean
-Reshaping:      (future) Reshape, Transpose, Concat, Split
-Attention:      (future) ScaledDotProduct, MultiHeadProjection
+Regularization: DropoutOp
+Reshaping:      Flatten, (future) Reshape, Transpose, Concat, Split
+Pooling:        (future) MaxPool2D, AvgPool2D
+Spatial:        (future) Conv2D (via im2col + MatMul)
+Embedding:      (future) Embedding (table lookup)
+Attention:      (future) ScaledDotProductAttention, MultiHeadProjection
 ```
 
 Each primitive: ~30-60 lines. Each hand-coded `Model` layer: ~200-400 lines. The savings compound with composition.
+
+#### Planned Primitives
+
+##### DropoutOp — Regularization via Random Masking
+
+```mojo
+struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
+    """y = x * mask / (1 - rate)  where rate = RATE_NUM / RATE_DEN.
+
+    Inverted dropout: scales surviving activations by 1/(1-rate) during
+    training so inference requires no change. Rate is compile-time as a
+    ratio (e.g., RATE_NUM=2, RATE_DEN=10 → 20% dropout) to avoid float
+    parameters.
+
+    Cache stores the binary mask so backward applies the same mask.
+    Needs a seed mechanism — either passed via a side channel or derived
+    from a step counter stored in the cache.
+    """
+    comptime OP_ID: Int = OpID.DROPOUT._value
+    comptime IN_DIM: Int = dim
+    comptime OUT_DIM: Int = dim
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = dim  # binary mask
+
+    # eval: generate mask from seed, apply mask, scale by 1/(1-rate)
+    # vjp: grad_input = grad_output * mask / (1 - rate)
+```
+
+##### Embedding — Table Lookup for Discrete Inputs
+
+```mojo
+struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
+    """y = W[index]  where W:(vocab_size, embed_dim), index:Int.
+
+    Unlike MatMul, input is an integer index, not a float vector.
+    Forward is a simple row copy. Backward scatters gradients to the
+    indexed row.
+
+    Note: This may require a variant DiffOp signature or a wrapper
+    since the standard DiffOp assumes float input tensors. One approach:
+    encode the index as a one-hot vector (IN_DIM=vocab_size), making it
+    equivalent to MatMul but with sparse input. Another: a specialized
+    EmbeddingModel that conforms to Model directly.
+    """
+    comptime OP_ID: Int = OpID.EMBEDDING._value
+    comptime IN_DIM: Int = vocab_size   # one-hot encoding approach
+    comptime OUT_DIM: Int = embed_dim
+    comptime PARAM_SIZE: Int = vocab_size * embed_dim
+    comptime CACHE_SIZE: Int = vocab_size  # cache one-hot input for backward
+
+    # eval: output[b] = W[argmax(input[b])]  (or sparse matmul)
+    # vjp: grad_W[index] += grad_output[b]
+```
+
+##### Conv2D — 2D Convolution via Im2col
+
+```mojo
+struct Conv2D[
+    in_channels: Int, out_channels: Int,
+    kernel_size: Int, stride: Int, padding: Int,
+    in_h: Int, in_w: Int,
+](DiffOp):
+    """y = conv2d(x, W) + b  via im2col reduction to MatMul.
+
+    The im2col approach reshapes spatial input patches into columns of a
+    matrix, then the convolution becomes a standard MatMul. This reuses
+    existing MatMul infrastructure and is easy to fuse.
+
+    Input shape:  (BATCH, in_channels * in_h * in_w)  — flattened spatial
+    Output shape: (BATCH, out_channels * out_h * out_w) — flattened spatial
+
+    Key design question: DiffOp currently assumes (BATCH, DIM) layout.
+    Conv2D needs spatial dimensions. Two approaches:
+    1. Flatten spatial dims into DIM — works but loses structure info
+    2. Extend DiffOp with optional spatial metadata — more complex
+
+    Approach 1 (flatten) is recommended for initial implementation.
+    """
+    comptime out_h: Int = (in_h + 2 * padding - kernel_size) // stride + 1
+    comptime out_w: Int = (in_w + 2 * padding - kernel_size) // stride + 1
+    comptime col_size: Int = in_channels * kernel_size * kernel_size
+
+    comptime IN_DIM: Int = in_channels * in_h * in_w
+    comptime OUT_DIM: Int = out_channels * out_h * out_w
+    comptime PARAM_SIZE: Int = out_channels * col_size + out_channels  # W + bias
+    comptime CACHE_SIZE: Int = col_size * out_h * out_w  # im2col buffer
+
+    # eval: im2col(input) → col_matrix, output = W @ col_matrix + b
+    # vjp: grad_col = W.T @ grad_output, col2im(grad_col) → grad_input
+    #       dW = grad_output @ col_matrix.T, db = sum(grad_output)
+```
+
+##### Flatten — Reshape for Conv→Dense Transition
+
+```mojo
+struct Flatten[dim: Int](DiffOp):
+    """Identity operation that documents a reshape boundary.
+
+    Zero-parameter, zero-cache op. Forward and backward are identity.
+    Exists to mark the transition from spatial (Conv2D) to flat (Dense)
+    in the op chain, making the architecture self-documenting.
+    """
+    comptime OP_ID: Int = OpID.FLATTEN._value
+    comptime IN_DIM: Int = dim
+    comptime OUT_DIM: Int = dim
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = 0
+
+    # eval: output = input (identity)
+    # vjp: grad_input = grad_output (identity)
+```
+
+##### MaxPool2D — Spatial Downsampling
+
+```mojo
+struct MaxPool2D[
+    channels: Int, in_h: Int, in_w: Int, pool_size: Int,
+](DiffOp):
+    """y = max_pool(x)  with pool_size x pool_size windows.
+
+    Reduces spatial dimensions by pool_size. Caches argmax indices
+    for backward (gradient routes to max element only).
+    """
+    comptime out_h: Int = in_h // pool_size
+    comptime out_w: Int = in_w // pool_size
+
+    comptime IN_DIM: Int = channels * in_h * in_w
+    comptime OUT_DIM: Int = channels * out_h * out_w
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = channels * out_h * out_w  # argmax indices
+
+    # eval: for each pool window, output = max(window), cache argmax index
+    # vjp: grad_input[argmax_idx] = grad_output, rest = 0
+```
+
+##### ScaledDotProductAttention — Transformer Core
+
+```mojo
+struct ScaledDotProductAttention[dim: Int, n_heads: Int](DiffOp):
+    """y = softmax(Q @ K.T / sqrt(d_k)) @ V
+
+    The fundamental transformer building block. Input is the concatenation
+    of Q, K, V projections (so IN_DIM = 3 * dim). Output is the attended
+    values (OUT_DIM = dim).
+
+    This doesn't decompose cleanly into existing DiffOps because:
+    1. The softmax is applied to the attention matrix (BATCH, seq, seq),
+       not the output dimension
+    2. The Q/K/V split is a reshape, not a computation
+    3. Flash-attention tiling requires fused forward+backward
+
+    Best implemented as a single DiffOp with custom VJP.
+
+    Cache needs: Q, K, V, attention_weights (for backward)
+    CACHE_SIZE = 3 * dim + n_heads * seq_len  (seq_len TBD)
+
+    Open question: How to handle variable sequence length within the
+    compile-time DiffOp framework. Options:
+    1. Fix seq_len as a comptime parameter
+    2. Use max_seq_len with masking
+    3. Separate the attention op from the projection ops
+    """
+    comptime head_dim: Int = dim // n_heads
+    comptime IN_DIM: Int = dim * 3   # concatenated Q, K, V
+    comptime OUT_DIM: Int = dim
+    comptime PARAM_SIZE: Int = 0     # projections are separate MatMul ops
+    comptime CACHE_SIZE: Int = dim * 3 + dim  # Q, K, V, output (attn weights derived)
+
+    # eval: split input → Q,K,V; per-head: attn = softmax(QK^T/sqrt(d_k)); out = attn @ V
+    # vjp: standard attention backward (see FlashAttention paper for fused version)
+```
+
+#### Composite Models — Built on Existing Primitives
+
+With `AutoDiffChain`, `AutoFused`, `Sequential`, `Residual`, `Parallel`, and `Repeat`, many
+standard architectures can be expressed declaratively:
+
+##### Transformer (once Attention + Embedding exist)
+
+```mojo
+# Feed-Forward Network (works today)
+comptime FFN[dim: Int, ff_dim: Int] = Sequential[
+    DenseReLU[dim, ff_dim],
+    Dense[ff_dim, dim],
+]
+
+# Pre-norm Transformer layer (needs Attention primitive)
+comptime TransformerLayer[dim: Int, heads: Int, ff: Int] = Sequential[
+    Residual[Sequential[
+        AutoFused[LayerNormOp[dim], MatMul[dim, dim*3], BiasAdd[dim*3]],  # QKV projection
+        ScaledDotProductAttention[dim, heads],
+    ]],
+    Residual[Sequential[
+        AutoFused[LayerNormOp[dim], MatMul[dim, ff], BiasAdd[ff], ReLUOp[ff]],
+        Dense[ff, dim],
+    ]],
+]
+
+# Full GPT-style model
+comptime GPT[vocab: Int, dim: Int, heads: Int, ff: Int, layers: Int] = Sequential[
+    Embedding[vocab, dim],
+    Repeat[layers, TransformerLayer[dim, heads, ff]],
+    AutoFused[LayerNormOp[dim], MatMul[dim, vocab], BiasAdd[vocab]],
+]
+```
+
+##### CNN for Vision (once Conv2D + MaxPool2D + Flatten exist)
+
+```mojo
+# LeNet-5 style
+comptime LeNet = Sequential[
+    Conv2D[1, 6, 5, 1, 0, 28, 28],       # 28x28 → 24x24x6
+    ReLUOp[6 * 24 * 24],
+    MaxPool2D[6, 24, 24, 2],              # → 12x12x6
+    Conv2D[6, 16, 5, 1, 0, 12, 12],      # → 8x8x16
+    ReLUOp[16 * 8 * 8],
+    MaxPool2D[16, 8, 8, 2],              # → 4x4x16
+    Flatten[16 * 4 * 4],
+    DenseReLU[256, 120],
+    DenseReLU[120, 84],
+    Dense[84, 10],
+]
+```
+
+##### ResNet Block (works today)
+
+```mojo
+comptime ResBlock[dim: Int] = Residual[Sequential[
+    DenseReLU[dim, dim],
+    Dense[dim, dim],
+]]
+
+comptime ResNet[in_d: Int, dim: Int, out_d: Int, depth: Int] = Sequential[
+    DenseReLU[in_d, dim],
+    Repeat[depth, ResBlock[dim]],
+    Dense[dim, out_d],
+]
+
+# Example: ResNet for MNIST
+comptime MNISTResNet = ResNet[784, 256, 10, 4]
+```
+
+##### Multi-Head Architecture (works today with Parallel)
+
+```mojo
+# Multi-head feature extractor with concatenated outputs
+comptime MultiHead[in_d: Int] = Parallel[
+    DenseReLU[in_d, 32],   # head 1: 32 features
+    DenseTanh[in_d, 16],   # head 2: 16 features
+    Dense[in_d, 8],        # head 3: 8 features
+]
+# Output: 32 + 16 + 8 = 56 features
+
+comptime MultiHeadClassifier[in_d: Int, out_d: Int] = Sequential[
+    MultiHead[in_d],
+    DenseReLU[56, 32],
+    Dense[32, out_d],
+]
+```
 
 ---
 
@@ -1319,7 +1594,13 @@ nn/
 │   │   ├── bias.mojo          # BiasAdd
 │   │   ├── activations.mojo   # ReLUOp, TanhOp, SigmoidOp, MishOp
 │   │   ├── norm.mojo          # LayerNormOp, RMSNormOp
-│   │   └── reduce.mojo        # ReduceSum, ReduceMean
+│   │   ├── reduce.mojo        # ReduceSum, ReduceMean
+│   │   ├── dropout.mojo       # DropoutOp (planned)
+│   │   ├── reshape.mojo       # Flatten (planned)
+│   │   ├── embedding.mojo     # Embedding (planned)
+│   │   ├── conv2d.mojo        # Conv2D via im2col (planned)
+│   │   ├── pool.mojo          # MaxPool2D, AvgPool2D (planned)
+│   │   └── attention.mojo     # ScaledDotProductAttention (planned)
 │   ├── fused/
 │   │   ├── activation.mojo          # Activation trait + ReLU/Tanh/Sigmoid/Mish activations
 │   │   ├── matmul_bias.mojo         # FusedMatMulBias (no activation, separate)
@@ -1331,6 +1612,7 @@ nn/
 │   │   ├── parallel.mojo      # Parallel branches + concat
 │   │   └── repeat.mojo        # Weight-shared repetition
 │   └── __init__.mojo             # Exports + aliases: Dense, DenseReLU, DenseTanh, DenseSigmoid
+│                                    # Composites: ResBlock, FFN, LeNet, etc. (planned)
 ├── model/                     # Existing layers (untouched)
 ├── optimizer/                 # Existing optimizers (untouched)
 ├── loss/                      # Existing losses (untouched)
@@ -1491,3 +1773,33 @@ The key differentiator: **everything resolves at compile time into the same zero
    Yes — since `Residual` takes `Inner: Model`, any `Model` works. This gives
    a clean migration path: wrap existing hand-coded layers in combinators today,
    migrate internals to `AutoDiffChain` later.
+
+9. **Dropout seed mechanism**: DiffOp is stateless — no place to store RNG state.
+   Options: (a) extend `eval`/`vjp` with a seed parameter, (b) reserve cache
+   slots for a deterministic mask derived from a step counter, (c) use
+   thread-local RNG (not reproducible), (d) make the mask a function of the
+   input pointer address + a global step (deterministic but fragile). The cache
+   approach (b) is most compatible — forward generates mask into cache, backward
+   reads it back. The seed source remains an open question.
+
+10. **Training vs inference mode for Dropout**: The existing `forward_gpu_no_cache`
+    path suggests inference mode (no cache → no mask → identity). But CPU
+    `eval` always receives a cache buffer. Options: (a) separate
+    `eval_inference` method in DiffOp, (b) a compile-time `TRAINING: Bool`
+    parameter on the chain, (c) convention: if cache pointer is null, skip
+    masking. Option (c) is simplest but requires null-check overhead.
+
+11. **Spatial dimension tracking**: DiffOp assumes `(BATCH, DIM)` layout.
+    Conv2D and pooling ops need implicit spatial structure `(BATCH, C*H*W)`.
+    The flatten approach works but loses information needed for spatial fusion
+    (e.g., fusing Conv2D + BatchNorm + ReLU requires knowing H, W). Options:
+    (a) flatten everything — simple, works for unfused ops, (b) add optional
+    `comptime CHANNELS, HEIGHT, WIDTH` metadata to DiffOp, (c) a separate
+    `SpatialDiffOp` trait that extends DiffOp with spatial info. Option (a)
+    is recommended for initial implementation; (b) or (c) for fusion.
+
+12. **Embedding input type**: DiffOp assumes float input tensors. Embedding
+    naturally takes integer indices. The one-hot encoding approach
+    (`IN_DIM = vocab_size`) fits the existing interface but is wasteful for
+    large vocabularies. A sparse variant or a specialized `EmbeddingModel`
+    that conforms to `Model` directly may be more practical for vocab > 10k.

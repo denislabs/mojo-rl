@@ -37,6 +37,18 @@ struct OpID:
     comptime REDUCE_SUM = OpID(30)
     comptime REDUCE_MEAN = OpID(31)
 
+    # Regularization (40-49)
+    comptime DROPOUT = OpID(40)
+
+    # Spatial (50-59)
+    comptime CONV2D = OpID(50)
+    comptime MAX_POOL2D = OpID(51)
+    comptime AVG_POOL2D = OpID(52)
+    comptime FLATTEN = OpID(53)
+
+    # Embedding (60-69)
+    comptime EMBEDDING = OpID(60)
+
     # Fused ops (100+)
     comptime FUSED_MATMUL_BIAS = OpID(100)
     comptime FUSED_MATMUL_BIAS_RELU = OpID(101)
