@@ -431,10 +431,10 @@ Normalization:  LayerNormOp, RMSNormOp
 Reduction:      ReduceSum, ReduceMean
 Regularization: DropoutOp
 Reshaping:      Flatten, (future) Reshape, Transpose, Concat, Split
-Pooling:        (future) MaxPool2D, AvgPool2D
-Spatial:        (future) Conv2D (via im2col + MatMul)
-Embedding:      (future) Embedding (table lookup)
-Attention:      (future) ScaledDotProductAttention, MultiHeadProjection
+Pooling:        MaxPool2D, AvgPool2D
+Spatial:        Conv2D (via im2col + MatMul)
+Embedding:      Embedding (one-hot input)
+Attention:      ScaledDotProductAttention[dim, n_heads, seq_len]
 ```
 
 Each primitive: ~30-60 lines. Each hand-coded `Model` layer: ~200-400 lines. The savings compound with composition.

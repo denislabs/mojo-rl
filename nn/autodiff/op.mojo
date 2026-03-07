@@ -49,6 +49,10 @@ struct OpID:
     # Embedding (60-69)
     comptime EMBEDDING = OpID(60)
 
+    # Attention (70-79)
+    comptime SCALED_DOT_PRODUCT_ATTENTION = OpID(70)
+    comptime MULTI_HEAD_PROJECTION = OpID(71)
+
     # Fused ops (100+)
     comptime FUSED_MATMUL_BIAS = OpID(100)
     comptime FUSED_MATMUL_BIAS_RELU = OpID(101)
