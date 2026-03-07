@@ -716,6 +716,46 @@ trait FusedOp(DiffOp):
     comptime FUSED_COUNT: Int  # how many original ops this replaces
 ```
 
+#### Parameterized Fused Activation: `FusedMatMulBiasActivation`
+
+Rather than duplicating ~500 lines per activation, fused matmul+bias+activation ops
+are parameterized on an `Activation` trait:
+
+```mojo
+# nn/autodiff/fused/activation.mojo
+trait Activation(Movable & ImplicitlyCopyable):
+    comptime OP_ID: Int          # Matches standalone DiffOp OP_ID (RELU=10, TANH=11...)
+    comptime FUSED_OP_ID: Int    # OP_ID for the fused variant (101, 102...)
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]
+
+    @staticmethod
+    fn backward(cache_val: Scalar[dtype], grad_out: Scalar[dtype]) -> Scalar[dtype]
+
+# Concrete activations:
+# - ReLUActivation:    forward = max(0,x), cache = pre_act, backward = g if cache>0 else 0
+# - TanhActivation:    forward = tanh(x),  cache = output,  backward = g*(1-cache^2)
+# - SigmoidActivation: forward = σ(x),     cache = output,  backward = g*cache*(1-cache)
+```
+
+The single `FusedMatMulBiasActivation[in_dim, out_dim, ACT: Activation]` struct
+(~500 lines) replaces what was ~1500 lines across 3 separate files. Only ~8 lines
+differ between activations — the calls to `ACT.forward()`, `ACT.cache()`, and
+`ACT.backward()` in the CPU eval/vjp and GPU kernels.
+
+**Backward-compatible wrappers:** `FusedMatMulBiasReLU` and `FusedMatMulBiasTanh`
+remain as concrete structs (thin delegation wrappers) rather than `comptime` aliases,
+because Mojo nightly doesn't fold `comptime` member constants through parameterized
+type aliases (see "Comptime alias limitation" in Open Questions below).
+
+New activations can now be added with ~30 lines (the `Activation` impl) instead of
+~500 lines (a full fused struct). `FusedMatMulBiasSigmoid` was the first new
+activation added this way.
+
 #### Example: Fused MatMul + BiasAdd + ReLU
 
 ```mojo
@@ -1245,9 +1285,11 @@ nn/
 │   │   ├── norm.mojo          # LayerNormOp, RMSNormOp
 │   │   └── reduce.mojo        # ReduceSum, ReduceMean
 │   ├── fused/
-│   │   ├── matmul_bias.mojo         # FusedMatMulBias
-│   │   ├── matmul_bias_relu.mojo    # FusedMatMulBiasReLU
-│   │   └── matmul_bias_tanh.mojo    # FusedMatMulBiasTanh
+│   │   ├── activation.mojo          # Activation trait + ReLU/Tanh/Sigmoid activations
+│   │   ├── matmul_bias.mojo         # FusedMatMulBias (no activation, separate)
+│   │   ├── matmul_bias_act.mojo     # FusedMatMulBiasActivation[i, o, ACT] (parameterized)
+│   │   ├── matmul_bias_relu.mojo    # FusedMatMulBiasReLU (thin wrapper)
+│   │   └── matmul_bias_tanh.mojo    # FusedMatMulBiasTanh (thin wrapper)
 │   ├── combinators/
 │   │   ├── residual.mojo      # Residual skip connection
 │   │   ├── parallel.mojo      # Parallel branches + concat
@@ -1354,26 +1396,49 @@ The key differentiator: **everything resolves at compile time into the same zero
    `constrained[]` is deprecated. All compile-time assertions in this design use
    `comptime assert condition, "error message"` instead.
 
+4. **~~Comptime alias member folding~~** → **Documented limitation, workaround found.**
+   Parameterized `comptime` type aliases like
+   `comptime FusedMatMulBiasReLU[i, o] = FusedMatMulBiasActivation[i, o, ReLUActivation]`
+   don't fold their member constants (`IN_DIM`, `OUT_DIM`, etc.) when used in
+   compile-time contexts like `AutoDiffChain[FusedMatMulBiasReLU[2, 8], ...]`.
+   The compiler keeps expressions like `FusedMatMulBiasActivation[2, 8, ReLUActivation].IN_DIM`
+   symbolic instead of folding to `2`, causing "unfolded expression at parser time" errors.
+   **Workaround**: Keep backward-compatible names as concrete structs (thin wrappers)
+   that delegate all methods to `FusedMatMulBiasActivation`. The wrapper struct has its
+   own `comptime IN_DIM: Int = Self.in_dim` which folds correctly. New activations
+   (like `FusedMatMulBiasSigmoid`) can use `comptime` aliases if they're always used
+   via `FusedMatMulBiasActivation[..., SigmoidActivation]` directly, or they need
+   their own thin wrapper if used in `AutoDiffChain[...]`.
+
 ### Still Open
 
-4. **Variadic type rewriting for automatic fusion**: Can we build a NEW variadic
+5. **Variadic type rewriting for automatic fusion**: Can we build a NEW variadic
    type list at compile time from an existing one? For example, scanning
    `[MatMul, BiasAdd, ReLU, MatMul, BiasAdd]` and producing
-   `[FusedMatMulBiasReLU, FusedMatMulBias]` automatically. If Mojo can't do this,
-   the pragmatic fallback is explicit fusion comptime aliases (which already work
-   well — see "Alternative: Explicit Fusion comptimees" above).
+   `[FusedMatMulBiasReLU, FusedMatMulBias]` automatically. Current finding is that
+   variadic type packs cannot be built incrementally, but this deserves further
+   exploration. Possible angles:
+   - **Recursive struct construction**: A struct that peels off 2-3 ops at a time
+     and builds a nested `Seq2[FusedOp, Seq2[FusedOp, ...]]` chain via `comptime if`
+     pattern matching on OP_IDs, similar to how `Sequential` nests `Seq2`.
+   - **Mojo language evolution**: Future Mojo versions may support `comptime` type
+     list construction or `comptime` variadic pack manipulation.
+   - **Hybrid approach**: `FusionAnalyzer` detects patterns at compile time, then a
+     macro-like `comptime fn` emits the fused chain for known sizes (1-8 layers).
+   The pragmatic fallback remains explicit fused aliases (`Dense`, `DenseReLU`,
+   `FusedChain.mlp_relu`, etc.) which already cover common RL architectures well.
 
-5. **GPU kernel fusion across ops**: `@always_inline` kernels can theoretically
+6. **GPU kernel fusion across ops**: `@always_inline` kernels can theoretically
    be inlined into a single kernel by the compiler. Whether Mojo actually does
    this for `ctx.enqueue_function[]` calls needs testing. If not, the explicit
    `FusedOp` approach (single kernel per fused pattern) is the reliable path.
 
-6. **Compile time for large models**: A 100-layer model means 100 iterations of
+7. **Compile time for large models**: A 100-layer model means 100 iterations of
    `comptime for`. How does Mojo handle compile-time evaluation at this scale?
    Your Sequential already does this for moderate-sized models — worth
    benchmarking compilation time as model depth grows.
 
-7. **DiffOp ↔ Model bridge**: `AutoDiffChain` conforms to `Model`, which means
+8. **DiffOp ↔ Model bridge**: `AutoDiffChain` conforms to `Model`, which means
    combinators can compose freely. But can a `Model` that ISN'T an `AutoDiffChain`
    (e.g., your existing hand-coded `Linear`) also be used inside `Residual`?
    Yes — since `Residual` takes `Inner: Model`, any `Model` works. This gives

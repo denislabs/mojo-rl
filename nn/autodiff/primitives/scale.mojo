@@ -3,22 +3,21 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
-from std.gpu.primitives import block
 
 
-struct BiasAdd[dim: Int](DiffOp):
-    """BiasAdd: y = x + b  where x:(B, dim), b:(dim,), y:(B, dim).
+struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
+    """Scale: y[i] = x[i] * (numerator / denominator).
 
-    Broadcast addition of a bias vector.
+    Compile-time constant scaling — covers 1/sqrt(d_k) as Scale[dim, 1, 8].
 
-    PARAM_SIZE = dim (the bias vector)
-    CACHE_SIZE = 0 (no cache needed — bias backward is identity + sum)
+    PARAM_SIZE = 0
+    CACHE_SIZE = 0
     """
 
-    comptime OP_ID: Int = OpID.BIAS_ADD._value
+    comptime OP_ID: Int = OpID.SCALE._value
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
-    comptime PARAM_SIZE: Int = Self.dim
+    comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = 0
 
     fn __init__(out self):
@@ -29,6 +28,10 @@ struct BiasAdd[dim: Int](DiffOp):
 
     fn __init__(out self, *, copy: Self):
         pass
+
+    @staticmethod
+    fn _scale() -> Scalar[dtype]:
+        return Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
 
     # =========================================================================
     # CPU eval / vjp
@@ -51,10 +54,10 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward: output = input + bias."""
+        var s = Self._scale()
         for b in range(BATCH):
             for i in range(Self.dim):
-                output[b, i] = input[b, i] + params[i]
+                output[b, i] = input[b, i] * s
 
     @staticmethod
     fn vjp[
@@ -76,18 +79,13 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward: grad_input = grad_out, db += sum(grad_out, axis=0)."""
+        var s = Self._scale()
         for b in range(BATCH):
-            # grad_input = grad_output (identity for addition)
             for i in range(Self.dim):
-                grad_input[b, i] = grad_output[b, i]
-
-            # db += sum(grad_output, axis=0) (ACCUMULATE)
-            for i in range(Self.dim):
-                grad_params[i] = grad_params[i] + grad_output[b, i]
+                grad_input[b, i] = grad_output[b, i] * s
 
     # =========================================================================
-    # GPU kernel implementations
+    # GPU kernels
     # =========================================================================
 
     @always_inline
@@ -101,19 +99,14 @@ struct BiasAdd[dim: Int](DiffOp):
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-        bias: LayoutTensor[dtype, Layout.row_major(Self.dim), ImmutAnyOrigin],
     ):
-        """Forward kernel: y = x + b.
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        output[row, col] = rebind[Scalar[dtype]](input[row, col]) + rebind[Scalar[dtype]](bias[col])
+        var s = Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
+        output[row, col] = rebind[Scalar[dtype]](input[row, col]) * s
 
     @always_inline
     @staticmethod
@@ -127,48 +120,13 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Backward kernel for grad_input: dx = dy (identity).
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col])
-
-    @always_inline
-    @staticmethod
-    fn backward_db_kernel_impl[
-        BATCH: Int
-    ](
-        db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
-        grad_output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-        ],
-    ):
-        """Backward kernel for bias gradient: db = sum(dy, axis=0).
-
-        Grid: (dim,)
-        Block: (TPB,)
-        """
-        var col = Int(block_idx.x)
-        var local_i = Int(thread_idx.x)
-
-        if col >= Self.dim:
-            return
-
-        var my_sum: db.element_type = 0
-        var batch_idx = local_i
-        while batch_idx < BATCH:
-            my_sum += rebind[Scalar[dtype]](grad_output[batch_idx, col])
-            batch_idx += TPB
-
-        var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
-        if local_i == 0:
-            db[col] = total[0]
+        var s = Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
+        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col]) * s
 
     # =========================================================================
     # GPU launchers
@@ -195,10 +153,6 @@ struct BiasAdd[dim: Int](DiffOp):
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
-        var bias = LayoutTensor[
-            dtype, Layout.row_major(Self.dim), ImmutAnyOrigin
-        ](params.ptr)
-
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
@@ -210,16 +164,12 @@ struct BiasAdd[dim: Int](DiffOp):
             input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
-            bias: LayoutTensor[
-                dtype, Layout.row_major(Self.dim), ImmutAnyOrigin
-            ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, bias)
+            Self.eval_kernel_impl[BATCH](output, input)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
             input_immut,
-            bias,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -248,16 +198,11 @@ struct BiasAdd[dim: Int](DiffOp):
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](grad_output.ptr)
-        var db = LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin](
-            grad_params.ptr
-        )
-
-        # Kernel 1: dx = dy (identity copy)
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn dx_wrapper(
+        fn wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -267,26 +212,9 @@ struct BiasAdd[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH](grad_input, grad_output)
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[wrapper, wrapper](
             grad_input,
             grad_output_immut,
             grid_dim=(grid_x,),
-            block_dim=(TPB,),
-        )
-
-        # Kernel 2: db = sum(dy, axis=0)
-        @always_inline
-        fn db_wrapper(
-            db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_db_kernel_impl[BATCH](db, grad_output)
-
-        ctx.enqueue_function[db_wrapper, db_wrapper](
-            db,
-            grad_output_immut,
-            grid_dim=(Self.dim,),
             block_dim=(TPB,),
         )

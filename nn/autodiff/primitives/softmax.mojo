@@ -4,22 +4,23 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
+from std.math import exp
 
 
-struct BiasAdd[dim: Int](DiffOp):
-    """BiasAdd: y = x + b  where x:(B, dim), b:(dim,), y:(B, dim).
+struct SoftmaxOp[dim: Int](DiffOp):
+    """SoftmaxOp: y = exp(x - max(x)) / sum(exp(x - max(x))).
 
-    Broadcast addition of a bias vector.
+    Numerically stable softmax with cached output for backward.
 
-    PARAM_SIZE = dim (the bias vector)
-    CACHE_SIZE = 0 (no cache needed — bias backward is identity + sum)
+    PARAM_SIZE = 0
+    CACHE_SIZE = dim (caches softmax output y)
     """
 
-    comptime OP_ID: Int = OpID.BIAS_ADD._value
+    comptime OP_ID: Int = OpID.SOFTMAX._value
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
-    comptime PARAM_SIZE: Int = Self.dim
-    comptime CACHE_SIZE: Int = 0
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = Self.dim
 
     fn __init__(out self):
         pass
@@ -51,10 +52,30 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward: output = input + bias."""
         for b in range(BATCH):
+            # Find max for numerical stability
+            var max_val = Float64(rebind[Scalar[dtype]](input[b, 0]))
+            for i in range(1, Self.dim):
+                var v = Float64(rebind[Scalar[dtype]](input[b, i]))
+                if v > max_val:
+                    max_val = v
+
+            # Compute exp(x - max) and sum
+            var sum_exp: Float64 = 0.0
             for i in range(Self.dim):
-                output[b, i] = input[b, i] + params[i]
+                var v = Float64(rebind[Scalar[dtype]](input[b, i]))
+                var e = exp(v - max_val)
+                output[b, i] = Scalar[dtype](e)
+                sum_exp += e
+
+            # Normalize
+            var inv_sum = 1.0 / sum_exp
+            for i in range(Self.dim):
+                var y = Scalar[dtype](
+                    Float64(rebind[Scalar[dtype]](output[b, i])) * inv_sum
+                )
+                output[b, i] = y
+                cache[b, i] = y
 
     @staticmethod
     fn vjp[
@@ -76,18 +97,22 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward: grad_input = grad_out, db += sum(grad_out, axis=0)."""
+        # dx[b,i] = y[b,i] * (grad[b,i] - sum_j(grad[b,j] * y[b,j]))
         for b in range(BATCH):
-            # grad_input = grad_output (identity for addition)
-            for i in range(Self.dim):
-                grad_input[b, i] = grad_output[b, i]
+            # Compute dot = sum_j(grad[b,j] * y[b,j])
+            var dot: Float64 = 0.0
+            for j in range(Self.dim):
+                var g = Float64(rebind[Scalar[dtype]](grad_output[b, j]))
+                var y = Float64(rebind[Scalar[dtype]](cache[b, j]))
+                dot += g * y
 
-            # db += sum(grad_output, axis=0) (ACCUMULATE)
             for i in range(Self.dim):
-                grad_params[i] = grad_params[i] + grad_output[b, i]
+                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
+                var y = Float64(rebind[Scalar[dtype]](cache[b, i]))
+                grad_input[b, i] = Scalar[dtype](y * (g - dot))
 
     # =========================================================================
-    # GPU kernel implementations
+    # GPU kernels
     # =========================================================================
 
     @always_inline
@@ -101,19 +126,47 @@ struct BiasAdd[dim: Int](DiffOp):
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-        bias: LayoutTensor[dtype, Layout.row_major(Self.dim), ImmutAnyOrigin],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
     ):
-        """Forward kernel: y = x + b.
+        """Per-sample softmax. Grid: (BATCH,), Block: (TPB,)."""
+        var b = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
+        if b >= BATCH:
             return
-        var row = idx // Self.dim
-        var col = idx % Self.dim
-        output[row, col] = rebind[Scalar[dtype]](input[row, col]) + rebind[Scalar[dtype]](bias[col])
+
+        # Phase 1: find max
+        var my_max = Scalar[dtype](-1e30)
+        var idx = local_i
+        while idx < Self.dim:
+            var v = rebind[Scalar[dtype]](input[b, idx])
+            if v > my_max:
+                my_max = v
+            idx += TPB
+
+        var global_max = block.max[block_size=TPB, broadcast=True](val=my_max)
+
+        # Phase 2: compute exp(x - max) and sum
+        var my_sum = Scalar[dtype](0)
+        idx = local_i
+        while idx < Self.dim:
+            var e = exp(rebind[Scalar[dtype]](input[b, idx]) - global_max)
+            output[b, idx] = e
+            my_sum += e
+            idx += TPB
+
+        var total_sum = block.sum[block_size=TPB, broadcast=True](val=my_sum)
+
+        # Phase 3: normalize
+        var inv_sum = Scalar[dtype](1.0) / total_sum
+        idx = local_i
+        while idx < Self.dim:
+            var y = rebind[Scalar[dtype]](output[b, idx]) * inv_sum
+            output[b, idx] = y
+            cache[b, idx] = y
+            idx += TPB
 
     @always_inline
     @staticmethod
@@ -126,49 +179,33 @@ struct BiasAdd[dim: Int](DiffOp):
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-    ):
-        """Backward kernel for grad_input: dx = dy (identity).
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
-            return
-        var row = idx // Self.dim
-        var col = idx % Self.dim
-        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col])
-
-    @always_inline
-    @staticmethod
-    fn backward_db_kernel_impl[
-        BATCH: Int
-    ](
-        db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
-        grad_output: LayoutTensor[
+        cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Backward kernel for bias gradient: db = sum(dy, axis=0).
-
-        Grid: (dim,)
-        Block: (TPB,)
-        """
-        var col = Int(block_idx.x)
+        """Per-sample softmax backward. Grid: (BATCH,), Block: (TPB,)."""
+        var b = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
-        if col >= Self.dim:
+        if b >= BATCH:
             return
 
-        var my_sum: db.element_type = 0
-        var batch_idx = local_i
-        while batch_idx < BATCH:
-            my_sum += rebind[Scalar[dtype]](grad_output[batch_idx, col])
-            batch_idx += TPB
+        # Phase 1: compute dot = sum_j(grad[b,j] * y[b,j])
+        var my_dot = Scalar[dtype](0)
+        var idx = local_i
+        while idx < Self.dim:
+            my_dot += rebind[Scalar[dtype]](grad_output[b, idx]) * rebind[Scalar[dtype]](cache[b, idx])
+            idx += TPB
 
-        var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
-        if local_i == 0:
-            db[col] = total[0]
+        var dot = block.sum[block_size=TPB, broadcast=True](val=my_dot)
+
+        # Phase 2: dx[b,i] = y[b,i] * (grad[b,i] - dot)
+        idx = local_i
+        while idx < Self.dim:
+            var y = rebind[Scalar[dtype]](cache[b, idx])
+            var g = rebind[Scalar[dtype]](grad_output[b, idx])
+            grad_input[b, idx] = y * (g - dot)
+            idx += TPB
 
     # =========================================================================
     # GPU launchers
@@ -195,12 +232,6 @@ struct BiasAdd[dim: Int](DiffOp):
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
-        var bias = LayoutTensor[
-            dtype, Layout.row_major(Self.dim), ImmutAnyOrigin
-        ](params.ptr)
-
-        var total_elements = BATCH * Self.dim
-        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn wrapper(
@@ -210,17 +241,17 @@ struct BiasAdd[dim: Int](DiffOp):
             input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
-            bias: LayoutTensor[
-                dtype, Layout.row_major(Self.dim), ImmutAnyOrigin
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, bias)
+            Self.eval_kernel_impl[BATCH](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
             input_immut,
-            bias,
-            grid_dim=(grid_x,),
+            cache,
+            grid_dim=(BATCH,),
             block_dim=(TPB,),
         )
 
@@ -248,45 +279,28 @@ struct BiasAdd[dim: Int](DiffOp):
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](grad_output.ptr)
-        var db = LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin](
-            grad_params.ptr
-        )
-
-        # Kernel 1: dx = dy (identity copy)
-        var total_elements = BATCH * Self.dim
-        var grid_x = (total_elements + TPB - 1) // TPB
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](cache.ptr)
 
         @always_inline
-        fn dx_wrapper(
+        fn wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
-        ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output)
-
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
-            grad_input,
-            grad_output_immut,
-            grid_dim=(grid_x,),
-            block_dim=(TPB,),
-        )
-
-        # Kernel 2: db = sum(dy, axis=0)
-        @always_inline
-        fn db_wrapper(
-            db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
-            grad_output: LayoutTensor[
+            cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_db_kernel_impl[BATCH](db, grad_output)
+            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
-            db,
+        ctx.enqueue_function[wrapper, wrapper](
+            grad_input,
             grad_output_immut,
-            grid_dim=(Self.dim,),
+            cache_immut,
+            grid_dim=(BATCH,),
             block_dim=(TPB,),
         )

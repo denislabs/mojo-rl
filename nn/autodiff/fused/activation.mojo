@@ -1,0 +1,126 @@
+"""Activation trait for parameterized fused matmul+bias+activation ops.
+
+Each Activation defines:
+- OP_ID: matches the standalone DiffOp OP_ID (RELU=10, TANH=11, SIGMOID=12)
+- FUSED_OP_ID: OP_ID for the fused variant (101, 102, 103)
+- forward(): apply activation to pre-activation scalar
+- cache(): what to store for backward (pre-act for ReLU, output for Tanh/Sigmoid)
+- backward(): compute grad_out * activation_derivative from cached value
+"""
+
+from ...constants import dtype
+from std.math import tanh, exp
+
+
+trait Activation(Movable & ImplicitlyCopyable):
+    """Trait for activation functions used in fused matmul+bias+activation ops."""
+
+    comptime OP_ID: Int  # Matches standalone DiffOp OP_ID (e.g. RELU=10)
+    comptime FUSED_OP_ID: Int  # OP_ID for the fused variant (e.g. 101)
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        """Apply activation function to pre-activation value."""
+        ...
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        """Return what to cache for backward. Either pre_act or output."""
+        ...
+
+    @staticmethod
+    fn backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        """Compute grad_out * activation_derivative from cached value."""
+        ...
+
+
+struct ReLUActivation(Activation):
+    """ReLU: max(0, x). Caches pre-activation for backward."""
+
+    comptime OP_ID: Int = 10  # OpID.RELU
+    comptime FUSED_OP_ID: Int = 101  # OpID.FUSED_MATMUL_BIAS_RELU
+
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        return pre_act if pre_act > 0 else 0
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        return pre_act
+
+    @staticmethod
+    fn backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        return grad_out if cache_val > 0 else 0
+
+
+struct TanhActivation(Activation):
+    """Tanh activation. Caches output for backward."""
+
+    comptime OP_ID: Int = 11  # OpID.TANH
+    comptime FUSED_OP_ID: Int = 102  # OpID.FUSED_MATMUL_BIAS_TANH
+
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        return tanh(pre_act)
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        return output
+
+    @staticmethod
+    fn backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        return grad_out * (1 - cache_val * cache_val)
+
+
+struct SigmoidActivation(Activation):
+    """Sigmoid: 1/(1+exp(-x)). Caches output for backward."""
+
+    comptime OP_ID: Int = 12  # OpID.SIGMOID
+    comptime FUSED_OP_ID: Int = 103  # OpID.FUSED_MATMUL_BIAS_SIGMOID
+
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    fn __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        return 1.0 / (1.0 + exp(-pre_act))
+
+    @staticmethod
+    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        return output
+
+    @staticmethod
+    fn backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        return grad_out * cache_val * (1 - cache_val)
