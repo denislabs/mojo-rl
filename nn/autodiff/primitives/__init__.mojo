@@ -10,3 +10,5 @@ from .rms_norm import RMSNormOp
 from .dropout import DropoutOp
 from .reshape import Flatten
 from .embedding import Embedding
+from .conv2d import Conv2D
+from .pool import MaxPool2D, AvgPool2D

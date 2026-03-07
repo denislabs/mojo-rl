@@ -17,6 +17,9 @@ from .primitives import (
     DropoutOp,
     Flatten,
     Embedding,
+    Conv2D,
+    MaxPool2D,
+    AvgPool2D,
 )
 from .fused import (
     FusedMatMulBias,

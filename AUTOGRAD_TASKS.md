@@ -326,38 +326,38 @@ New primitives for regularization, reshaping, and expanded model support.
 Unlock vision models. Major design challenge: DiffOp assumes `(BATCH, DIM)` layout — spatial ops need `(BATCH, C*H*W)` with implicit spatial structure.
 
 ### 7.1 Conv2D
-- [ ] Add `CONV2D = OpID(50)` to OpID enum
-- [ ] Implement `Conv2D[in_ch, out_ch, kernel, stride, pad, in_h, in_w]` — `nn/autodiff/primitives/conv2d.mojo`
-  - [ ] Im2col helper: reshape spatial patches into column matrix
-  - [ ] `eval`: im2col(input) → col, output = W @ col + bias, reshape to spatial
-  - [ ] `vjp`: col2im for grad_input, standard matmul backward for dW, sum for db
-  - [ ] Compile-time output spatial dims: `out_h = (in_h + 2*pad - kernel) // stride + 1`
-  - [ ] `PARAM_SIZE = out_ch * (in_ch * kernel * kernel) + out_ch`
-  - [ ] `CACHE_SIZE = in_ch * kernel * kernel * out_h * out_w` (im2col buffer)
-- [ ] GPU kernel: im2col + tiled matmul (reuse existing matmul infrastructure)
-- [ ] Unit test: 1x1 conv = pointwise matmul
-- [ ] Unit test: known 3x3 kernel on 5x5 input
-- [ ] Finite difference gradient check
+- [x] Add `CONV2D = OpID(50)` to OpID enum
+- [x] Implement `Conv2D[in_ch, out_ch, kernel, stride, pad, in_h, in_w]` — `nn/autodiff/primitives/conv2d.mojo`
+  - [x] Im2col helper: reshape spatial patches into column matrix
+  - [x] `eval`: im2col(input) → col, output = W @ col + bias, reshape to spatial
+  - [x] `vjp`: col2im for grad_input, standard matmul backward for dW, sum for db
+  - [x] Compile-time output spatial dims: `out_h = (in_h + 2*pad - kernel) // stride + 1`
+  - [x] `PARAM_SIZE = out_ch * (in_ch * kernel * kernel) + out_ch`
+  - [x] `CACHE_SIZE = in_ch * kernel * kernel * out_h * out_w` (im2col buffer)
+- [x] GPU kernel: im2col + tiled matmul (reuse existing matmul infrastructure)
+- [x] Unit test: 1x1 conv = pointwise matmul
+- [x] Unit test: known 3x3 kernel on 5x5 input
+- [x] Finite difference gradient check
 
 ### 7.2 MaxPool2D
-- [ ] Add `MAX_POOL2D = OpID(51)` to OpID enum
-- [ ] Implement `MaxPool2D[channels, in_h, in_w, pool_size]` — `nn/autodiff/primitives/pool.mojo`
-  - [ ] `eval`: max over each pool window, cache argmax indices
-  - [ ] `vjp`: route gradient to argmax position only
-  - [ ] `IN_DIM = channels * in_h * in_w`, `OUT_DIM = channels * out_h * out_w`
-- [ ] GPU kernel: per-window max reduction
-- [ ] Unit test: known pooling output
-- [ ] Unit test: gradient routing to max element
+- [x] Add `MAX_POOL2D = OpID(51)` to OpID enum
+- [x] Implement `MaxPool2D[channels, in_h, in_w, pool_size]` — `nn/autodiff/primitives/pool.mojo`
+  - [x] `eval`: max over each pool window, cache argmax indices
+  - [x] `vjp`: route gradient to argmax position only
+  - [x] `IN_DIM = channels * in_h * in_w`, `OUT_DIM = channels * out_h * out_w`
+- [x] GPU kernel: per-window max reduction
+- [x] Unit test: known pooling output
+- [x] Unit test: gradient routing to max element
 
 ### 7.3 AvgPool2D (optional)
-- [ ] Add `AVG_POOL2D = OpID(52)` to OpID enum
-- [ ] Implement `AvgPool2D[channels, in_h, in_w, pool_size]`
-  - [ ] `eval`: average over each pool window
-  - [ ] `vjp`: distribute gradient equally across window
-- [ ] Unit test: forward/backward correctness
+- [x] Add `AVG_POOL2D = OpID(52)` to OpID enum
+- [x] Implement `AvgPool2D[channels, in_h, in_w, pool_size]`
+  - [x] `eval`: average over each pool window
+  - [x] `vjp`: distribute gradient equally across window
+- [x] Unit test: forward/backward correctness
 
 ### 7.4 Verification — Phase 7
-- [ ] Integration test: `Conv2D[1,6,5,1,0,28,28] → ReLU → MaxPool2D → Flatten → Dense` compiles
+- [x] Integration test: `Conv2D[1,6,3,1,0,8,8] → ReLU → MaxPool2D → Flatten → Dense` compiles and runs forward+backward
 - [ ] Integration test: LeNet-5 on MNIST (or synthetic data) converges
 - [ ] GPU vs CPU numerical agreement for Conv2D
 
