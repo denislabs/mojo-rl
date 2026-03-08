@@ -47,8 +47,11 @@ mujoco = ">=3.5.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid
 imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
 
-[activation]
+[target.osx-arm64.activation]
 env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.dylib" }
+
+[target.linux-64.activation]
+env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.so" }
 
 [environments]
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
