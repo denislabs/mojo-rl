@@ -36,6 +36,7 @@ from ..checkpoint import (
     read_metadata_section,
     get_metadata_value,
     save_checkpoint_file,
+    BinaryCheckpoint,
 )
 
 from layout import Layout, LayoutTensor
@@ -306,5 +307,68 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
         var metadata = read_metadata_section(content)
         var step_str = get_metadata_value(metadata, "step_num")
+        if len(step_str) > 0:
+            self.step_num = Int(atol(step_str))
+
+    # =========================================================================
+    # Binary Checkpoint Save / Load (~3x smaller files)
+    # =========================================================================
+
+    fn write_sections_binary(self, mut ckpt: BinaryCheckpoint, prefix: String):
+        """Add params and optimizer_state as named sections to a binary checkpoint.
+
+        Args:
+            ckpt: BinaryCheckpoint to add sections to.
+            prefix: Section name prefix (e.g. "actor_", "critic_").
+        """
+        ckpt.add_float_section(prefix + "params", self.params)
+        ckpt.add_float_section(
+            prefix + "optimizer_state", self.optimizer_state
+        )
+
+    fn read_sections_binary(
+        mut self, ckpt: BinaryCheckpoint, prefix: String
+    ) raises:
+        """Load params and optimizer_state from a binary checkpoint.
+
+        Args:
+            ckpt: BinaryCheckpoint to read sections from.
+            prefix: Section name prefix (e.g. "actor_", "critic_").
+        """
+        var loaded_params = ckpt.get_float_section(
+            prefix + "params", Self.PARAM_SIZE
+        )
+        for i in range(Self.PARAM_SIZE):
+            self.params[i] = loaded_params[i]
+
+        var loaded_state = ckpt.get_float_section(
+            prefix + "optimizer_state", Self.STATE_SIZE
+        )
+        for i in range(Self.STATE_SIZE):
+            self.optimizer_state[i] = loaded_state[i]
+
+    fn save_checkpoint_binary(self, filepath: String) raises:
+        """Save params, optimizer state, and step_num to a binary checkpoint.
+
+        Binary format is ~3x smaller than text format.
+
+        Args:
+            filepath: Destination path for the binary checkpoint file.
+        """
+        var ckpt = BinaryCheckpoint("network_state")
+        self.write_sections_binary(ckpt, "")
+        ckpt.add_metadata("step_num", String(self.step_num))
+        ckpt.save(filepath)
+
+    fn load_checkpoint_binary(mut self, filepath: String) raises:
+        """Load params and optimizer state from a binary checkpoint.
+
+        Args:
+            filepath: Path to the binary checkpoint file.
+        """
+        var ckpt = BinaryCheckpoint.load(filepath)
+        self.read_sections_binary(ckpt, "")
+
+        var step_str = ckpt.get_metadata_value("step_num")
         if len(step_str) > 0:
             self.step_num = Int(atol(step_str))

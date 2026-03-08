@@ -17,3 +17,4 @@ from .checkpoint import (
     split_lines,
     find_section_start,
 )
+from .binary_checkpoint import BinaryCheckpoint, FloatSection

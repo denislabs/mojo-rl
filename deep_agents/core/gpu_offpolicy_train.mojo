@@ -63,6 +63,7 @@ from deep_agents.core.kernels import (
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
 )
+from deep_agents.core.utils import print_progress_bar
 
 
 # =============================================================================
@@ -408,6 +409,12 @@ fn run_offpolicy_continuous_train_gpu[
     var next_sync = sync_every
     var next_checkpoint = checkpoint_every
 
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < n_envs:
+        progress_interval = n_envs
+    var next_progress = progress_interval
+
     # Warmup kernel wrapper (uniform random actions in [-action_scale, action_scale])
     comptime act_tpb = 256
     comptime act_blocks = (n_envs * E.ACTION_DIM + act_tpb - 1) // act_tpb
@@ -550,6 +557,20 @@ fn run_offpolicy_continuous_train_gpu[
         step_seed += 1
 
         # ------------------------------------------------------------------
+        # Progress bar (no GPU sync, pure CPU counters)
+        # Shows progress within the current print interval (0% → 100%)
+        # ------------------------------------------------------------------
+        if verbose and total_steps >= next_progress:
+            var interval_start = next_print - print_every
+            print_progress_bar(
+                total_steps - interval_start,
+                print_every,
+                total_train_steps,
+                algorithm_name,
+            )
+            next_progress += progress_interval
+
+        # ------------------------------------------------------------------
         # Print progress (only sync for episode stats at print boundaries)
         # ------------------------------------------------------------------
         if verbose and total_steps >= next_print:
@@ -574,6 +595,8 @@ fn run_offpolicy_continuous_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
+            # Newline to clear progress bar, then full stats line
+            print()
             print(
                 algorithm_name
                 + " | Step "
@@ -742,6 +765,12 @@ fn run_offpolicy_discrete_train_gpu[
     var next_sync = sync_every
     var next_checkpoint = checkpoint_every
 
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < n_envs:
+        progress_interval = n_envs
+    var next_progress = progress_interval
+
     while total_steps < num_steps:
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
@@ -835,6 +864,18 @@ fn run_offpolicy_discrete_train_gpu[
         total_steps += n_envs
         step_seed += 1
 
+        # Progress bar (no GPU sync, pure CPU counters)
+        # Shows progress within the current print interval (0% → 100%)
+        if verbose and total_steps >= next_progress:
+            var interval_start = next_print - print_every
+            print_progress_bar(
+                total_steps - interval_start,
+                print_every,
+                total_train_steps,
+                algorithm_name,
+            )
+            next_progress += progress_interval
+
         if verbose and total_steps >= next_print:
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -854,6 +895,7 @@ fn run_offpolicy_discrete_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
+            print()
             print(
                 algorithm_name
                 + " | Step "

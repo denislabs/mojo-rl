@@ -68,6 +68,7 @@ from deep_agents.core.kernels import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
+from deep_agents.core.utils import print_progress_bar
 
 
 # =============================================================================
@@ -513,6 +514,12 @@ fn run_onpolicy_discrete_train_gpu[
     var step_seed: UInt32 = 42
     var completed_episodes = 0
 
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < 1:
+        progress_interval = 1
+    var next_progress = progress_interval
+
     for update in range(num_updates):
         # ==================================================================
         # Phase 1: Collect rollout (ROLLOUT_LEN steps across n_envs envs)
@@ -668,10 +675,22 @@ fn run_onpolicy_discrete_train_gpu[
                 agent.download_from_gpu(gpu_state, ctx)
             agent.save_checkpoint(checkpoint_path)
 
+        # Progress bar (no GPU sync, pure CPU counters)
+        # Shows progress within the current print interval (0% → 100%)
+        if verbose and update + 1 >= next_progress:
+            var interval_pos = (update + 1) % print_every
+            if interval_pos == 0:
+                interval_pos = print_every
+            print_progress_bar(
+                interval_pos, print_every, total_steps, algorithm_name
+            )
+            next_progress += progress_interval
+
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
+            print()
             print(
                 algorithm_name
                 + " | Update "
@@ -816,6 +835,12 @@ fn run_onpolicy_continuous_train_gpu[
     var total_steps = 0
     var step_seed: UInt32 = 42
     var completed_episodes = 0
+
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < 1:
+        progress_interval = 1
+    var next_progress = progress_interval
 
     for update in range(num_updates):
         if target_episodes > 0 and completed_episodes >= target_episodes:
@@ -981,6 +1006,17 @@ fn run_onpolicy_continuous_train_gpu[
                 agent.download_from_gpu(gpu_state, ctx)
             agent.save_checkpoint(checkpoint_path)
 
+        # Progress bar (no GPU sync, pure CPU counters)
+        # Shows progress within the current print interval (0% → 100%)
+        if verbose and update + 1 >= next_progress:
+            var interval_pos = (update + 1) % print_every
+            if interval_pos == 0:
+                interval_pos = print_every
+            print_progress_bar(
+                interval_pos, print_every, total_steps, algorithm_name
+            )
+            next_progress += progress_interval
+
         if verbose and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
@@ -988,6 +1024,7 @@ fn run_onpolicy_continuous_train_gpu[
             var ep_progress = String(completed_episodes) + (
                 " / " + String(target_episodes) if target_episodes > 0 else ""
             )
+            print()
             print(
                 algorithm_name
                 + " | Episodes: "

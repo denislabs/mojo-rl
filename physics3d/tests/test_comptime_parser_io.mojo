@@ -1,5 +1,4 @@
-from io.file import open
-from std.testing import assert_true, TestSuite
+from std.io.file import open
 
 
 fn read_file(path: String) -> String:
@@ -17,4 +16,4 @@ fn test_comptime_parser_io() raises:
 
 
 fn main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
+    test_comptime_parser_io()

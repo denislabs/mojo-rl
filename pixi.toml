@@ -14,10 +14,13 @@ cuda-toolkit = "12.*" # for compute-sanitizer etc.
 cuda-gdb = "12.*"     # for GPU kernel debugging
 nsight-compute = "*"  # interactive kernel profiling
 
-# Uncomment if using a Mojo nightly that has switched to libnvptxcompiler CUDA 13
-# (requires driver >= 580). Set this to use the conda-installed ptxas instead.
 [feature.nvidia.activation]
-env = { MODULAR_NVPTX_COMPILER_PATH = "$PIXI_PROJECT_ROOT/.pixi/envs/nvidia/bin/ptxas" }
+# Use the system ptxas from the CUDA container (/usr/local/cuda/bin/ptxas).
+# This bypasses MAX's built-in libnvptxcompiler (tied to CUDA 13 + driver >= 580)
+# and works with any CUDA container (12.x or 13.x) on driver >= 570.
+# On CUDA 13 containers (RTX 5090): ptxas 13.x → supports sm_120 (Blackwell) ✅
+# On CUDA 12.8 containers (RTX 4090): ptxas 12.x → supports sm_89 (Ada) ✅
+env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas" }
 
 [feature.nvidia.target.linux-64.pypi-dependencies]
 torch = { version = "*", index = "https://download.pytorch.org/whl/cu128" }
