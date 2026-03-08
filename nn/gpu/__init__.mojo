@@ -45,6 +45,11 @@ from .elementwise import (
 )
 from .matmul import (
     tiled_matmul_kernel,
+    mma_matmul_kernel,
+    gpu_matmul,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_BLOCK_THREADS,
 )
 from .matmul_ops import (
     TILE_APPLE,
