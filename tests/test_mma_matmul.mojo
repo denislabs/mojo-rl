@@ -329,6 +329,11 @@ def main():
     test_matmul[256, 256, 256](ctx)
     test_matmul[512, 512, 512](ctx)
 
+    print("  Real training dims (PPO HalfCheetah, minibatch=2048):")
+    test_matmul[2048, 17, 256](ctx)    # input -> hidden
+    test_matmul[2048, 256, 256](ctx)   # hidden -> hidden
+    test_matmul[2048, 256, 6](ctx)     # hidden -> output
+
     # A/B benchmark: tiled scalar vs auto-dispatch (MMA on NVIDIA)
     print("\n--- Benchmark: tiled scalar vs auto (MMA on NVIDIA) ---")
     print("  (500 iterations each, lower is better)")
@@ -337,5 +342,10 @@ def main():
     bench_matmul[128, 256, 256](ctx)
     bench_matmul[256, 256, 256](ctx)
     bench_matmul[512, 512, 512](ctx)
+
+    print("\n--- Benchmark: Real PPO training dims (minibatch=2048) ---")
+    bench_matmul[2048, 17, 256](ctx)    # input -> hidden
+    bench_matmul[2048, 256, 256](ctx)   # hidden -> hidden (dominant)
+    bench_matmul[2048, 256, 6](ctx)     # hidden -> output
 
     print("\nDone!")
