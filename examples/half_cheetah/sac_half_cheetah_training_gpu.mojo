@@ -78,7 +78,7 @@ fn main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0003,
+            critic_lr=0.001,  # CleanRL default: q_lr=1e-3 (higher than actor)
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
@@ -86,7 +86,7 @@ fn main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0003,
+            alpha_lr=0.001,  # CleanRL uses q_lr for alpha too
             target_entropy=-Float64(ACTION_DIM),
             checkpoint_every=100_000,
             checkpoint_path="sac_half_cheetah.ckpt",
@@ -104,8 +104,8 @@ fn main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 3e-4")
-        print("    - Alpha LR: 3e-4")
+        print("    - Critic LR: 1e-3 (CleanRL default)")
+        print("    - Alpha LR: 1e-3 (CleanRL default)")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))

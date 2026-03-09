@@ -1093,9 +1093,10 @@ struct DeepSACAgent[
         self.train_step_count += 1
 
         # ----- Phase 1: Sample batch -----
+        # Kernel uses BATCH seeds [seed, seed+BATCH-1]; stride must be >= BATCH
         gpu_state.buffer.sample[BATCH](
             ctx,
-            rng_seed=UInt32(self.train_step_count),
+            rng_seed=UInt32(self.train_step_count) * UInt32(BATCH + 1),
             sampled_obs=gpu_state.s_obs,
             sampled_actions=gpu_state.s_act,
             sampled_rewards=gpu_state.s_rew,
