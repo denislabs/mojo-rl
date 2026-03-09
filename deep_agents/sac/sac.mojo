@@ -941,8 +941,10 @@ struct DeepSACAgent[
         # Phase 5: Update Alpha (if auto_alpha)
         # =================================================================
         if self.auto_alpha:
-            # J(α) = E[α * (log_π + target_entropy)]
-            # Gradient descent on log_α: log_α -= α_lr * mean(log_π + target_entropy)
+            # CleanRL: alpha_loss = (-exp(log_alpha) * (log_pi + target_entropy)).mean()
+            # ∂alpha_loss/∂log_alpha = -alpha * mean(log_pi + target_entropy)
+            # SGD: log_alpha -= lr * (-alpha * mean(log_pi + target_entropy))
+            #    = log_alpha += lr * alpha * mean(log_pi + target_entropy)
             var alpha_grad: Float64 = 0.0
             for b in range(Self.BATCH):
                 alpha_grad += (
@@ -950,7 +952,7 @@ struct DeepSACAgent[
                 )
             alpha_grad /= Float64(Self.BATCH)
 
-            self.log_alpha -= self.alpha_lr * alpha_grad
+            self.log_alpha += self.alpha_lr * self.alpha * alpha_grad
             if self.log_alpha < -5.0:
                 self.log_alpha = -5.0
             elif self.log_alpha > 2.0:
@@ -1606,7 +1608,10 @@ struct DeepSACAgent[
                 alpha_grad += Float64(lp_host[b]) + self.target_entropy
             alpha_grad /= Float64(BATCH)
 
-            self.log_alpha -= self.alpha_lr * alpha_grad
+            # CleanRL: alpha_loss = (-exp(log_alpha) * (log_pi + target_entropy)).mean()
+            # ∂loss/∂log_alpha = -alpha * mean(log_pi + target_entropy)
+            # SGD: log_alpha -= lr * (-alpha * alpha_grad) = log_alpha += lr * alpha * alpha_grad
+            self.log_alpha += self.alpha_lr * self.alpha * alpha_grad
             if self.log_alpha < -5.0:
                 self.log_alpha = -5.0
             elif self.log_alpha > 2.0:

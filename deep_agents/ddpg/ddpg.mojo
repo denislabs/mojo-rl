@@ -582,7 +582,11 @@ struct DeepDDPGAgent[
 
         var noise_std_s = Scalar[dtype](self.noise_std)
         var scale_s = Scalar[dtype](self.action_scale)
-        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
+        # Kernel uses N_ENVS*ACTION_DIM seeds; total_steps increments by N_ENVS,
+        # so multiply by ACTION_DIM to avoid overlap between consecutive calls.
+        var rng_seed_s = Scalar[DType.uint32](
+            UInt32(self.total_steps) * UInt32(Self.ACTIONS)
+        )
 
         @always_inline
         fn exploration_wrapper(

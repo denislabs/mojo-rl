@@ -797,7 +797,11 @@ struct DeepTD3Agent[
 
         var noise_std_s = Scalar[dtype](self.noise_std)
         var scale_s = Scalar[dtype](self.action_scale)
-        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
+        # Kernel uses N_ENVS*ACTION_DIM seeds; total_steps increments by N_ENVS,
+        # so multiply by ACTION_DIM to avoid overlap between consecutive calls.
+        var rng_seed_s = Scalar[DType.uint32](
+            UInt32(self.total_steps) * UInt32(Self.ACTIONS)
+        )
 
         @always_inline
         fn exploration_wrapper(
@@ -926,8 +930,10 @@ struct DeepTD3Agent[
         var tnc_s = Scalar[dtype](self.target_noise_clip)
         var act_min_s = Scalar[dtype](-self.action_scale)
         var act_max_s = Scalar[dtype](self.action_scale)
-        # Use update_count as seed (offset by large value to avoid collision with exploration)
-        var noise_seed_s = Scalar[DType.uint32](self.update_count + 1000000)
+        # Kernel uses BATCH*ACTIONS seeds; stride must be >= BATCH*ACTIONS to avoid collision.
+        var noise_seed_s = Scalar[DType.uint32](
+            UInt32(self.update_count) * UInt32(BATCH * ACTIONS + 1)
+        )
 
         @always_inline
         fn smooth_noise(
