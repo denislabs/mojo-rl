@@ -95,7 +95,7 @@ fn main() raises:
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=False,
-            checkpoint_every=1_000,
+            checkpoint_every=5_000,
             checkpoint_path="ppo_half_cheetah.ckpt",
             normalize_rewards=True,
             obs_noise_std=0.0,
