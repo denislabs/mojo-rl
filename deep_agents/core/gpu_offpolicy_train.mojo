@@ -63,7 +63,7 @@ from deep_agents.core.kernels import (
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
 )
-from deep_agents.core.utils import print_progress_bar
+from deep_agents.core.utils import print_progress_bar, clear_progress_bar
 
 
 # =============================================================================
@@ -596,8 +596,8 @@ fn run_offpolicy_continuous_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-            # Newline to clear progress bar, then full stats line
-            print()
+            # Clear progress bar, then full stats line
+            clear_progress_bar()
             print(
                 algorithm_name
                 + " | Step "
@@ -622,11 +622,29 @@ fn run_offpolicy_continuous_train_gpu[
     var final_sum = Float64(host_reward_sum[0])
     completed_episodes += final_count
     if final_count > 0:
-        var final_avg = final_sum / Float64(final_count)
+        last_avg_reward = final_sum / Float64(final_count)
         for _ in range(final_count):
-            metrics.log_episode(completed_episodes, final_avg, 0, 0.0)
+            metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
 
     agent.download_from_gpu(gpu_state, ctx)
+
+    # Print final stats
+    if verbose:
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Step "
+            + String(total_steps)
+            + " / "
+            + String(num_steps)
+            + " | Ep: "
+            + String(completed_episodes)
+            + " | AvgR: "
+            + String(last_avg_reward)[:7]
+            + " | Train: "
+            + String(total_train_steps)
+            + " [DONE]"
+        )
 
     return metrics^
 
@@ -898,7 +916,7 @@ fn run_offpolicy_discrete_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-            print()
+            clear_progress_bar()
             print(
                 algorithm_name
                 + " | Step "
@@ -923,10 +941,28 @@ fn run_offpolicy_discrete_train_gpu[
     var final_sum = Float64(host_reward_sum[0])
     completed_episodes += final_count
     if final_count > 0:
-        var final_avg = final_sum / Float64(final_count)
+        last_avg_reward = final_sum / Float64(final_count)
         for _ in range(final_count):
-            metrics.log_episode(completed_episodes, final_avg, 0, 0.0)
+            metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
 
     agent.download_from_gpu(gpu_state, ctx)
+
+    # Print final stats
+    if verbose:
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Step "
+            + String(total_steps)
+            + " / "
+            + String(num_steps)
+            + " | Ep: "
+            + String(completed_episodes)
+            + " | AvgR: "
+            + String(last_avg_reward)[:7]
+            + " | Train: "
+            + String(total_train_steps)
+            + " [DONE]"
+        )
 
     return metrics^

@@ -133,6 +133,15 @@ fn print_progress_bar(
     )
 
 
+fn clear_progress_bar():
+    """Overwrite the current progress bar line with spaces and return to start.
+
+    Call this before printing stats to ensure the progress bar is fully erased.
+    """
+    # 120 spaces is enough to cover any progress bar output
+    print("\r" + String(" ") * 120 + "\r", end="")
+
+
 fn concat_obs_action_batch[
     OBS: Int, ACT: Int, BATCH: Int
 ](

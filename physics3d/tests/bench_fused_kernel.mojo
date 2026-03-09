@@ -9,7 +9,7 @@ This tells us whether kernel fusion would be worth pursuing.
 
 For HalfCheetah with FRAME_SKIP=5 and ROLLOUT_LEN=512:
 - 512 × 5 = 2560 physics substeps per rollout
-- 3 kernel launches per substep = 7680 total launches
+- 4 kernel launches per substep = 10240 total launches
 - Fusion would save 2560-5120 launches depending on approach
 
 Run with:
@@ -269,7 +269,7 @@ fn bench_physics_step[BATCH: Int](
     var t1 = perf_counter_ns()
     var physics_ms = Float64(t1 - t0) / 1e6
     var per_step_us = physics_ms / Float64(num_substeps) * 1000.0
-    var total_launches = num_substeps * 3
+    var total_launches = num_substeps * 4
 
     print(
         "  Physics step (batch="
@@ -288,7 +288,7 @@ fn bench_physics_step[BATCH: Int](
     print(
         "    Per substep:",
         String(per_step_us)[:7],
-        "us (3 launches)",
+        "us (4 launches)",
     )
     print(
         "    Per launch: ",
@@ -507,7 +507,7 @@ fn main() raises:
     print()
     print("Environment: HalfCheetah (NQ=9, NV=9, MAX_CONTACTS=20)")
     print("Solver: Newton (solver_threads=20)")
-    print("3 kernel launches per substep: step(1D) + solve(2D) + finalize(1D)")
+    print("4 kernel launches per substep: step(1D) + contact(1D) + solve(2D) + finalize(1D)")
     print()
 
     with DeviceContext() as ctx:
@@ -546,9 +546,9 @@ fn main() raises:
         print(
             "  Per rollout: 512 steps × 5 frame_skip = 2560 physics substeps"
         )
-        print("  Per rollout: 2560 × 3 launches = 7680 kernel launches")
+        print("  Per rollout: 2560 × 4 launches = 10240 kernel launches")
         print(
-            "  If fusion saves 2 launches/substep: 5120 fewer launches/rollout"
+            "  If fusion saves 3 launches/substep: 7680 fewer launches/rollout"
         )
         print()
 

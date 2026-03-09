@@ -68,7 +68,7 @@ from deep_agents.core.kernels import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from deep_agents.core.utils import print_progress_bar
+from deep_agents.core.utils import print_progress_bar, clear_progress_bar
 
 
 # =============================================================================
@@ -691,7 +691,7 @@ fn run_onpolicy_discrete_train_gpu[
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
-            print()
+            clear_progress_bar()
             print(
                 algorithm_name
                 + " | Update "
@@ -709,6 +709,27 @@ fn run_onpolicy_discrete_train_gpu[
     # Final sync to ensure CPU params are up to date
     ctx.synchronize()
     agent.download_from_gpu(gpu_state, ctx)
+
+    # Print final stats
+    if verbose:
+        var avg_reward = metrics.mean_reward_last_n(
+            min(100, completed_episodes)
+        )
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Update "
+            + String(num_updates)
+            + " / "
+            + String(num_updates)
+            + " | Episodes: "
+            + String(completed_episodes)
+            + " | AvgR(100): "
+            + String(avg_reward)[:7]
+            + " | Steps: "
+            + String(total_steps)
+            + " [DONE]"
+        )
 
     return metrics^
 
@@ -1027,7 +1048,7 @@ fn run_onpolicy_continuous_train_gpu[
             var ep_progress = String(completed_episodes) + (
                 " / " + String(target_episodes) if target_episodes > 0 else ""
             )
-            print()
+            clear_progress_bar()
             print(
                 algorithm_name
                 + " | Episodes: "
@@ -1042,5 +1063,27 @@ fn run_onpolicy_continuous_train_gpu[
 
     ctx.synchronize()
     agent.download_from_gpu(gpu_state, ctx)
+
+    # Print final stats
+    if verbose:
+        var avg_reward = metrics.mean_reward_last_n(
+            min(100, completed_episodes)
+        )
+        var ep_progress = String(completed_episodes) + (
+            " / " + String(target_episodes) if target_episodes > 0 else ""
+        )
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Episodes: "
+            + ep_progress
+            + " | Update: "
+            + String(update + 1)
+            + " | AvgR(100): "
+            + String(avg_reward)[:7]
+            + " | Steps: "
+            + String(total_steps)
+            + " [DONE]"
+        )
 
     return metrics^
