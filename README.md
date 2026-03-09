@@ -1,27 +1,27 @@
 # mojo-rl
 
-A reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, comprehensive tabular RL algorithms, policy gradient methods, and continuous control.
+A reinforcement learning framework written in Mojo, featuring trait-based design, 30+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, and native SDL3 rendering.
 
 ## Features
 
-- **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO)
-- **Deep RL infrastructure**: Trait-based neural network framework with Model, Optimizer, LossFunction, and Initializer traits; Linear/ReLU/Tanh layers; SGD/Adam optimizers; Sequential composition via Sequential; GPU kernels with tiled matmul
-- **13 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing, Hopper, HalfCheetah
-- **Integrated SDL3 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing, Hopper, HalfCheetah)
+- **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
+- **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO), and model-based RL (TD-MPC2)
+- **Deep learning framework** (`nn/`): Trait-based neural networks with autodiff, 15+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
+- **Autodiff system** (`nn/autodiff/`): Composition-based automatic differentiation with DiffOp primitives, AutoDiffChain, fused kernels, and combinators (Residual, Parallel, Repeat)
+- **3D physics engine** (`physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
+- **2D physics engine** (`physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
+- **22 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing, HalfCheetah, Hopper, Ant, Walker2d, Swimmer, Humanoid, HumanoidStandup, InvertedPendulum, InvertedDoublePendulum, and more
+- **SDL3 rendering** (`render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **Experience replay**: Uniform and prioritized replay buffers for both discrete and continuous actions
-- **Policy gradient methods**: REINFORCE, Actor-Critic, A2C, PPO with GAE
-- **Continuous control**: PPO, DDPG, TD3, SAC with linear function approximation
-- **Generic training utilities**: Works with any compatible environment/agent combination
+- **GPU training**: All continuous control deep agents (DDPG, TD3, SAC, PPO) support GPU-accelerated training
 
 ## Acknowledgments
 
-This project uses [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) as a reference implementation for environment physics and reward structures. The native Mojo environments (CartPole, MountainCar, Acrobot, Pendulum) are faithful ports of their Gymnasium counterparts, ensuring compatibility and correctness.
+This project uses [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) as a reference for environment physics. Native Mojo environments are faithful ports ensuring compatibility. MuJoCo-style environments reference [MuJoCo](https://mujoco.org/) for physics and model definitions.
 
 ## Quick Start
 
-This project uses **pixi** for dependency management and to ensure the latest Mojo version is used.
+This project uses **pixi** for dependency management.
 
 ### Installing pixi
 
@@ -47,21 +47,6 @@ pixi run mojo run benchmark.mojo
 
 # Build a binary
 pixi run mojo build main.mojo
-
-# Run native renderer demo (requires SDL2)
-pixi run mojo run examples/native_renderer_demo.mojo
-```
-
-### SDL2 Requirements (for visualization)
-
-To use the integrated SDL2 rendering for CartPole and MountainCar:
-
-```bash
-# macOS
-brew install sdl2 sdl2_ttf
-
-# Ubuntu/Debian
-sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 ```
 
 ### GPU Support
@@ -76,266 +61,181 @@ pixi run -e apple mojo run examples/lunar_lander_dqn.mojo
 pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 ```
 
+## Project Structure
+
+```
+mojo-rl/
+├── main.mojo               # Entry point (Q-Learning on GridWorld)
+├── benchmark.mojo           # Algorithm comparison
+├── core/                    # Core RL abstractions (traits, replay buffers, tile coding)
+├── agents/                  # Tabular & linear RL algorithms (20+ agents)
+├── deep_agents/             # Deep RL agents with CPU/GPU training
+│   ├── core/                #   Shared training loops, GPU kernels, replay buffers
+│   ├── dqn/                 #   DQN, Double DQN
+│   ├── dqn_per/             #   DQN + Prioritized Experience Replay
+│   ├── dueling_dqn/         #   Dueling DQN (V + A streams)
+│   ├── ddpg/                #   Deep Deterministic Policy Gradient
+│   ├── td3/                 #   Twin Delayed DDPG
+│   ├── sac/                 #   Soft Actor-Critic
+│   ├── a2c/                 #   Advantage Actor-Critic
+│   ├── ppo/                 #   PPO (discrete + continuous)
+│   └── tdmpc2/              #   TD-MPC2 (model-based, world model + MPPI)
+├── nn/                      # Deep learning framework
+│   ├── model/               #   Layers: Linear, ReLU, Tanh, Sigmoid, Mish, LayerNorm, etc.
+│   ├── optimizer/           #   SGD, Adam, AdamW, RMSprop, Muon
+│   ├── loss/                #   MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
+│   ├── initializer/         #   Xavier, Kaiming, LeCun, etc.
+│   ├── training/            #   Trainer, NetworkState, GPUNetworkState, NetworkPair
+│   ├── checkpoint/          #   Model serialization (text + binary)
+│   ├── autodiff/            #   Automatic differentiation framework
+│   │   ├── primitives/      #     MatMul, BiasAdd, ReLU, Tanh, Conv2D, Attention, etc.
+│   │   ├── fused/           #     FusedMatMulBiasReLU, FusedMatMulBiasTanh, etc.
+│   │   └── combinators/     #     Residual, Parallel, Repeat
+│   ├── composites.mojo      #   Pre-built architectures (ResBlock, ResNet, LeNet)
+│   ├── gpu/                 #   GPU kernels (matmul, elementwise, random)
+│   └── replay/              #   Experience replay buffers
+├── physics3d/               # 3D MuJoCo-inspired physics engine
+│   ├── model/               #   Compile-time model specs (BodySpec, JointSpec, GeomSpec)
+│   ├── dynamics/            #   Mass matrix (CRBA), bias forces (RNE), Jacobians
+│   ├── integrator/          #   Euler, ImplicitFast, Implicit, RK4
+│   ├── solver/              #   PGS, Newton, CG, Island-based solvers
+│   ├── collision/           #   Narrow-phase + Sweep-and-Prune broadphase
+│   ├── constraints/         #   Constraint building + solving
+│   ├── kinematics/          #   Forward kinematics + quaternion math
+│   └── parser/              #   MJCF XML model loading
+├── physics2d/               # GPU-accelerated 2D physics engine
+│   ├── integrators/         #   Semi-implicit Euler
+│   ├── collision/           #   Flat/edge terrain detection
+│   ├── solvers/             #   Impulse + unified constraint solver
+│   ├── joints/              #   Revolute joint solver
+│   ├── articulated/         #   Multi-body chain support
+│   ├── car/                 #   CarRacing slip-based tire physics
+│   └── lidar/               #   Distance sensing
+├── math3d/                  # 3D math library (Vec3, Quat, Mat3, Mat4)
+├── render/                  # SDL3 rendering infrastructure
+│   ├── renderer2d.mojo      #   2D CPU rasterizer
+│   ├── renderer3d.mojo      #   GPU-accelerated 3D renderer (Metal shaders)
+│   ├── gpu_shaders.mojo     #   MSL shaders (solid, shadow, skybox, text)
+│   ├── video_recorder.mojo  #   MP4/GIF recording
+│   └── sdl/                 #   SDL3 FFI bindings (38 files)
+├── envs/                    # Environment implementations
+│   ├── gridworld.mojo       #   Tabular environments
+│   ├── cartpole.mojo        #   Classic control (GPU-capable)
+│   ├── lunar_lander/        #   Custom 2D physics (GPU batch)
+│   ├── bipedal_walker/      #   Custom 2D physics (GPU batch)
+│   ├── car_racing/          #   Tire slip physics (GPU batch)
+│   ├── half_cheetah/        #   MuJoCo-style (physics3d)
+│   ├── hopper/              #   MuJoCo-style (physics3d)
+│   ├── ant/                 #   MuJoCo-style (physics3d)
+│   ├── walker2d/            #   MuJoCo-style (physics3d)
+│   ├── humanoid/            #   MuJoCo-style (physics3d)
+│   └── gymnasium/           #   Python Gymnasium wrappers
+└── examples/                # Demo scripts and benchmarks
+```
+
 ## Algorithms
 
-### TD Methods
+### Tabular & Linear Methods
 
-| Algorithm             | Description                                                        |
-| --------------------- | ------------------------------------------------------------------ |
-| **Q-Learning**        | Off-policy TD learning: `Q(s,a) += α(r + γ·max Q(s',a') - Q(s,a))` |
-| **SARSA**             | On-policy TD learning: `Q(s,a) += α(r + γ·Q(s',a') - Q(s,a))`      |
-| **Expected SARSA**    | Uses expected value: `Q(s,a) += α(r + γ·E[Q(s',a')] - Q(s,a))`     |
-| **Double Q-Learning** | Two Q-tables to reduce overestimation bias                         |
-
-### Multi-step & Eligibility Traces
-
-| Algorithm        | Description                                         |
-| ---------------- | --------------------------------------------------- |
-| **N-step SARSA** | n-step returns, configurable bias-variance tradeoff |
-| **SARSA(λ)**     | Eligibility traces for efficient credit assignment  |
-| **Monte Carlo**  | First-visit MC with complete episode returns        |
-
-### Model-based Planning
-
-| Algorithm             | Description                                          |
-| --------------------- | ---------------------------------------------------- |
-| **Dyna-Q**            | Q-Learning + simulated experience from learned model |
-| **Priority Sweeping** | Prioritized updates by TD error magnitude            |
-
-### With Experience Replay
-
-| Algorithm               | Description                            |
-| ----------------------- | -------------------------------------- |
-| **Q-Learning + Replay** | Off-policy learning with replay buffer |
-
-### Function Approximation (Tile Coding)
-
-| Algorithm            | Description                                       |
-| -------------------- | ------------------------------------------------- |
-| **Tiled Q-Learning** | Q-Learning with tile coding for continuous states |
-| **Tiled SARSA**      | On-policy SARSA with tile coding                  |
-| **Tiled SARSA(λ)**   | Eligibility traces + tile coding                  |
-
-### Function Approximation (Linear with Arbitrary Features)
-
-| Algorithm             | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| **Linear Q-Learning** | Q-Learning with polynomial, RBF, or custom features   |
-| **Linear SARSA**      | On-policy SARSA with arbitrary feature vectors        |
-| **Linear SARSA(λ)**   | Eligibility traces with linear function approximation |
-
-### Policy Gradient Methods
-
-| Algorithm                | Description                                                   |
-| ------------------------ | ------------------------------------------------------------- |
-| **REINFORCE**            | Monte Carlo policy gradient with softmax policy               |
-| **REINFORCE + Baseline** | Variance reduction using learned value baseline               |
-| **Actor-Critic**         | One-step TD policy gradient with online updates               |
-| **Actor-Critic(λ)**      | Actor-Critic with eligibility traces for actor and critic     |
-| **A2C**                  | Advantage Actor-Critic with n-step returns and entropy bonus  |
-| **PPO**                  | Proximal Policy Optimization with clipped surrogate objective |
-| **PPO + Minibatch**      | PPO with minibatch sampling for larger rollouts               |
-
-### Continuous Control (Deterministic Policy Gradient)
-
-| Algorithm | Description                                                                      |
-| --------- | -------------------------------------------------------------------------------- |
-| **DDPG**  | Deep Deterministic Policy Gradient with linear function approximation            |
-| **TD3**   | Twin Delayed DDPG with twin Q-networks, delayed policy updates, target smoothing |
-| **SAC**   | Soft Actor-Critic with maximum entropy RL and automatic temperature tuning       |
+| Category | Algorithms |
+|----------|-----------|
+| **TD Methods** | Q-Learning, SARSA, Expected SARSA, Double Q-Learning |
+| **Multi-step** | N-step SARSA, SARSA(lambda), Monte Carlo |
+| **Model-based** | Dyna-Q, Priority Sweeping |
+| **With Replay** | Q-Learning + Replay, Q-Learning + PER |
+| **Tile Coding** | Tiled Q-Learning, Tiled SARSA, Tiled SARSA(lambda) |
+| **Linear FA** | Linear Q-Learning, Linear SARSA, Linear SARSA(lambda) |
+| **Policy Gradient** | REINFORCE, Actor-Critic, Actor-Critic(lambda), A2C, PPO |
+| **Continuous (Linear)** | DDPG, TD3, SAC |
 
 ### Deep RL (Neural Networks)
 
-| Algorithm            | Description                                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------------- |
-| **Deep DQN**         | Deep Q-Network with target network, experience replay, epsilon-greedy exploration                       |
-| **Deep Double DQN**  | DQN with reduced overestimation: online network selects actions, target evaluates                       |
-| **Deep Dueling DQN** | Separate V(s) and A(s,a) streams for better value estimation                                            |
-| **Deep DQN + PER**   | DQN with Prioritized Experience Replay for efficient learning                                           |
-| **Deep DDPG**        | DDPG with 2-layer MLP actor/critic networks for continuous control                                      |
-| **Deep TD3**         | TD3 with twin critics, delayed policy updates, target policy smoothing                                  |
-| **Deep SAC**         | Soft Actor-Critic with entropy regularization and automatic temperature                                 |
-| **Deep A2C**         | Advantage Actor-Critic with GAE for variance reduction                                                  |
-| **Deep PPO**         | Proximal Policy Optimization with clipped surrogate, LR annealing, KL early stopping, gradient clipping |
+| Algorithm | Actions | GPU | Description |
+|-----------|---------|-----|-------------|
+| **DQN** | Discrete | Yes | Double DQN, target network, epsilon-greedy |
+| **DQN + PER** | Discrete | No | Prioritized replay with sum-tree |
+| **Dueling DQN** | Discrete | No | V(s) + A(s,a) architecture |
+| **DDPG** | Continuous | Yes | Deterministic actor, Gaussian noise |
+| **TD3** | Continuous | Yes | Twin critics, delayed policy, target smoothing |
+| **SAC** | Continuous | Yes | Max entropy, stochastic policy, auto alpha |
+| **A2C** | Discrete | No | GAE, softmax policy |
+| **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch |
+| **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
 
 ## Environments
 
 ### Native Mojo Environments
 
-| Environment       | States           | Actions                        | Description                                                                           |
-| ----------------- | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------- |
-| **GridWorld**     | 25 (5x5)         | 4                              | Navigate to goal, -1/step, +10 goal                                                   |
-| **FrozenLake**    | 16 (4x4)         | 4                              | Avoid holes on slippery ice                                                           |
-| **CliffWalking**  | 48 (4x12)        | 4                              | Avoid cliff, -100 penalty                                                             |
-| **Taxi**          | 500              | 6                              | Pickup/dropoff passenger                                                              |
-| **CartPole**      | Continuous       | 2                              | Balance pole on cart (145x faster than Gymnasium), integrated SDL2 rendering          |
-| **MountainCar**   | Continuous       | 3                              | Drive car up mountain using momentum, integrated SDL2 rendering                       |
-| **Acrobot**       | Continuous       | 3                              | Swing two-link pendulum above threshold, integrated SDL2 rendering                    |
-| **Pendulum**      | Continuous       | Continuous                     | Swing up and balance inverted pendulum, integrated SDL2 rendering                     |
-| **LunarLander**   | Continuous (8D)  | 4 (discrete)                   | Land spacecraft on helipad, custom 2D physics engine, flame particles, SDL2 rendering |
-| **BipedalWalker** | Continuous (24D) | Continuous (4D)                | Walk on terrain, normal/hardcore modes, lidar, custom 2D physics, SDL2 rendering      |
-| **CarRacing**     | Continuous (12D) | Continuous (3D) / Discrete (5) | Top-down racing, procedural tracks, 4-wheel friction, SDL2 rendering                  |
+| Environment | Obs Dim | Actions | Physics Engine | GPU Batch |
+|-------------|---------|---------|----------------|-----------|
+| GridWorld | 25 | 4 (discrete) | Grid | No |
+| FrozenLake | 16 | 4 (discrete) | Grid | No |
+| CliffWalking | 48 | 4 (discrete) | Grid | No |
+| Taxi | 500 | 6 (discrete) | Grid | No |
+| CartPole | 4 | 2 (discrete) | Gymnasium-matching | Yes |
+| MountainCar | 2 | 3 (discrete) | Gymnasium-matching | No |
+| Acrobot | 6 | 3 (discrete) | RK4 | No |
+| Pendulum | 3 | 1 (continuous) | Direct | Yes |
+| LunarLander | 8 | 4 / continuous | physics2d (impulse) | Yes |
+| BipedalWalker | 24 | 4 (continuous) | physics2d (impulse + joints) | Yes |
+| CarRacing | 12 | 3 (continuous) | physics2d (tire slip) | Yes |
+| HalfCheetah | 17 | 6 (continuous) | physics3d (GC) | Yes |
+| Hopper | 11 | 3 (continuous) | physics3d (GC) | Yes |
+| Ant | 27 | 8 (continuous) | physics3d (GC) | Yes |
+| Walker2d | 17 | 6 (continuous) | physics3d (GC) | Yes |
+| Swimmer | 8 | 2 (continuous) | physics3d (GC) | Yes |
+| Humanoid | 376 | 17 (continuous) | physics3d (GC) | Yes |
+| InvertedPendulum | 4 | 1 (continuous) | physics3d (GC) | Yes |
 
-### Gymnasium Wrappers (`envs/gymnasium/`)
-
-Wrap any Gymnasium environment with Python interop:
+### Gymnasium Wrappers
 
 - **Classic Control**: CartPole, MountainCar, Pendulum, Acrobot
 - **Box2D**: LunarLander, BipedalWalker, CarRacing
 - **Toy Text**: FrozenLake, Taxi, Blackjack, CliffWalking
 - **MuJoCo**: HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, and more
 
-## Project Structure
+## Usage Examples
 
-```
-mojo-rl/
-├── main.mojo              # Entry point (Q-Learning on GridWorld)
-├── benchmark.mojo         # Algorithm comparison
-├── core/                  # Core RL abstractions
-│   ├── state.mojo         # State trait
-│   ├── action.mojo        # Action trait
-│   ├── env.mojo           # Environment trait
-│   ├── env_traits.mojo    # Environment trait hierarchy (DiscreteEnv, BoxDiscreteActionEnv, etc.)
-│   ├── agent.mojo         # Agent trait
-│   ├── tabular_agent.mojo # TabularAgent trait
-│   ├── replay_buffer.mojo # Experience replay buffers (discrete actions)
-│   ├── continuous_replay_buffer.mojo # Replay buffer for continuous actions
-│   ├── space.mojo         # Space abstractions (DiscreteSpace, BoxSpace)
-│   ├── tile_coding.mojo   # Tile coding for function approximation
-│   ├── linear_fa.mojo     # Linear function approximation (polynomial, RBF features)
-│   ├── vec_env.mojo       # Vectorized environment support
-│   ├── metrics.mojo       # Training metrics and logging
-├── agents/                # Algorithm implementations (tabular & linear)
-│   ├── qlearning.mojo
-│   ├── sarsa.mojo
-│   ├── expected_sarsa.mojo
-│   ├── nstep_sarsa.mojo
-│   ├── sarsa_lambda.mojo
-│   ├── monte_carlo.mojo
-│   ├── double_qlearning.mojo
-│   ├── dyna_q.mojo
-│   ├── priority_sweeping.mojo
-│   ├── qlearning_replay.mojo
-│   ├── tiled_qlearning.mojo   # Tile coding agents
-│   ├── linear_qlearning.mojo  # Linear function approximation agents
-│   ├── reinforce.mojo         # REINFORCE policy gradient
-│   ├── actor_critic.mojo      # Actor-Critic, Actor-Critic(λ), A2C
-│   ├── ppo.mojo               # PPO with GAE
-│   ├── ddpg.mojo              # Deep Deterministic Policy Gradient (linear)
-│   ├── td3.mojo               # Twin Delayed DDPG (linear)
-│   └── sac.mojo               # Soft Actor-Critic (linear)
-├── nn/               # Deep RL infrastructure (trait-based neural networks)
-│   ├── constants.mojo     # Global constants (dtype=float32, TILE=16, TPB=256)
-│   ├── model/             # Neural network layers (Model trait)
-│   │   ├── model.mojo     # Model trait: stateless forward/backward with LayoutTensor
-│   │   ├── linear.mojo    # Linear[in_dim, out_dim]: y = x @ W + b with GPU kernels
-│   │   ├── relu.mojo      # ReLU[dim]: y = max(0, x) activation
-│   │   ├── tanh.mojo      # Tanh[dim]: y = tanh(x) activation
-│   │   └── sequential.mojo # Seq2[L0, L1] + seq() helpers for composing layers
-│   ├── optimizer/         # Optimizers (Optimizer trait)
-│   │   ├── optimizer.mojo # Optimizer trait: step() with external state
-│   │   ├── sgd.mojo       # SGD: param -= lr * grad
-│   │   └── adam.mojo      # Adam: adaptive learning with momentum
-│   ├── loss/              # Loss functions (LossFunction trait)
-│   │   ├── loss.mojo      # LossFunction trait: forward/backward
-│   │   └── mse.mojo       # MSELoss: mean squared error
-│   ├── initializer/       # Weight initializers (Initializer trait)
-│   │   └── initializers.mojo # Xavier, Kaiming, LeCun, Zeros, Ones, Constant, Uniform, Normal
-│   ├── training/          # Training utilities
-│   │   └── trainer.mojo   # Trainer[MODEL, OPT, LOSS, INIT]: CPU/GPU training loop
-│   ├── replay/            # Experience replay buffers
-│   │   └── replay_buffer.mojo # ReplayBuffer, PrioritizedReplayBuffer
-│   └── gpu/               # GPU utilities (elementwise, matmul, random)
-├── deep_agents/           # Deep RL agents (neural networks)
-│   ├── dqn.mojo           # DQNAgent with Double DQN support
-│   ├── dqn_per.mojo       # DQNPERAgent with prioritized replay
-│   ├── dueling_dqn.mojo   # DuelingDQNAgent with V(s) + A(s,a) split
-│   ├── ddpg.mojo          # DeepDDPGAgent for continuous control
-│   ├── td3.mojo           # DeepTD3Agent with twin critics
-│   ├── sac.mojo           # DeepSACAgent with entropy regularization
-│   ├── a2c.mojo           # DeepA2CAgent with GAE
-│   └── ppo.mojo           # DeepPPOAgent with clipped surrogate
-├── physics/               # 2D physics engine for LunarLander
-│   ├── vec2.mojo          # 2D vector math
-│   ├── body.mojo          # Rigid body dynamics
-│   ├── shape.mojo         # Polygon, circle, edge shapes
-│   ├── fixture.mojo       # Shape-body attachment + collision filtering
-│   ├── collision.mojo     # Edge-polygon collision detection
-│   ├── joint.mojo         # Revolute joint with motor/limits
-│   └── world.mojo         # Physics world simulation
-├── render/                # Rendering infrastructure
-│   ├── sdl2.mojo          # SDL2 FFI bindings for rendering
-│   └── renderer_base.mojo # Renderer base class
-└── envs/                  # Environment implementations
-    ├── gridworld.mojo
-    ├── frozenlake.mojo
-    ├── cliffwalking.mojo
-    ├── taxi.mojo
-    ├── cartpole.mojo          # Native CartPole with integrated SDL2 rendering
-    ├── mountain_car.mojo      # Native MountainCar with integrated SDL2 rendering
-    ├── acrobot.mojo           # Native Acrobot with integrated SDL2 rendering
-    ├── pendulum.mojo          # Native Pendulum with integrated SDL2 rendering
-    ├── lunar_lander.mojo      # Native LunarLander with custom physics + SDL2 rendering
-    ├── bipedal_walker.mojo    # Native BipedalWalker with custom physics + SDL2 rendering
-    ├── car_racing.mojo        # Native CarRacing with procedural tracks + SDL2 rendering
-    ├── vec_cartpole.mojo      # Vectorized CartPole for parallel training
-    └── gymnasium/             # Gymnasium wrappers
-        ├── gymnasium_wrapper.mojo
-        ├── gymnasium_classic_control.mojo
-        ├── gymnasium_box2d.mojo
-        ├── gymnasium_toy_text.mojo
-        └── gymnasium_mujoco.mojo
-```
-
-## Usage Example
+### Tabular RL
 
 ```mojo
-from agents import QLearningAgent, SARSALambdaAgent, DynaQAgent
-from envs import GridWorldEnv, CliffWalkingEnv
+from agents import QLearningAgent
+from envs import GridWorldEnv
 
 fn main():
-    # Train Q-Learning on GridWorld
     var env = GridWorldEnv(width=5, height=5)
     var agent = QLearningAgent(num_states=25, num_actions=4)
     _ = agent.train(env, num_episodes=500, verbose=True)
-    var reward = agent.evaluate(env, num_episodes=10)
-    print("Q-Learning reward:", reward)
-
-    # Train SARSA(λ) on CliffWalking
-    var cliff_env = CliffWalkingEnv(width=12, height=4)
-    var sarsa_agent = SARSALambdaAgent(
-        num_states=48, num_actions=4, lambda_=0.9
-    )
-    _ = sarsa_agent.train(cliff_env, num_episodes=500)
 ```
 
-### CartPole with SDL2 Visualization
+### Deep RL with GPU Training
 
 ```mojo
-from envs import CartPoleNative, CartPoleAction
-from agents import QLearningAgent
+from deep_agents import DeepPPOContinuousAgent
+from envs.half_cheetah import HalfCheetahEnv
+from gpu.host import DeviceContext
 
 fn main() raises:
-    var num_bins = 10
-    var env = CartPoleEnv(num_bins=num_bins)
-    var agent = QLearningAgent(
-        num_states=CartPoleEnv.get_num_states(num_bins),
-        num_actions=2,
+    var agent = DeepPPOContinuousAgent[
+        obs_dim=17, action_dim=6, hidden_dim=64,
+    ]()
+    var ctx = DeviceContext()
+    var metrics = agent.train_gpu[HalfCheetahEnv](ctx, num_updates=1000)
+```
+
+### Neural Network Training
+
+```mojo
+from nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
+
+fn main() raises:
+    # Define model at compile time: 2 -> 16 (ReLU) -> 1
+    comptime MLP = Sequential[Linear[2, 16], ReLU[16], Linear[16, 1]]
+
+    var trainer = Trainer[MLP, Adam, MSELoss, Kaiming](
+        MLP(), Adam(lr=0.001), MSELoss(), Kaiming(), epochs=1000,
     )
-
-    # Train using generic training function
-    _ = agent.train(env, num_episodes=1000, max_steps_per_episode=500)
-
-    # Visualize trained agent
-    var state = env.reset()
-    for _ in range(500):
-        var action_idx = agent.get_best_action(state.index)
-        var result = env.step(CartPoleAction(direction=action_idx))
-        env.render()  # Opens SDL2 window
-        state = result[0]
-        if result[2]:
-            break
-    env.close()
+    var result = trainer.train[4](input, target)
 ```
 
 ## Extending the Framework
@@ -364,138 +264,3 @@ struct MyAgent(TabularAgent):
     fn decay_epsilon(mut self): ...
     fn get_epsilon(self) -> Float64: ...
 ```
-
-### Policy Gradient on CartPole
-
-```mojo
-from core.tile_coding import make_cartpole_tile_coding
-from agents import REINFORCEAgent, ActorCriticAgent
-from envs import CartPoleNative
-
-fn main() raises:
-    # Create tile coding for continuous state space
-    var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
-
-    # REINFORCE agent with baseline
-    var agent = REINFORCEAgent(
-        tile_coding=tc,
-        num_actions=2,
-        learning_rate=0.001,
-        use_baseline=True,
-    )
-
-    var env = CartPoleNative()
-
-    for episode in range(1000):
-        var obs = env.reset()
-        agent.reset()
-
-        for step in range(500):
-            var tiles = tc.get_tiles_simd4(obs)
-            var action = agent.select_action(tiles)
-            var result = env.step(action)
-            agent.store_transition(tiles, action, result[1])
-            obs = result[0]
-            if result[2]:
-                break
-
-        # Update at end of episode
-        agent.update_from_episode()
-```
-
-### Deep Learning with Trainer
-
-```mojo
-from nn import (
-    Model, seq, Linear, ReLU, Tanh,
-    Optimizer, SGD, Adam,
-    LossFunction, MSELoss,
-    Initializer, Xavier, Kaiming,
-    Trainer, TrainResult,
-)
-
-fn main() raises:
-    # Build a 2-layer MLP: 2 -> 16 (ReLU) -> 1
-    var model = seq(
-        Linear[2, 16](),
-        ReLU[16](),
-        Linear[16, 1](),
-    )
-
-    # Create trainer with Adam optimizer and MSE loss
-    var trainer = Trainer[
-        typeof(model),  # Model type
-        Adam,           # Optimizer type
-        MSELoss,        # Loss function type
-        Kaiming,        # Initializer type (good for ReLU)
-    ](
-        model,
-        Adam(lr=0.001),
-        MSELoss(),
-        Kaiming(),
-        epochs=1000,
-        print_every=100,
-    )
-
-    # Prepare training data (XOR problem)
-    var input = InlineArray[Scalar[DType.float32], 8](
-        0, 0,  # Sample 1
-        0, 1,  # Sample 2
-        1, 0,  # Sample 3
-        1, 1,  # Sample 4
-    )
-    var target = InlineArray[Scalar[DType.float32], 4](
-        0,  # 0 XOR 0 = 0
-        1,  # 0 XOR 1 = 1
-        1,  # 1 XOR 0 = 1
-        0,  # 1 XOR 1 = 0
-    )
-
-    # Train on CPU
-    var result = trainer.train[4](input, target)
-    print("Final loss:", result.final_loss)
-
-    # Or train on GPU (Metal/CUDA)
-    from gpu.host import DeviceContext
-    var ctx = DeviceContext()
-    var gpu_result = trainer.train_gpu[4](ctx, input, target)
-```
-
-## Algorithm Parameters
-
-| Algorithm           | Key Parameters                                                                                                                                                          |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q-Learning          | `learning_rate`, `discount_factor`, `epsilon`, `epsilon_decay`                                                                                                          |
-| N-step SARSA        | Above + `n` (number of steps)                                                                                                                                           |
-| SARSA(λ)            | Above + `lambda_` (trace decay)                                                                                                                                         |
-| Dyna-Q              | Above + `n_planning` (planning steps per real step)                                                                                                                     |
-| Priority Sweeping   | Above + `priority_threshold`                                                                                                                                            |
-| Q-Learning + Replay | Above + `buffer_size`, `batch_size`, `min_buffer_size`                                                                                                                  |
-| REINFORCE           | `learning_rate`, `discount_factor`, `use_baseline`, `baseline_lr`                                                                                                       |
-| Actor-Critic        | `actor_lr`, `critic_lr`, `discount_factor`, `entropy_coef`                                                                                                              |
-| Actor-Critic(λ)     | Above + `lambda_` (trace decay)                                                                                                                                         |
-| A2C                 | Above + `n_steps` (for n-step returns)                                                                                                                                  |
-| PPO                 | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef`                                                                                     |
-| DDPG                | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale`                                                                                          |
-| TD3                 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip`                                                                                                         |
-| SAC                 | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy`                                                                              |
-| Deep DQN            | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity`                                                          |
-| Deep Double DQN     | Same as Deep DQN (enabled by default via compile-time parameter)                                                                                                        |
-| Deep Dueling DQN    | Same as Deep DQN with V(s) + A(s,a) architecture                                                                                                                        |
-| Deep DQN + PER      | Same as Deep DQN + `alpha`, `beta_start`, priority sampling                                                                                                             |
-| Deep DDPG           | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size`                                                         |
-| Deep TD3            | Above + `policy_delay`, `target_noise_std`, `target_noise_clip`                                                                                                         |
-| Deep SAC            | `actor_lr`, `critic_lr`, `gamma`, `tau`, `alpha`, `auto_alpha`, `target_entropy`, `hidden_dim`, `batch_size`                                                            |
-| Deep A2C            | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `entropy_coef`, `hidden_dim`                                                                                            |
-| Deep PPO            | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim`, `target_kl`, `max_grad_norm`, `anneal_lr`, `anneal_entropy` |
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for planned features including:
-
-- ~~Deep RL algorithms~~ ✅ DQN, Dueling DQN, DQN+PER, DDPG, TD3, SAC, A2C, PPO all implemented
-- ~~Prioritized Experience Replay~~ ✅ Implemented with sum-tree
-- ~~GPU support for training~~ ✅ Trainer with GPU support
-- ~~Learning rate scheduling~~ ✅ Linear annealing in Deep PPO
-- ~~BipedalWalker and CarRacing~~ ✅ Native implementations with custom physics
-- GPU-accelerated deep RL agents
