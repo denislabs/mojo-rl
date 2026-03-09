@@ -1,0 +1,323 @@
+"""NTSC color palette for Atari 2600 (128 colors → RGB).
+
+The Atari 2600 TIA uses 7-bit color values (128 colors).
+Each entry is stored as packed 0xRRGGBB.
+
+Ported from CuLE (BSD-3): cule/atari/palettes.hpp
+"""
+
+from std.collections import InlineArray
+
+# NTSC palette: 128 colors (only even indices used by TIA, but we store all 256
+# entries for direct indexing with the full 8-bit color register value).
+# Format: 0x00RRGGBB
+comptime NTSC_PALETTE: InlineArray[UInt32, 256] = [
+    # 0x0_: Grays
+    0x000000,
+    0x000000,
+    0x4A4A4A,
+    0x4A4A4A,
+    0x6F6F6F,
+    0x6F6F6F,
+    0x8E8E8E,
+    0x8E8E8E,
+    0xAAAAAA,
+    0xAAAAAA,
+    0xC0C0C0,
+    0xC0C0C0,
+    0xD6D6D6,
+    0xD6D6D6,
+    0xECECEC,
+    0xECECEC,
+    # 0x1_: Gold
+    0x484800,
+    0x484800,
+    0x6C6C00,
+    0x6C6C00,
+    0x909000,
+    0x909000,
+    0xB0B000,
+    0xB0B000,
+    0xC8C800,
+    0xC8C800,
+    0xDCDC00,
+    0xDCDC00,
+    0xECEC00,
+    0xECEC00,
+    0xFCFC00,
+    0xFCFC00,
+    # 0x2_: Orange
+    0x700000,
+    0x700000,
+    0x945000,
+    0x945000,
+    0xAA6A00,
+    0xAA6A00,
+    0xC08000,
+    0xC08000,
+    0xD49400,
+    0xD49400,
+    0xE4A800,
+    0xE4A800,
+    0xF4BC00,
+    0xF4BC00,
+    0xFCD000,
+    0xFCD000,
+    # 0x3_: Red-Orange
+    0x841800,
+    0x841800,
+    0x983800,
+    0x983800,
+    0xAC5400,
+    0xAC5400,
+    0xC06C00,
+    0xC06C00,
+    0xD08400,
+    0xD08400,
+    0xE09800,
+    0xE09800,
+    0xECAC00,
+    0xECAC00,
+    0xFCC000,
+    0xFCC000,
+    # 0x4_: Pink
+    0x880000,
+    0x880000,
+    0x9C2020,
+    0x9C2020,
+    0xB03C3C,
+    0xB03C3C,
+    0xC05858,
+    0xC05858,
+    0xD07070,
+    0xD07070,
+    0xE08888,
+    0xE08888,
+    0xECA0A0,
+    0xECA0A0,
+    0xFCB4B4,
+    0xFCB4B4,
+    # 0x5_: Purple
+    0x78005C,
+    0x78005C,
+    0x8C2074,
+    0x8C2074,
+    0xA03C88,
+    0xA03C88,
+    0xB0589C,
+    0xB0589C,
+    0xC070B0,
+    0xC070B0,
+    0xD084C0,
+    0xD084C0,
+    0xDC9CD0,
+    0xDC9CD0,
+    0xECB0E0,
+    0xECB0E0,
+    # 0x6_: Purple-Blue
+    0x480078,
+    0x480078,
+    0x602090,
+    0x602090,
+    0x783CA4,
+    0x783CA4,
+    0x8C58B8,
+    0x8C58B8,
+    0xA070CC,
+    0xA070CC,
+    0xB484DC,
+    0xB484DC,
+    0xC49CEC,
+    0xC49CEC,
+    0xD4B0FC,
+    0xD4B0FC,
+    # 0x7_: Blue
+    0x140090,
+    0x140090,
+    0x302CA4,
+    0x302CA4,
+    0x4C44B8,
+    0x4C44B8,
+    0x685CCC,
+    0x685CCC,
+    0x7C70DC,
+    0x7C70DC,
+    0x9488EC,
+    0x9488EC,
+    0xA8A0FC,
+    0xA8A0FC,
+    0xBCB4FC,
+    0xBCB4FC,
+    # 0x8_: Blue
+    0x000088,
+    0x000088,
+    0x1818A0,
+    0x1818A0,
+    0x3434B8,
+    0x3434B8,
+    0x5050CC,
+    0x5050CC,
+    0x6868DC,
+    0x6868DC,
+    0x8080EC,
+    0x8080EC,
+    0x9898FC,
+    0x9898FC,
+    0xB0B0FC,
+    0xB0B0FC,
+    # 0x9_: Light Blue
+    0x00187C,
+    0x00187C,
+    0x1C3890,
+    0x1C3890,
+    0x3854A8,
+    0x3854A8,
+    0x5070BC,
+    0x5070BC,
+    0x6888CC,
+    0x6888CC,
+    0x80A0DC,
+    0x80A0DC,
+    0x94B4EC,
+    0x94B4EC,
+    0xA8C8FC,
+    0xA8C8FC,
+    # 0xA_: Turquoise
+    0x002C5C,
+    0x002C5C,
+    0x1C4C78,
+    0x1C4C78,
+    0x386890,
+    0x386890,
+    0x5084AC,
+    0x5084AC,
+    0x689CC0,
+    0x689CC0,
+    0x80B4D4,
+    0x80B4D4,
+    0x94CCE8,
+    0x94CCE8,
+    0xA8E4FC,
+    0xA8E4FC,
+    # 0xB_: Green-Blue
+    0x003C2C,
+    0x003C2C,
+    0x1C5C48,
+    0x1C5C48,
+    0x387C64,
+    0x387C64,
+    0x509C80,
+    0x509C80,
+    0x68B494,
+    0x68B494,
+    0x80CCB0,
+    0x80CCB0,
+    0x94E4C8,
+    0x94E4C8,
+    0xA8FCE0,
+    0xA8FCE0,
+    # 0xC_: Green
+    0x003C00,
+    0x003C00,
+    0x205C20,
+    0x205C20,
+    0x407C40,
+    0x407C40,
+    0x5C9C5C,
+    0x5C9C5C,
+    0x74B474,
+    0x74B474,
+    0x8CD08C,
+    0x8CD08C,
+    0xA4E4A4,
+    0xA4E4A4,
+    0xB8FCB8,
+    0xB8FCB8,
+    # 0xD_: Yellow-Green
+    0x143800,
+    0x143800,
+    0x345C1C,
+    0x345C1C,
+    0x507C38,
+    0x507C38,
+    0x6C9850,
+    0x6C9850,
+    0x84B468,
+    0x84B468,
+    0x9CCC7C,
+    0x9CCC7C,
+    0xB4E490,
+    0xB4E490,
+    0xC8FCA4,
+    0xC8FCA4,
+    # 0xE_: Yellow-Green
+    0x2C3000,
+    0x2C3000,
+    0x4C501C,
+    0x4C501C,
+    0x687034,
+    0x687034,
+    0x848C4C,
+    0x848C4C,
+    0x9CA864,
+    0x9CA864,
+    0xB4C078,
+    0xB4C078,
+    0xCCD488,
+    0xCCD488,
+    0xE0EC9C,
+    0xE0EC9C,
+    # 0xF_: Orange-Yellow
+    0x442800,
+    0x442800,
+    0x644818,
+    0x644818,
+    0x846830,
+    0x846830,
+    0xA08444,
+    0xA08444,
+    0xB89C58,
+    0xB89C58,
+    0xD0B46C,
+    0xD0B46C,
+    0xE8CC7C,
+    0xE8CC7C,
+    0xFCE08C,
+    0xFCE08C,
+]
+
+
+@always_inline
+fn palette_r(color_idx: UInt8) -> UInt8:
+    """Extract red channel from palette entry."""
+    var palette = materialize[NTSC_PALETTE]()
+    return UInt8((palette[Int(color_idx)] >> 16) & 0xFF)
+
+
+@always_inline
+fn palette_g(color_idx: UInt8) -> UInt8:
+    """Extract green channel from palette entry."""
+    var palette = materialize[NTSC_PALETTE]()
+    return UInt8((palette[Int(color_idx)] >> 8) & 0xFF)
+
+
+@always_inline
+fn palette_b(color_idx: UInt8) -> UInt8:
+    """Extract blue channel from palette entry."""
+    var palette = materialize[NTSC_PALETTE]()
+    return UInt8(palette[Int(color_idx)] & 0xFF)
+
+
+@always_inline
+fn palette_grayscale(color_idx: UInt8) -> UInt8:
+    """Convert palette color to grayscale using luminance formula.
+
+    Y = 0.299*R + 0.587*G + 0.114*B (ITU-R BT.601)
+    """
+    var palette = materialize[NTSC_PALETTE]()
+    var rgb = palette[Int(color_idx)]
+    var r = Int((rgb >> 16) & 0xFF)
+    var g = Int((rgb >> 8) & 0xFF)
+    var b = Int(rgb & 0xFF)
+    # Fixed-point: (77*R + 150*G + 29*B) >> 8
+    return UInt8((77 * r + 150 * g + 29 * b) >> 8)

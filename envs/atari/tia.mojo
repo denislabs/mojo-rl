@@ -1,0 +1,347 @@
+"""Atari 2600 TIA (Television Interface Adapter) emulation.
+
+The TIA generates video output and handles collision detection.
+This is a simplified version focused on collision-only emulation
+for RL (no pixel rendering in the hot path). Frame rendering is
+done separately in preprocessing.mojo when pixel observations are needed.
+
+For RL with RAM observations, we only need collision detection
+(games read collision registers to determine game state).
+
+Ported from CuLE (BSD-3): cule/atari/tia.hpp
+"""
+
+from .atari_state import AtariState
+from .flags import (
+    TIA_VBLANK, TIA_VSYNC, TIA_HMOVE,
+    TIA_M0_LOCK, TIA_M1_LOCK,
+    TIA_P0_REFLECT, TIA_P1_REFLECT,
+    TIA_PF_REFLECT, TIA_PF_SCORE, TIA_PF_PRIORITY,
+    TIA_VDELP0, TIA_VDELP1, TIA_VDELBL,
+    CLOCKS_PER_LINE, HBLANK_CLOCKS, TOTAL_SCANLINES,
+    FRAME_HEIGHT, FRAME_WIDTH,
+    CX_M0P1, CX_M0P0, CX_M1P0, CX_M1P1,
+    CX_P0PF, CX_P0BL, CX_P1PF, CX_P1BL,
+    CX_M0PF, CX_M0BL, CX_M1PF, CX_M1BL,
+    CX_BLPF, CX_P0P1, CX_M0M1,
+)
+from .tables import (
+    player_mask, missile_mask, ball_mask,
+    playfield_mask, collision_mask,
+)
+
+
+# ============================================================================
+# TIA Register Read
+# ============================================================================
+
+@always_inline
+fn tia_read(state: AtariState, addr: UInt8) -> UInt8:
+    """Read a TIA register. Only collision and input registers are readable."""
+    var reg = addr & 0x0F
+
+    # Collision registers (0x00-0x07)
+    if reg == 0x00:  # CXM0P
+        var val: UInt8 = 0
+        if (state.collision & CX_M0P1) != 0: val = val | 0x80
+        if (state.collision & CX_M0P0) != 0: val = val | 0x40
+        return val
+    elif reg == 0x01:  # CXM1P
+        var val: UInt8 = 0
+        if (state.collision & CX_M1P0) != 0: val = val | 0x80
+        if (state.collision & CX_M1P1) != 0: val = val | 0x40
+        return val
+    elif reg == 0x02:  # CXP0FB
+        var val: UInt8 = 0
+        if (state.collision & CX_P0PF) != 0: val = val | 0x80
+        if (state.collision & CX_P0BL) != 0: val = val | 0x40
+        return val
+    elif reg == 0x03:  # CXP1FB
+        var val: UInt8 = 0
+        if (state.collision & CX_P1PF) != 0: val = val | 0x80
+        if (state.collision & CX_P1BL) != 0: val = val | 0x40
+        return val
+    elif reg == 0x04:  # CXM0FB
+        var val: UInt8 = 0
+        if (state.collision & CX_M0PF) != 0: val = val | 0x80
+        if (state.collision & CX_M0BL) != 0: val = val | 0x40
+        return val
+    elif reg == 0x05:  # CXM1FB
+        var val: UInt8 = 0
+        if (state.collision & CX_M1PF) != 0: val = val | 0x80
+        if (state.collision & CX_M1BL) != 0: val = val | 0x40
+        return val
+    elif reg == 0x06:  # CXBLPF
+        var val: UInt8 = 0
+        if (state.collision & CX_BLPF) != 0: val = val | 0x80
+        return val
+    elif reg == 0x07:  # CXPPMM
+        var val: UInt8 = 0
+        if (state.collision & CX_P0P1) != 0: val = val | 0x80
+        if (state.collision & CX_M0M1) != 0: val = val | 0x40
+        return val
+
+    # Input ports (0x08-0x0D)
+    elif reg == 0x0C:  # INPT4 - Player 0 fire button
+        if (state.sys_flags & UInt32(1 << 4)) != 0:  # FLAG_CON_FIRE
+            return 0x00  # Button pressed (active low... but INPT4 bit 7)
+        return 0x80  # Not pressed
+    elif reg == 0x0D:  # INPT5 - Player 1 fire button
+        return 0x80  # Not pressed (no player 2)
+    else:
+        return 0x00
+
+
+# ============================================================================
+# TIA Register Write
+# ============================================================================
+
+@always_inline
+fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
+    """Write a TIA register."""
+    var reg = addr & 0x3F
+
+    if reg == 0x00:  # VSYNC
+        if (value & 0x02) != 0:
+            state.tia_flags = state.tia_flags | TIA_VSYNC
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_VSYNC
+
+    elif reg == 0x01:  # VBLANK
+        if (value & 0x02) != 0:
+            state.tia_flags = state.tia_flags | TIA_VBLANK
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_VBLANK
+
+    elif reg == 0x02:  # WSYNC — halt CPU until end of scanline
+        # In our frame-based emulation, we just advance the clock
+        pass
+
+    elif reg == 0x04:  # NUSIZ0
+        state.nusiz0 = value & 0x37
+
+    elif reg == 0x05:  # NUSIZ1
+        state.nusiz1 = value & 0x37
+
+    elif reg == 0x06:  # COLUP0
+        state.colup0 = value & 0xFE  # Low bit ignored
+
+    elif reg == 0x07:  # COLUP1
+        state.colup1 = value & 0xFE
+
+    elif reg == 0x08:  # COLUPF
+        state.colupf = value & 0xFE
+
+    elif reg == 0x09:  # COLUBK
+        state.colubk = value & 0xFE
+
+    elif reg == 0x0A:  # CTRLPF
+        state.ctrlpf = value
+        if (value & 0x01) != 0:
+            state.tia_flags = state.tia_flags | TIA_PF_REFLECT
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_PF_REFLECT
+        if (value & 0x02) != 0:
+            state.tia_flags = state.tia_flags | TIA_PF_SCORE
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_PF_SCORE
+        if (value & 0x04) != 0:
+            state.tia_flags = state.tia_flags | TIA_PF_PRIORITY
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_PF_PRIORITY
+
+    elif reg == 0x0B:  # REFP0
+        if (value & 0x08) != 0:
+            state.tia_flags = state.tia_flags | TIA_P0_REFLECT
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_P0_REFLECT
+
+    elif reg == 0x0C:  # REFP1
+        if (value & 0x08) != 0:
+            state.tia_flags = state.tia_flags | TIA_P1_REFLECT
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_P1_REFLECT
+
+    elif reg == 0x0D:  # PF0
+        state.pf0 = value
+
+    elif reg == 0x0E:  # PF1
+        state.pf1 = value
+
+    elif reg == 0x0F:  # PF2
+        state.pf2 = value
+
+    elif reg == 0x10:  # RESP0 — reset player 0 position
+        # Position = current clock - HBLANK. Simplified: use current clock
+        state.pos_p0 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+
+    elif reg == 0x11:  # RESP1
+        state.pos_p1 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+
+    elif reg == 0x12:  # RESM0
+        state.pos_m0 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+
+    elif reg == 0x13:  # RESM1
+        state.pos_m1 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+
+    elif reg == 0x14:  # RESBL
+        state.pos_bl = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+
+    elif reg == 0x1B:  # GRP0
+        state.grp0_old = state.grp0
+        state.grp0 = value
+
+    elif reg == 0x1C:  # GRP1
+        state.grp1_old = state.grp1
+        state.grp1 = value
+
+    elif reg == 0x1D:  # ENAM0
+        state.enam0 = value & 0x02
+
+    elif reg == 0x1E:  # ENAM1
+        state.enam1 = value & 0x02
+
+    elif reg == 0x1F:  # ENABL
+        state.enabl_old = state.enabl
+        state.enabl = value & 0x02
+
+    elif reg == 0x20:  # HMP0
+        state.hm_p0 = value >> 4
+
+    elif reg == 0x21:  # HMP1
+        state.hm_p1 = value >> 4
+
+    elif reg == 0x22:  # HMM0
+        state.hm_m0 = value >> 4
+
+    elif reg == 0x23:  # HMM1
+        state.hm_m1 = value >> 4
+
+    elif reg == 0x24:  # HMBL
+        state.hm_bl = value >> 4
+
+    elif reg == 0x25:  # VDELP0
+        if (value & 0x01) != 0:
+            state.tia_flags = state.tia_flags | TIA_VDELP0
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_VDELP0
+
+    elif reg == 0x26:  # VDELP1
+        if (value & 0x01) != 0:
+            state.tia_flags = state.tia_flags | TIA_VDELP1
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_VDELP1
+
+    elif reg == 0x27:  # VDELBL
+        if (value & 0x01) != 0:
+            state.tia_flags = state.tia_flags | TIA_VDELBL
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_VDELBL
+
+    elif reg == 0x28:  # RESMP0
+        if (value & 0x02) != 0:
+            state.tia_flags = state.tia_flags | TIA_M0_LOCK
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_M0_LOCK
+
+    elif reg == 0x29:  # RESMP1
+        if (value & 0x02) != 0:
+            state.tia_flags = state.tia_flags | TIA_M1_LOCK
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_M1_LOCK
+
+    elif reg == 0x2A:  # HMOVE — apply horizontal motion
+        _apply_hmove(state)
+
+    elif reg == 0x2B:  # HMCLR — clear all motion registers
+        state.hm_p0 = 0
+        state.hm_p1 = 0
+        state.hm_m0 = 0
+        state.hm_m1 = 0
+        state.hm_bl = 0
+
+    elif reg == 0x2C:  # CXCLR — clear collision latches
+        state.collision = 0
+
+
+@always_inline
+fn _hm_to_signed(hm: UInt8) -> Int:
+    """Convert 4-bit horizontal motion value to signed displacement.
+
+    The 4-bit value is in the upper nibble format:
+    0000 = no motion, 0001-0111 = left 1-7, 1000-1111 = right 8-1
+    After >> 4 in the write, we have the raw 4-bit value.
+    """
+    var val = Int(hm)
+    if val >= 8:
+        return val - 16  # 8->-8, 9->-7, ..., 15->-1
+    return val  # 0->0, 1->1, ..., 7->7
+
+
+@always_inline
+fn _clamp_pos(pos: Int) -> UInt8:
+    """Clamp position to [0, 159] with wrapping."""
+    var p = pos
+    while p < 0:
+        p += FRAME_WIDTH
+    while p >= FRAME_WIDTH:
+        p -= FRAME_WIDTH
+    return UInt8(p)
+
+
+@always_inline
+fn _apply_hmove(mut state: AtariState):
+    """Apply horizontal motion (HMOVE register write)."""
+    state.pos_p0 = _clamp_pos(Int(state.pos_p0) - _hm_to_signed(state.hm_p0))
+    state.pos_p1 = _clamp_pos(Int(state.pos_p1) - _hm_to_signed(state.hm_p1))
+    state.pos_m0 = _clamp_pos(Int(state.pos_m0) - _hm_to_signed(state.hm_m0))
+    state.pos_m1 = _clamp_pos(Int(state.pos_m1) - _hm_to_signed(state.hm_m1))
+    state.pos_bl = _clamp_pos(Int(state.pos_bl) - _hm_to_signed(state.hm_bl))
+    state.tia_flags = state.tia_flags | TIA_HMOVE
+
+
+# ============================================================================
+# TIA Collision Detection (per-scanline)
+# ============================================================================
+
+@always_inline
+fn tia_update_collision(mut state: AtariState, clock_pos: Int):
+    """Update collision registers for one pixel position.
+
+    This is called during frame emulation for each visible pixel.
+    It checks which objects are present at this position and sets
+    the corresponding collision bits.
+    """
+    var pf = playfield_mask(state, clock_pos)
+    var p0 = player_mask(state, 0, clock_pos)
+    var p1 = player_mask(state, 1, clock_pos)
+    var m0 = missile_mask(state, 0, clock_pos)
+    var m1 = missile_mask(state, 1, clock_pos)
+    var bl = ball_mask(state, clock_pos)
+
+    # Update collision bits
+    if m0 and p1: state.collision = state.collision | CX_M0P1
+    if m0 and p0: state.collision = state.collision | CX_M0P0
+    if m1 and p0: state.collision = state.collision | CX_M1P0
+    if m1 and p1: state.collision = state.collision | CX_M1P1
+    if p0 and pf: state.collision = state.collision | CX_P0PF
+    if p0 and bl: state.collision = state.collision | CX_P0BL
+    if p1 and pf: state.collision = state.collision | CX_P1PF
+    if p1 and bl: state.collision = state.collision | CX_P1BL
+    if m0 and pf: state.collision = state.collision | CX_M0PF
+    if m0 and bl: state.collision = state.collision | CX_M0BL
+    if m1 and pf: state.collision = state.collision | CX_M1PF
+    if m1 and bl: state.collision = state.collision | CX_M1BL
+    if bl and pf: state.collision = state.collision | CX_BLPF
+    if p0 and p1: state.collision = state.collision | CX_P0P1
+    if m0 and m1: state.collision = state.collision | CX_M0M1
+
+
+@always_inline
+fn tia_update_frame_scanline(mut state: AtariState):
+    """Process collision detection for one scanline.
+
+    During visible scanlines, check all 160 pixel positions for collisions.
+    """
+    for pixel in range(FRAME_WIDTH):
+        tia_update_collision(state, pixel)
