@@ -238,7 +238,7 @@ struct DeepSACAgent[
         auto_alpha: Bool = True,
         alpha_lr: Float64 = 0.0003,
         target_entropy: Float64 = -1.0,
-        policy_delay: Int = 2,
+        policy_delay: Int = 1,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -252,7 +252,7 @@ struct DeepSACAgent[
             auto_alpha: Automatically tune alpha (default: True).
             alpha_lr: Alpha learning rate (default: 0.0003).
             target_entropy: Target entropy, typically -action_dim (default: -1.0).
-            policy_delay: Update actor/alpha every N critic updates (default: 2).
+            policy_delay: Update actor/alpha every N critic updates (default: 1).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
@@ -968,11 +968,11 @@ struct DeepSACAgent[
                     self.log_alpha = 2.0
                 self.alpha = exp(self.log_alpha)
 
-            # =============================================================
-            # Phase 6: Soft Update Target Critics
-            # =============================================================
-            cpu_state.critic1.soft_update(self.tau)
-            cpu_state.critic2.soft_update(self.tau)
+        # =================================================================
+        # Phase 6: Soft Update Target Critics (every step, not delayed)
+        # =================================================================
+        cpu_state.critic1.soft_update(self.tau)
+        cpu_state.critic2.soft_update(self.tau)
 
         self.train_step_count += 1
         return avg_critic_loss
@@ -1702,6 +1702,17 @@ struct DeepSACAgent[
                     self.log_alpha = 2.0
                 self.alpha = exp(self.log_alpha)
 
+        # ----- Diagnostics (every 10000 train steps) -----
+        if self.train_step_count % 10000 == 0:
+            print(
+                "  [SAC diag] step="
+                + String(self.train_step_count)
+                + " alpha="
+                + String(self.alpha)[:6]
+                + " log_alpha="
+                + String(self.log_alpha)[:7]
+            )
+
     fn get_action_scale(self) -> Float64:
         return self.action_scale
 
@@ -1719,11 +1730,10 @@ struct DeepSACAgent[
         """Soft-update target critic networks on GPU.
 
         SAC has NO target actor — only critic targets are updated.
-        Target updates are delayed to match actor updates (every policy_delay steps).
+        Target networks are updated every step (CleanRL target_network_frequency=1).
         """
-        if self.train_step_count % self.policy_delay == 0:
-            gpu_state.critic1.soft_update(self.tau, ctx)
-            gpu_state.critic2.soft_update(self.tau, ctx)
+        gpu_state.critic1.soft_update(self.tau, ctx)
+        gpu_state.critic2.soft_update(self.tau, ctx)
 
     # =========================================================================
     # GPU training — delegates to shared run_offpolicy_continuous_train_gpu
