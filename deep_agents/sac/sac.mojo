@@ -218,6 +218,11 @@ struct DeepSACAgent[
     var alpha_lr: Float64
     var auto_alpha: Bool
 
+    # Adam state for alpha optimizer (scalar Adam, matching CleanRL)
+    var alpha_adam_m: Float64  # First moment estimate
+    var alpha_adam_v: Float64  # Second moment estimate
+    var alpha_adam_t: Int  # Timestep counter
+
     # Policy delay (update actor + alpha every N critic updates, like TD3)
     var policy_delay: Int
 
@@ -266,6 +271,9 @@ struct DeepSACAgent[
         self.target_entropy = target_entropy
         self.alpha_lr = alpha_lr
         self.auto_alpha = auto_alpha
+        self.alpha_adam_m = 0.0
+        self.alpha_adam_v = 0.0
+        self.alpha_adam_t = 0
         self.policy_delay = policy_delay
         self.total_steps = 0
         self.train_step_count = 0
@@ -954,18 +962,25 @@ struct DeepSACAgent[
             # Phase 5: Update Alpha (if auto_alpha)
             # =============================================================
             if self.auto_alpha:
-                var alpha_grad: Float64 = 0.0
+                var mean_lp: Float64 = 0.0
                 for b in range(Self.BATCH):
-                    alpha_grad += (
-                        Float64(cpu_state._curr_log_pi[b]) + self.target_entropy
-                    )
-                alpha_grad /= Float64(Self.BATCH)
+                    mean_lp += Float64(cpu_state._curr_log_pi[b])
+                mean_lp /= Float64(Self.BATCH)
 
-                self.log_alpha += self.alpha_lr * self.alpha * alpha_grad
-                if self.log_alpha < -5.0:
-                    self.log_alpha = -5.0
-                elif self.log_alpha > 2.0:
-                    self.log_alpha = 2.0
+                # CleanRL: alpha_loss = (-exp(log_alpha) * (log_pi + target_entropy)).mean()
+                # ∂loss/∂log_alpha = -alpha * mean(log_pi + target_entropy)
+                var grad = -self.alpha * (mean_lp + self.target_entropy)
+
+                # Adam update for log_alpha (matches CleanRL's a_optimizer)
+                self.alpha_adam_t += 1
+                var beta1: Float64 = 0.9
+                var beta2: Float64 = 0.999
+                var eps: Float64 = 1e-8
+                self.alpha_adam_m = beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
+                self.alpha_adam_v = beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
+                var m_hat = self.alpha_adam_m / (1.0 - beta1 ** Float64(self.alpha_adam_t))
+                var v_hat = self.alpha_adam_v / (1.0 - beta2 ** Float64(self.alpha_adam_t))
+                self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                 self.alpha = exp(self.log_alpha)
 
         # =================================================================
@@ -1687,19 +1702,25 @@ struct DeepSACAgent[
                 ctx.enqueue_copy(lp_host, gpu_state.curr_lp)
                 ctx.synchronize()
 
-                var alpha_grad: Float64 = 0.0
+                var mean_lp: Float64 = 0.0
                 for b in range(BATCH):
-                    alpha_grad += Float64(lp_host[b]) + self.target_entropy
-                alpha_grad /= Float64(BATCH)
+                    mean_lp += Float64(lp_host[b])
+                mean_lp /= Float64(BATCH)
 
                 # CleanRL: alpha_loss = (-exp(log_alpha) * (log_pi + target_entropy)).mean()
                 # ∂loss/∂log_alpha = -alpha * mean(log_pi + target_entropy)
-                # SGD: log_alpha -= lr * (-alpha * alpha_grad) = log_alpha += lr * alpha * alpha_grad
-                self.log_alpha += self.alpha_lr * self.alpha * alpha_grad
-                if self.log_alpha < -5.0:
-                    self.log_alpha = -5.0
-                elif self.log_alpha > 2.0:
-                    self.log_alpha = 2.0
+                var grad = -self.alpha * (mean_lp + self.target_entropy)
+
+                # Adam update for log_alpha (matches CleanRL's a_optimizer)
+                self.alpha_adam_t += 1
+                var beta1: Float64 = 0.9
+                var beta2: Float64 = 0.999
+                var eps: Float64 = 1e-8
+                self.alpha_adam_m = beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
+                self.alpha_adam_v = beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
+                var m_hat = self.alpha_adam_m / (1.0 - beta1 ** Float64(self.alpha_adam_t))
+                var v_hat = self.alpha_adam_v / (1.0 - beta2 ** Float64(self.alpha_adam_t))
+                self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                 self.alpha = exp(self.log_alpha)
 
         # ----- Diagnostics (every 10000 train steps) -----
@@ -1934,6 +1955,9 @@ struct DeepSACAgent[
         metadata.append("policy_delay=" + String(self.policy_delay))
         metadata.append("total_steps=" + String(self.total_steps))
         metadata.append("train_step_count=" + String(self.train_step_count))
+        metadata.append("alpha_adam_m=" + String(self.alpha_adam_m))
+        metadata.append("alpha_adam_v=" + String(self.alpha_adam_v))
+        metadata.append("alpha_adam_t=" + String(self.alpha_adam_t))
         content += write_metadata_section(metadata)
 
         save_checkpoint_file(filepath, content)
@@ -1966,4 +1990,13 @@ struct DeepSACAgent[
         set_metadata_value_int(metadata, "total_steps", self.total_steps)
         set_metadata_value_int(
             metadata, "train_step_count", self.train_step_count
+        )
+        set_metadata_value_float(
+            metadata, "alpha_adam_m", self.alpha_adam_m
+        )
+        set_metadata_value_float(
+            metadata, "alpha_adam_v", self.alpha_adam_v
+        )
+        set_metadata_value_int(
+            metadata, "alpha_adam_t", self.alpha_adam_t
         )
