@@ -88,7 +88,7 @@ fn main() raises:
             auto_alpha=True,
             alpha_lr=0.0003,
             target_entropy=-Float64(ACTION_DIM),
-            checkpoint_every=10_000,
+            checkpoint_every=100_000,
             checkpoint_path="sac_half_cheetah.ckpt",
         )
 
@@ -138,7 +138,7 @@ fn main() raises:
                 # gradient_steps=0 uses n_envs (1:1 replay ratio)
                 sync_every=5_000,
                 verbose=True,
-                print_every=5_000,
+                print_every=32_000,
                 environment_name="HalfCheetah",
             )
 
