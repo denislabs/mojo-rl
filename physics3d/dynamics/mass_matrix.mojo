@@ -1735,6 +1735,240 @@ fn compute_mass_matrix_full_gpu[
 
 
 @always_inline
+fn compute_mass_matrix_full_gpu_mt[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Compute full NV×NV mass matrix on GPU — multi-threaded variant.
+
+    Same algorithm as compute_mass_matrix_full_gpu but distributes work across
+    n_threads threads. Each thread handles rows i where i % n_threads == tid.
+    All threads redundantly compute I_world and subtree_mask (read-only from
+    model/state data) to avoid extra barriers.
+    """
+
+    # Derive pointers from workspace (MutAnyOrigin)
+    comptime cdof_idx = ws_cdof_offset()
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    # Zero M — distributed across threads
+    for i in range(tid, NV * NV, n_threads):
+        workspace[env, M_idx + i] = 0
+
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    for i in range(NV):
+        dof_body[i] = 0
+
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body_id = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        var ndof = 1
+        if jnt_type == JNT_FREE:
+            ndof = 6
+        elif jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body_id
+
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+
+    # Pre-compute per-body world-frame inertia tensor (all threads redundantly)
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var body_off = model_body_offset(b)
+        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
+
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
+
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        I_world[b * 6 + 0] = (
+            Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        )
+        I_world[b * 6 + 1] = (
+            Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        )
+        I_world[b * 6 + 2] = (
+            Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        )
+        I_world[b * 6 + 3] = (
+            Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        )
+        I_world[b * 6 + 4] = (
+            Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        )
+        I_world[b * 6 + 5] = (
+            Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+        )
+
+    # Pre-compute subtree membership (all threads redundantly)
+    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
+    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
+    for k in range(NBODY):
+        subtree_mask[k * NBODY + k] = True
+        var current = k
+        while current > 0:
+            var body_off_c = model_body_offset(current)
+            var parent = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_c + BODY_IDX_PARENT])
+            )
+            subtree_mask[k * NBODY + parent] = True
+            current = parent
+
+    # Compute M[i,j] — each thread handles rows where i % n_threads == tid
+    for i in range(tid, NV, n_threads):
+        var body_i = dof_body[i]
+        var ai0 = workspace[env, cdof_idx + i * 6 + 0]
+        var ai1 = workspace[env, cdof_idx + i * 6 + 1]
+        var ai2 = workspace[env, cdof_idx + i * 6 + 2]
+        var li0 = workspace[env, cdof_idx + i * 6 + 3]
+        var li1 = workspace[env, cdof_idx + i * 6 + 4]
+        var li2 = workspace[env, cdof_idx + i * 6 + 5]
+
+        for j in range(i, NV):
+            var body_j = dof_body[j]
+            var aj0 = workspace[env, cdof_idx + j * 6 + 0]
+            var aj1 = workspace[env, cdof_idx + j * 6 + 1]
+            var aj2 = workspace[env, cdof_idx + j * 6 + 2]
+            var lj0 = workspace[env, cdof_idx + j * 6 + 3]
+            var lj1 = workspace[env, cdof_idx + j * 6 + 4]
+            var lj2 = workspace[env, cdof_idx + j * 6 + 5]
+
+            var mij: workspace.element_type = 0
+
+            for k in range(NBODY):
+                if not subtree_mask[k * NBODY + body_i]:
+                    continue
+                if not subtree_mask[k * NBODY + body_j]:
+                    continue
+
+                var body_off_k = model_body_offset(k)
+                var mk = rebind[Scalar[DTYPE]](
+                    model[0, body_off_k + BODY_IDX_MASS]
+                )
+                var pk0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 0]
+                )
+                var pk1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 1]
+                )
+                var pk2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + k * 3 + 2]
+                )
+
+                var pi0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 0]
+                )
+                var pi1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 1]
+                )
+                var pi2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_i * 3 + 2]
+                )
+                var di0 = pk0 - pi0
+                var di1 = pk1 - pi1
+                var di2 = pk2 - pi2
+                var vki0 = li0 + ai1 * di2 - ai2 * di1
+                var vki1 = li1 + ai2 * di0 - ai0 * di2
+                var vki2 = li2 + ai0 * di1 - ai1 * di0
+
+                var pj0 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 0]
+                )
+                var pj1 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 1]
+                )
+                var pj2 = rebind[Scalar[DTYPE]](
+                    state[env, xipos_off + body_j * 3 + 2]
+                )
+                var dj0 = pk0 - pj0
+                var dj1 = pk1 - pj1
+                var dj2 = pk2 - pj2
+                var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
+                var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
+                var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
+
+                mij = mij + mk * (vki0 * vkj0 + vki1 * vkj1 + vki2 * vkj2)
+
+                var Ik_xx = I_world[k * 6 + 0]
+                var Ik_yy = I_world[k * 6 + 1]
+                var Ik_zz = I_world[k * 6 + 2]
+                var Ik_xy = I_world[k * 6 + 3]
+                var Ik_xz = I_world[k * 6 + 4]
+                var Ik_yz = I_world[k * 6 + 5]
+
+                var Iaj0 = Ik_xx * aj0 + Ik_xy * aj1 + Ik_xz * aj2
+                var Iaj1 = Ik_xy * aj0 + Ik_yy * aj1 + Ik_yz * aj2
+                var Iaj2 = Ik_xz * aj0 + Ik_yz * aj1 + Ik_zz * aj2
+
+                mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
+
+            workspace[env, M_idx + i * NV + j] = mij
+            if i != j:
+                workspace[env, M_idx + j * NV + i] = mij
+
+
+@always_inline
 fn ldl_factor_gpu[
     DTYPE: DType,
     NV: Int,

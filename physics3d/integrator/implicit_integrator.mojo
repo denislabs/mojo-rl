@@ -1071,6 +1071,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         NSITE: Int = 0,
         NM: Int = 0,
         SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1203,6 +1204,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         NSITE: Int = 0,
         NM: Int = 0,
         SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

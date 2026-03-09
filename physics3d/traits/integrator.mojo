@@ -130,6 +130,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NSITE: Int = 0,
         NM: Int = 0,
         SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -139,6 +140,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         """Perform one physics simulation step on GPU.
 
         Runs physics for all BATCH environments in parallel.
+        When STEP_THREADS > 1, uses a multi-threaded step kernel.
 
         Args:
             ctx: GPU device context.
@@ -166,6 +168,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NSITE: Int = 0,
         NM: Int = 0,
         SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

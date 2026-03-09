@@ -495,6 +495,140 @@ fn bench_physics_with_sync[BATCH: Int](
     print()
 
 
+fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
+    ctx: DeviceContext,
+    num_substeps: Int,
+) raises:
+    """Benchmark multi-threaded step kernel vs single-threaded."""
+
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+    comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+    comptime WS_SIZE = integrator_workspace_size[
+        NV, NBODY
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+
+    var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+
+    var state_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * STATE_SIZE)
+    var ws_host = ctx.enqueue_create_host_buffer[DTYPE](BATCH * WS_SIZE)
+    var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
+    var ws_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+
+    for i in range(BATCH * STATE_SIZE):
+        state_host[i] = Scalar[DTYPE](0)
+    for e in range(BATCH):
+        var base = e * STATE_SIZE
+        state_host[base + qpos_offset[NQ, NV]() + 1] = Scalar[DTYPE](0.7)
+        var qfrc_off = qfrc_offset[NQ, NV]()
+        state_host[base + qfrc_off + 3] = Scalar[DTYPE](0.5 * 120.0)
+        state_host[base + qfrc_off + 4] = Scalar[DTYPE](-0.3 * 90.0)
+        state_host[base + qfrc_off + 5] = Scalar[DTYPE](0.2 * 60.0)
+        state_host[base + qfrc_off + 6] = Scalar[DTYPE](0.4 * 120.0)
+        state_host[base + qfrc_off + 7] = Scalar[DTYPE](-0.1 * 60.0)
+        state_host[base + qfrc_off + 8] = Scalar[DTYPE](0.3 * 30.0)
+
+    # --- Benchmark: single-threaded (STEP_THREADS=1) ---
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+    for i in range(BATCH * WS_SIZE):
+        ws_host[i] = Scalar[DTYPE](0)
+    ctx.enqueue_copy(ws_buf, ws_host.unsafe_ptr())
+    ctx.synchronize()
+
+    # Warmup
+    for _ in range(10):
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            CONE_TYPE=HalfCheetahModel.CONE_TYPE,
+            STEP_THREADS=1,
+        ](ctx, state_buf, model_buf, ws_buf)
+    ctx.synchronize()
+
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+    for i in range(BATCH * WS_SIZE):
+        ws_host[i] = Scalar[DTYPE](0)
+    ctx.enqueue_copy(ws_buf, ws_host.unsafe_ptr())
+    ctx.synchronize()
+
+    var t0 = perf_counter_ns()
+    for _ in range(num_substeps):
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            CONE_TYPE=HalfCheetahModel.CONE_TYPE,
+            STEP_THREADS=1,
+        ](ctx, state_buf, model_buf, ws_buf)
+    ctx.synchronize()
+    var t1 = perf_counter_ns()
+    var st_ms = Float64(t1 - t0) / 1e6
+    var st_per_step = st_ms / Float64(num_substeps) * 1000.0
+
+    # --- Benchmark: multi-threaded (STEP_THREADS=NV) ---
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+    for i in range(BATCH * WS_SIZE):
+        ws_host[i] = Scalar[DTYPE](0)
+    ctx.enqueue_copy(ws_buf, ws_host.unsafe_ptr())
+    ctx.synchronize()
+
+    # Warmup
+    for _ in range(10):
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            CONE_TYPE=HalfCheetahModel.CONE_TYPE,
+            STEP_THREADS=STEP_THREADS,
+        ](ctx, state_buf, model_buf, ws_buf)
+    ctx.synchronize()
+
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+    for i in range(BATCH * WS_SIZE):
+        ws_host[i] = Scalar[DTYPE](0)
+    ctx.enqueue_copy(ws_buf, ws_host.unsafe_ptr())
+    ctx.synchronize()
+
+    var t2 = perf_counter_ns()
+    for _ in range(num_substeps):
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            CONE_TYPE=HalfCheetahModel.CONE_TYPE,
+            STEP_THREADS=STEP_THREADS,
+        ](ctx, state_buf, model_buf, ws_buf)
+    ctx.synchronize()
+    var t3 = perf_counter_ns()
+    var mt_ms = Float64(t3 - t2) / 1e6
+    var mt_per_step = mt_ms / Float64(num_substeps) * 1000.0
+
+    var speedup = st_ms / mt_ms
+
+    print(
+        "  Multi-thread step kernel (batch="
+        + String(BATCH)
+        + ", STEP_THREADS="
+        + String(STEP_THREADS)
+        + ", substeps="
+        + String(num_substeps)
+        + "):"
+    )
+    print(
+        "    Single-threaded: ",
+        String(st_ms)[:8],
+        "ms (",
+        String(st_per_step)[:7],
+        "us/substep)",
+    )
+    print(
+        "    Multi-threaded:  ",
+        String(mt_ms)[:8],
+        "ms (",
+        String(mt_per_step)[:7],
+        "us/substep)",
+    )
+    print(
+        "    Speedup:         ",
+        String(speedup)[:5],
+        "x",
+    )
+    print()
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -539,9 +673,20 @@ fn main() raises:
         bench_physics_with_sync[256](ctx, 500)
         bench_physics_with_sync[1024](ctx, 500)
 
-        # === Section 4: Extrapolation ===
+        # === Section 4: Multi-thread step kernel comparison ===
         print("-" * 70)
-        print("Section 4: Impact estimate for training (batch=256)")
+        print(
+            "Section 4: Multi-thread step kernel (STEP_THREADS=1 vs"
+            " STEP_THREADS=NV)"
+        )
+        print("-" * 70)
+        bench_physics_step_mt[256, NV](ctx, 2560)
+        bench_physics_step_mt[512, NV](ctx, 2560)
+        bench_physics_step_mt[1024, NV](ctx, 2560)
+
+        # === Section 5: Extrapolation ===
+        print("-" * 70)
+        print("Section 5: Impact estimate for training (batch=256)")
         print("-" * 70)
         print(
             "  Per rollout: 512 steps × 5 frame_skip = 2560 physics substeps"
