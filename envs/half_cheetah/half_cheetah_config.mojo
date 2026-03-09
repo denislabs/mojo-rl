@@ -26,7 +26,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # Reward
     comptime FORWARD_REWARD_WEIGHT = 1.0
     comptime CTRL_COST_WEIGHT = 0.1
-    comptime ANGLE_PENALTY_WEIGHT = 0.5
+    # comptime ANGLE_PENALTY_WEIGHT = 0.5
 
     # Termination
     comptime MAX_PITCH = 1.0  # ~57 deg
@@ -127,9 +127,9 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         # Angle penalty
         var y_angle = data.qpos[2]  # rooty
         var abs_angle = y_angle if y_angle >= Scalar[DTYPE](0.0) else -y_angle
-        var angle_penalty = Scalar[DTYPE](Self.ANGLE_PENALTY_WEIGHT) * abs_angle
+        # var angle_penalty = Scalar[DTYPE](Self.ANGLE_PENALTY_WEIGHT) * abs_angle
 
-        var reward = forward_reward - ctrl_cost - angle_penalty
+        var reward = forward_reward - ctrl_cost  # - angle_penalty
 
         # Health check — HalfCheetah only checks pitch
         var max_pitch = Scalar[DTYPE](Self.MAX_PITCH)
@@ -253,12 +253,12 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
 
         # Angle penalty
         var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
-        var abs_angle = y_angle
-        if abs_angle < Scalar[DTYPE](0.0):
-            abs_angle = -abs_angle
-        var angle_penalty = Scalar[DTYPE](0.5) * abs_angle
+        # var abs_angle = y_angle
+        # if abs_angle < Scalar[DTYPE](0.0):
+        #     abs_angle = -abs_angle
+        # var angle_penalty = Scalar[DTYPE](0.5) * abs_angle
 
-        var reward = forward_reward - ctrl_cost - angle_penalty
+        var reward = forward_reward - ctrl_cost  # - angle_penalty
 
         # Health check — read max_pitch from curriculum; fall back to config
         # default when curriculum is not set (curriculum slot stays 0 when
