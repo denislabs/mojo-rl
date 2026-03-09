@@ -88,7 +88,7 @@ fn main() raises:
             policy_delay=2,
             target_noise_std=0.2,
             target_noise_clip=0.5,
-            checkpoint_every=10_000,
+            checkpoint_every=100_000,
             checkpoint_path="td3_half_cheetah.ckpt",
         )
 
