@@ -1078,7 +1078,7 @@ fn run_onpolicy_continuous_train_gpu[
             + " | Episodes: "
             + ep_progress
             + " | Update: "
-            + String(update + 1)
+            + String(num_updates)
             + " | AvgR(100): "
             + String(avg_reward)[:7]
             + " | Steps: "
