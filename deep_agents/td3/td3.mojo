@@ -1149,49 +1149,6 @@ struct DeepTD3Agent[
         )
         gpu_state.critic2.online.optimizer_step(ctx)
 
-        # ----- Diagnostics (every 5000 steps) -----
-        if self.update_count % 5000 == 0:
-            ctx.synchronize()
-            var diag_q1 = ctx.enqueue_create_host_buffer[dtype](BATCH)
-            var diag_q2 = ctx.enqueue_create_host_buffer[dtype](BATCH)
-            var diag_tgt = ctx.enqueue_create_host_buffer[dtype](BATCH)
-            var diag_act = ctx.enqueue_create_host_buffer[dtype](
-                BATCH * ACTIONS
-            )
-            ctx.enqueue_copy(diag_q1, gpu_state.q1_out)
-            ctx.enqueue_copy(diag_q2, gpu_state.q2_out)
-            ctx.enqueue_copy(diag_tgt, gpu_state.targets)
-            ctx.enqueue_copy(diag_act, gpu_state.s_act)
-            ctx.synchronize()
-            var mean_q1: Float64 = 0.0
-            var mean_q2: Float64 = 0.0
-            var mean_tgt: Float64 = 0.0
-            var n_sat: Int = 0
-            for b in range(BATCH):
-                mean_q1 += Float64(diag_q1[b])
-                mean_q2 += Float64(diag_q2[b])
-                mean_tgt += Float64(diag_tgt[b])
-            for b in range(BATCH * ACTIONS):
-                var a_val = Float64(diag_act[b])
-                if a_val > 0.99 or a_val < -0.99:
-                    n_sat += 1
-            mean_q1 /= Float64(BATCH)
-            mean_q2 /= Float64(BATCH)
-            mean_tgt /= Float64(BATCH)
-            var sat_pct = Float64(n_sat) / Float64(BATCH * ACTIONS) * 100.0
-            print(
-                "  [DIAG] step="
-                + String(self.update_count)
-                + " Q1="
-                + String(mean_q1)[:8]
-                + " Q2="
-                + String(mean_q2)[:8]
-                + " Tgt="
-                + String(mean_tgt)[:8]
-                + " ActSat%="
-                + String(sat_pct)[:5]
-            )
-
         # ----- Phase 10+: Delayed actor update (TD3 Innovation #2) -----
         if self.update_count % self.policy_delay == 0:
             var actor_act_t = LayoutTensor[
@@ -1255,35 +1212,6 @@ struct DeepTD3Agent[
                 block_dim=(TPB256,),
             )
 
-            # Diag: actor output stats
-            if self.update_count % 5000 == 0:
-                ctx.synchronize()
-                var diag_aout = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * ACTIONS
-                )
-                ctx.enqueue_copy(diag_aout, gpu_state.actor_act)
-                ctx.synchronize()
-                var mean_abs: Float64 = 0.0
-                var n_sat2: Int = 0
-                for i in range(BATCH * ACTIONS):
-                    var v = Float64(diag_aout[i])
-                    if v < 0:
-                        mean_abs -= v
-                    else:
-                        mean_abs += v
-                    if v > 0.99 or v < -0.99:
-                        n_sat2 += 1
-                mean_abs /= Float64(BATCH * ACTIONS)
-                var sat2_pct = Float64(n_sat2) / Float64(
-                    BATCH * ACTIONS
-                ) * 100.0
-                print(
-                    "  [DIAG] ActorOut: mean|a|="
-                    + String(mean_abs)[:6]
-                    + " sat%="
-                    + String(sat2_pct)[:5]
-                )
-
             # Critic1 forward for policy gradient (use critic1 per TD3 paper)
             Self.CriticNet.forward_gpu_with_cache[BATCH](
                 ctx,
@@ -1340,27 +1268,6 @@ struct DeepTD3Agent[
                 g_actor,
                 gpu_state.actor_ws,
             )
-            # Diag: actor gradient + dQ/da stats
-            if self.update_count % 5000 == 0:
-                ctx.synchronize()
-                var diag_da = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * ACTIONS
-                )
-                ctx.enqueue_copy(diag_da, gpu_state.d_act)
-                ctx.synchronize()
-                var mean_da: Float64 = 0.0
-                for i in range(BATCH * ACTIONS):
-                    var v = Float64(diag_da[i])
-                    if v < 0:
-                        mean_da -= v
-                    else:
-                        mean_da += v
-                mean_da /= Float64(BATCH * ACTIONS)
-                print(
-                    "  [DIAG] dQ/da: mean|grad|="
-                    + String(mean_da)[:8]
-                )
-
             gpu_state.actor.online.optimizer_step(ctx)
 
     fn get_action_scale(self) -> Float64:

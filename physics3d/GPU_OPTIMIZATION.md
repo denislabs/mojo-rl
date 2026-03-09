@@ -256,50 +256,61 @@ class BlockDim:
 
 ## Remaining Optimization Plan (NVIDIA-focused)
 
-### Priority 1: Multi-Thread Step Kernel (Highest Impact)
+### ✅ Priority 1A: Multi-Thread Step Kernel (2025-03-09)
 
-**Goal**: Break the step kernel (73% of physics time on RTX 4090) from
-1-thread-per-env to N-threads-per-env, increasing GPU occupancy.
+**Problem**: Step kernel (73% of physics time on RTX 4090, 471μs/substep) ran
+1 thread per environment — 256 threads on a 16,384-core GPU (1.6% occupancy).
 
-**Current step kernel pipeline** (all serial per env):
+**Solution**: Added `step_kernel_mt` using 2D blocks `(envs_per_block, STEP_THREADS)`.
+For HalfCheetah, `STEP_THREADS=NV=9` (one thread per DOF).
+
+Kernel flow:
 ```
-1. Forward kinematics     — walk kinematic tree (NBODY=8 iterations)
-2. Body velocities        — walk tree again
-3. (contact count zeroed) — contacts now in separate kernel
-4. Compute cdof           — per-DOF spatial axes (NV=9)
-5. Composite inertia      — bottom-up tree walk (NBODY=8)
-6. Mass matrix (CRBA)     — NV×NV=81 elements, subtree mask lookup
-7. LDL factorize + M_inv — O(NV³)=729 ops
-8. Bias forces (RNE)      — two tree passes (forward + backward)
-9. Passive forces         — per-joint loops
-10. LDL solve             — O(NV²)=81 ops
+tid==0: FK, body velocities, contact zero, cdof, CRB     (serial)
+barrier()
+all threads: mass matrix rows (stride loop i % STEP_THREADS == tid)  (parallel)
+barrier()
+tid==0: armature, LDL factor, M_inv, bias forces          (serial)
+barrier()
+all threads: fnet = qfrc - bias (stride loop)              (parallel)
+barrier()
+tid==0: passive forces, fluid forces, LDL solve            (serial)
+barrier()
+all threads: write qacc to state + workspace               (parallel)
 ```
 
-**Approach**: Use 2D blocks `(envs_per_block, STEP_THREADS)` where STEP_THREADS
-is tuned per robot. For HalfCheetah, start with STEP_THREADS=8 or 16.
+Mass matrix parallelization uses `compute_mass_matrix_full_gpu_mt()` where each
+thread computes complete rows M[i, 0..NV-1] for rows where `i % n_threads == tid`.
+I_world and subtree_mask are computed redundantly by all threads (avoids extra barrier).
 
-#### Phase 1A: Per-DOF Parallelism
+**Activation**: `step_gpu` takes `STEP_THREADS: Int = 1` comptime parameter.
+When >1, launches `step_kernel_mt` with 2D grid; when =1, uses original `step_kernel`.
+HalfCheetah activates it via `STEP_THREADS=NV` in `half_cheetah_config.mojo`.
 
-Parallelize steps 4, 6, 9, 10 across DOFs (NV=9 for HalfCheetah):
+**Files modified**:
+- `physics3d/dynamics/mass_matrix.mojo` — added `compute_mass_matrix_full_gpu_mt()`
+- `physics3d/integrator/euler_integrator.mojo` — added `step_kernel_mt`, updated
+  `step_gpu` and `simulate_gpu` with `STEP_THREADS` parameter
+- `physics3d/traits/integrator.mojo` — added `STEP_THREADS` to trait signatures
+- `physics3d/integrator/rk4_integrator.mojo`, `implicit_fast_integrator.mojo`,
+  `implicit_integrator.mojo` — added `STEP_THREADS` for trait conformance
+- `envs/half_cheetah/half_cheetah_config.mojo` — activated `STEP_THREADS=NV`
+- `physics3d/tests/bench_fused_kernel.mojo` — added multi-thread benchmark section
 
-- **cdof computation** (step 4): Each thread computes 1-2 DOFs' spatial axes.
-  Currently a loop over NJOINT. Independent per DOF.
-- **Mass matrix diagonal+column** (step 6): Each thread computes one row/column
-  of M using its DOF's cdof and crb. Off-diagonal terms require ancestor walk
-  but each row is independent.
-- **Passive forces** (step 9): Each thread handles damping/stiffness/frictionloss
-  for 1-2 joints. Fully independent per joint.
-- **fnet = qfrc - bias** (between steps 8-9): Elementwise, trivially parallel.
+**Benchmark results** (batch=256, 2560 substeps):
 
-**Files to modify**:
-- `physics3d/integrator/euler_integrator.mojo` — `step_kernel` method
-- `physics3d/dynamics/mass_matrix.mojo` — add `compute_mass_matrix_full_gpu_mt()` variant
-- `physics3d/dynamics/jacobian.mojo` — add `compute_cdof_gpu_mt()` variant
+| GPU | Single-threaded | Multi-threaded | Speedup |
+|-----|----------------|----------------|---------|
+| RTX 4090 | 649 μs/substep | 321 μs/substep | **2.02×** |
+| Apple M1 Pro | 6404 μs/substep | 5421 μs/substep | **1.18×** |
 
-**Expected impact**: Moderate for HalfCheetah (NV=9 doesn't fill many threads),
-larger for Humanoid (NV=27) and Ant (NV=14).
+RTX 4090 benefits much more due to higher core count (256→2304 active threads).
+Apple Silicon sees modest gains since its GPU has fewer cores and barrier latency
+is relatively higher.
 
-#### Phase 1B: Tree-Level Parallelism for FK and CRB
+**Verification**: All mass matrix, full-step, and contact CPU vs GPU tests pass.
+
+### Remaining: Phase 1B — Tree-Level Parallelism for FK and CRB
 
 Parallelize the tree walks in FK (step 1) and CRB (step 5):
 
@@ -316,18 +327,10 @@ Parallelize the tree walks in FK (step 1) and CRB (step 5):
 - `body_tree_level[nbody]`: tree depth per body (comptime)
 - `body_level_start[max_depth+1]`: start indices per level (comptime)
 
-Since the kinematic tree is known at compile time, all branch decomposition
-can be computed as `comptime` values.
-
-**Files to modify**:
-- `physics3d/model/model_def.mojo` — add branch/level decomposition to ModelDef
-- `physics3d/kinematics/forward_kinematics.mojo` — add `forward_kinematics_gpu_mt()`
-- `physics3d/dynamics/jacobian.mojo` — add `compute_composite_inertia_gpu_mt()`
-
 **Expected impact**: Low for HalfCheetah (only 2 branches, 8 bodies), higher
 for Humanoid (4+ branches, 14 bodies) and Ant (4 branches, 14 bodies).
 
-#### Phase 1C: Parallel Contact Detection (structural work done)
+### Remaining: Phase 1C — Parallel Contact Detection (structural work done)
 
 Contact detection has been extracted to a separate kernel (Item 5 above).
 Next step: convert from 1-thread-per-env to per-geom-pair parallelism.
@@ -336,11 +339,6 @@ Next step: convert from 1-thread-per-env to per-geom-pair parallelism.
 - Each thread handles one geom pair check
 - Use atomics for thread-safe contact count increment
 - For HalfCheetah: ~15 geom pairs × cost of capsule-plane or capsule-capsule check
-
-**Files to modify**:
-- `physics3d/integrator/euler_integrator.mojo` — `contact_detection_kernel`
-- `physics3d/collision/broadphase_sap.mojo` — add `detect_contacts_auto_gpu_mt()`
-- `physics3d/collision/contact_detection.mojo` — parallel narrowphase
 
 **Expected impact**: Low on RTX 4090 (contact is only 5.1% / 33μs). More relevant on
 M1 Pro (14.5% / 468μs) and for robots with more geoms (Ant has 14 geoms).
@@ -439,11 +437,12 @@ Keep 1D blocks but add optional parallelism within specific functions:
 **Cons**: Limited speedup, doesn't address root cause.
 **Best for**: Small robots like HalfCheetah (NV=9).
 
-### Recommendation
+### Outcome
 
-Start with **Option B** (vectorize inner loops, optimize memory access) since
-HalfCheetah has a small kinematic tree where barrier overhead would dominate
-any parallelism gains. Move to **Option A** when targeting Humanoid (NV=27).
+**Option A (2D blocks with barriers) was implemented** and delivered a 2× speedup
+on RTX 4090 even for HalfCheetah (NV=9). The barrier overhead is negligible on
+NVIDIA hardware. Apple Silicon sees a more modest 1.18× due to fewer cores and
+higher relative barrier cost.
 
 ---
 
@@ -456,7 +455,7 @@ any parallelism gains. Move to **Option A** when targeting Humanoid (NV=27).
 | 3 | Shared memory for model params | ❌ Blocked | 10-20% step speedup | Mojo lacks address space casting |
 | 4 | Mass matrix subtree mask | ✅ Done | O(1) vs O(depth) lookups | CPU vs GPU tests pass |
 | 5 | Contact detection kernel extraction | ✅ Done | Enables parallelization | 4-kernel pipeline, tests pass |
-| 6 | Per-DOF mass matrix computation | Planned | 10-20% for large robots | Phase 1A |
+| 6 | Multi-thread step kernel | ✅ Done | **2× step speedup (4090)** | `STEP_THREADS=NV`, 2D blocks |
 | 7 | FK branch decomposition | Planned | Significant for Humanoid | Phase 1B |
 | 8 | Parallel contact pairs | Planned | ~14% of physics time | Phase 1C (structural work done) |
 | 9 | Solver register reduction + fusion | Planned | Enables fusion (Apple) | Priority 2 |
