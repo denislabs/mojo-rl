@@ -150,7 +150,8 @@ struct TDMPC2GPUState[
     comptime ENV_OBS = Self.max_n_envs * Self.OBS
     comptime ENV_ACT = Self.max_n_envs * Self.ACT
     comptime ENV_LATENT = Self.max_n_envs * Self.LATENT
-    comptime ENV_PI_OUT = Self.max_n_envs * 2 * Self.ACT
+    comptime POL_OUT = Self.PolModel.OUT_DIM
+    comptime ENV_PI_OUT = Self.max_n_envs * Self.POL_OUT
     comptime ENC_ENV_WS = Self.max_n_envs * Self.ENC_W
     comptime POL_ENV_WS = Self.max_n_envs * Self.POL_W
 
@@ -378,7 +379,7 @@ struct TDMPC2GPUState[
         self.z_pred_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
         self.za_buf = ctx.enqueue_create_buffer[dtype](Self.B_ZA)
         self.pi_out_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * 2 * Self.ACT
+            Self.BATCH * Self.POL_OUT
         )
         self.pi_act_buf = ctx.enqueue_create_buffer[dtype](Self.B_ACT)
         self.logits_buf = ctx.enqueue_create_buffer[dtype](Self.B_BINS)
@@ -402,7 +403,7 @@ struct TDMPC2GPUState[
         self.grad_logits_buf = ctx.enqueue_create_buffer[dtype](Self.B_BINS)
         self.grad_term_prob_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
         self.grad_pi_out_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * 2 * Self.ACT
+            Self.BATCH * Self.POL_OUT
         )
         self.dummy_grad_buf = ctx.enqueue_create_buffer[dtype](Self.DUMMY_SIZE)
 
@@ -556,6 +557,7 @@ struct TDMPC2CPUState[
     comptime REW_CACHE_SIZE = Self.WM.RewModel.CACHE_SIZE
     comptime TERM_CACHE_SIZE = Self.WM.TermModel.CACHE_SIZE
     comptime POL_CACHE_SIZE = Self.WM.PolModel.CACHE_SIZE
+    comptime POL_OUT = Self.WM.PolModel.OUT_DIM
     comptime Q_CACHE_SIZE = Self.WM.QModel.CACHE_SIZE
 
     # ── Core state ────────────────────────────────────────────────────────
@@ -649,7 +651,7 @@ struct TDMPC2CPUState[
         self._pi_cache = List[Scalar[dtype]](
             capacity=Self.BATCH * Self.POL_CACHE_SIZE
         )
-        self._pi_out = List[Scalar[dtype]](capacity=Self.BATCH * 2 * Self.ACT)
+        self._pi_out = List[Scalar[dtype]](capacity=Self.BATCH * Self.POL_OUT)
         self._a_pi = List[Scalar[dtype]](capacity=Self.B_ACT)
         self._q_logits2 = List[Scalar[dtype]](capacity=Self.B_BINS)
 
@@ -710,8 +712,8 @@ struct TDMPC2CPUState[
         for _ in range(Self.BATCH * Self.POL_CACHE_SIZE):
             self._pi_cache.append(Scalar[dtype](0))
 
-        # Policy output: BATCH * 2 * ACT
-        for _ in range(Self.BATCH * 2 * Self.ACT):
+        # Policy output: BATCH * POL_OUT
+        for _ in range(Self.BATCH * Self.POL_OUT):
             self._pi_out.append(Scalar[dtype](0))
 
         # TD targets: H * BATCH * BINS

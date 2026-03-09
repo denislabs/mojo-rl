@@ -165,6 +165,7 @@ struct TDMPC2Agent[
     comptime POL_P = Self.WM.PolicyNet.PARAM_SIZE
     comptime POL_C = Self.WM.PolicyNet.CACHE_SIZE
     comptime POL_W = Self.WM.PolicyNet.WORKSPACE_SIZE_PER_SAMPLE
+    comptime POL_OUT = Self.WM.PolModel.OUT_DIM
     comptime Q_P = Self.WM.QNet.PARAM_SIZE
     comptime Q_C = Self.WM.QNet.CACHE_SIZE
     comptime Q_W = Self.WM.QNet.WORKSPACE_SIZE_PER_SAMPLE
@@ -787,8 +788,9 @@ struct TDMPC2Agent[
         var z_current_v = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
         ](self.state._z_current.unsafe_ptr())
+        comptime POL_OUT = Self.CPUStateType.POL_OUT
         var pi_out_v = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.BATCH, POL_OUT), MutAnyOrigin
         ](self.state._pi_out.unsafe_ptr())
         var pi_cache_v = LayoutTensor[
             dtype,
@@ -833,10 +835,10 @@ struct TDMPC2Agent[
             for b in range(Self.BATCH):
                 for a in range(Self.ACT):
                     var mean_val = Float64(
-                        self.state._pi_out[b * 2 * Self.ACT + a]
+                        self.state._pi_out[b * POL_OUT + a]
                     )
                     var log_std = Float64(
-                        self.state._pi_out[b * 2 * Self.ACT + Self.ACT + a]
+                        self.state._pi_out[b * POL_OUT + Self.ACT + a]
                     )
                     if log_std < -10.0:
                         log_std = -10.0
@@ -1502,7 +1504,7 @@ struct TDMPC2Agent[
         comptime ENV_OBS = n_envs * Self.OBS
         comptime ENV_ACT = n_envs * Self.ACT
         comptime ENV_LATENT = n_envs * Self.LATENT
-        comptime ENV_PI_OUT = n_envs * 2 * Self.ACT
+        comptime ENV_PI_OUT = n_envs * Self.POL_OUT
         comptime ENC_ENV_WS = n_envs * Self.ENC_W
         comptime POL_ENV_WS = n_envs * Self.POL_W
         comptime PER_ENV_CAP = max(
@@ -1558,7 +1560,7 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(n_envs, Self.ACT), MutAnyOrigin
         ](gs.env_act_buf.unsafe_ptr())
         var env_pi_out_tensor = LayoutTensor[
-            dtype, Layout.row_major(n_envs, 2 * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(n_envs, Self.POL_OUT), MutAnyOrigin
         ](gs.env_pi_out_buf.unsafe_ptr())
 
 
@@ -1587,7 +1589,7 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
         ](gs.za_buf.unsafe_ptr())
         var pi_out_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.BATCH, Self.POL_OUT), MutAnyOrigin
         ](gs.pi_out_buf.unsafe_ptr())
         var pi_act_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
@@ -1617,7 +1619,7 @@ struct TDMPC2Agent[
 
         # Gradient tensors
         var grad_pi_out_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, 2 * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.BATCH, Self.POL_OUT), MutAnyOrigin
         ](gs.grad_pi_out_buf.unsafe_ptr())
 
         # Flat 1D views for copy kernel (z advance)

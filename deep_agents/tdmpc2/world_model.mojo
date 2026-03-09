@@ -27,6 +27,7 @@ from nn.constants import dtype
 from nn.model import (
     Linear,
     Sequential,
+    Parallel,
     Sigmoid,
     NormedLinear,
     SimNorm,
@@ -115,7 +116,10 @@ struct WorldModel[
     comptime PolModel = Sequential[
         NormedLinear[Self.LATENT_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
-        Linear[Self.MLP_DIM, 2 * Self.ACTION_DIM],
+        Parallel[
+            Linear[Self.MLP_DIM, Self.ACTION_DIM],   # mean head
+            Linear[Self.MLP_DIM, Self.ACTION_DIM],   # log_std head
+        ],
     ]
 
     # Q-network: (LATENT + ACTION) → NUM_BINS logits
@@ -404,19 +408,20 @@ struct WorldModel[
             log_std: Output log std [BATCH * ACTION_DIM] (written).
         """
 
-        var out = List[Scalar[dtype]](capacity=BATCH * 2 * Self.ACTION_DIM)
-        for _ in range(BATCH * 2 * Self.ACTION_DIM):
+        comptime POL_OUT = Self.PolModel.OUT_DIM
+        var out = List[Scalar[dtype]](capacity=BATCH * POL_OUT)
+        for _ in range(BATCH * POL_OUT):
             out.append(Scalar[dtype](0))
         var out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, POL_OUT), MutAnyOrigin
         ](out.unsafe_ptr())
         Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
-                mean[b, i] = out[b * 2 * Self.ACTION_DIM + i]
+                mean[b, i] = out[b * POL_OUT + i]
                 # Clamp log_std to [-10, 2] for numerical stability
                 var ls = Float64(
-                    out[b * 2 * Self.ACTION_DIM + Self.ACTION_DIM + i]
+                    out[b * POL_OUT + Self.ACTION_DIM + i]
                 )
                 if ls < -10.0:
                     ls = -10.0
@@ -432,7 +437,7 @@ struct WorldModel[
             dtype, Layout.row_major(BATCH, Self.LATENT_DIM), MutAnyOrigin
         ],
         mut out: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 2 * Self.ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, Self.PolModel.OUT_DIM), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype,

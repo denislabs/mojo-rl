@@ -23,8 +23,8 @@ Usage:
         ).mean_reward()
 """
 
-from .metrics import TrainingMetrics
-from .env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv, RenderableEnv
+from core import TrainingMetrics
+from core import BoxDiscreteActionEnv, BoxContinuousActionEnv, RenderableEnv
 from .offpolicy_train import OffPolicyAgent, OffPolicyContinuousAgent, OffPolicyDiscreteAgent
 from .onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAgent
 
@@ -255,7 +255,10 @@ fn run_offpolicy_discrete_eval[
         var episode_steps = 0
 
         for _ in range(max_steps):
-            var action_list = agent.select_greedy_action_list(obs)
+            var obs_f64 = List[Float64](capacity=len(obs))
+            for i in range(len(obs)):
+                obs_f64.append(Float64(obs[i]))
+            var action_list = agent.select_greedy_action_list(obs_f64)
             var action_int = Int(Float64(action_list[0]))
             var result = env.step_obs(action_int)
             var next_obs = result[0].copy()

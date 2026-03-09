@@ -82,9 +82,10 @@ fn tdmpc2_sample_actions_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
 ](
     pi_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     actions: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
@@ -601,13 +602,14 @@ fn tdmpc2_policy_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
 ](
     pi_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     q_values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     grad_pi_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     rho_weight: Scalar[dtype],
     entropy_coef: Scalar[dtype],
@@ -678,9 +680,10 @@ fn tdmpc2_apply_tanh_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
 ](
     pi_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     actions: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
@@ -1016,9 +1019,10 @@ fn tdmpc2_apply_tanh_build_za_kernel[
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
     LATENT_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
 ](
     pi_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     actions: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
