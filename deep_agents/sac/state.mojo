@@ -55,8 +55,8 @@ struct SACCPUState[
     comptime BATCH = Self.batch_size
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
     comptime BUFFER_DTYPE = dtype
-    # StochasticActor outputs mean + log_std
-    comptime ACTOR_OUT = Self.ACTIONS * 2
+    # Actor outputs mean + log_std (via Parallel heads)
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
 
     # Actor: online only (SAC has no target actor)
     var actor: NetworkState[Self.ActorModel, Self.ActorOpt]
@@ -293,7 +293,7 @@ struct SACGPUState[
     comptime ACTIONS = Self.action_dim
     comptime BATCH = Self.batch_size
     comptime MAX_N = Self.max_n_envs
-    comptime ACTOR_OUT = Self.ACTIONS * 2  # SAC: mean || log_std
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM  # SAC: mean || log_std
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
     comptime ACTOR_CS = Self.ActorModel.CACHE_SIZE
     comptime CRITIC_CS = Self.CriticModel.CACHE_SIZE

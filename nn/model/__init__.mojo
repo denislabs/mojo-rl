@@ -1,8 +1,6 @@
 from .model import Model
 from .sequential import Sequential
-from .linear import Linear
-from .linear_relu import LinearReLU
-from .linear_tanh import LinearTanh
+from .linear_act import Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish
 from .relu import ReLU
 from .tanh import Tanh
 from .sigmoid import Sigmoid
@@ -19,3 +17,6 @@ from .stochastic_actor import (
 from .mish import Mish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
+
+# Combinators (canonical home: nn.autodiff.combinators, re-exported here)
+from ..autodiff.combinators import Parallel, Residual, Repeat

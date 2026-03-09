@@ -1,0 +1,38 @@
+"""Linear layers: plain and fused with activations.
+
+All are aliases for autodiff-based AutoFused layers, which provide
+identical parameter layout [W_flat | b] with automatic kernel fusion.
+
+Linear:         y = x @ W + b           (CACHE_SIZE = in_dim)
+Linear + Act:   y = act(x @ W + b)      (CACHE_SIZE = in_dim + out_dim)
+"""
+
+from ..autodiff import (
+    AutoFused,
+    MatMul,
+    BiasAdd,
+    ReLUOp,
+    TanhOp,
+    SigmoidOp,
+    MishOp,
+)
+
+comptime Linear[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim]
+]
+
+comptime LinearReLU[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim], ReLUOp[out_dim]
+]
+
+comptime LinearTanh[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim], TanhOp[out_dim]
+]
+
+comptime LinearSigmoid[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim], SigmoidOp[out_dim]
+]
+
+comptime LinearMish[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim], MishOp[out_dim]
+]

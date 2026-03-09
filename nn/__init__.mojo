@@ -3,6 +3,7 @@ from .model import (
     Model,
     Linear,
     LinearReLU,
+    LinearTanh,
     Sequential,
     ReLU,
     Tanh,
@@ -15,6 +16,9 @@ from .model import (
     sample_action,
     compute_log_prob,
     get_deterministic_action,
+    Parallel,
+    Residual,
+    Repeat,
 )
 from .loss import LossFunction, MSELoss, HuberLoss, CrossEntropyLoss
 from .optimizer import Optimizer, SGD, Adam, RMSprop, AdamW
@@ -70,6 +74,7 @@ from .autodiff import (
     DenseReLU,
     DenseTanh,
     DenseSigmoid,
+    DenseMish,
     FusionAnalyzer,
     FusedChain,
 )

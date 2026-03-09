@@ -35,7 +35,7 @@ from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Model, Linear, LinearReLU, Sequential
+from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential, Parallel
 from nn.model.stochastic_actor import (
     rsample,
     rsample_with_cache,
@@ -149,21 +149,22 @@ struct DeepSACAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime BATCH = Self.batch_size
 
-    # Actor output: mean + log_std (state-dependent)
-    comptime ACTOR_OUT = Self.ACTIONS * 2
-
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Actor: obs → hidden (ReLU) → hidden (ReLU) → Linear (mean + log_std)
-    # Linear[HIDDEN, ACTIONS*2] gives state-dependent log_std (SAC requirement).
-    # StochasticActor uses state-independent log_std (PPO design), which is wrong
-    # for SAC where different states need different exploration levels.
+    # Actor: obs → hidden (ReLU) → hidden (ReLU) → Parallel[mean, log_std]
+    # Parallel gives each head independent weights (PyTorch dual-head pattern).
+    # State-dependent log_std is essential for SAC: different states need
+    # different exploration levels (unlike PPO's state-independent log_std).
     comptime ActorModel = Sequential[
         LinearReLU[Self.OBS, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.ACTIONS * 2],
+        Parallel[
+            Linear[Self.HIDDEN, Self.ACTIONS],       # mean head
+            LinearTanh[Self.HIDDEN, Self.ACTIONS],   # log_std head (tanh-clamped)
+        ],
     ]
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
     # Critic: (obs ‖ action) → hidden (ReLU) → hidden (ReLU) → Q-value
@@ -337,10 +338,8 @@ struct DeepSACAgent[
                 m = -10.0
             if raw_ls != raw_ls:
                 raw_ls = 0.0
-            # Tanh scaling for log_std (CleanRL-style)
-            from std.math import tanh as f64_tanh
-
-            var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
+            # Affine rescale: tanh already applied by LinearTanh head
+            var ls = -5.0 + 0.5 * 7.0 * (raw_ls + 1.0)
             mean_arr[i] = Scalar[dtype](m)
             log_std_arr[i] = Scalar[dtype](ls)
 
@@ -575,10 +574,8 @@ struct DeepSACAgent[
                     m = -10.0
                 if raw_ls != raw_ls:
                     raw_ls = 0.0
-                # Tanh scaling for log_std (CleanRL-style)
-                from std.math import tanh as f64_tanh
-
-                var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
+                # Affine rescale: tanh already applied by LinearTanh head
+                var ls = -5.0 + 0.5 * 7.0 * (raw_ls + 1.0)
                 next_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
                 next_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 
@@ -790,10 +787,8 @@ struct DeepSACAgent[
                     m = -10.0
                 if raw_ls != raw_ls:
                     raw_ls = 0.0
-                # Tanh scaling for log_std (CleanRL-style)
-                from std.math import tanh as f64_tanh
-
-                var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
+                # Affine rescale: tanh already applied by LinearTanh head
+                var ls = -5.0 + 0.5 * 7.0 * (raw_ls + 1.0)
                 curr_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
                 curr_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 
@@ -934,6 +929,10 @@ struct DeepSACAgent[
             )
 
             # Step 8: Build actor_grad = concat(grad_mean, grad_log_std)
+            # grad_ls is w.r.t. clamped log_std; chain through affine:
+            # ls = -5 + 3.5 * (tanh_out + 1), so d(ls)/d(tanh_out) = 3.5
+            # tanh derivative is handled by LinearTanh in model backward
+            comptime AFFINE_SCALE = Scalar[dtype](0.5 * 7.0)
             var actor_grad_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, Self.ACTOR_OUT), MutAnyOrigin
             ](cpu_state._actor_grad_arr.unsafe_ptr())
@@ -944,7 +943,7 @@ struct DeepSACAgent[
                     ] = grad_mean_arr[b * Self.ACTIONS + a]
                     cpu_state._actor_grad_arr[
                         b * Self.ACTOR_OUT + Self.ACTIONS + a
-                    ] = grad_ls_arr[b * Self.ACTIONS + a]
+                    ] = grad_ls_arr[b * Self.ACTIONS + a] * AFFINE_SCALE
 
             # Step 9: Backward through actor network
             var d_obs_t = LayoutTensor[

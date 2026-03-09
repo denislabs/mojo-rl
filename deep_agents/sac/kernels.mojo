@@ -71,9 +71,9 @@ fn sac_reparameterize_kernel[
     var lp: log_probs.element_type = 0.0
 
     for a in range(ACTION_DIM):
-        # Tanh scaling for log_std (CleanRL-style, smooth bounds)
-        var raw_ls = log_std[b, a]
-        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = log_std[b, a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
 
         var std_val = exp(ls)
 
@@ -155,9 +155,9 @@ fn sac_sample_actions_kernel[
 
     for a in range(ACTION_DIM):
         var mean_val = actor_out[b, a]
-        # Tanh scaling for log_std (CleanRL-style)
-        var raw_ls = actor_out[b, ACTION_DIM + a]
-        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
 
         var std_val = exp(ls)
 
@@ -236,9 +236,9 @@ fn sac_rsample_with_cache_kernel[
     var lp: log_probs.element_type = 0.0
 
     for a in range(ACTION_DIM):
-        # Tanh scaling for log_std (CleanRL-style)
-        var raw_ls = actor_out[b, ACTION_DIM + a]
-        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
 
         var std_val = exp(ls)
 
@@ -342,10 +342,9 @@ fn sac_rsample_bwd_kernel[
 
     for a in range(ACTION_DIM):
         var act_val = curr_act[b, a]
-        # Tanh scaling for log_std (CleanRL-style)
-        var raw_ls = actor_out[b, ACTION_DIM + a]
-        var tanh_raw = tanh(raw_ls)
-        var ls = log_std_min + half * ls_range * (tanh_raw + one)
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
 
         var sigma = exp(ls)
         var eps = eps_cache[b, a]
@@ -360,10 +359,11 @@ fn sac_rsample_bwd_kernel[
         actor_grad[b, a] = d_z
 
         # Grad wrt log_std: ∂z/∂log_std = σ*ε, plus entropy term -1
-        # Chain rule for tanh scaling: d(ls)/d(raw_ls) = 0.5 * range * (1 - tanh²(raw))
+        # Chain rule for affine: d(ls)/d(tanh_out) = 0.5 * range (constant)
+        # tanh derivative is handled by LinearTanh in model backward
         var d_ls = d_z * sigma * eps - alpha_per_sample
-        var d_ls_d_raw = half * ls_range * (one - tanh_raw * tanh_raw)
-        actor_grad[b, ACTION_DIM + a] = d_ls * d_ls_d_raw
+        var d_ls_d_tanh_out = half * ls_range
+        actor_grad[b, ACTION_DIM + a] = d_ls * d_ls_d_tanh_out
 
 
 # =============================================================================

@@ -1,4 +1,4 @@
-"""Pre-built composite model architectures (Phase 9).
+"""Pre-built composite model architectures.
 
 These combine autodiff primitives, combinators, and Sequential into
 ready-to-use model definitions. All conform to the Model trait and
@@ -8,10 +8,10 @@ Usage:
     from nn.composites import ResBlock, ResNet, LeNet, FFN
 """
 
-from .model.sequential import Sequential
+from .model import Sequential, Parallel, Residual, Repeat
+from .model import Linear, LinearReLU
 from .autodiff import (
     AutoDiffChain,
-    AutoFused,
     Dense,
     DenseReLU,
     DenseTanh,
@@ -19,21 +19,13 @@ from .autodiff import (
     MatMul,
     BiasAdd,
     ReLUOp,
-    TanhOp,
-    SigmoidOp,
-    LayerNormOp,
     Flatten,
     Conv2D,
     MaxPool2D,
-    Embedding,
-    ScaledDotProductAttention,
-    Residual,
-    Parallel,
-    Repeat,
 )
 
 # =============================================================================
-# 9.1 ResNet Variants
+# ResNet Variants
 # =============================================================================
 
 # ResBlock: residual block with two dense layers
@@ -51,7 +43,7 @@ comptime ResNet[in_d: Int, dim: Int, out_d: Int, depth: Int] = Sequential[
 ]
 
 # =============================================================================
-# 9.2 Multi-Head Architectures
+# Multi-Head Architectures
 # =============================================================================
 
 # Example 2-branch multi-head (for documentation; actual multi-head models
@@ -62,20 +54,8 @@ comptime ResNet[in_d: Int, dim: Int, out_d: Int, depth: Int] = Sequential[
 #   comptime MyClassifier = Sequential[MyMultiHead, DenseReLU[48, 32], Dense[32, out_d]]
 
 # =============================================================================
-# 9.3 CNN Architectures
+# CNN Architectures
 # =============================================================================
-
-# SimpleCNN: single conv layer + pool + dense output
-#   Conv2D -> ReLU -> MaxPool -> Flatten -> Dense
-#
-# Parameters:
-#   in_ch: input channels
-#   in_h, in_w: input spatial dimensions
-#   out_d: output dimension (e.g., number of classes)
-#
-# Note: comptime aliases with arithmetic expressions in type params work,
-# but complex CNN architectures are better defined explicitly in user code
-# to keep dimension calculations clear.
 
 # LeNet-5 style for 8x8 single-channel input (e.g., downsampled MNIST)
 # Conv2D[1,6,3,1,0,8,8] (8x8->6x6x6) -> ReLU -> MaxPool (->3x3x6)
@@ -99,7 +79,7 @@ comptime LeNet8x8 = Sequential[
 ]
 
 # =============================================================================
-# 9.4 Transformer Architectures
+# Feed-Forward Networks
 # =============================================================================
 
 # FFN: feed-forward network (two dense layers with ReLU)
