@@ -1927,89 +1927,6 @@ struct DeepPPOContinuousAgentOld[
             ctx.enqueue_copy(returns_buf, returns_host)
             ctx.synchronize()
 
-            # ---------------------------------------------------------------
-            # DEBUG: GAE stats for first 5 rollouts (matching new file format)
-            # ---------------------------------------------------------------
-            if rollout_count <= 5:
-                var r_sum = Scalar[dtype](0.0)
-                var r_min = rollout_rewards_host[0]
-                var r_max = rollout_rewards_host[0]
-                var done_count = 0
-                var v_sum = Scalar[dtype](0.0)
-                var adv_sum = Scalar[dtype](0.0)
-                var adv_min = advantages_host[0]
-                var adv_max = advantages_host[0]
-                for _i in range(ROLLOUT_TOTAL):
-                    var _r = rollout_rewards_host[_i]
-                    var _v = rollout_values_host[_i]
-                    var _d = rollout_dones_host[_i]
-                    var _a = advantages_host[_i]
-                    r_sum += _r
-                    v_sum += _v
-                    adv_sum += _a
-                    if _r < r_min:
-                        r_min = _r
-                    if _r > r_max:
-                        r_max = _r
-                    if _a < adv_min:
-                        adv_min = _a
-                    if _a > adv_max:
-                        adv_max = _a
-                    if _d > Scalar[dtype](0.5):
-                        done_count += 1
-                var r_mean = r_sum / Scalar[dtype](ROLLOUT_TOTAL)
-                var v_mean = v_sum / Scalar[dtype](ROLLOUT_TOTAL)
-                var adv_mean = adv_sum / Scalar[dtype](ROLLOUT_TOTAL)
-                var bs_sum2 = Scalar[dtype](0.0)
-                for _i in range(Self.n_envs):
-                    bs_sum2 += bootstrap_values_host[_i]
-                var bs_mean = bs_sum2 / Scalar[dtype](Self.n_envs)
-                print(
-                    "[OLD DEBUG GAE rollout="
-                    + String(rollout_count)
-                    + "]"
-                    + " reward mean="
-                    + String(Float64(r_mean))[:25]
-                    + " min="
-                    + String(Float64(r_min))[:25]
-                    + " max="
-                    + String(Float64(r_max))[:25]
-                    + " | dones="
-                    + String(done_count)
-                    + " | value_mean="
-                    + String(Float64(v_mean))[:25]
-                    + " | bootstrap_mean="
-                    + String(Float64(bs_mean))[:25]
-                    + " | adv mean="
-                    + String(Float64(adv_mean))[:25]
-                    + " min="
-                    + String(Float64(adv_min))[:25]
-                    + " max="
-                    + String(Float64(adv_max))[:25]
-                )
-                var _ret_sum2 = Scalar[dtype](0.0)
-                var _ret_min2 = returns_host[0]
-                var _ret_max2 = returns_host[0]
-                for _j in range(ROLLOUT_TOTAL):
-                    var _rv = returns_host[_j]
-                    _ret_sum2 += _rv
-                    if _rv < _ret_min2:
-                        _ret_min2 = _rv
-                    if _rv > _ret_max2:
-                        _ret_max2 = _rv
-                var _ret_mean2 = _ret_sum2 / Scalar[dtype](ROLLOUT_TOTAL)
-                print(
-                    "[OLD DEBUG RETURNS rollout="
-                    + String(rollout_count)
-                    + "]"
-                    + " mean="
-                    + String(Float64(_ret_mean2))[:25]
-                    + " min="
-                    + String(Float64(_ret_min2))[:25]
-                    + " max="
-                    + String(Float64(_ret_max2))[:25]
-                )
-
             var phase2_end = perf_counter_ns()
 
             # =================================================================
@@ -2107,40 +2024,6 @@ struct DeepPPOContinuousAgentOld[
                     )
                     # No sync needed - GPU operations execute in order on same stream
 
-                    # ---------------------------------------------------------------
-                    # DEBUG: PRE-normalization adv stats (first 5 rollouts, e0 mb0)
-                    # ---------------------------------------------------------------
-                    if rollout_count <= 5 and epoch == 0 and mb_idx == 0:
-                        ctx.synchronize()
-                        ctx.enqueue_copy(mb_advantages_host, mb_advantages_buf)
-                        ctx.synchronize()
-                        var _pre_sum = Scalar[dtype](0.0)
-                        var _pre_min = mb_advantages_host[0]
-                        var _pre_max = mb_advantages_host[0]
-                        for _i in range(MINIBATCH):
-                            var _pv = mb_advantages_host[_i]
-                            _pre_sum += _pv
-                            if _pv < _pre_min:
-                                _pre_min = _pv
-                            if _pv > _pre_max:
-                                _pre_max = _pv
-                        var _pre_mean = _pre_sum / Scalar[dtype](MINIBATCH)
-                        print(
-                            "[OLD DEBUG PRE-NORM adv rollout="
-                            + String(rollout_count)
-                            + "]"
-                            + " mean="
-                            + String(Float64(_pre_mean))[:25]
-                            + " min="
-                            + String(Float64(_pre_min))[:25]
-                            + " max="
-                            + String(Float64(_pre_max))[:25]
-                            + " | norm_adv_per_mb="
-                            + String(self.norm_adv_per_minibatch)
-                            + " normalize_adv="
-                            + String(self.normalize_advantages)
-                        )
-
                     # Per-minibatch advantage normalization (include in gather time)
                     # Uses fused GPU kernel - no CPU roundtrip needed
                     if self.norm_adv_per_minibatch:
@@ -2154,56 +2037,6 @@ struct DeepPPOContinuousAgentOld[
                         )
                         # No sync needed - next kernels will wait for this to complete
                     gather_time_ns += perf_counter_ns() - gather_start
-
-                    # ---------------------------------------------------------------
-                    # DEBUG: log minibatch stats for first 5 rollouts, epoch 0, mb 0
-                    # ---------------------------------------------------------------
-                    if rollout_count <= 5 and epoch == 0 and mb_idx == 0:
-                        ctx.synchronize()
-                        ctx.enqueue_copy(mb_advantages_host, mb_advantages_buf)
-                        # Borrow kl_divergences_host to read old log probs
-                        ctx.enqueue_copy(
-                            kl_divergences_host, mb_old_log_probs_buf
-                        )
-                        ctx.synchronize()
-                        var _adv_sum = Scalar[dtype](0.0)
-                        var _adv_min = mb_advantages_host[0]
-                        var _adv_max = mb_advantages_host[0]
-                        var _olp_sum = Scalar[dtype](0.0)
-                        var _olp_min = kl_divergences_host[0]
-                        var _olp_max = kl_divergences_host[0]
-                        for _i in range(MINIBATCH):
-                            var _av = mb_advantages_host[_i]
-                            var _lv = kl_divergences_host[_i]
-                            _adv_sum += _av
-                            _olp_sum += _lv
-                            if _av < _adv_min:
-                                _adv_min = _av
-                            if _av > _adv_max:
-                                _adv_max = _av
-                            if _lv < _olp_min:
-                                _olp_min = _lv
-                            if _lv > _olp_max:
-                                _olp_max = _lv
-                        var _adv_mean = _adv_sum / Scalar[dtype](MINIBATCH)
-                        var _olp_mean = _olp_sum / Scalar[dtype](MINIBATCH)
-                        print(
-                            "[OLD DEBUG MB gather rollout="
-                            + String(rollout_count)
-                            + "]"
-                            + " adv mean="
-                            + String(Float64(_adv_mean))[:25]
-                            + " min="
-                            + String(Float64(_adv_min))[:25]
-                            + " max="
-                            + String(Float64(_adv_max))[:25]
-                            + " | old_lp mean="
-                            + String(Float64(_olp_mean))[:25]
-                            + " min="
-                            + String(Float64(_olp_min))[:25]
-                            + " max="
-                            + String(Float64(_olp_max))[:25]
-                        )
 
                     # Train actor - forward pass
                     var actor_fwd_start = perf_counter_ns()
@@ -2240,100 +2073,6 @@ struct DeepPPOContinuousAgentOld[
                     if self.target_kl > 0.0:
                         ctx.synchronize()
                     actor_grad_kernel_ns += perf_counter_ns() - actor_grad_start
-
-                    # ---------------------------------------------------------------
-                    # DEBUG: log actor output + grad + KL for first 5 rollouts, e0 mb0
-                    # ---------------------------------------------------------------
-                    if rollout_count <= 5 and epoch == 0 and mb_idx == 0:
-                        ctx.synchronize()
-                        var _ao_host = ctx.enqueue_create_host_buffer[dtype](
-                            MINIBATCH * Self.ACTOR_OUT
-                        )
-                        ctx.enqueue_copy(_ao_host, actor_output_mb_buf)
-                        var _ag_host = ctx.enqueue_create_host_buffer[dtype](
-                            MINIBATCH * Self.ACTOR_OUT
-                        )
-                        ctx.enqueue_copy(_ag_host, actor_grad_output_buf)
-                        ctx.enqueue_copy(
-                            kl_divergences_host, kl_divergences_buf
-                        )
-                        ctx.synchronize()
-                        var _m_sum = Scalar[dtype](0.0)
-                        var _l_sum = Scalar[dtype](0.0)
-                        var _g_sum = Scalar[dtype](0.0)
-                        var _kl_sum2 = Scalar[dtype](0.0)
-                        var _m_min = _ao_host[0]
-                        var _m_max = _ao_host[0]
-                        var _l_min = _ao_host[Self.ACTIONS]
-                        var _l_max = _ao_host[Self.ACTIONS]
-                        var _g_min = _ag_host[0]
-                        var _g_max = _ag_host[0]
-                        var _kl_min2 = kl_divergences_host[0]
-                        var _kl_max2 = kl_divergences_host[0]
-                        for _i in range(MINIBATCH):
-                            var _m = _ao_host[_i * Self.ACTOR_OUT]
-                            var _l = _ao_host[
-                                _i * Self.ACTOR_OUT + Self.ACTIONS
-                            ]
-                            var _g = _ag_host[_i * Self.ACTOR_OUT]
-                            var _k = kl_divergences_host[_i]
-                            _m_sum += _m
-                            _l_sum += _l
-                            _g_sum += _g
-                            _kl_sum2 += _k
-                            if _m < _m_min:
-                                _m_min = _m
-                            if _m > _m_max:
-                                _m_max = _m
-                            if _l < _l_min:
-                                _l_min = _l
-                            if _l > _l_max:
-                                _l_max = _l
-                            if _g < _g_min:
-                                _g_min = _g
-                            if _g > _g_max:
-                                _g_max = _g
-                            if _k < _kl_min2:
-                                _kl_min2 = _k
-                            if _k > _kl_max2:
-                                _kl_max2 = _k
-                        var _m_avg = _m_sum / Scalar[dtype](MINIBATCH)
-                        var _l_avg = _l_sum / Scalar[dtype](MINIBATCH)
-                        var _g_avg = _g_sum / Scalar[dtype](MINIBATCH)
-                        var _kl_avg2 = _kl_sum2 / Scalar[dtype](MINIBATCH)
-                        print(
-                            "[OLD DEBUG ACTOR FWD+GRAD rollout="
-                            + String(rollout_count)
-                            + "]"
-                            + " mean0 avg="
-                            + String(Float64(_m_avg))[:25]
-                            + " ["
-                            + String(Float64(_m_min))[:25]
-                            + ","
-                            + String(Float64(_m_max))[:25]
-                            + "]"
-                            + " | logstd0 avg="
-                            + String(Float64(_l_avg))[:25]
-                            + " ["
-                            + String(Float64(_l_min))[:25]
-                            + ","
-                            + String(Float64(_l_max))[:25]
-                            + "]"
-                            + " | KL mean="
-                            + String(Float64(_kl_avg2))[:25]
-                            + " ["
-                            + String(Float64(_kl_min2))[:25]
-                            + ","
-                            + String(Float64(_kl_max2))[:25]
-                            + "]"
-                            + " | grad_mean0 avg="
-                            + String(Float64(_g_avg))[:25]
-                            + " ["
-                            + String(Float64(_g_min))[:25]
-                            + ","
-                            + String(Float64(_g_max))[:25]
-                            + "]"
-                        )
 
                     # KL divergence early stopping
                     if self.target_kl > 0.0:
@@ -2457,6 +2196,7 @@ struct DeepPPOContinuousAgentOld[
                             mb_returns_tensor,
                             mb_old_values_tensor,
                             Scalar[dtype](self.clip_epsilon),
+                            Scalar[dtype](self.value_loss_coef),
                             MINIBATCH,
                             grid_dim=(MINIBATCH_BLOCKS,),
                             block_dim=(TPB,),
@@ -2468,6 +2208,7 @@ struct DeepPPOContinuousAgentOld[
                             critic_grad_output_tensor,
                             critic_values_tensor,
                             mb_returns_tensor,
+                            Scalar[dtype](self.value_loss_coef),
                             MINIBATCH,
                             grid_dim=(MINIBATCH_BLOCKS,),
                             block_dim=(TPB,),
@@ -2476,55 +2217,6 @@ struct DeepPPOContinuousAgentOld[
                     critic_grad_kernel_ns += (
                         perf_counter_ns() - critic_grad_start
                     )
-
-                    # Debug: critic predicted values vs target returns
-                    if rollout_count <= 5 and epoch == 0 and mb_idx == 0:
-                        ctx.synchronize()
-                        ctx.enqueue_copy(mb_advantages_host, critic_values_buf)
-                        ctx.synchronize()
-                        var _cv_sum = Scalar[dtype](0.0)
-                        var _cv_min = mb_advantages_host[0]
-                        var _cv_max = mb_advantages_host[0]
-                        for _i in range(MINIBATCH):
-                            var _cv = mb_advantages_host[_i]
-                            _cv_sum += _cv
-                            if _cv < _cv_min:
-                                _cv_min = _cv
-                            if _cv > _cv_max:
-                                _cv_max = _cv
-                        var _cv_avg = _cv_sum / Scalar[dtype](MINIBATCH)
-                        ctx.enqueue_copy(mb_advantages_host, mb_returns_buf)
-                        ctx.synchronize()
-                        var _ret_sum = Scalar[dtype](0.0)
-                        var _ret_min = mb_advantages_host[0]
-                        var _ret_max = mb_advantages_host[0]
-                        for _i in range(MINIBATCH):
-                            var _ret = mb_advantages_host[_i]
-                            _ret_sum += _ret
-                            if _ret < _ret_min:
-                                _ret_min = _ret
-                            if _ret > _ret_max:
-                                _ret_max = _ret
-                        var _ret_avg = _ret_sum / Scalar[dtype](MINIBATCH)
-                        print(
-                            "[OLD DEBUG CRITIC VALUES rollout="
-                            + String(rollout_count)
-                            + "]"
-                            + " critic_val avg="
-                            + String(Float64(_cv_avg))[:25]
-                            + " ["
-                            + String(Float64(_cv_min))[:25]
-                            + ","
-                            + String(Float64(_cv_max))[:25]
-                            + "]"
-                            + " | returns avg="
-                            + String(Float64(_ret_avg))[:25]
-                            + " ["
-                            + String(Float64(_ret_min))[:25]
-                            + ","
-                            + String(Float64(_ret_max))[:25]
-                            + "]"
-                        )
 
                     # Critic backward pass
                     var critic_bwd_start = perf_counter_ns()

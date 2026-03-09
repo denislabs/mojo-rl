@@ -1029,7 +1029,11 @@ struct DeepSACAgent[
         var scale_s = Scalar[dtype](self.action_scale)
         var log_std_min_s = Scalar[dtype](-5.0)
         var log_std_max_s = Scalar[dtype](2.0)
-        var rng_seed_s = Scalar[DType.uint32](self.total_steps)
+        # Kernel uses N_ENVS*ACTION_DIM seeds; total_steps increments by N_ENVS,
+        # so multiply by ACTION_DIM to avoid overlap between consecutive calls.
+        var rng_seed_s = Scalar[DType.uint32](
+            UInt32(self.total_steps) * UInt32(Self.ACTIONS)
+        )
 
         @always_inline
         fn sample_actions(
@@ -1122,10 +1126,15 @@ struct DeepSACAgent[
 
         var log_std_min_s = Scalar[dtype](-5.0)
         var log_std_max_s = Scalar[dtype](2.0)
-        # Use train_step_count as seed; offset next-state vs curr-state to avoid correlation
-        var next_rng_seed_s = Scalar[DType.uint32](self.train_step_count * 2)
+        # Each rsample kernel uses BATCH*ACTIONS seeds [base, base+BATCH*ACTIONS-1].
+        # Stride between next-state and curr-state must be >= BATCH*ACTIONS to avoid
+        # seed collision (same fix as PPO Bug 2 in MEMORY.md).
+        var seed_stride = UInt32(BATCH * ACTIONS + 1)
+        var next_rng_seed_s = Scalar[DType.uint32](
+            UInt32(self.train_step_count) * seed_stride * 2
+        )
         var curr_rng_seed_s = Scalar[DType.uint32](
-            self.train_step_count * 2 + 1
+            UInt32(self.train_step_count) * seed_stride * 2 + seed_stride
         )
 
         # ----- Phase 2: Actor forward on next_obs → next_actor_out -----

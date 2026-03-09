@@ -50,7 +50,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 50_000
+comptime NUM_EPISODES = 10_000
 
 comptime dtype = DType.float32
 
