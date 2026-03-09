@@ -8,11 +8,8 @@ optimized performance on Apple Silicon.
 from std.math import tanh
 from ..constants import dtype, TILE
 from .model import Model
+from ..initializer import Initializer
 
-# Minimum tanh gradient to prevent gradient death at saturation.
-# At full saturation tanh(x)=±1, (1-tanh²)=0 → actor can never recover.
-# Floor of 0.01 ensures ~1% gradient signal even when fully saturated.
-comptime TANH_GRAD_FLOOR: Scalar[dtype] = 0.01
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -64,6 +61,14 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
     fn __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
 
     @staticmethod
     fn forward[
@@ -269,8 +274,6 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                     var grad_val = grad_output[global_row, dy_col]
                     var tanh_out = cache[global_row, Self.IN_DIM + dy_col]
                     var tanh_grad = 1 - tanh_out * tanh_out
-                    if tanh_grad < TANH_GRAD_FLOOR:
-                        tanh_grad = TANH_GRAD_FLOOR
                     shared_A[local_row, local_col] = grad_val * tanh_grad
                 else:
                     shared_A[local_row, local_col] = 0
@@ -322,8 +325,6 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                     var grad_val = grad_output[dy_row, global_col]
                     var tanh_out = cache[dy_row, Self.IN_DIM + global_col]
                     var tanh_grad = 1 - tanh_out * tanh_out
-                    if tanh_grad < TANH_GRAD_FLOOR:
-                        tanh_grad = TANH_GRAD_FLOOR
                     var scaled_grad = grad_val * tanh_grad
                     shared_B[local_row, local_col] = scaled_grad
                     if dW_block_y == 0:
@@ -607,8 +608,6 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                 for j in range(Self.out_dim):
                     var tanh_out = cache[batch, Self.in_dim + j]
                     var tanh_grad = 1 - tanh_out * tanh_out
-                    if tanh_grad < TANH_GRAD_FLOOR:
-                        tanh_grad = TANH_GRAD_FLOOR
                     var scaled_grad = grad_output[batch, j] * tanh_grad
                     acc += scaled_grad * W[i, j]
                 grad_input[batch, i] = acc
@@ -617,8 +616,6 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                 for j in range(Self.out_dim):
                     var tanh_out = cache[batch, Self.in_dim + j]
                     var tanh_grad = 1 - tanh_out * tanh_out
-                    if tanh_grad < TANH_GRAD_FLOOR:
-                        tanh_grad = TANH_GRAD_FLOOR
                     var scaled_grad = grad_output[batch, j] * tanh_grad
                     var cached_input = cache[batch, i]
                     dW[i, j] = dW[i, j] + cached_input * scaled_grad
@@ -626,7 +623,5 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
             for j in range(Self.out_dim):
                 var tanh_out = cache[batch, Self.in_dim + j]
                 var tanh_grad = 1 - tanh_out * tanh_out
-                if tanh_grad < TANH_GRAD_FLOOR:
-                    tanh_grad = TANH_GRAD_FLOOR
                 var scaled_grad = grad_output[batch, j] * tanh_grad
                 grads[db_offset + j] = grads[db_offset + j] + scaled_grad

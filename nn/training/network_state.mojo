@@ -108,6 +108,10 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     fn initialize[INITIALIZER: Initializer = Xavier](mut self):
         """Initialize params using the given initializer strategy.
 
+        Delegates to MODEL.initialize_params which handles per-layer fan
+        dimensions for Sequential models. Leaf layers use their own
+        IN_DIM/OUT_DIM directly.
+
         Parameters:
             INITIALIZER: Weight initialization strategy (Xavier, Kaiming, etc.).
 
@@ -116,9 +120,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             state.initialize[Xavier]()    # for tanh/sigmoid networks
         """
         var t = self.params_view()
-        INITIALIZER.init[
-            Self.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
-        ](t)
+        Self.MODEL.initialize_params[INITIALIZER](t)
 
     # =========================================================================
     # LayoutTensor Views (zero-copy)

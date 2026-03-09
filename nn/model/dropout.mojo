@@ -1,5 +1,6 @@
 from ..constants import dtype
 from .model import Model
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -31,6 +32,14 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     # Only need cache during training (to store mask)
     comptime CACHE_SIZE: Int = Self.dim if Self.training else 0
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        pass
 
     @staticmethod
     fn _random_from_seed(seed: UInt64) -> Float64:

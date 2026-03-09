@@ -1,5 +1,6 @@
 from ..constants import dtype
 from .model import Model
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -29,6 +30,14 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     comptime PARAM_SIZE: Int = 2 * Self.dim  # gamma + beta
     comptime CACHE_SIZE: Int = Self.dim + 2  # normalized + inv_std + mean
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
 
     @staticmethod
     fn forward[

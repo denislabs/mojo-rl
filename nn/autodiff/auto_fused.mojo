@@ -18,6 +18,7 @@ parsing of the following line.
 
 from ..constants import dtype
 from ..model.model import Model
+from ..initializer import Initializer
 from .op import DiffOp, OpID
 from .fused import FusedMatMulBias, FusedMatMulBiasActivation
 from .fused.activation import (
@@ -881,6 +882,38 @@ struct AutoFused[*OPS: DiffOp](Model):
     comptime CACHE_SIZE: Int = _fused_cache_size[*Self.OPS]()
     comptime INTER_SIZE_PER_SAMPLE: Int = _fused_inter_size[*Self.OPS]()
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn _param_offset_raw[idx: Int]() -> Int:
+        var total = 0
+
+        comptime for j in range(idx):
+            total += Self.op_types[j].PARAM_SIZE
+        return total
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize each DiffOp's params with its own fan dimensions."""
+        comptime for i in range(Self.N):
+            comptime if Self.op_types[i].PARAM_SIZE > 0:
+                var op_params = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.op_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset_raw[i]())
+                INIT.init[
+                    Self.op_types[i].PARAM_SIZE,
+                    Self.op_types[i].IN_DIM,
+                    Self.op_types[i].OUT_DIM,
+                ](op_params)
 
     # =========================================================================
     # CPU Forward (with cache)

@@ -1,5 +1,6 @@
 from ..constants import dtype, TPB
 from .model import Model
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -33,6 +34,14 @@ struct Mish[dim: Int](Model):
         pass
 
     fn __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
         pass
 
     @staticmethod

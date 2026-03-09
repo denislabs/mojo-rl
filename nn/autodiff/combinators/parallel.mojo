@@ -13,6 +13,7 @@ Backward: grad_input = sum_i(B_i.backward(grad_i))
 
 from ...constants import dtype, TPB
 from ...model.model import Model
+from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -107,6 +108,26 @@ struct Parallel[*BRANCHES: Model](Model):
         comptime for j in range(idx):
             total += Self.branch_types[j].WORKSPACE_SIZE_PER_SAMPLE
         return total
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize each branch with its own fan dimensions."""
+        comptime for i in range(Self.N):
+            comptime if Self.branch_types[i].PARAM_SIZE > 0:
+                var branch_params = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                Self.branch_types[i].initialize_params[INIT](branch_params)
 
     # =========================================================================
     # CPU Forward (with cache)

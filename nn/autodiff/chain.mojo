@@ -1,5 +1,6 @@
 from ..constants import dtype
 from ..model.model import Model
+from ..initializer import Initializer
 from .op import DiffOp
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
@@ -101,6 +102,30 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         comptime for j in range(idx):
             total += Self.op_types[j].OUT_DIM
         return total
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize each DiffOp's params with its own fan dimensions."""
+        comptime for i in range(Self.N):
+            comptime if Self.op_types[i].PARAM_SIZE > 0:
+                var op_params = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.op_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                INIT.init[
+                    Self.op_types[i].PARAM_SIZE,
+                    Self.op_types[i].IN_DIM,
+                    Self.op_types[i].OUT_DIM,
+                ](op_params)
 
     # =========================================================================
     # CPU Forward (with cache)

@@ -9,6 +9,7 @@ Backward: grad_input = Inner.backward(grad_output) + grad_output
 
 from ...constants import dtype, TPB
 from ...model.model import Model
+from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -43,6 +44,19 @@ struct Residual[Inner: Model](Model):
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
     )
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Delegate to Inner model's initialize_params."""
+        Self.Inner.initialize_params[INIT](params)
 
     # =========================================================================
     # CPU Forward (with cache)

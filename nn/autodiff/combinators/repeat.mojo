@@ -12,6 +12,7 @@ Requires Inner.IN_DIM == Inner.OUT_DIM (same shape for chaining).
 
 from ...constants import dtype, TPB
 from ...model.model import Model
+from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -47,6 +48,19 @@ struct Repeat[n: Int, Inner: Model](Model):
     fn _inter_offset[idx: Int]() -> Int:
         """Intermediate buffer offset for iteration idx (per sample)."""
         return idx * Self.Inner.OUT_DIM
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Delegate to Inner model's initialize_params (shared weights)."""
+        Self.Inner.initialize_params[INIT](params)
 
     # =========================================================================
     # CPU Forward (with cache)

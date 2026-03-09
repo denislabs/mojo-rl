@@ -1,5 +1,6 @@
 from ..constants import dtype, TILE, TPB
 from .model import Model
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -43,6 +44,14 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
     fn __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
 
     @staticmethod
     fn forward[

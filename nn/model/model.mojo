@@ -1,4 +1,5 @@
 from ..constants import dtype
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -34,6 +35,24 @@ trait Model(Movable & ImplicitlyCopyable):
     comptime PARAM_SIZE: Int
     comptime CACHE_SIZE: Int
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize parameters with per-layer fan dimensions.
+
+        Leaf layers call INIT.init with their own IN_DIM/OUT_DIM.
+        Sequential overrides to iterate through layers.
+        Activation-only layers (PARAM_SIZE=0) are no-ops.
+        """
+        ...
 
     # =========================================================================
     # Forward passes

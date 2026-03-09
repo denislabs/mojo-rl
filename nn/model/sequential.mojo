@@ -1,5 +1,6 @@
 from ..constants import dtype
 from .model import Model
+from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -112,6 +113,22 @@ struct Sequential[*LAYERS: Model](Model):
         comptime for j in range(idx):
             total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
         return total
+
+    @staticmethod
+    fn initialize_params[INIT: Initializer](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize each layer with its own fan_in/fan_out dimensions."""
+        comptime for i in range(Self.N):
+            comptime if Self.model_types[i].PARAM_SIZE > 0:
+                var layer_params = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                Self.model_types[i].initialize_params[INIT](layer_params)
 
     # =========================================================================
     # CPU Forward (with cache)
