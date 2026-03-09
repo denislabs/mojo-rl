@@ -10,7 +10,6 @@ Run with:
 
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
-from std.sys import is_nvidia_gpu
 
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -179,10 +178,9 @@ fn test_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
 
 def main():
     print("=" * 60)
-    comptime if is_nvidia_gpu():
-        print("MMA Matmul Test (NVIDIA — tensor core path)")
-    else:
-        print("MMA Matmul Test (Apple/other — tiled scalar fallback)")
+    print("MMA Matmul Test")
+    print("  Dispatch: NVIDIA → tensor core MMA, Apple → tiled scalar")
+    print("  (auto-selected at GPU compile time inside kernel)")
     print("=" * 60)
 
     var ctx = DeviceContext()

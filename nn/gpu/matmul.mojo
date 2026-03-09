@@ -340,6 +340,143 @@ fn mma_matmul_kernel[
 
 
 # =============================================================================
+# MMA kernel for TILE×TILE blocks (used by gpu_matmul dispatcher)
+# =============================================================================
+
+
+@always_inline
+fn _mma_tile_kernel[
+    dtype: DType,
+    M: Int,
+    N: Int,
+    K: Int,
+    TILE: Int,
+](
+    output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
+    a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
+    b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
+):
+    """MMA matmul producing TILE×TILE output per block (NVIDIA only).
+
+    Uses m16n8k8 TF32 tensor cores. With TILE=16, 2 warps compute
+    the 16×16 output (each warp handles a 16×8 half). All 256 threads
+    participate in shared memory loading.
+
+    Block: (TILE, TILE) — same as tiled scalar kernel.
+    Grid: ((N+TILE-1)//TILE, (M+TILE-1)//TILE)
+    """
+    var tid = Int(thread_idx.y) * TILE + Int(thread_idx.x)
+    var warp_id = tid // 32
+
+    var block_row = Int(block_idx.y) * TILE
+    var block_col = Int(block_idx.x) * TILE
+
+    # Number of MMA warp-tiles needed to cover TILE columns
+    comptime WARPS_NEEDED = (TILE + MMA_N - 1) // MMA_N  # 2 for TILE=16
+
+    # Shared memory for one K-step
+    var a_smem = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, MMA_K),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var b_smem = LayoutTensor[
+        dtype,
+        Layout.row_major(MMA_K, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var acc = SIMD[DType.float32, 4](0)
+
+    var lid = lane_id()
+    var group_id = lid >> 2
+    var group_lane = lid % 4
+
+    comptime num_k_tiles = (K + MMA_K - 1) // MMA_K
+    comptime smem_a_elems = TILE * MMA_K  # 128 for TILE=16
+
+    for k_tile in range(num_k_tiles):
+        var k_off = k_tile * MMA_K
+
+        # --- Load A[TILE, MMA_K] — first 128 threads ---
+        if tid < smem_a_elems:
+            var a_r = tid // MMA_K
+            var a_c = tid % MMA_K
+            var ga_r = block_row + a_r
+            var ga_c = k_off + a_c
+            if ga_r < M and ga_c < K:
+                a_smem[a_r, a_c] = a[ga_r, ga_c]
+            else:
+                a_smem[a_r, a_c] = 0
+
+        # --- Load B[MMA_K, TILE] — last 128 threads ---
+        if tid >= smem_a_elems:
+            var b_tid = tid - smem_a_elems
+            var b_r = b_tid // TILE
+            var b_c = b_tid % TILE
+            var gb_r = k_off + b_r
+            var gb_c = block_col + b_c
+            if gb_r < K and gb_c < N:
+                b_smem[b_r, b_c] = b[gb_r, gb_c]
+            else:
+                b_smem[b_r, b_c] = 0
+
+        barrier()
+
+        # --- MMA: only first WARPS_NEEDED warps compute ---
+        if warp_id < WARPS_NEEDED:
+            var warp_n = warp_id  # each warp covers MMA_N=8 columns
+
+            var a_frag = SIMD[DType.float32, 4](
+                rebind[Scalar[DType.float32]](
+                    a_smem[Int(group_id), Int(group_lane)]
+                ),
+                rebind[Scalar[DType.float32]](
+                    a_smem[Int(group_id) + 8, Int(group_lane)]
+                ),
+                rebind[Scalar[DType.float32]](
+                    a_smem[Int(group_id), Int(group_lane) + 4]
+                ),
+                rebind[Scalar[DType.float32]](
+                    a_smem[Int(group_id) + 8, Int(group_lane) + 4]
+                ),
+            )
+
+            var b_frag = SIMD[DType.float32, 2](
+                rebind[Scalar[DType.float32]](
+                    b_smem[Int(group_lane), warp_n * MMA_N + Int(group_id)]
+                ),
+                rebind[Scalar[DType.float32]](
+                    b_smem[Int(group_lane) + 4, warp_n * MMA_N + Int(group_id)]
+                ),
+            )
+
+            mma(acc, a_frag, b_frag, acc)
+
+        barrier()
+
+    # --- Store result (only active warps) ---
+    if warp_id < WARPS_NEEDED:
+        var warp_n = warp_id
+        var r0 = block_row + Int(group_id)
+        var r1 = r0 + 8
+        var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+        var c1 = c0 + 1
+
+        if r0 < M and c0 < N:
+            output[r0, c0] = rebind[Scalar[dtype]](acc[0])
+        if r0 < M and c1 < N:
+            output[r0, c1] = rebind[Scalar[dtype]](acc[1])
+        if r1 < M and c0 < N:
+            output[r1, c0] = rebind[Scalar[dtype]](acc[2])
+        if r1 < M and c1 < N:
+            output[r1, c1] = rebind[Scalar[dtype]](acc[3])
+
+
+# =============================================================================
 # Auto-dispatching GPU matmul launcher
 # =============================================================================
 
@@ -358,47 +495,35 @@ fn gpu_matmul[
 ) raises:
     """Auto-dispatching GPU matmul: MMA on NVIDIA, tiled scalar on Apple.
 
-    On NVIDIA: uses tensor core m16n8k8 MMA (32×32 block tiles, 256 threads).
-    On Apple/other: uses shared-memory tiled matmul (TILE×TILE block tiles).
+    The comptime dispatch happens INSIDE the kernel wrapper so it is
+    evaluated when compiling for the GPU target (not the host CPU).
+
+    On NVIDIA: uses tensor core m16n8k8 MMA (2 warps produce TILE×TILE output).
+    On Apple/other: uses shared-memory tiled matmul (TILE×TILE scalar).
+    Both paths use the same grid and block dimensions.
     """
-    comptime if is_nvidia_gpu():
-        comptime mma_grid_x = (N + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime mma_grid_y = (M + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+    comptime grid_x = (N + TILE - 1) // TILE
+    comptime grid_y = (M + TILE - 1) // TILE
 
-        @always_inline
-        fn mma_wrapper(
-            output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
-            a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
-            b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
-        ):
-            mma_matmul_kernel[dtype, M, N, K](output, a, b)
-
-        ctx.enqueue_function[mma_wrapper, mma_wrapper](
-            output,
-            a,
-            b,
-            grid_dim=(mma_grid_x, mma_grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
-    else:
-        comptime grid_x = (N + TILE - 1) // TILE
-        comptime grid_y = (M + TILE - 1) // TILE
-
-        @always_inline
-        fn tiled_wrapper(
-            output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
-            a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
-            b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
-        ):
+    @always_inline
+    fn kernel(
+        output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
+        a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
+        b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
+    ):
+        # This comptime check is evaluated when compiling for the GPU target
+        comptime if is_nvidia_gpu():
+            _mma_tile_kernel[dtype, M, N, K, TILE](output, a, b)
+        else:
             tiled_matmul_kernel[dtype, M, N, K, TILE](output, a, b)
 
-        ctx.enqueue_function[tiled_wrapper, tiled_wrapper](
-            output,
-            a,
-            b,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(TILE, TILE),
-        )
+    ctx.enqueue_function[kernel, kernel](
+        output,
+        a,
+        b,
+        grid_dim=(grid_x, grid_y),
+        block_dim=(TILE, TILE),
+    )
 
 
 @always_inline
