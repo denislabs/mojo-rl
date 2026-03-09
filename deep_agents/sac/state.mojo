@@ -359,7 +359,7 @@ struct SACGPUState[
     var new_ci: DeviceBuffer[dtype]  # [batch_size * CRITIC_IN]
     var new_q: DeviceBuffer[dtype]  # [batch_size * 1]
     var new_q_cache: DeviceBuffer[dtype]  # [batch_size * CRITIC_CS]
-    var dq: DeviceBuffer[dtype]  # [batch_size * 1] constant -1/batch_size
+    var dq: DeviceBuffer[dtype]  # [batch_size * 1] min-Q masked gradient (Q1 path)
     var d_new_ci: DeviceBuffer[dtype]  # [batch_size * CRITIC_IN]
     var grad_act: DeviceBuffer[dtype]  # [batch_size * action_dim]
     var actor_grad: DeviceBuffer[dtype]  # [batch_size * ACTOR_OUT]
@@ -466,12 +466,7 @@ struct SACGPUState[
         )
         self.d_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
 
-        # Pre-fill dq with -1/batch_size (constant policy-gradient weight)
-        ctx.synchronize()
-        var dq_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
-        for i in range(Self.BATCH):
-            dq_host[i] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
-        ctx.enqueue_copy(self.dq, dq_host)
+        # dq is filled dynamically per step by min_q_dq_kernel (no pre-fill)
 
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods

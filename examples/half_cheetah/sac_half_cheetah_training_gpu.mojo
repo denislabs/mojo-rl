@@ -138,7 +138,7 @@ fn main() raises:
                 # gradient_steps=0 uses n_envs (1:1 replay ratio)
                 sync_every=5_000,
                 verbose=True,
-                print_every=32_000,
+                print_every=50_000,
                 environment_name="HalfCheetah",
             )
 

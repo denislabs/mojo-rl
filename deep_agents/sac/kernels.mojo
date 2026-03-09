@@ -359,3 +359,65 @@ fn sac_rsample_bwd_kernel[
 
         # Grad wrt log_std: ∂z/∂log_std = σ*ε, plus entropy term -log_std → d/d(log_std)=-1
         actor_grad[b, ACTION_DIM + a] = d_z * sigma * eps - alpha_per_sample
+
+
+# =============================================================================
+# min(Q1, Q2) masked gradient kernels
+# =============================================================================
+
+
+@always_inline
+fn min_q_dq_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+](
+    dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    dq2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    q1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    q2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+):
+    """Create masked dq gradients based on min(Q1, Q2).
+
+    For each sample b:
+        if Q1[b] <= Q2[b]: dq1[b] = -1/BATCH, dq2[b] = 0
+        else:              dq1[b] = 0,         dq2[b] = -1/BATCH
+
+    The actor loss is: L = alpha * log_pi - min(Q1, Q2)
+    Minimizing L maximizes Q and entropy. The gradient of -min(Q1,Q2)
+    routes through whichever critic has the lower Q value.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+    var zero = Scalar[dtype](0.0)
+
+    if q1[b, 0] <= q2[b, 0]:
+        dq1[b, 0] = neg_inv_batch
+        dq2[b, 0] = zero
+    else:
+        dq1[b, 0] = zero
+        dq2[b, 0] = neg_inv_batch
+
+
+@always_inline
+fn add_ci_grads_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    DIM: Int,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    """Add src to dst elementwise: dst[b,d] += src[b,d].
+
+    Used to combine action gradients from Q1 and Q2 backward passes.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * DIM:
+        return
+
+    var b = idx // DIM
+    var d = idx % DIM
+    dst[b, d] = dst[b, d] + src[b, d]
