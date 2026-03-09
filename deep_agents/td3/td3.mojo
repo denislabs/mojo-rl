@@ -49,7 +49,7 @@ from std.random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
+from nn import Model, Dense, DenseTanh, DenseReLU, Sequential
 from nn.optimizer import Optimizer, Adam
 from nn.initializer import Kaiming, Xavier
 from nn.training import (
@@ -153,18 +153,18 @@ struct DeepTD3Agent[
 
     # Actor: obs → hidden (ReLU) → hidden (ReLU) → action (Tanh)
     comptime ActorModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        LinearTanh[Self.HIDDEN, Self.ACTIONS],
+        DenseReLU[Self.OBS, Self.HIDDEN],
+        DenseReLU[Self.HIDDEN, Self.HIDDEN],
+        DenseTanh[Self.HIDDEN, Self.ACTIONS],
     ]
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
     # Critic: (obs ‖ action) → hidden (ReLU) → hidden (ReLU) → Q-value
     # Both critics share the same model architecture
     comptime CriticModel = Sequential[
-        LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+        DenseReLU[Self.CRITIC_IN, Self.HIDDEN],
+        DenseReLU[Self.HIDDEN, Self.HIDDEN],
+        Dense[Self.HIDDEN, 1],
     ]
     comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
 

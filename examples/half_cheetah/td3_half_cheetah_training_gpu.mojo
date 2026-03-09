@@ -46,7 +46,7 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 64
 
 # Training duration (total env transitions across all parallel envs)
-comptime NUM_STEPS = 1_000_000
+comptime NUM_STEPS = 3_000_000
 comptime WARMUP_STEPS = 25_000
 
 comptime dtype = DType.float32
@@ -88,7 +88,7 @@ fn main() raises:
             policy_delay=2,
             target_noise_std=0.2,
             target_noise_clip=0.5,
-            checkpoint_every=100_000,
+            checkpoint_every=500_000,
             checkpoint_path="td3_half_cheetah.ckpt",
         )
 
