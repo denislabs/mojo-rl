@@ -21,6 +21,13 @@ from std.gpu.compute.mma import mma
 from layout import Layout, LayoutTensor
 from layout.layout_tensor import copy_dram_to_sram_async
 
+from ..constants import (
+    MMA_M, MMA_N, MMA_K,
+    MMA_BLOCK_M, MMA_BLOCK_N,
+    MMA_WARPS_M, MMA_WARPS_N,
+    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+)
+
 
 @always_inline
 fn tiled_matmul_kernel[
@@ -185,20 +192,6 @@ fn matmul_kernel[
 # =============================================================================
 # MMA (Tensor Core) Matmul — NVIDIA only
 # =============================================================================
-
-# MMA tile dimensions for m16n8k8 (TF32)
-comptime MMA_M = 16  # Output rows per warp MMA op
-comptime MMA_N = 8  # Output cols per warp MMA op
-comptime MMA_K = 8  # Reduction dimension per MMA step
-
-# Block-level tile: 8 warps arranged 2 (M) × 4 (N)
-comptime MMA_BLOCK_M = 32  # 2 × MMA_M
-comptime MMA_BLOCK_N = 32  # 4 × MMA_N
-comptime MMA_WARPS_M = 2
-comptime MMA_WARPS_N = 4
-comptime MMA_NUM_WARPS = 8
-comptime MMA_BLOCK_THREADS = MMA_NUM_WARPS * 32  # 256
-
 
 @always_inline
 fn mma_matmul_kernel[
