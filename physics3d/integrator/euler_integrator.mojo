@@ -141,6 +141,8 @@ from ..gpu.constants import (
     ws_qacc_ws_offset,
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
+    metadata_offset,
+    META_IDX_NUM_CONTACTS,
 )
 
 
@@ -723,7 +725,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         Pipeline:
         1. Forward kinematics (qpos -> xpos, xquat)
         2. Compute body velocities (qvel -> xvel, xangvel)
-        3. Detect ground contacts
+        3. Zero contact count (contacts detected in separate kernel)
         4. Compute cdof (spatial motion axes per DOF)
         5. Compute composite rigid body inertia (CRBA)
         6. Compute full mass matrix M(q)
@@ -787,19 +789,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
         ](env, state, model)
 
-        # 3. Detect contacts
-        detect_contacts_auto_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            NGEOM,
-        ](env, state, model)
+        # 3. Contact detection — extracted to separate kernel launch
+        #    (contact_detection_kernel runs between step_kernel and solver)
+        #    Zero contact count here so the separate kernel starts fresh.
+        comptime meta_off_c = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        state[env, meta_off_c + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
 
         # 4. Compute cdof (writes to workspace at ws_cdof_offset)
         compute_cdof_gpu[
@@ -1306,6 +1300,49 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
+    fn contact_detection_kernel[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        BATCH: Int,
+        NGEOM: Int = 0,
+    ](
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Separate contact detection kernel — runs between step_kernel and solver.
+
+        Extracted from step_kernel to enable future parallelization across
+        geom pairs. Currently runs one thread per environment (same as before).
+        """
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        detect_contacts_auto_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
+        ](env, state, model)
+
+    @always_inline
+    @staticmethod
     fn step_finalize_kernel[
         DTYPE: DType,
         NQ: Int,
@@ -1585,6 +1622,29 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Contact detection — separate kernel for future parallelization
+        comptime contact_kernel_wrapper = Self.contact_detection_kernel[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
+        ]
+
+        ctx.enqueue_function[
+            contact_kernel_wrapper, contact_kernel_wrapper
+        ](
+            state,
+            model,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )

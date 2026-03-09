@@ -374,6 +374,12 @@ fn bench_physics_with_sync[BATCH: Int](
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
         STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
     ]
+    comptime contact_wrapper = EulerIntegrator[
+        SOLVER=NewtonSolver
+    ].contact_detection_kernel[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+    ]
     comptime solver_wrapper = NewtonSolver.solve_gpu[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
         STATE_SIZE, MODEL_SIZE, NV, BATCH, WS_SIZE, NGEOM,
@@ -387,6 +393,7 @@ fn bench_physics_with_sync[BATCH: Int](
     ]
 
     var step_ns: Int = 0
+    var contact_ns: Int = 0
     var solve_ns: Int = 0
     var finalize_ns: Int = 0
 
@@ -398,6 +405,13 @@ fn bench_physics_with_sync[BATCH: Int](
         )
         ctx.synchronize()
         var ts1 = perf_counter_ns()
+
+        ctx.enqueue_function[contact_wrapper, contact_wrapper](
+            state, model,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.synchronize()
+        var ts_contact = perf_counter_ns()
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
             state, model, workspace,
@@ -415,13 +429,15 @@ fn bench_physics_with_sync[BATCH: Int](
         var ts3 = perf_counter_ns()
 
         step_ns += Int(ts1 - ts0)
-        solve_ns += Int(ts2 - ts1)
+        contact_ns += Int(ts_contact - ts1)
+        solve_ns += Int(ts2 - ts_contact)
         finalize_ns += Int(ts3 - ts2)
 
     var step_ms = Float64(step_ns) / 1e6
+    var contact_ms = Float64(contact_ns) / 1e6
     var solve_ms = Float64(solve_ns) / 1e6
     var finalize_ms = Float64(finalize_ns) / 1e6
-    var total_ms = step_ms + solve_ms + finalize_ms
+    var total_ms = step_ms + contact_ms + solve_ms + finalize_ms
 
     print(
         "  Per-kernel timing with sync (batch="
@@ -437,6 +453,15 @@ fn bench_physics_with_sync[BATCH: Int](
         String(step_ms / Float64(num_substeps) * 1000.0)[:7],
         "us/call,",
         String(step_ms / total_ms * 100.0)[:5],
+        "%)",
+    )
+    print(
+        "    Contact kernel:  ",
+        String(contact_ms)[:8],
+        "ms (",
+        String(contact_ms / Float64(num_substeps) * 1000.0)[:7],
+        "us/call,",
+        String(contact_ms / total_ms * 100.0)[:5],
         "%)",
     )
     print(

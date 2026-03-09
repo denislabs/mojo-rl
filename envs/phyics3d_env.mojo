@@ -615,6 +615,9 @@ struct Phyics3dEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Reset only done environments on GPU."""
         var states = LayoutTensor[
@@ -634,8 +637,20 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
         ]()
-        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-        Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
+
+        # Reuse model from pre-allocated workspace if available,
+        # otherwise allocate (backward compatible)
+        var model_buf: DeviceBuffer[gpu_dtype]
+        if workspace_ptr:
+            model_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr,
+                MODEL_SIZE,
+                owning=False,
+            )
+        else:
+            model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+            Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
 
         var model = LayoutTensor[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin

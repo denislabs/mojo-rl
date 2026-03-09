@@ -642,12 +642,13 @@ fn run_onpolicy_discrete_train_gpu[
                 block_dim=(tpb,),
             )
 
-            # Auto-reset done environments
+            # Auto-reset done environments (reuse model from workspace)
             E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                 ctx,
                 states_buf,
                 dones_buf,
                 rng_seed=UInt64(step_seed + 1),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
             )
 
             total_steps += n_envs
@@ -969,11 +970,13 @@ fn run_onpolicy_continuous_train_gpu[
                 block_dim=(tpb,),
             )
 
+            # Auto-reset done environments (reuse model from workspace)
             E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                 ctx,
                 states_buf,
                 dones_buf,
                 rng_seed=UInt64(step_seed + 1),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
             )
             # Update obs_buf for reset environments — must happen after selective_reset
             # so that the next step's actor sees the initial obs of the new episode,

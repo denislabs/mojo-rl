@@ -524,10 +524,11 @@ fn run_offpolicy_continuous_train_gpu[
         )
 
         # ------------------------------------------------------------------
-        # Reset done environments
+        # Reset done environments (reuse model from workspace)
         # ------------------------------------------------------------------
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1)
+            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+            workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
         # ------------------------------------------------------------------
@@ -837,8 +838,10 @@ fn run_offpolicy_discrete_train_gpu[
             block_dim=(1,),
         )
 
+        # Reuse model from workspace for reset
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1)
+            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+            workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
         # ------------------------------------------------------------------

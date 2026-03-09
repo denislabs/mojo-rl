@@ -958,12 +958,13 @@ struct DeepPPOContinuousAgentOld[
                     if episodes_completed >= num_episodes:
                         break
 
-            # Auto-reset done environments
+            # Auto-reset done environments (reuse model from workspace)
             EnvType.selective_reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
                 ctx,
                 env_states_buf,
                 dones_buf,
                 UInt64(step),
+                workspace_ptr=eval_ws_buf.unsafe_ptr(),
             )
 
             # Extract observations from reset environments using env-specific kernel
@@ -1016,6 +1017,7 @@ struct DeepPPOContinuousAgentOld[
     fn train_gpu[
         EnvType: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
+        PROFILE_PHASE3: Bool = False,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1818,7 +1820,7 @@ struct DeepPPOContinuousAgentOld[
                     block_dim=(TPB,),
                 )
 
-                # Auto-reset done environments
+                # Auto-reset done environments (reuse model from workspace)
                 EnvType.selective_reset_kernel_gpu[
                     Self.n_envs, EnvType.STATE_SIZE
                 ](
@@ -1826,6 +1828,7 @@ struct DeepPPOContinuousAgentOld[
                     states_buf,
                     dones_buf,
                     UInt64(total_steps * 1013904223 + t * 2654435761),
+                    workspace_ptr=step_ws_buf.unsafe_ptr(),
                 )
 
                 # Extract observations from state buffer after selective reset
@@ -2039,6 +2042,8 @@ struct DeepPPOContinuousAgentOld[
                     gather_time_ns += perf_counter_ns() - gather_start
 
                     # Train actor - forward pass
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var actor_fwd_start = perf_counter_ns()
                     gpu_actor.zero_grads(ctx)
                     Self.ActorModel.forward_gpu[MINIBATCH](
@@ -2053,6 +2058,8 @@ struct DeepPPOContinuousAgentOld[
                     actor_forward_ns += perf_counter_ns() - actor_fwd_start
 
                     # Actor grad kernel (ppo_continuous_actor_grad_kernel)
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var actor_grad_start = perf_counter_ns()
                     ctx.enqueue_function[
                         actor_grad_wrapper, actor_grad_wrapper
@@ -2100,6 +2107,8 @@ struct DeepPPOContinuousAgentOld[
                             break
 
                     # Actor backward pass
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var actor_bwd_start = perf_counter_ns()
                     Self.ActorModel.backward_gpu[MINIBATCH](
                         ctx,
@@ -2114,6 +2123,8 @@ struct DeepPPOContinuousAgentOld[
                     actor_backward_ns += perf_counter_ns() - actor_bwd_start
 
                     # Gradient clipping for actor (fully fused, 2 kernels)
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var actor_clip_start = perf_counter_ns()
                     if self.max_grad_norm > 0.0:
                         # Step 1: Compute partial sums of squared gradients
@@ -2140,6 +2151,8 @@ struct DeepPPOContinuousAgentOld[
                     actor_grad_clip_ns += perf_counter_ns() - actor_clip_start
 
                     # Actor optimizer step
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var actor_optim_start = perf_counter_ns()
                     gpu_actor.optimizer_step(ctx)
 
@@ -2170,6 +2183,8 @@ struct DeepPPOContinuousAgentOld[
                     actor_optim_ns += perf_counter_ns() - actor_optim_start
 
                     # Train critic - forward pass
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var critic_fwd_start = perf_counter_ns()
                     gpu_critic.zero_grads(ctx)
                     Self.CriticModel.forward_gpu[MINIBATCH](
@@ -2184,6 +2199,8 @@ struct DeepPPOContinuousAgentOld[
                     critic_forward_ns += perf_counter_ns() - critic_fwd_start
 
                     # Critic grad kernel
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var critic_grad_start = perf_counter_ns()
 
                     comptime if Self.clip_value:
@@ -2219,6 +2236,8 @@ struct DeepPPOContinuousAgentOld[
                     )
 
                     # Critic backward pass
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var critic_bwd_start = perf_counter_ns()
                     Self.CriticModel.backward_gpu[MINIBATCH](
                         ctx,
@@ -2233,6 +2252,8 @@ struct DeepPPOContinuousAgentOld[
                     critic_backward_ns += perf_counter_ns() - critic_bwd_start
 
                     # Gradient clipping for critic (fully fused, 2 kernels)
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var critic_clip_start = perf_counter_ns()
                     if self.max_grad_norm > 0.0:
                         # Step 1: Compute partial sums of squared gradients
@@ -2259,6 +2280,8 @@ struct DeepPPOContinuousAgentOld[
                     critic_grad_clip_ns += perf_counter_ns() - critic_clip_start
 
                     # Critic optimizer step
+                    comptime if PROFILE_PHASE3:
+                        ctx.synchronize()
                     var critic_optim_start = perf_counter_ns()
                     gpu_critic.optimizer_step(ctx)
                     # Sync at end of minibatch to ensure all GPU work completes

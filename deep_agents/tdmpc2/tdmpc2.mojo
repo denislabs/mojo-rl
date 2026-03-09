@@ -1959,12 +1959,13 @@ struct TDMPC2Agent[
                 recent_episode_count = 0
                 next_print += print_every
 
-            # Reset done environments
+            # Reset done environments (reuse model from workspace)
             ENV.selective_reset_kernel_gpu[n_envs, ENV.STATE_SIZE](
                 ctx,
                 gs.states_buf,
                 gs.env_done_buf,
                 UInt64(total_steps * 1013904223 + 2654435761),
+                workspace_ptr=step_ws_buf.unsafe_ptr(),
             )
             ENV.extract_obs_kernel_gpu[n_envs, ENV.STATE_SIZE, Self.OBS](
                 ctx, gs.states_buf, gs.env_obs_buf

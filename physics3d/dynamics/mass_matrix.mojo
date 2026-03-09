@@ -1623,7 +1623,24 @@ fn compute_mass_matrix_full_gpu[
             Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
         )
 
-    # Compute M[i,j] using direct body summation
+    # Pre-compute subtree membership: subtree_mask[k * NBODY + b] = True iff
+    # body k is in the subtree rooted at body b (i.e., k == b or k descends from b).
+    # This replaces O(depth) parent-chain walks with O(1) lookups in the inner loop.
+    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
+    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
+    for k in range(NBODY):
+        subtree_mask[k * NBODY + k] = True  # body is always in its own subtree
+        # Walk parent chain from k upward, marking ancestors
+        var current = k
+        while current > 0:
+            var body_off_c = model_body_offset(current)
+            var parent = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_c + BODY_IDX_PARENT])
+            )
+            subtree_mask[k * NBODY + parent] = True
+            current = parent
+
+    # Compute M[i,j] using direct body summation with subtree mask lookup
     for i in range(NV):
         var body_i = dof_body[i]
         var ai0 = workspace[env, cdof_idx + i * 6 + 0]
@@ -1645,15 +1662,10 @@ fn compute_mass_matrix_full_gpu[
             var mij: workspace.element_type = 0
 
             for k in range(NBODY):
-                var in_subtree_i = (k == body_i) or _is_descendant_gpu[
-                    DTYPE, NBODY, MODEL_SIZE
-                ](model, k, body_i)
-                if not in_subtree_i:
+                # O(1) subtree check replaces O(depth) parent-chain walk
+                if not subtree_mask[k * NBODY + body_i]:
                     continue
-                var in_subtree_j = (k == body_j) or _is_descendant_gpu[
-                    DTYPE, NBODY, MODEL_SIZE
-                ](model, k, body_j)
-                if not in_subtree_j:
+                if not subtree_mask[k * NBODY + body_j]:
                     continue
 
                 var body_off_k = model_body_offset(k)

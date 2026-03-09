@@ -386,6 +386,9 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Reset only done environments (GPUContinuousEnv trait).
 

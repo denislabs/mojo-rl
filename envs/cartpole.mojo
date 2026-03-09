@@ -1139,6 +1139,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.
 

@@ -41,6 +41,7 @@ from .env import Env
 from layout import LayoutTensor, Layout
 from nn import dtype
 from std.gpu import DeviceContext, DeviceBuffer
+from std.memory import UnsafePointer
 
 
 # ============================================================================
@@ -420,6 +421,9 @@ trait GPUDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -432,6 +436,9 @@ trait GPUDiscreteEnv:
             dones: Done flags buffer on GPU.
             rng_seed: Random seed for terrain/initial state generation.
                      Should be different each call (e.g., training step counter).
+            workspace_ptr: Optional pre-allocated workspace pointer.
+                          When non-null, reuses model data from workspace
+                          instead of allocating a new buffer each call.
         """
         ...
 
@@ -547,6 +554,9 @@ trait GPUContinuousEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -559,6 +569,9 @@ trait GPUContinuousEnv:
             dones: Done flags buffer on GPU.
             rng_seed: Random seed for terrain/initial state generation.
                      Should be different each call (e.g., training step counter).
+            workspace_ptr: Optional pre-allocated workspace pointer.
+                          When non-null, reuses model data from workspace
+                          instead of allocating a new buffer each call.
         """
         ...
 

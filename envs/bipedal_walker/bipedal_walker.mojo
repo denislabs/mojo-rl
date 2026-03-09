@@ -1552,6 +1552,9 @@ struct BipedalWalker[
         mut states_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """GPU selective reset kernel - resets only done environments."""
         var states = LayoutTensor[

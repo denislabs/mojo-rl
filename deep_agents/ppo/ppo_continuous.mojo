@@ -1807,12 +1807,13 @@ struct DeepPPOContinuousAgent[
                     if episodes_completed >= num_episodes:
                         break
 
-            # Auto-reset done environments
+            # Auto-reset done environments (reuse model from workspace)
             EnvType.selective_reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
                 ctx,
                 env_states_buf,
                 dones_buf,
                 UInt64(step),
+                workspace_ptr=eval_ws_buf.unsafe_ptr(),
             )
 
             # Extract observations from reset environments using env-specific kernel

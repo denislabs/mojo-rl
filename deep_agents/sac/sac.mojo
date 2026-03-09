@@ -1723,17 +1723,6 @@ struct DeepSACAgent[
                 self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                 self.alpha = exp(self.log_alpha)
 
-        # ----- Diagnostics (every 10000 train steps) -----
-        if self.train_step_count % 10000 == 0:
-            print(
-                "  [SAC diag] step="
-                + String(self.train_step_count)
-                + " alpha="
-                + String(self.alpha)[:6]
-                + " log_alpha="
-                + String(self.log_alpha)[:7]
-            )
-
     fn get_action_scale(self) -> Float64:
         return self.action_scale
 
