@@ -3,7 +3,7 @@
 This SAC (Soft Actor-Critic) implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state
 - Network (all-static) for stateless forward/backward ops via LayoutTensor
-- Sequential composition with StochasticActor output layer
+- Sequential composition with Linear output layer (state-dependent log_std)
 - ReplayBuffer from nn.replay for experience replay
 - OffPolicyAgent trait for shared training loop
 
@@ -35,7 +35,7 @@ from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Model, Linear, LinearReLU, Sequential, StochasticActor
+from nn.model import Model, Linear, LinearReLU, Sequential
 from nn.model.stochastic_actor import (
     rsample,
     rsample_with_cache,
@@ -149,17 +149,20 @@ struct DeepSACAgent[
     comptime HIDDEN = Self.hidden_dim
     comptime BATCH = Self.batch_size
 
-    # StochasticActor outputs mean + log_std
+    # Actor output: mean + log_std (state-dependent)
     comptime ACTOR_OUT = Self.ACTIONS * 2
 
     # Critic input dimension: obs + action concatenated
     comptime CRITIC_IN = Self.OBS + Self.ACTIONS
 
-    # Actor: obs → hidden (ReLU) → hidden (ReLU) → StochasticActor (mean + log_std)
+    # Actor: obs → hidden (ReLU) → hidden (ReLU) → Linear (mean + log_std)
+    # Linear[HIDDEN, ACTIONS*2] gives state-dependent log_std (SAC requirement).
+    # StochasticActor uses state-independent log_std (PPO design), which is wrong
+    # for SAC where different states need different exploration levels.
     comptime ActorModel = Sequential[
         LinearReLU[Self.OBS, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        StochasticActor[Self.HIDDEN, Self.ACTIONS],
+        Linear[Self.HIDDEN, Self.ACTIONS * 2],
     ]
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
@@ -317,19 +320,19 @@ struct DeepSACAgent[
         )
         for i in range(Self.ACTIONS):
             var m = Float64(out_arr[i])
-            var ls = Float64(out_arr[Self.ACTIONS + i])
+            var raw_ls = Float64(out_arr[Self.ACTIONS + i])
             if m != m:
                 m = 0.0
             elif m > 10.0:
                 m = 10.0
             elif m < -10.0:
                 m = -10.0
-            if ls != ls:
-                ls = -1.0
-            elif ls > 2.0:
-                ls = 2.0
-            elif ls < -5.0:
-                ls = -5.0
+            if raw_ls != raw_ls:
+                raw_ls = 0.0
+            # Tanh scaling for log_std (CleanRL-style)
+            from std.math import tanh as f64_tanh
+
+            var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
             mean_arr[i] = Scalar[dtype](m)
             log_std_arr[i] = Scalar[dtype](ls)
 
@@ -553,7 +556,7 @@ struct DeepSACAgent[
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
                 var m = Float64(cpu_state._next_out[b * Self.ACTOR_OUT + a])
-                var ls = Float64(
+                var raw_ls = Float64(
                     cpu_state._next_out[b * Self.ACTOR_OUT + Self.ACTIONS + a]
                 )
                 if m != m:
@@ -562,12 +565,12 @@ struct DeepSACAgent[
                     m = 10.0
                 elif m < -10.0:
                     m = -10.0
-                if ls != ls:
-                    ls = -1.0
-                elif ls > 2.0:
-                    ls = 2.0
-                elif ls < -5.0:
-                    ls = -5.0
+                if raw_ls != raw_ls:
+                    raw_ls = 0.0
+                # Tanh scaling for log_std (CleanRL-style)
+                from std.math import tanh as f64_tanh
+
+                var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
                 next_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
                 next_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 
@@ -768,7 +771,7 @@ struct DeepSACAgent[
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
                 var m = Float64(cpu_state._curr_out[b * Self.ACTOR_OUT + a])
-                var ls = Float64(
+                var raw_ls = Float64(
                     cpu_state._curr_out[b * Self.ACTOR_OUT + Self.ACTIONS + a]
                 )
                 if m != m:
@@ -777,12 +780,12 @@ struct DeepSACAgent[
                     m = 10.0
                 elif m < -10.0:
                     m = -10.0
-                if ls != ls:
-                    ls = -1.0
-                elif ls > 2.0:
-                    ls = 2.0
-                elif ls < -5.0:
-                    ls = -5.0
+                if raw_ls != raw_ls:
+                    raw_ls = 0.0
+                # Tanh scaling for log_std (CleanRL-style)
+                from std.math import tanh as f64_tanh
+
+                var ls = -5.0 + 0.5 * 7.0 * (f64_tanh(raw_ls) + 1.0)
                 curr_mean_arr[b * Self.ACTIONS + a] = Scalar[dtype](m)
                 curr_ls_arr[b * Self.ACTIONS + a] = Scalar[dtype](ls)
 

@@ -65,16 +65,15 @@ fn sac_reparameterize_kernel[
 
     var half_log_2pi = Scalar[dtype](0.9189385332046727)  # 0.5 * log(2π)
     var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
 
     var lp: log_probs.element_type = 0.0
 
     for a in range(ACTION_DIM):
-        # Clamp log_std
-        var ls = log_std[b, a]
-        if ls < log_std_min:
-            ls = log_std_min
-        if ls > log_std_max:
-            ls = log_std_max
+        # Tanh scaling for log_std (CleanRL-style, smooth bounds)
+        var raw_ls = log_std[b, a]
+        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
 
         var std_val = exp(ls)
 
@@ -150,13 +149,15 @@ fn sac_sample_actions_kernel[
     if b >= N:
         return
 
+    var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
+
     for a in range(ACTION_DIM):
         var mean_val = actor_out[b, a]
-        var ls = actor_out[b, ACTION_DIM + a]
-        if ls < log_std_min:
-            ls = log_std_min
-        if ls > log_std_max:
-            ls = log_std_max
+        # Tanh scaling for log_std (CleanRL-style)
+        var raw_ls = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
 
         var std_val = exp(ls)
 
@@ -230,14 +231,14 @@ fn sac_rsample_with_cache_kernel[
 
     var half_log_2pi = Scalar[dtype](0.9189385332046727)
     var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
     var lp: log_probs.element_type = 0.0
 
     for a in range(ACTION_DIM):
-        var ls = actor_out[b, ACTION_DIM + a]
-        if ls < log_std_min:
-            ls = log_std_min
-        if ls > log_std_max:
-            ls = log_std_max
+        # Tanh scaling for log_std (CleanRL-style)
+        var raw_ls = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh(raw_ls) + one)
 
         var std_val = exp(ls)
 
@@ -336,14 +337,15 @@ fn sac_rsample_bwd_kernel[
 
     var one = Scalar[dtype](1.0)
     var two = Scalar[dtype](2.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
 
     for a in range(ACTION_DIM):
         var act_val = curr_act[b, a]
-        var ls = actor_out[b, ACTION_DIM + a]
-        if ls < log_std_min:
-            ls = log_std_min
-        if ls > log_std_max:
-            ls = log_std_max
+        # Tanh scaling for log_std (CleanRL-style)
+        var raw_ls = actor_out[b, ACTION_DIM + a]
+        var tanh_raw = tanh(raw_ls)
+        var ls = log_std_min + half * ls_range * (tanh_raw + one)
 
         var sigma = exp(ls)
         var eps = eps_cache[b, a]
@@ -357,8 +359,11 @@ fn sac_rsample_bwd_kernel[
         # Grad wrt mean: z = mean + σ*ε, so ∂z/∂mean = 1
         actor_grad[b, a] = d_z
 
-        # Grad wrt log_std: ∂z/∂log_std = σ*ε, plus entropy term -log_std → d/d(log_std)=-1
-        actor_grad[b, ACTION_DIM + a] = d_z * sigma * eps - alpha_per_sample
+        # Grad wrt log_std: ∂z/∂log_std = σ*ε, plus entropy term -1
+        # Chain rule for tanh scaling: d(ls)/d(raw_ls) = 0.5 * range * (1 - tanh²(raw))
+        var d_ls = d_z * sigma * eps - alpha_per_sample
+        var d_ls_d_raw = half * ls_range * (one - tanh_raw * tanh_raw)
+        actor_grad[b, ACTION_DIM + a] = d_ls * d_ls_d_raw
 
 
 # =============================================================================
