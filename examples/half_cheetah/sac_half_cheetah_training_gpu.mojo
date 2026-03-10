@@ -48,7 +48,7 @@ comptime BATCH_SIZE = 1024
 comptime MAX_N_ENVS = 256
 
 # Training duration (off-policy uses steps, not episodes)
-comptime NUM_STEPS = 1_000_000
+comptime NUM_STEPS = 5_000_000
 comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
