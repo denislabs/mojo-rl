@@ -102,6 +102,7 @@ comptime TIA_VDELP0: UInt32 = 1 << 10
 comptime TIA_VDELP1: UInt32 = 1 << 11
 comptime TIA_VDELBL: UInt32 = 1 << 12
 comptime TIA_COSMIC_ARK: UInt32 = 1 << 13  # Cosmic Ark M0 bug
+comptime TIA_PADDLE_GROUND: UInt32 = 1 << 14  # Paddle capacitors grounded (VBLANK bit 7)
 
 # ============================================================================
 # TIA Registers (addresses)

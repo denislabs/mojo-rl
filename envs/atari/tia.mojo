@@ -13,7 +13,7 @@ Ported from CuLE (BSD-3): cule/atari/tia.hpp
 
 from .atari_state import AtariState
 from .flags import (
-    TIA_VBLANK, TIA_VSYNC, TIA_HMOVE,
+    TIA_VBLANK, TIA_VSYNC, TIA_HMOVE, TIA_PADDLE_GROUND,
     TIA_M0_LOCK, TIA_M1_LOCK,
     TIA_P0_REFLECT, TIA_P1_REFLECT,
     TIA_PF_REFLECT, TIA_PF_SCORE, TIA_PF_PRIORITY,
@@ -145,9 +145,14 @@ fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
             state.tia_flags = state.tia_flags | TIA_VBLANK
         else:
             state.tia_flags = state.tia_flags & ~TIA_VBLANK
-        # Bit 7: dump paddle capacitors (ground INPT0-INPT3)
+        # Bit 7: paddle capacitor grounding (real hardware latches this)
+        # When set: ground capacitors (charge=0, stays grounded)
+        # When clear: release ground (capacitors begin charging)
         if (value & 0x80) != 0:
             state.paddle_charge = 0
+            state.tia_flags = state.tia_flags | TIA_PADDLE_GROUND
+        else:
+            state.tia_flags = state.tia_flags & ~TIA_PADDLE_GROUND
 
     elif reg == 0x02:  # WSYNC — halt CPU until end of scanline
         state.wsync = True

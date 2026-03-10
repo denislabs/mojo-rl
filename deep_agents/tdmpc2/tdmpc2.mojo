@@ -1855,14 +1855,6 @@ struct TDMPC2Agent[
                 # Policy-based exploration: encode obs → policy → sample actions
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
-                    env_pi_enc_tensor,  # temp: use pi_out buf as output (n_envs x LATENT)
-                    env_obs_tensor,
-                    enc_params_tensor,
-                    gs.enc_env_ws_buf,
-                )
-                # Actually encode obs → z (not pi_out) — reuse env_z_buf
-                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
-                    ctx,
                     env_z_tensor,
                     env_obs_tensor,
                     enc_params_tensor,

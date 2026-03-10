@@ -673,13 +673,10 @@ fn tdmpc2_policy_grad_kernel[
 
     Policy loss: L = -rho * mean(Q(z, pi(z))) + entropy_coef * mean(-log_prob)
 
-    Gradient approximation:
-    - The gradient of -E[Q] w.r.t. mean: -rho/BATCH * tanh'(mean) * sign(Q-mean_Q)
-    - The gradient w.r.t. log_std: entropy bonus entropy_coef / BATCH
-
-    This simplified gradient treats Q as a scalar weight for the mean update.
-    For proper reparameterization, a full backward through the Q-network would
-    be needed. This approximation is effective in practice for TD-MPC2.
+    Gradient of -E[Q(z, tanh(mean))]:
+      d(-Q)/d(mean_j) = -Q_i * tanh'(mean_j) * rho / BATCH
+    The Q-value scales the gradient so the policy learns to output
+    actions that lead to higher Q-values.
 
     ACCUMULATES into grad_pi_out.
 
@@ -697,10 +694,8 @@ fn tdmpc2_policy_grad_kernel[
     if i >= BATCH_SIZE:
         return
 
-    # Gradient of -E[Q] w.r.t. policy mean:
-    # Maximize Q → gradient is -rho / BATCH for each action dim
-    # (multiplied by tanh' = 1 - tanh(mean)^2 at the mean output)
-    var neg_scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
+    var q_i = Scalar[dtype](q_values[i][0])
+    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
     var ent_scale = entropy_coef / Scalar[dtype](BATCH_SIZE)
 
     for j in range(ACTION_DIM):
@@ -710,21 +705,18 @@ fn tdmpc2_policy_grad_kernel[
         var t = Scalar[dtype](tanh(Float32(mean_raw)))
         var tanh_deriv = Scalar[dtype](1.0) - t * t
 
-        # Gradient w.r.t. mean: -rho/B * (1 - tanh(u)^2)
-        # (chain rule: d(-Q)/d(mean) = d(-Q)/d(action) * d(action)/d(u))
-        grad_pi_out[i, j] = grad_pi_out[i, j] + neg_scale * tanh_deriv
+        # d(-Q)/d(mean_j) = -rho/B * Q_i * tanh'(mean_j)
+        # Q_i scales the gradient: higher Q → stronger push in that direction
+        grad_pi_out[i, j] = grad_pi_out[i, j] + scale * q_i * tanh_deriv
 
-        # Gradient w.r.t. log_std: entropy bonus = +1/B (maximize entropy)
-        # log_prob contribution to entropy: -log_std (approx)
-        # maximize entropy = minimize -log_prob → gradient = -entropy_coef/B
+        # Gradient w.r.t. log_std: entropy bonus
+        # maximize entropy → gradient = -entropy_coef/B
         var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
-        # Clamp for stability
         if log_std_raw < LOG_STD_MIN:
             log_std_raw = LOG_STD_MIN
         elif log_std_raw > LOG_STD_MAX:
             log_std_raw = LOG_STD_MAX
 
-        # d(entropy)/d(log_std) = 1 → gradient to maximize entropy = -entropy_coef * (-1/B) = ent_scale
         grad_pi_out[i, ACTION_DIM + j] = (
             grad_pi_out[i, ACTION_DIM + j] - ent_scale
         )

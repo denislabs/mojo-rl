@@ -742,8 +742,8 @@ fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
     """
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
     for _ in range(TOTAL_SCANLINES):
-        # Charge paddle capacitor before scanline (game reads INPT during execution)
-        if state.paddle_charge < 255:
+        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
+        if state.paddle_charge < 255 and (state.tia_flags & TIA_PADDLE_GROUND) == 0:
             state.paddle_charge += 1
         var total = _run_scanline(state, rom, rom_size, overflow)
         overflow = total - CPU_CLOCKS_PER_LINE
@@ -787,9 +787,8 @@ fn run_frame_with_video(
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
 
     for _ in range(TOTAL_SCANLINES):
-        # Charge paddle capacitor before scanline so game reads correct
-        # charge during execution (matches real hardware continuous charging)
-        if state.paddle_charge < 255:
+        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
+        if state.paddle_charge < 255 and (state.tia_flags & TIA_PADDLE_GROUND) == 0:
             state.paddle_charge += 1
 
         var total = _run_scanline(state, rom, rom_size, overflow)
@@ -812,4 +811,4 @@ fn run_frame_with_video(
 
 
 # Import here to avoid circular dependency
-from .flags import TOTAL_SCANLINES, CPU_CLOCKS_PER_LINE, FRAME_WIDTH
+from .flags import TOTAL_SCANLINES, CPU_CLOCKS_PER_LINE, FRAME_WIDTH, TIA_PADDLE_GROUND
