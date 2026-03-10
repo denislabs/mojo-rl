@@ -353,6 +353,7 @@ struct TDMPC2Agent[
             z0[i] = z[i]
 
         # MPPI planning with warm-start
+
         var action = plan[
             Self.OBS,
             Self.ACT,
@@ -372,10 +373,10 @@ struct TDMPC2Agent[
             self.state.world_model,
             self.gamma,
             self.temperature,
+            self._prev_mean,
             self.action_scale,
             deterministic,
             self._episode_t0,
-            self._prev_mean,
         )
         # After first call in episode, subsequent calls warm-start
         self._episode_t0 = False

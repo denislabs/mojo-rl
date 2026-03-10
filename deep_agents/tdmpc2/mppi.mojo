@@ -67,10 +67,10 @@ fn plan[
     ],
     gamma: Float64,
     temperature: Float64,
+    mut prev_mean: List[Float64],
     action_scale: Float64 = 1.0,
     deterministic: Bool = False,
     t0: Bool = True,
-    mut prev_mean: List[Float64] = List[Float64](),
 ) -> InlineArray[Scalar[dtype], ACTION_DIM]:
     """MPPI planning in latent space.
 
