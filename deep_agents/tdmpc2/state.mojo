@@ -243,8 +243,9 @@ struct TDMPC2GPUState[
     var grad_pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var dummy_grad_buf: DeviceBuffer[dtype]  # [max(B_ZA, B_OBS)]
 
-    # ── TD targets + bins ──
+    # ── TD targets + reward targets + bins ──
     var td_targets_buf: DeviceBuffer[dtype]  # [H * BATCH * BINS]
+    var rew_targets_buf: DeviceBuffer[dtype]  # [H * BATCH * BINS]
     var bins_buf: DeviceBuffer[dtype]  # [BINS]
 
     # ── Batch data GPU buffers (CPU→GPU per training step) ──
@@ -407,8 +408,11 @@ struct TDMPC2GPUState[
         )
         self.dummy_grad_buf = ctx.enqueue_create_buffer[dtype](Self.DUMMY_SIZE)
 
-        # ── TD targets + bins ──
+        # ── TD targets + reward targets + bins ──
         self.td_targets_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TGTS_FLAT
+        )
+        self.rew_targets_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH_TGTS_FLAT
         )
         self.bins_buf = ctx.enqueue_create_buffer[dtype](Self.BINS)

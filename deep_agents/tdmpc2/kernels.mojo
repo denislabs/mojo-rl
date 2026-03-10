@@ -592,6 +592,61 @@ fn tdmpc2_compute_td_targets_kernel[
     td_targets[i, k + 1] = lower_w
 
 
+@always_inline
+fn tdmpc2_compute_reward_targets_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    rew_targets: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    v_min: Scalar[dtype],
+    v_max: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Compute two-hot encoded IMMEDIATE reward targets on GPU.
+
+    Unlike TD targets, this encodes just r_t (no bootstrapping).
+    Used for the reward prediction head.
+
+    Args:
+        rewards: Step rewards [BATCH].
+        rew_targets: Output two-hot distributions [BATCH, BINS].
+        v_min: Minimum value for distribution.
+        v_max: Maximum value for distribution.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var r = Scalar[dtype](rewards[i][0])
+
+    # Clamp to [v_min, v_max]
+    if r < v_min:
+        r = v_min
+    if r > v_max:
+        r = v_max
+
+    # Two-hot encoding: distribute probability between two adjacent bins
+    var step = (v_max - v_min) / Scalar[dtype](BINS - 1)
+    var k_float = (r - v_min) / step
+    var k = Int(k_float)
+    if k >= BINS - 1:
+        k = BINS - 2
+
+    var bin_low = v_min + step * Scalar[dtype](k)
+    var bin_high = bin_low + step
+    var upper_w = (bin_high - r) / (bin_high - bin_low)
+    var lower_w = Scalar[dtype](1.0) - upper_w
+
+    # Zero out this row, then set the two bins
+    for kk in range(BINS):
+        rew_targets[i, kk] = Scalar[dtype](0.0)
+    rew_targets[i, k] = upper_w
+    rew_targets[i, k + 1] = lower_w
+
+
 # =============================================================================
 # Policy Gradient Kernels
 # =============================================================================
