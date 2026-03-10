@@ -361,73 +361,119 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._render(self._renderer[])
 
     fn _render(self, mut renderer: Renderer2D):
-        if not renderer.begin_frame():
+        """Render Space Invaders — Atari-style dark theme."""
+        var bg_color = SDL_Color(10, 10, 30, 255)
+        if not renderer.begin_frame_with_color(bg_color):
             return
 
-        var sx = Float64(renderer.screen_width) / Float64(SCREEN_W)
-        var sy = Float64(renderer.screen_height) / Float64(SCREEN_H)
-        var white_c = SDL_Color(255, 255, 255, 255)
-        var green_c = SDL_Color(50, 255, 50, 255)
-        var red_c = SDL_Color(255, 50, 50, 255)
+        var sw = renderer.screen_width
+        var sh = renderer.screen_height
+        var sx = Float64(sw) / Float64(SCREEN_W)
+        var sy = Float64(sh) / Float64(SCREEN_H)
 
-        # Draw aliens
+        # Colors
+        var score_bar_color = SDL_Color(30, 30, 50, 255)
+        var sep_color = SDL_Color(100, 100, 140, 255)
+        var ship_color = SDL_Color(60, 220, 60, 255)
+        var bullet_color = SDL_Color(220, 220, 255, 255)
+        var alien_bullet_color = SDL_Color(255, 60, 60, 255)
+        # Alien row colors (top=most dangerous)
+        var a_c0 = SDL_Color(255, 60, 60, 255)   # red (30 pts)
+        var a_c1 = SDL_Color(255, 160, 60, 255)  # orange (20 pts)
+        var a_c2 = SDL_Color(255, 255, 60, 255)  # yellow (20 pts)
+        var a_c3 = SDL_Color(60, 255, 120, 255)  # green (10 pts)
+        var a_c4 = SDL_Color(60, 200, 255, 255)  # cyan (10 pts)
+
+        # -- Score area at top --
+        var score_area_h = Int(24.0 * sy)
+        renderer.draw_rect(0, 0, sw, score_area_h, score_bar_color)
+        renderer.draw_rect(0, score_area_h, sw, max(1, Int(sy)), sep_color)
+
+        var score_color = SDL_Color(200, 200, 220, 255)
+        var lives_color = SDL_Color(60, 220, 60, 255)
+        renderer.draw_text(
+            "SCORE: " + String(Int(self.state[S_SCORE])),
+            Int(10.0 * sx), score_area_h // 2 - 7, score_color,
+        )
+        renderer.draw_text(
+            "LIVES: " + String(Int(self.state[S_LIVES])),
+            sw - Int(80.0 * sx), score_area_h // 2 - 7, lives_color,
+        )
+
+        # -- Bottom info bar --
+        var info_h = max(1, Int(14.0 * sy))
+        var info_y = sh - info_h
+        renderer.draw_rect(0, info_y, sw, info_h, score_bar_color)
+        renderer.draw_rect(0, info_y, sw, max(1, Int(sy)), sep_color)
+        var info_color = SDL_Color(160, 160, 180, 255)
+        renderer.draw_text(
+            "Aliens: " + String(Int(self.state[S_ALIENS_REM])) + "      Frame: " + String(Int(self.state[S_STEP_COUNT])),
+            8, info_y + 2, info_color,
+        )
+
+        # Play area: game [0..SCREEN_H] → screen [play_top..info_y]
+        var play_top = score_area_h + max(1, Int(sy))
+        var play_h = info_y - play_top
+
+        # Helper to map game Y to screen Y
+        @always_inline
+        fn gy(game_y: Float64) -> Int:
+            return play_top + Int(game_y / Float64(SCREEN_H) * Float64(play_h))
+
+        # -- Draw aliens --
         for row in range(ALIEN_ROWS):
+            var color = a_c0
+            if row == 1:
+                color = a_c1
+            elif row == 2:
+                color = a_c2
+            elif row == 3:
+                color = a_c3
+            elif row == 4:
+                color = a_c4
             for col in range(ALIEN_COLS):
                 var idx = row * ALIEN_COLS + col
                 if self.state[S_ALIENS_START + idx] < 0.5:
                     continue
-                var ax = Int(
-                    Float64(ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X))
-                    + Float64(self.state[S_ALIEN_SX])
-                )
-                var ay = Int(
-                    Float64(ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y))
-                    + Float64(self.state[S_ALIEN_SY])
-                )
+                var ax_f = Float64(ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)) + Float64(self.state[S_ALIEN_SX])
+                var ay_f = Float64(ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)) + Float64(self.state[S_ALIEN_SY])
                 renderer.draw_rect(
-                    Int(Float64(ax) * sx),
-                    Int(Float64(ay) * sy),
+                    Int(ax_f * sx),
+                    gy(ay_f),
                     max(1, Int(Float64(ALIEN_WIDTH) * sx)),
-                    max(1, Int(Float64(ALIEN_HEIGHT) * sy)),
-                    green_c,
+                    max(1, Int(Float64(ALIEN_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))),
+                    color,
                 )
 
-        # Draw ship
-        var ship_x = Int(self.state[S_SHIP_X])
+        # -- Draw ship --
+        var ship_x = Float64(Int(self.state[S_SHIP_X]))
+        var ship_w = max(2, Int(Float64(SHIP_WIDTH) * sx))
+        var ship_h = max(2, Int(8.0 / Float64(SCREEN_H) * Float64(play_h)))
         renderer.draw_rect(
-            Int(Float64(ship_x - SHIP_WIDTH // 2) * sx),
-            Int(Float64(SHIP_Y - 4) * sy),
-            max(1, Int(Float64(SHIP_WIDTH) * sx)),
-            max(1, Int(8.0 * sy)),
-            white_c,
+            Int((ship_x - Float64(SHIP_WIDTH // 2)) * sx),
+            gy(Float64(SHIP_Y - 4)),
+            ship_w, ship_h, ship_color,
         )
 
-        # Draw player bullet
+        # -- Player bullet --
         if self.state[S_BULLET_ACTIVE] > 0.5:
+            var bul_w = max(2, Int(2.0 * sx))
+            var bul_h = max(2, Int(6.0 / Float64(SCREEN_H) * Float64(play_h)))
             renderer.draw_rect(
-                Int(Float64(self.state[S_BULLET_X]) * sx) - 1,
-                Int(Float64(self.state[S_BULLET_Y]) * sy),
-                max(1, Int(2.0 * sx)),
-                max(1, Int(4.0 * sy)),
-                white_c,
+                Int(Float64(self.state[S_BULLET_X]) * sx) - bul_w // 2,
+                gy(Float64(self.state[S_BULLET_Y])),
+                bul_w, bul_h, bullet_color,
             )
 
-        # Draw alien bullet
+        # -- Alien bullet --
         if self.state[S_ABUL_ACTIVE] > 0.5:
+            var abul_w = max(2, Int(2.0 * sx))
+            var abul_h = max(2, Int(6.0 / Float64(SCREEN_H) * Float64(play_h)))
             renderer.draw_rect(
-                Int(Float64(self.state[S_ABUL_X]) * sx) - 1,
-                Int(Float64(self.state[S_ABUL_Y]) * sy),
-                max(1, Int(2.0 * sx)),
-                max(1, Int(4.0 * sy)),
-                red_c,
+                Int(Float64(self.state[S_ABUL_X]) * sx) - abul_w // 2,
+                gy(Float64(self.state[S_ABUL_Y])),
+                abul_w, abul_h, alien_bullet_color,
             )
-
-        # Info
-        var info = List[String]()
-        info.append("Score: " + String(Int(self.state[S_SCORE])))
-        info.append("Lives: " + String(Int(self.state[S_LIVES])))
-        info.append("Aliens: " + String(Int(self.state[S_ALIENS_REM])))
-        renderer.draw_info_box(info)
 
         renderer.flip()
 

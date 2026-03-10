@@ -346,23 +346,57 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._render(self._renderer[])
 
     fn _render(self, mut renderer: Renderer2D):
-        if not renderer.begin_frame():
+        """Render Breakout state — Atari-style dark theme."""
+        var bg_color = SDL_Color(20, 20, 40, 255)
+        if not renderer.begin_frame_with_color(bg_color):
             return
 
-        var sx = Float64(renderer.screen_width) / Float64(SCREEN_W)
-        var sy = Float64(renderer.screen_height) / Float64(SCREEN_H)
+        var sw = renderer.screen_width
+        var sh = renderer.screen_height
+        var sx = Float64(sw) / Float64(SCREEN_W)
+        var sy = Float64(sh) / Float64(SCREEN_H)
 
-        var white_c = SDL_Color(255, 255, 255, 255)
-        # Brick row colors
-        # Brick row colors
-        var c_red = SDL_Color(255, 50, 50, 255)
-        var c_orange = SDL_Color(255, 140, 50, 255)
-        var c_yellow = SDL_Color(255, 255, 50, 255)
-        var c_green = SDL_Color(50, 255, 50, 255)
-        var c_aqua = SDL_Color(50, 255, 255, 255)
-        var c_blue = SDL_Color(50, 100, 255, 255)
+        # Colors
+        var score_bar_color = SDL_Color(40, 40, 60, 255)
+        var sep_color = SDL_Color(120, 120, 160, 255)
+        var paddle_color = SDL_Color(180, 180, 220, 255)
+        var ball_color = SDL_Color(240, 240, 255, 255)
 
-        # Draw bricks
+        # Brick row colors (vivid, Atari-style)
+        var c_red = SDL_Color(220, 50, 50, 255)
+        var c_orange = SDL_Color(220, 130, 40, 255)
+        var c_yellow = SDL_Color(200, 200, 40, 255)
+        var c_green = SDL_Color(40, 200, 40, 255)
+        var c_aqua = SDL_Color(40, 200, 200, 255)
+        var c_blue = SDL_Color(60, 100, 220, 255)
+
+        # -- Score area at top --
+        var score_area_h = Int(24.0 * sy)
+        renderer.draw_rect(0, 0, sw, score_area_h, score_bar_color)
+        renderer.draw_rect(0, score_area_h, sw, max(1, Int(sy)), sep_color)
+
+        # Score + lives text in score bar
+        var score_color = SDL_Color(200, 200, 220, 255)
+        var lives_color = SDL_Color(220, 80, 80, 255)
+        var score_str = "SCORE: " + String(Int(self.state[S_SCORE]))
+        var lives_str = "LIVES: " + String(Int(self.state[S_LIVES]))
+        renderer.draw_text(score_str, Int(10.0 * sx), score_area_h // 2 - 7, score_color)
+        renderer.draw_text(lives_str, sw - Int(80.0 * sx), score_area_h // 2 - 7, lives_color)
+
+        # -- Bottom info bar --
+        var info_h = max(1, Int(14.0 * sy))
+        var info_y = sh - info_h
+        renderer.draw_rect(0, info_y, sw, info_h, score_bar_color)
+        renderer.draw_rect(0, info_y, sw, max(1, Int(sy)), sep_color)
+        var info_color = SDL_Color(160, 160, 180, 255)
+        var info_str = "Bricks: " + String(Int(self.state[S_BRICKS_REM])) + "      Frame: " + String(Int(self.state[S_STEP_COUNT]))
+        renderer.draw_text(info_str, 8, info_y + 2, info_color)
+
+        # Play area mapping: game [0..SCREEN_H] → screen [play_top..info_y]
+        var play_top = score_area_h + max(1, Int(sy))
+        var play_h = info_y - play_top
+
+        # -- Draw bricks --
         for row in range(BRICK_ROWS):
             for col in range(BRICK_COLS):
                 var idx = row * BRICK_COLS + col
@@ -383,39 +417,31 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     color = c_blue
                 renderer.draw_rect(
                     Int(Float64(bx) * sx),
-                    Int(Float64(by) * sy),
+                    play_top + Int(Float64(by) / Float64(SCREEN_H) * Float64(play_h)),
                     max(1, Int(Float64(BRICK_WIDTH) * sx)),
-                    max(1, Int(Float64(BRICK_HEIGHT) * sy)),
+                    max(1, Int(Float64(BRICK_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))),
                     color,
                 )
 
-        # Draw paddle
+        # -- Draw paddle --
         var px = Int(self.state[S_PADDLE_X])
+        var pw = max(2, Int(Float64(PADDLE_WIDTH) * sx))
+        var p_h = max(2, Int(Float64(PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h)))
         renderer.draw_rect(
             Int(Float64(px - PADDLE_WIDTH // 2) * sx),
-            Int(Float64(PADDLE_Y - PADDLE_HEIGHT) * sy),
-            max(1, Int(Float64(PADDLE_WIDTH) * sx)),
-            max(1, Int(Float64(PADDLE_HEIGHT) * sy)),
-            white_c,
+            play_top + Int(Float64(PADDLE_Y - PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h)),
+            pw, p_h, paddle_color,
         )
 
-        # Draw ball
-        var ball_x = Int(self.state[S_BALL_X])
-        var ball_y = Int(self.state[S_BALL_Y])
+        # -- Draw ball --
+        var ball_x = Float64(Int(self.state[S_BALL_X]))
+        var ball_y = Float64(Int(self.state[S_BALL_Y]))
+        var bsz = max(4, Int(Float64(BALL_SIZE) * sx * 2.0))
         renderer.draw_rect(
-            Int(Float64(ball_x) * sx) - 1,
-            Int(Float64(ball_y) * sy) - 1,
-            max(2, Int(Float64(BALL_SIZE) * sx)),
-            max(2, Int(Float64(BALL_SIZE) * sy)),
-            white_c,
+            Int(ball_x * sx) - bsz // 2,
+            play_top + Int(ball_y / Float64(SCREEN_H) * Float64(play_h)) - bsz // 2,
+            bsz, bsz, ball_color,
         )
-
-        # Info
-        var info = List[String]()
-        info.append("Score: " + String(Int(self.state[S_SCORE])))
-        info.append("Lives: " + String(Int(self.state[S_LIVES])))
-        info.append("Bricks: " + String(Int(self.state[S_BRICKS_REM])))
-        renderer.draw_info_box(info)
 
         renderer.flip()
 
