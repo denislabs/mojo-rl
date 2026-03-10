@@ -34,13 +34,13 @@ comptime HIDDEN_DIM = 128
 
 # PPO hyperparameters
 comptime ROLLOUT_LEN = 256  # Steps per env per update
-comptime N_ENVS = 128  # Parallel environments on GPU
-comptime GPU_MINIBATCH_SIZE = 1024
+comptime N_ENVS = 256  # Parallel environments on GPU
+comptime GPU_MINIBATCH_SIZE = 2048
 
 # Training duration
 # Each update = ROLLOUT_LEN * N_ENVS = 32768 transitions
 # 200 updates = ~6.5M total transitions
-comptime NUM_UPDATES = 200
+comptime NUM_UPDATES = 10_000
 
 comptime dtype = DType.float32
 
@@ -140,7 +140,7 @@ fn main() raises:
                 ctx,
                 num_updates=NUM_UPDATES,
                 verbose=True,
-                print_every=10,
+                print_every=1000,
             )
 
             var end_time = perf_counter_ns()
