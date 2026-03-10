@@ -1718,6 +1718,18 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
         ](gs.dummy_grad_buf.unsafe_ptr())
 
+        # Q1 cache + grad buffers for proper DPG policy gradient
+        var q1_cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+        ](gs.q1_cache_buf.unsafe_ptr())
+        var q1_grads_tensor_pi = gs.q1.grads_view()
+        var grad_za_pi_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
+        ](gs.grad_za_buf.unsafe_ptr())
+        var grad_logits_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+        ](gs.grad_logits_buf.unsafe_ptr())
+
         # n_envs-sized tensors for data collection phase
         var env_z_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.LATENT), MutAnyOrigin
@@ -2673,57 +2685,58 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
-                # Q1 forward (stop-grad) → decode → init q_min
-                Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                # ── Proper DPG: backprop through Q1 to get dQ/d(action) ──
+                # Q1 forward WITH cache (need cache for backward)
+                Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
                     ctx,
-                    logits_tensor,
                     za_tensor,
+                    logits_tensor,
                     q1_params_tensor,
+                    q1_cache_tensor,
                     gs.q1_batch_ws_buf,
                 )
-                ctx.enqueue_function[
-                    tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                    tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                ](
-                    logits_tensor,
-                    bins_tensor,
-                    q_min_tensor,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
 
-                # Q2 forward → fused decode + min-reduce (use 2 Qs for policy, as in CPU)
-                Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    logits_tensor,
-                    za_tensor,
-                    q2_params_tensor,
-                    gs.q2_batch_ws_buf,
-                )
+                # Decode Q from logits AND compute dL/d(logits)
                 ctx.enqueue_function[
-                    tdmpc2_decode_and_min_kernel[
+                    tdmpc2_q_decode_backward_kernel[
                         dtype, Self.BATCH, Self.BINS
                     ],
-                    tdmpc2_decode_and_min_kernel[
+                    tdmpc2_q_decode_backward_kernel[
                         dtype, Self.BATCH, Self.BINS
                     ],
                 ](
                     logits_tensor,
                     bins_tensor,
-                    q_min_tensor,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-                # Policy gradient kernel: maximize Q + entropy
-                ctx.enqueue_function[
-                    tdmpc2_policy_grad_kernel[dtype, Self.BATCH, Self.ACT],
-                    tdmpc2_policy_grad_kernel[dtype, Self.BATCH, Self.ACT],
-                ](
-                    pi_out_tensor,
-                    q_min_tensor,
-                    grad_pi_out_tensor,
+                    grad_logits_tensor,
                     pol_rho_t,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                # Q1 backward: dL/d(logits) → dL/d(za)
+                # (Q1 param grads are ignored — already consumed by WM optimizer)
+                Self.WM.QNet.backward_gpu[Self.BATCH](
+                    ctx,
+                    grad_logits_tensor,
+                    grad_za_pi_tensor,
+                    q1_params_tensor,
+                    q1_cache_tensor,
+                    q1_grads_tensor_pi,
+                    gs.q1_batch_ws_buf,
+                )
+
+                # Chain dQ/d(action) through tanh → dL/d(mean) + entropy grad
+                ctx.enqueue_function[
+                    tdmpc2_action_tanh_chain_kernel[
+                        dtype, Self.BATCH, Self.ACT, Self.LATENT
+                    ],
+                    tdmpc2_action_tanh_chain_kernel[
+                        dtype, Self.BATCH, Self.ACT, Self.LATENT
+                    ],
+                ](
+                    grad_za_pi_tensor,
+                    pi_out_tensor,
+                    grad_pi_out_tensor,
                     entropy_coef_scalar,
                     grid_dim=(Self.BATCH_BLOCKS,),
                     block_dim=(TPB,),

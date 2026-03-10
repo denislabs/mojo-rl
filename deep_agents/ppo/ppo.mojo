@@ -2538,7 +2538,7 @@ fn _sample_actions_kernel[
     actions[i] = selected_action
 
     # Compute log probability
-    var logit_sel = logits[i, selected_action] - max_logit
+    var logit_sel = logits[i, Int(selected_action)] - max_logit
     var selected_prob_simd = exp(logit_sel) / sum_exp
     var selected_prob = Float32(selected_prob_simd[0])
     var eps = Float32(1e-8)
