@@ -5,6 +5,7 @@ for building neural networks.
 
 Available agents:
 - DQNAgent: Deep Q-Network with Double DQN support
+- DQNCNNAgent: DQN with CNN for pixel observations (Nature DQN architecture)
 - DQNPERAgent: DQN with Prioritized Experience Replay
 - DuelingDQNAgent: Dueling DQN with separate V(s) and A(s,a) streams
 - DeepDDPGAgent: Deep Deterministic Policy Gradient
@@ -16,6 +17,7 @@ Available agents:
 """
 
 from .dqn import DQNAgent
+from .dqn_cnn import DQNCNNAgent
 from .dqn_per import DQNPERAgent
 from .dueling_dqn import DuelingDQNAgent
 from .ddpg import DeepDDPGAgent

@@ -15,7 +15,7 @@ Usage:
     PongEnv.step_kernel_gpu[BATCH, STATE, OBS](ctx, states, ...)
 """
 
-from .pong import PongEnv
+from .pong import PongEnv, PongPixelEnv
 from .breakout import BreakoutEnv
 from .space_invaders import SpaceInvadersEnv
 from .core.gpu_env import ArcadeGameState, ArcadeGameAction
