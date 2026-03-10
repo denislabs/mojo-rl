@@ -102,7 +102,7 @@ struct AtariEnvironment(Movable):
         # Return score delta as reward (game-specific extraction happens externally)
         return total_reward
 
-    fn step_with_game[GameDef: _GameDefTrait](mut self, action_idx: Int) -> Int:
+    fn step_with_game[GAME: GameDef](mut self, action_idx: Int) -> Int:
         """Execute one step using a game definition for reward/terminal extraction.
 
         This is the preferred interface — it handles:
@@ -110,7 +110,7 @@ struct AtariEnvironment(Movable):
         - Frame skipping
         - Score/reward/lives/terminal extraction from RAM
         """
-        var ale_action = GameDef.map_action(action_idx)
+        var ale_action = GAME.map_action(action_idx)
         var prev_score = Int(self.state.score)
 
         for frame in range(self.frame_skip):
@@ -118,12 +118,12 @@ struct AtariEnvironment(Movable):
             run_frame(self.state, self.rom, self.rom_size)
 
         # Extract RL signals from RAM
-        var new_score = GameDef.get_score(self.state.ram)
+        var new_score = GAME.get_score(self.state.ram)
         var reward = new_score - prev_score
         self.state.score = Int32(new_score)
         self.state.reward = Int32(reward)
-        self.state.lives = UInt8(GameDef.get_lives(self.state.ram))
-        self.state.terminal = GameDef.is_terminal(self.state.ram)
+        self.state.lives = UInt8(GAME.get_lives(self.state.ram))
+        self.state.terminal = GAME.is_terminal(self.state.ram)
 
         # Check max frames truncation
         if (
@@ -156,7 +156,9 @@ struct AtariEnvironment(Movable):
 # ============================================================================
 
 
-trait _GameDefTrait:
+trait GameDef:
+    comptime NUM_ACTIONS: Int
+
     @staticmethod
     fn get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
         ...

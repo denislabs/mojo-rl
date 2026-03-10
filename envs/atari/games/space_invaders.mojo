@@ -19,10 +19,11 @@ from ..flags import (
     ACTION_LEFTFIRE,
     ACTION_RIGHTFIRE,
 )
+from ..environment import GameDef
 from .helpers import get_decimal_score_2
 
 
-struct SpaceInvadersDef:
+struct SpaceInvadersDef(GameDef):
     """Space Invaders game definition."""
 
     comptime GAME_NAME: String = "SpaceInvaders"

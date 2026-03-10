@@ -19,9 +19,10 @@ from ..flags import (
     ACTION_RIGHTFIRE,
     ACTION_LEFTFIRE,
 )
+from ..environment import GameDef
 
 
-struct PongDef:
+struct PongDef(GameDef):
     """Pong game definition."""
 
     comptime GAME_NAME: String = "Pong"

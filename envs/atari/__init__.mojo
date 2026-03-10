@@ -16,6 +16,7 @@ Usage:
 from .atari_state import AtariState
 from .environment import AtariEnvironment, RomData, load_rom
 from .frame_render import render_frame_bgra, render_frame_rgb, render_frame_grayscale
+from .atari_env import AtariEnv, AtariEnvState, AtariAction
 from .flags import (
     ACTION_NOOP, ACTION_FIRE, ACTION_UP, ACTION_RIGHT,
     ACTION_LEFT, ACTION_DOWN,

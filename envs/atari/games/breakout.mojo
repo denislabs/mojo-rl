@@ -18,9 +18,10 @@ from ..flags import (
     ACTION_RIGHT,
     ACTION_LEFT,
 )
+from ..environment import GameDef
 
 
-struct BreakoutDef:
+struct BreakoutDef(GameDef):
     """Breakout game definition."""
 
     comptime GAME_NAME: String = "Breakout"
