@@ -40,7 +40,7 @@ from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from ..core.gpu_env import AtariGameState, AtariGameAction, gpu_dtype
+from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype
 from ..core.colors import SCREEN_W, SCREEN_H
 
 # ============================================================================
@@ -102,8 +102,8 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     """Native Space Invaders — CPU+GPU dual path."""
 
     comptime dtype = Self.DTYPE
-    comptime StateType = AtariGameState
-    comptime ActionType = AtariGameAction
+    comptime StateType = ArcadeGameState
+    comptime ActionType = ArcadeGameAction
 
     comptime STATE_SIZE: Int = 80
     comptime OBS_DIM: Int = 8
@@ -131,7 +131,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU reset + step
     # ========================================================================
 
-    fn reset(mut self) -> AtariGameState:
+    fn reset(mut self) -> ArcadeGameState:
         self._rng_counter += 1
         self.state[S_SHIP_X] = Scalar[Self.dtype](SCREEN_W // 2)
         self.state[S_BULLET_ACTIVE] = 0.0
@@ -149,14 +149,14 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         for r in range(70, 80):
             self.state[r] = 0.0
         self.done = False
-        return AtariGameState(index=0)
+        return ArcadeGameState(index=0)
 
     fn step(
-        mut self, action: AtariGameAction, verbose: Bool = False
-    ) -> Tuple[AtariGameState, Scalar[Self.dtype], Bool]:
+        mut self, action: ArcadeGameAction, verbose: Bool = False
+    ) -> Tuple[ArcadeGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
         return (
-            AtariGameState(index=Int(self.state[S_STEP_COUNT])),
+            ArcadeGameState(index=Int(self.state[S_STEP_COUNT])),
             result[0],
             result[1],
         )
@@ -200,7 +200,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.state[S_ALIEN_TIMER] -= 1.0
         if self.state[S_ALIEN_TIMER] <= 0:
             self.state[S_ALIEN_TIMER] = Scalar[Self.dtype](ALIEN_MOVE_INTERVAL)
-            self.state[S_ALIEN_SX] += self.state[S_ALIEN_DIR] * Scalar[Self.dtype](ALIEN_SHIFT_X)
+            self.state[S_ALIEN_SX] += self.state[S_ALIEN_DIR] * Scalar[
+                Self.dtype
+            ](ALIEN_SHIFT_X)
             # Check bounds: reverse direction + drop
             if self.state[S_ALIEN_SX] > Scalar[Self.dtype](
                 SCREEN_W - ALIEN_LEFT - ALIEN_COLS * (ALIEN_WIDTH + ALIEN_GAP_X)
@@ -209,19 +211,30 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 self.state[S_ALIEN_SY] += Scalar[Self.dtype](ALIEN_DROP_Y)
 
         # Alien firing (random)
-        if self.state[S_ABUL_ACTIVE] < 0.5 and random_float64() < ALIEN_FIRE_CHANCE:
+        if (
+            self.state[S_ABUL_ACTIVE] < 0.5
+            and random_float64() < ALIEN_FIRE_CHANCE
+        ):
             # Pick a random alive alien in the bottom row
             for row in range(ALIEN_ROWS - 1, -1, -1):
                 for col in range(ALIEN_COLS):
                     var idx = row * ALIEN_COLS + col
                     if self.state[S_ALIENS_START + idx] > 0.5:
                         self.state[S_ABUL_ACTIVE] = 1.0
-                        self.state[S_ABUL_X] = Scalar[Self.dtype](
-                            ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
-                        ) + self.state[S_ALIEN_SX] + Scalar[Self.dtype](ALIEN_WIDTH // 2)
-                        self.state[S_ABUL_Y] = Scalar[Self.dtype](
-                            ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
-                        ) + self.state[S_ALIEN_SY] + Scalar[Self.dtype](ALIEN_HEIGHT)
+                        self.state[S_ABUL_X] = (
+                            Scalar[Self.dtype](
+                                ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
+                            )
+                            + self.state[S_ALIEN_SX]
+                            + Scalar[Self.dtype](ALIEN_WIDTH // 2)
+                        )
+                        self.state[S_ABUL_Y] = (
+                            Scalar[Self.dtype](
+                                ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+                            )
+                            + self.state[S_ALIEN_SY]
+                            + Scalar[Self.dtype](ALIEN_HEIGHT)
+                        )
                         break
                 if self.state[S_ABUL_ACTIVE] > 0.5:
                     break
@@ -235,12 +248,18 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     var idx = row * ALIEN_COLS + col
                     if self.state[S_ALIENS_START + idx] < 0.5:
                         continue
-                    var ax = Scalar[Self.dtype](
-                        ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
-                    ) + self.state[S_ALIEN_SX]
-                    var ay = Scalar[Self.dtype](
-                        ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
-                    ) + self.state[S_ALIEN_SY]
+                    var ax = (
+                        Scalar[Self.dtype](
+                            ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
+                        )
+                        + self.state[S_ALIEN_SX]
+                    )
+                    var ay = (
+                        Scalar[Self.dtype](
+                            ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+                        )
+                        + self.state[S_ALIEN_SY]
+                    )
                     if (
                         bul_x >= ax
                         and bul_x <= ax + Scalar[Self.dtype](ALIEN_WIDTH)
@@ -276,7 +295,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Check aliens reached bottom
         var lowest_alien_y = self.state[S_ALIEN_SY] + Scalar[Self.dtype](
-            ALIEN_TOP + (ALIEN_ROWS - 1) * (ALIEN_HEIGHT + ALIEN_GAP_Y) + ALIEN_HEIGHT
+            ALIEN_TOP
+            + (ALIEN_ROWS - 1) * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+            + ALIEN_HEIGHT
         )
         if lowest_alien_y >= Scalar[Self.dtype](SHIP_Y):
             self.done = True
@@ -295,8 +316,8 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Trait methods
     # ========================================================================
 
-    fn get_state(self) -> AtariGameState:
-        return AtariGameState(index=Int(self.state[S_STEP_COUNT]))
+    fn get_state(self) -> ArcadeGameState:
+        return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     fn close(mut self):
         if self._renderer_initialized:
@@ -304,8 +325,8 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> AtariGameAction:
-        return AtariGameAction(value=action_idx)
+    fn action_from_index(self, action_idx: Int) -> ArcadeGameAction:
+        return ArcadeGameAction(value=action_idx)
 
     fn num_actions(self) -> Int:
         return 4
@@ -316,7 +337,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     fn num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: AtariGameState) -> Int:
+    fn state_to_index(self, state: ArcadeGameState) -> Int:
         return state.index
 
     fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
@@ -328,9 +349,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.state[S_ABUL_X] / Scalar[Self.dtype](SCREEN_W))
         obs.append(self.state[S_ABUL_Y] / Scalar[Self.dtype](SCREEN_H))
         obs.append(self.state[S_ABUL_ACTIVE])
-        obs.append(
-            self.state[S_ALIENS_REM] / Scalar[Self.dtype](TOTAL_ALIENS)
-        )
+        obs.append(self.state[S_ALIENS_REM] / Scalar[Self.dtype](TOTAL_ALIENS))
         return obs^
 
     fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
@@ -378,7 +397,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var bullet_color = SDL_Color(220, 220, 255, 255)
         var alien_bullet_color = SDL_Color(255, 60, 60, 255)
         # Alien row colors (top=most dangerous)
-        var a_c0 = SDL_Color(255, 60, 60, 255)   # red (30 pts)
+        var a_c0 = SDL_Color(255, 60, 60, 255)  # red (30 pts)
         var a_c1 = SDL_Color(255, 160, 60, 255)  # orange (20 pts)
         var a_c2 = SDL_Color(255, 255, 60, 255)  # yellow (20 pts)
         var a_c3 = SDL_Color(60, 255, 120, 255)  # green (10 pts)
@@ -393,11 +412,15 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var lives_color = SDL_Color(60, 220, 60, 255)
         renderer.draw_text(
             "SCORE: " + String(Int(self.state[S_SCORE])),
-            Int(10.0 * sx), score_area_h // 2 - 7, score_color,
+            Int(10.0 * sx),
+            score_area_h // 2 - 7,
+            score_color,
         )
         renderer.draw_text(
             "LIVES: " + String(Int(self.state[S_LIVES])),
-            sw - Int(80.0 * sx), score_area_h // 2 - 7, lives_color,
+            sw - Int(80.0 * sx),
+            score_area_h // 2 - 7,
+            lives_color,
         )
 
         # -- Bottom info bar --
@@ -407,8 +430,13 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         renderer.draw_rect(0, info_y, sw, max(1, Int(sy)), sep_color)
         var info_color = SDL_Color(160, 160, 180, 255)
         renderer.draw_text(
-            "Aliens: " + String(Int(self.state[S_ALIENS_REM])) + "      Frame: " + String(Int(self.state[S_STEP_COUNT])),
-            8, info_y + 2, info_color,
+            "Aliens: "
+            + String(Int(self.state[S_ALIENS_REM]))
+            + "      Frame: "
+            + String(Int(self.state[S_STEP_COUNT])),
+            8,
+            info_y + 2,
+            info_color,
         )
 
         # Play area: game [0..SCREEN_H] → screen [play_top..info_y]
@@ -435,13 +463,24 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 var idx = row * ALIEN_COLS + col
                 if self.state[S_ALIENS_START + idx] < 0.5:
                     continue
-                var ax_f = Float64(ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)) + Float64(self.state[S_ALIEN_SX])
-                var ay_f = Float64(ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)) + Float64(self.state[S_ALIEN_SY])
+                var ax_f = Float64(
+                    ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
+                ) + Float64(self.state[S_ALIEN_SX])
+                var ay_f = Float64(
+                    ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+                ) + Float64(self.state[S_ALIEN_SY])
                 renderer.draw_rect(
                     Int(ax_f * sx),
                     gy(ay_f),
                     max(1, Int(Float64(ALIEN_WIDTH) * sx)),
-                    max(1, Int(Float64(ALIEN_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))),
+                    max(
+                        1,
+                        Int(
+                            Float64(ALIEN_HEIGHT)
+                            / Float64(SCREEN_H)
+                            * Float64(play_h)
+                        ),
+                    ),
                     color,
                 )
 
@@ -452,7 +491,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         renderer.draw_rect(
             Int((ship_x - Float64(SHIP_WIDTH // 2)) * sx),
             gy(Float64(SHIP_Y - 4)),
-            ship_w, ship_h, ship_color,
+            ship_w,
+            ship_h,
+            ship_color,
         )
 
         # -- Player bullet --
@@ -462,7 +503,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             renderer.draw_rect(
                 Int(Float64(self.state[S_BULLET_X]) * sx) - bul_w // 2,
                 gy(Float64(self.state[S_BULLET_Y])),
-                bul_w, bul_h, bullet_color,
+                bul_w,
+                bul_h,
+                bullet_color,
             )
 
         # -- Alien bullet --
@@ -472,7 +515,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             renderer.draw_rect(
                 Int(Float64(self.state[S_ABUL_X]) * sx) - abul_w // 2,
                 gy(Float64(self.state[S_ABUL_Y])),
-                abul_w, abul_h, alien_bullet_color,
+                abul_w,
+                abul_h,
+                alien_bullet_color,
             )
 
         renderer.flip()
@@ -599,7 +644,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if abul_active < Scalar[gpu_dtype](0.5):
             var rng = xorshift32(
                 Scalar[DType.uint32](
-                    UInt32(i) * 2654435761 + UInt32(rng_seed) + UInt32(Int(steps))
+                    UInt32(i) * 2654435761
+                    + UInt32(rng_seed)
+                    + UInt32(Int(steps))
                 )
             )
             var fire_result = random_range[gpu_dtype](
@@ -610,14 +657,26 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 for row in range(ALIEN_ROWS - 1, -1, -1):
                     for col in range(ALIEN_COLS):
                         var idx = row * ALIEN_COLS + col
-                        if states[i, S_ALIENS_START + idx] > Scalar[gpu_dtype](0.5):
+                        if states[i, S_ALIENS_START + idx] > Scalar[gpu_dtype](
+                            0.5
+                        ):
                             abul_active = 1.0
-                            abul_x = Scalar[gpu_dtype](
-                                ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
-                            ) + alien_sx + Scalar[gpu_dtype](ALIEN_WIDTH // 2)
-                            abul_y = Scalar[gpu_dtype](
-                                ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
-                            ) + alien_sy + Scalar[gpu_dtype](ALIEN_HEIGHT)
+                            abul_x = (
+                                Scalar[gpu_dtype](
+                                    ALIEN_LEFT
+                                    + col * (ALIEN_WIDTH + ALIEN_GAP_X)
+                                )
+                                + alien_sx
+                                + Scalar[gpu_dtype](ALIEN_WIDTH // 2)
+                            )
+                            abul_y = (
+                                Scalar[gpu_dtype](
+                                    ALIEN_TOP
+                                    + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+                                )
+                                + alien_sy
+                                + Scalar[gpu_dtype](ALIEN_HEIGHT)
+                            )
                             break
                     if abul_active > Scalar[gpu_dtype](0.5):
                         break
@@ -629,12 +688,18 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     var idx = row * ALIEN_COLS + col
                     if states[i, S_ALIENS_START + idx] < Scalar[gpu_dtype](0.5):
                         continue
-                    var ax = Scalar[gpu_dtype](
-                        ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
-                    ) + alien_sx
-                    var ay = Scalar[gpu_dtype](
-                        ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
-                    ) + alien_sy
+                    var ax = (
+                        Scalar[gpu_dtype](
+                            ALIEN_LEFT + col * (ALIEN_WIDTH + ALIEN_GAP_X)
+                        )
+                        + alien_sx
+                    )
+                    var ay = (
+                        Scalar[gpu_dtype](
+                            ALIEN_TOP + row * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+                        )
+                        + alien_sy
+                    )
                     if (
                         bul_x >= ax
                         and bul_x <= ax + Scalar[gpu_dtype](ALIEN_WIDTH)
@@ -671,7 +736,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Check aliens reached bottom
         if alien_sy + Scalar[gpu_dtype](
-            ALIEN_TOP + (ALIEN_ROWS - 1) * (ALIEN_HEIGHT + ALIEN_GAP_Y) + ALIEN_HEIGHT
+            ALIEN_TOP
+            + (ALIEN_ROWS - 1) * (ALIEN_HEIGHT + ALIEN_GAP_Y)
+            + ALIEN_HEIGHT
         ) >= Scalar[gpu_dtype](SHIP_Y):
             is_done = True
 
@@ -852,18 +919,37 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx < BATCH_SIZE:
                 terminated_out[idx] = dones[idx]
-                obs[idx, 0] = states[idx, S_SHIP_X] / Scalar[gpu_dtype](SCREEN_W)
-                obs[idx, 1] = states[idx, S_BULLET_X] / Scalar[gpu_dtype](SCREEN_W)
-                obs[idx, 2] = states[idx, S_BULLET_Y] / Scalar[gpu_dtype](SCREEN_H)
+                obs[idx, 0] = states[idx, S_SHIP_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 1] = states[idx, S_BULLET_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 2] = states[idx, S_BULLET_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
                 obs[idx, 3] = states[idx, S_BULLET_ACTIVE]
-                obs[idx, 4] = states[idx, S_ABUL_X] / Scalar[gpu_dtype](SCREEN_W)
-                obs[idx, 5] = states[idx, S_ABUL_Y] / Scalar[gpu_dtype](SCREEN_H)
+                obs[idx, 4] = states[idx, S_ABUL_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 5] = states[idx, S_ABUL_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
                 obs[idx, 6] = states[idx, S_ABUL_ACTIVE]
-                obs[idx, 7] = states[idx, S_ALIENS_REM] / Scalar[gpu_dtype](TOTAL_ALIENS)
+                obs[idx, 7] = states[idx, S_ALIENS_REM] / Scalar[gpu_dtype](
+                    TOTAL_ALIENS
+                )
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
-            states, actions, rewards, dones, terminated_out, obs, seed,
-            grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            obs,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod
@@ -891,7 +977,9 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
-            states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod
@@ -933,7 +1021,11 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             )
 
         ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
-            states, dones, seed, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            dones,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Shared utilities for Atari game GPU environments.
+"""Shared utilities for Arcade game GPU environments.
 
 This module provides common constants and helper types used by all
 game-specific environment structs (PongEnv, BreakoutEnv, etc.).
@@ -22,7 +22,7 @@ comptime gpu_dtype = DType.float32
 
 
 @fieldwise_init
-struct AtariGameState(Copyable, ImplicitlyCopyable, Movable, State):
+struct ArcadeGameState(Copyable, ImplicitlyCopyable, Movable, State):
     """Generic state wrapper — just an integer index (needed for Env trait)."""
 
     var index: Int
@@ -38,7 +38,7 @@ struct AtariGameState(Copyable, ImplicitlyCopyable, Movable, State):
 
 
 @fieldwise_init
-struct AtariGameAction(Action, Copyable, ImplicitlyCopyable, Movable):
+struct ArcadeGameAction(Action, Copyable, ImplicitlyCopyable, Movable):
     """Generic discrete action wrapper."""
 
     var value: Int

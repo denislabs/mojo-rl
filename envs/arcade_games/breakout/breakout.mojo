@@ -35,7 +35,7 @@ from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from ..core.gpu_env import AtariGameState, AtariGameAction, gpu_dtype
+from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype
 from ..core.colors import SCREEN_W, SCREEN_H
 
 # ============================================================================
@@ -92,8 +92,8 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
     """Native Breakout environment — CPU+GPU dual path."""
 
     comptime dtype = Self.DTYPE
-    comptime StateType = AtariGameState
-    comptime ActionType = AtariGameAction
+    comptime StateType = ArcadeGameState
+    comptime ActionType = ArcadeGameAction
 
     comptime STATE_SIZE: Int = 56
     comptime OBS_DIM: Int = 7
@@ -121,7 +121,7 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU reset + step
     # ========================================================================
 
-    fn reset(mut self) -> AtariGameState:
+    fn reset(mut self) -> ArcadeGameState:
         self._rng_counter += 1
         # Ball stuck on paddle
         self.state[S_PADDLE_X] = Scalar[Self.dtype](SCREEN_W // 2)
@@ -138,14 +138,14 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         for b in range(TOTAL_BRICKS):
             self.state[S_BRICKS_START + b] = 1.0
         self.done = False
-        return AtariGameState(index=0)
+        return ArcadeGameState(index=0)
 
     fn step(
-        mut self, action: AtariGameAction, verbose: Bool = False
-    ) -> Tuple[AtariGameState, Scalar[Self.dtype], Bool]:
+        mut self, action: ArcadeGameAction, verbose: Bool = False
+    ) -> Tuple[ArcadeGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
         return (
-            AtariGameState(index=Int(self.state[S_STEP_COUNT])),
+            ArcadeGameState(index=Int(self.state[S_STEP_COUNT])),
             result[0],
             result[1],
         )
@@ -177,9 +177,7 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if self.state[S_BALL_STUCK] > 0.5:
             # Ball follows paddle
             self.state[S_BALL_X] = paddle_x
-            self.state[S_BALL_Y] = Scalar[Self.dtype](
-                PADDLE_Y - BALL_SIZE - 1
-            )
+            self.state[S_BALL_Y] = Scalar[Self.dtype](PADDLE_Y - BALL_SIZE - 1)
             self.state[S_STEP_COUNT] += 1.0
             return (reward, self.done)
 
@@ -213,9 +211,7 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             # Reset ball on paddle
             self.state[S_BALL_STUCK] = 1.0
             self.state[S_BALL_X] = paddle_x
-            self.state[S_BALL_Y] = Scalar[Self.dtype](
-                PADDLE_Y - BALL_SIZE - 1
-            )
+            self.state[S_BALL_Y] = Scalar[Self.dtype](PADDLE_Y - BALL_SIZE - 1)
             self.state[S_BALL_VX] = 0.0
             self.state[S_BALL_VY] = 0.0
 
@@ -281,8 +277,8 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Trait methods
     # ========================================================================
 
-    fn get_state(self) -> AtariGameState:
-        return AtariGameState(index=Int(self.state[S_STEP_COUNT]))
+    fn get_state(self) -> ArcadeGameState:
+        return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     fn close(mut self):
         if self._renderer_initialized:
@@ -290,8 +286,8 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> AtariGameAction:
-        return AtariGameAction(value=action_idx)
+    fn action_from_index(self, action_idx: Int) -> ArcadeGameAction:
+        return ArcadeGameAction(value=action_idx)
 
     fn num_actions(self) -> Int:
         return 4
@@ -302,7 +298,7 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
     fn num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: AtariGameState) -> Int:
+    fn state_to_index(self, state: ArcadeGameState) -> Int:
         return state.index
 
     fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
@@ -312,9 +308,7 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.state[S_BALL_VX] / Scalar[Self.dtype](MAX_BALL_VX))
         obs.append(self.state[S_BALL_VY] / Scalar[Self.dtype](MAX_BALL_VY))
         obs.append(self.state[S_PADDLE_X] / Scalar[Self.dtype](SCREEN_W))
-        obs.append(
-            self.state[S_BRICKS_REM] / Scalar[Self.dtype](TOTAL_BRICKS)
-        )
+        obs.append(self.state[S_BRICKS_REM] / Scalar[Self.dtype](TOTAL_BRICKS))
         obs.append(self.state[S_LIVES] / Scalar[Self.dtype](INITIAL_LIVES))
         return obs^
 
@@ -380,8 +374,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var lives_color = SDL_Color(220, 80, 80, 255)
         var score_str = "SCORE: " + String(Int(self.state[S_SCORE]))
         var lives_str = "LIVES: " + String(Int(self.state[S_LIVES]))
-        renderer.draw_text(score_str, Int(10.0 * sx), score_area_h // 2 - 7, score_color)
-        renderer.draw_text(lives_str, sw - Int(80.0 * sx), score_area_h // 2 - 7, lives_color)
+        renderer.draw_text(
+            score_str, Int(10.0 * sx), score_area_h // 2 - 7, score_color
+        )
+        renderer.draw_text(
+            lives_str, sw - Int(80.0 * sx), score_area_h // 2 - 7, lives_color
+        )
 
         # -- Bottom info bar --
         var info_h = max(1, Int(14.0 * sy))
@@ -389,7 +387,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         renderer.draw_rect(0, info_y, sw, info_h, score_bar_color)
         renderer.draw_rect(0, info_y, sw, max(1, Int(sy)), sep_color)
         var info_color = SDL_Color(160, 160, 180, 255)
-        var info_str = "Bricks: " + String(Int(self.state[S_BRICKS_REM])) + "      Frame: " + String(Int(self.state[S_STEP_COUNT]))
+        var info_str = (
+            "Bricks: "
+            + String(Int(self.state[S_BRICKS_REM]))
+            + "      Frame: "
+            + String(Int(self.state[S_STEP_COUNT]))
+        )
         renderer.draw_text(info_str, 8, info_y + 2, info_color)
 
         # Play area mapping: game [0..SCREEN_H] → screen [play_top..info_y]
@@ -417,20 +420,37 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     color = c_blue
                 renderer.draw_rect(
                     Int(Float64(bx) * sx),
-                    play_top + Int(Float64(by) / Float64(SCREEN_H) * Float64(play_h)),
+                    play_top
+                    + Int(Float64(by) / Float64(SCREEN_H) * Float64(play_h)),
                     max(1, Int(Float64(BRICK_WIDTH) * sx)),
-                    max(1, Int(Float64(BRICK_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))),
+                    max(
+                        1,
+                        Int(
+                            Float64(BRICK_HEIGHT)
+                            / Float64(SCREEN_H)
+                            * Float64(play_h)
+                        ),
+                    ),
                     color,
                 )
 
         # -- Draw paddle --
         var px = Int(self.state[S_PADDLE_X])
         var pw = max(2, Int(Float64(PADDLE_WIDTH) * sx))
-        var p_h = max(2, Int(Float64(PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h)))
+        var p_h = max(
+            2, Int(Float64(PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))
+        )
         renderer.draw_rect(
             Int(Float64(px - PADDLE_WIDTH // 2) * sx),
-            play_top + Int(Float64(PADDLE_Y - PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h)),
-            pw, p_h, paddle_color,
+            play_top
+            + Int(
+                Float64(PADDLE_Y - PADDLE_HEIGHT)
+                / Float64(SCREEN_H)
+                * Float64(play_h)
+            ),
+            pw,
+            p_h,
+            paddle_color,
         )
 
         # -- Draw ball --
@@ -439,8 +459,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var bsz = max(4, Int(Float64(BALL_SIZE) * sx * 2.0))
         renderer.draw_rect(
             Int(ball_x * sx) - bsz // 2,
-            play_top + Int(ball_y / Float64(SCREEN_H) * Float64(play_h)) - bsz // 2,
-            bsz, bsz, ball_color,
+            play_top
+            + Int(ball_y / Float64(SCREEN_H) * Float64(play_h))
+            - bsz // 2,
+            bsz,
+            bsz,
+            ball_color,
         )
 
         renderer.flip()
@@ -532,12 +556,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if action == 1 and stuck > Scalar[gpu_dtype](0.5):
             stuck = 0.0
             var rng = xorshift32(
-                Scalar[DType.uint32](
-                    UInt32(i) * 2654435761 + UInt32(rng_seed)
-                )
+                Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
             )
             var vx_result = random_range[gpu_dtype](
-                rng, Scalar[gpu_dtype](-BALL_SPEED_X), Scalar[gpu_dtype](BALL_SPEED_X)
+                rng,
+                Scalar[gpu_dtype](-BALL_SPEED_X),
+                Scalar[gpu_dtype](BALL_SPEED_X),
             )
             bvx = vx_result[0]
             bvy = Scalar[gpu_dtype](BALL_SPEED_Y)
@@ -795,17 +819,38 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx < BATCH_SIZE:
                 terminated_out[idx] = dones[idx]
-                obs[idx, 0] = states[idx, S_BALL_X] / Scalar[gpu_dtype](SCREEN_W)
-                obs[idx, 1] = states[idx, S_BALL_Y] / Scalar[gpu_dtype](SCREEN_H)
-                obs[idx, 2] = states[idx, S_BALL_VX] / Scalar[gpu_dtype](MAX_BALL_VX)
-                obs[idx, 3] = states[idx, S_BALL_VY] / Scalar[gpu_dtype](MAX_BALL_VY)
-                obs[idx, 4] = states[idx, S_PADDLE_X] / Scalar[gpu_dtype](SCREEN_W)
-                obs[idx, 5] = states[idx, S_BRICKS_REM] / Scalar[gpu_dtype](TOTAL_BRICKS)
-                obs[idx, 6] = states[idx, S_LIVES] / Scalar[gpu_dtype](INITIAL_LIVES)
+                obs[idx, 0] = states[idx, S_BALL_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 1] = states[idx, S_BALL_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
+                obs[idx, 2] = states[idx, S_BALL_VX] / Scalar[gpu_dtype](
+                    MAX_BALL_VX
+                )
+                obs[idx, 3] = states[idx, S_BALL_VY] / Scalar[gpu_dtype](
+                    MAX_BALL_VY
+                )
+                obs[idx, 4] = states[idx, S_PADDLE_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 5] = states[idx, S_BRICKS_REM] / Scalar[gpu_dtype](
+                    TOTAL_BRICKS
+                )
+                obs[idx, 6] = states[idx, S_LIVES] / Scalar[gpu_dtype](
+                    INITIAL_LIVES
+                )
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
-            states, actions, rewards, dones, terminated_out, obs, seed,
-            grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            obs,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod
@@ -833,7 +878,9 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
-            states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod
@@ -875,7 +922,11 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             )
 
         ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
-            states, dones, seed, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            dones,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod

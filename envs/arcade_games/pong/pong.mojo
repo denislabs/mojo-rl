@@ -36,7 +36,7 @@ from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from ..core.gpu_env import AtariGameState, AtariGameAction, gpu_dtype
+from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype
 from ..core.colors import (
     SCREEN_W,
     SCREEN_H,
@@ -110,8 +110,8 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     # Trait conformance
     comptime dtype = Self.DTYPE
-    comptime StateType = AtariGameState
-    comptime ActionType = AtariGameAction
+    comptime StateType = ArcadeGameState
+    comptime ActionType = ArcadeGameAction
 
     # GPUDiscreteEnv constants
     comptime STATE_SIZE: Int = 12
@@ -142,7 +142,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU: reset + step
     # ========================================================================
 
-    fn reset(mut self) -> AtariGameState:
+    fn reset(mut self) -> ArcadeGameState:
         self._rng_counter += 1
         # Ball at center
         self.state[S_BALL_X] = Scalar[Self.dtype](SCREEN_W // 2)
@@ -167,21 +167,19 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.state[S_SCORE] = 0.0
         self.state[S_LIVES] = 0.0
         self.done = False
-        return AtariGameState(index=0)
+        return ArcadeGameState(index=0)
 
     fn step(
-        mut self, action: AtariGameAction, verbose: Bool = False
-    ) -> Tuple[AtariGameState, Scalar[Self.dtype], Bool]:
+        mut self, action: ArcadeGameAction, verbose: Bool = False
+    ) -> Tuple[ArcadeGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
         return (
-            AtariGameState(index=Int(self.state[S_STEP_COUNT])),
+            ArcadeGameState(index=Int(self.state[S_STEP_COUNT])),
             result[0],
             result[1],
         )
 
-    fn _step_impl(
-        mut self, action: Int
-    ) -> Tuple[Scalar[Self.dtype], Bool]:
+    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Internal step: returns (reward, done)."""
         # Move agent paddle
         if action == 1:  # UP
@@ -224,9 +222,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if self.state[S_BALL_Y] < Scalar[Self.dtype](BALL_SIZE):
             self.state[S_BALL_Y] = Scalar[Self.dtype](BALL_SIZE)
             self.state[S_BALL_VY] = -self.state[S_BALL_VY]
-        elif self.state[S_BALL_Y] > Scalar[Self.dtype](
-            SCREEN_H - BALL_SIZE
-        ):
+        elif self.state[S_BALL_Y] > Scalar[Self.dtype](SCREEN_H - BALL_SIZE):
             self.state[S_BALL_Y] = Scalar[Self.dtype](SCREEN_H - BALL_SIZE)
             self.state[S_BALL_VY] = -self.state[S_BALL_VY]
 
@@ -311,8 +307,8 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Env trait methods
     # ========================================================================
 
-    fn get_state(self) -> AtariGameState:
-        return AtariGameState(index=Int(self.state[S_STEP_COUNT]))
+    fn get_state(self) -> ArcadeGameState:
+        return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     fn close(mut self):
         if self._renderer_initialized:
@@ -320,8 +316,8 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> AtariGameAction:
-        return AtariGameAction(value=action_idx)
+    fn action_from_index(self, action_idx: Int) -> ArcadeGameAction:
+        return ArcadeGameAction(value=action_idx)
 
     fn num_actions(self) -> Int:
         return 3
@@ -332,7 +328,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
     fn num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: AtariGameState) -> Int:
+    fn state_to_index(self, state: ArcadeGameState) -> Int:
         return state.index
 
     # ========================================================================
@@ -344,16 +340,10 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Normalized observations
         obs.append(self.state[S_BALL_X] / Scalar[Self.dtype](SCREEN_W))
         obs.append(self.state[S_BALL_Y] / Scalar[Self.dtype](SCREEN_H))
-        obs.append(
-            self.state[S_BALL_VX] / Scalar[Self.dtype](MAX_BALL_VY)
-        )
-        obs.append(
-            self.state[S_BALL_VY] / Scalar[Self.dtype](MAX_BALL_VY)
-        )
+        obs.append(self.state[S_BALL_VX] / Scalar[Self.dtype](MAX_BALL_VY))
+        obs.append(self.state[S_BALL_VY] / Scalar[Self.dtype](MAX_BALL_VY))
         obs.append(self.state[S_PADDLE_Y] / Scalar[Self.dtype](SCREEN_H))
-        obs.append(
-            self.state[S_CPU_PADDLE_Y] / Scalar[Self.dtype](SCREEN_H)
-        )
+        obs.append(self.state[S_CPU_PADDLE_Y] / Scalar[Self.dtype](SCREEN_H))
         return obs^
 
     fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
@@ -475,11 +465,23 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 renderer, tens, start_x, y, digit_w, digit_h, color
             )
             Self._draw_7seg_digit(
-                renderer, ones, start_x + digit_w + gap, y, digit_w, digit_h, color
+                renderer,
+                ones,
+                start_x + digit_w + gap,
+                y,
+                digit_w,
+                digit_h,
+                color,
             )
         else:
             Self._draw_7seg_digit(
-                renderer, ones, center_x - digit_w // 2, y, digit_w, digit_h, color
+                renderer,
+                ones,
+                center_x - digit_w // 2,
+                y,
+                digit_w,
+                digit_h,
+                color,
             )
 
     fn _render(self, mut renderer: Renderer2D):
@@ -514,13 +516,23 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var score_y = (score_area_h - digit_h) // 2
         # CPU score — left quarter
         Self._draw_score(
-            renderer, Int(self.state[S_CPU_SCORE]),
-            sw // 4, score_y, digit_w, digit_h, cpu_color,
+            renderer,
+            Int(self.state[S_CPU_SCORE]),
+            sw // 4,
+            score_y,
+            digit_w,
+            digit_h,
+            cpu_color,
         )
         # Player score — right quarter
         Self._draw_score(
-            renderer, Int(self.state[S_PLAYER_SCORE]),
-            sw * 3 // 4, score_y, digit_w, digit_h, player_color,
+            renderer,
+            Int(self.state[S_PLAYER_SCORE]),
+            sw * 3 // 4,
+            score_y,
+            digit_w,
+            digit_h,
+            player_color,
         )
 
         # -- Bottom info bar (compute first so play area excludes it) --
@@ -544,19 +556,35 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # -- CPU paddle (left, teal) --
         var cpu_y_f = Float64(Int(self.state[S_CPU_PADDLE_Y]))
         var pw = max(3, Int(Float64(PADDLE_WIDTH) * sx))
-        var ph = max(6, Int(Float64(PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h)))
+        var ph = max(
+            6, Int(Float64(PADDLE_HEIGHT) / Float64(SCREEN_H) * Float64(play_h))
+        )
         renderer.draw_rect(
             Int(Float64(LEFT_PADDLE_X) * sx),
-            play_top + Int((cpu_y_f - Float64(PADDLE_HEIGHT // 2)) / Float64(SCREEN_H) * Float64(play_h)),
-            pw, ph, cpu_color,
+            play_top
+            + Int(
+                (cpu_y_f - Float64(PADDLE_HEIGHT // 2))
+                / Float64(SCREEN_H)
+                * Float64(play_h)
+            ),
+            pw,
+            ph,
+            cpu_color,
         )
 
         # -- Agent paddle (right, purple) --
         var pad_y_f = Float64(Int(self.state[S_PADDLE_Y]))
         renderer.draw_rect(
             Int(Float64(RIGHT_PADDLE_X) * sx),
-            play_top + Int((pad_y_f - Float64(PADDLE_HEIGHT // 2)) / Float64(SCREEN_H) * Float64(play_h)),
-            pw, ph, player_color,
+            play_top
+            + Int(
+                (pad_y_f - Float64(PADDLE_HEIGHT // 2))
+                / Float64(SCREEN_H)
+                * Float64(play_h)
+            ),
+            pw,
+            ph,
+            player_color,
         )
 
         # -- Ball (bright square) --
@@ -565,16 +593,27 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var bsz = max(4, Int(Float64(BALL_SIZE) * sx * 2.0))
         renderer.draw_rect(
             Int(bx_f * sx) - bsz // 2,
-            play_top + Int(by_f / Float64(SCREEN_H) * Float64(play_h)) - bsz // 2,
-            bsz, bsz, ball_color,
+            play_top
+            + Int(by_f / Float64(SCREEN_H) * Float64(play_h))
+            - bsz // 2,
+            bsz,
+            bsz,
+            ball_color,
         )
 
         # -- Draw bottom info bar (on top of everything) --
         renderer.draw_rect(0, info_y, sw, info_h, score_bar_color)
         renderer.draw_rect(0, info_y, sw, max(1, Int(sy)), sep_color)
         var info_color = SDL_Color(160, 160, 180, 255)
-        var score_diff = Int(self.state[S_PLAYER_SCORE]) - Int(self.state[S_CPU_SCORE])
-        var info_str = "Score: " + String(score_diff) + "      Lives: 0      Frame: " + String(Int(self.state[S_STEP_COUNT]))
+        var score_diff = Int(self.state[S_PLAYER_SCORE]) - Int(
+            self.state[S_CPU_SCORE]
+        )
+        var info_str = (
+            "Score: "
+            + String(score_diff)
+            + "      Lives: 0      Frame: "
+            + String(Int(self.state[S_STEP_COUNT]))
+        )
         renderer.draw_text(info_str, 8, info_y + 2, info_color)
 
         renderer.flip()
@@ -736,9 +775,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             bx = Scalar[gpu_dtype](SCREEN_W // 2)
             by = Scalar[gpu_dtype](SCREEN_H // 2)
             var rng = xorshift32(
-                Scalar[DType.uint32](
-                    UInt32(i) * 2654435761 + UInt32(rng_seed)
-                )
+                Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
             )
             var vy_result = random_range[gpu_dtype](
                 rng, Scalar[gpu_dtype](-1.5), Scalar[gpu_dtype](1.5)
@@ -978,9 +1015,9 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 obs[idx, 4] = states[idx, S_PADDLE_Y] / Scalar[gpu_dtype](
                     SCREEN_H
                 )
-                obs[idx, 5] = states[idx, S_CPU_PADDLE_Y] / Scalar[
-                    gpu_dtype
-                ](SCREEN_H)
+                obs[idx, 5] = states[idx, S_CPU_PADDLE_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
             states,

@@ -1,10 +1,10 @@
-"""Native Atari game engines for GPU-batched RL training.
+"""Native Arcade game engines for GPU-batched RL training.
 
 Each game is a self-contained struct implementing BoxDiscreteActionEnv + GPUDiscreteEnv
 + RenderableEnv, following the same pattern as CartPole/Pendulum.
 
 Usage:
-    from envs.atari_games.pong import PongEnv
+    from envs.arcade_games.pong import PongEnv
 
     # CPU path
     var env = PongEnv[DType.float64]()
@@ -18,4 +18,4 @@ Usage:
 from .pong import PongEnv
 from .breakout import BreakoutEnv
 from .space_invaders import SpaceInvadersEnv
-from .core.gpu_env import AtariGameState, AtariGameAction
+from .core.gpu_env import ArcadeGameState, ArcadeGameAction

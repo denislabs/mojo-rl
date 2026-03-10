@@ -1,4 +1,4 @@
-"""Atari-style color palette — grayscale values for GPU rendering."""
+"""Arcade-style color palette — grayscale values for GPU rendering."""
 
 # Grayscale color constants for the 160×210 framebuffer
 comptime COLOR_BLACK: UInt8 = 0
@@ -13,7 +13,7 @@ comptime COLOR_GRAY: UInt8 = 128
 comptime COLOR_LIGHT_GRAY: UInt8 = 192
 comptime COLOR_DARK_GRAY: UInt8 = 64
 
-# Screen dimensions (Atari standard)
+# Screen dimensions (Arcade standard)
 comptime SCREEN_W: Int = 160
 comptime SCREEN_H: Int = 210
 
