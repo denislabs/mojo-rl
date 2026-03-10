@@ -103,8 +103,8 @@ fn main() raises:
         gamma=0.99,
         rho=0.5,
         tau=0.01,
-        consistency_coef=2.0,
-        reward_coef=0.5,
+        consistency_coef=20.0,
+        reward_coef=0.1,
         value_coef=0.1,
         terminal_coef=1.0,
         entropy_coef=1e-4,
@@ -146,8 +146,8 @@ fn main() raises:
     print("  - gamma: 0.99 (discount)")
     print("  - rho: 0.5 (temporal weight decay)")
     print("  - tau: 0.01 (target Q soft update)")
-    print("  - consistency_coef: 2.0")
-    print("  - reward_coef: 0.5")
+    print("  - consistency_coef: 20.0")
+    print("  - reward_coef: 0.1")
     print("  - value_coef: 0.1")
     print("  - temperature: 0.5 (MPPI softmax)")
     print()

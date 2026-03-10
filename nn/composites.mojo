@@ -78,6 +78,36 @@ comptime LeNet8x8 = Sequential[
     ],
 ]
 
+# Nature DQN CNN (Mnih et al., 2015) for Atari-style 84×84 4-frame input
+# Conv2D[4,32,8,4,0,84,84] (84→20, 32ch) → ReLU
+# Conv2D[32,64,4,2,0,20,20] (20→9, 64ch) → ReLU
+# Conv2D[64,64,3,1,0,9,9] (9→7, 64ch) → ReLU
+# Flatten → Dense[3136, 512] → ReLU → Dense[512, out_d]
+comptime NatureDQN[out_d: Int] = Sequential[
+    AutoDiffChain[
+        Conv2D[4, 32, 8, 4, 0, 84, 84],
+        ReLUOp[32 * 20 * 20],
+    ],
+    AutoDiffChain[
+        Conv2D[32, 64, 4, 2, 0, 20, 20],
+        ReLUOp[64 * 9 * 9],
+    ],
+    AutoDiffChain[
+        Conv2D[64, 64, 3, 1, 0, 9, 9],
+        ReLUOp[64 * 7 * 7],
+    ],
+    AutoDiffChain[
+        Flatten[64 * 7 * 7],
+        MatMul[64 * 7 * 7, 512],
+        BiasAdd[512],
+        ReLUOp[512],
+    ],
+    AutoDiffChain[
+        MatMul[512, out_d],
+        BiasAdd[out_d],
+    ],
+]
+
 # =============================================================================
 # Feed-Forward Networks
 # =============================================================================

@@ -1637,3 +1637,223 @@ fn tdmpc2_adam_step_5q_kernel[
     state5[idx, 0] = m5
     state5[idx, 1] = v5
     params5[idx] = rebind[Scalar[dtype]](params5[idx]) - lr * (m5 / bias_correction1) / (sqrt(v5 / bias_correction2) + eps)
+
+
+# =============================================================================
+# MPPI GPU Kernels
+# =============================================================================
+
+
+@always_inline
+fn mppi_broadcast_z0_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    z0: LayoutTensor[dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin],
+    z_all: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Broadcast a single z0 [1, LATENT] into [TOTAL_SAMPLES, LATENT].
+
+    One thread per sample, copies LATENT values.
+
+    Args:
+        z0: Source latent state [1, LATENT_DIM].
+        z_all: Output replicated states [TOTAL_SAMPLES, LATENT_DIM].
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    for k in range(LATENT_DIM):
+        z_all[i, k] = z0[0, k]
+
+
+@always_inline
+fn mppi_sample_actions_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    NUM_PI_TRAJS: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, POL_OUT), MutAnyOrigin
+    ],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    act_step: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, ACTION_DIM), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    step: Int,
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Sample actions for all MPPI candidates at horizon step t.
+
+    For samples [0, NUM_PI_TRAJS): sample from policy output with noise (0.1 std).
+    For samples [NUM_PI_TRAJS, TOTAL_SAMPLES): sample from Gaussian(mean[t], std[t]).
+
+    Args:
+        pi_out: Policy network output [TOTAL_SAMPLES, POL_OUT] (mean | log_std).
+        mean: MPPI distribution mean [H * ACT].
+        std: MPPI distribution std [H * ACT].
+        act_step: Output actions for current step [TOTAL_SAMPLES, ACT].
+        all_actions: Full action storage [TOTAL_SAMPLES * H * ACT] (written at step t).
+        step: Current horizon step index (0..H-1).
+        rng_seed: Random seed.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    for j in range(ACTION_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var noise = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        var act: Scalar[dtype]
+        if i < NUM_PI_TRAJS:
+            # Policy trajectory: use policy mean + small noise
+            var pi_mean = Scalar[dtype](pi_out[i, j][0])
+            act = pi_mean + noise * Scalar[dtype](0.1)
+        else:
+            # MPPI trajectory: sample from Gaussian(mean[t,j], std[t,j])
+            var mu = Scalar[dtype](mean[step * ACTION_DIM + j][0])
+            var sigma = Scalar[dtype](std[step * ACTION_DIM + j][0])
+            act = mu + sigma * noise
+
+        # Clamp to [-1, 1]
+        if act < Scalar[dtype](-1.0):
+            act = Scalar[dtype](-1.0)
+        if act > Scalar[dtype](1.0):
+            act = Scalar[dtype](1.0)
+
+        act_step[i, j] = act
+        # Store into all_actions[i * H * ACT + step * ACT + j]
+        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
+
+
+@always_inline
+fn mppi_accumulate_reward_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    BINS: Int,
+](
+    rew_logits: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    returns: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    discount: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode reward logits and accumulate discounted reward into returns.
+
+    returns[i] += discount * symexp(softmax(logits[i]) · bins)
+
+    Args:
+        rew_logits: Reward network logits [TOTAL_SAMPLES, BINS].
+        bins: Bin centers [BINS] (in symlog space).
+        returns: Running return accumulator [TOTAL_SAMPLES] (updated in-place).
+        discount: Discount factor gamma^t for this step.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    # Softmax + dot product with bins
+    var max_l = Scalar[dtype](rew_logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](rew_logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](rew_logits[i, k][0]) - max_l)
+
+    var val_symlog = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var prob = exp(Scalar[dtype](rew_logits[i, k][0]) - max_l) / sum_exp
+        val_symlog = val_symlog + prob * Scalar[dtype](bins[k][0])
+
+    # symexp: convert from symlog to actual value space
+    var reward_val = _symexp[dtype](val_symlog)
+    returns[i] = returns[i] + discount * reward_val
+
+
+@always_inline
+fn mppi_add_terminal_value_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+](
+    q_min: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    returns: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    discount: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Add discounted terminal Q-value to returns.
+
+    returns[i] += discount * q_min[i]
+
+    Args:
+        q_min: Min-Q terminal values [TOTAL_SAMPLES].
+        returns: Running return accumulator [TOTAL_SAMPLES] (updated in-place).
+        discount: Discount factor gamma^H.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    returns[i] = returns[i] + discount * q_min[i]
+
+
+@always_inline
+fn mppi_copy_z_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    dst: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+    src: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Copy latent states: dst[i] = src[i].
+
+    Args:
+        dst: Destination latent buffer [TOTAL_SAMPLES, LATENT].
+        src: Source latent buffer [TOTAL_SAMPLES, LATENT].
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    for k in range(LATENT_DIM):
+        dst[i, k] = src[i, k]

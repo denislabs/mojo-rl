@@ -51,9 +51,9 @@ from deep_agents.ppo.kernels import (
 )
 from deep_agents.core.utils import print_progress_bar, clear_progress_bar
 
-from .state import TDMPC2GPUState, TDMPC2CPUState
+from .state import TDMPC2GPUState, TDMPC2CPUState, MPPIGPUBuffers
 from .world_model import WorldModel, decode_value_batch_scalar
-from .mppi import plan
+from .mppi import plan, plan_gpu
 from .kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
@@ -883,9 +883,7 @@ struct TDMPC2Agent[
 
             for b in range(Self.BATCH):
                 for a in range(Self.ACT):
-                    var mean_val = Float64(
-                        self.state._pi_out[b * POL_OUT + a]
-                    )
+                    var mean_val = Float64(self.state._pi_out[b * POL_OUT + a])
                     var log_std = Float64(
                         self.state._pi_out[b * POL_OUT + Self.ACT + a]
                     )
@@ -1528,11 +1526,14 @@ struct TDMPC2Agent[
         num_episodes: Int,
         verbose: Bool = True,
         print_every: Int = 50_000,
+        use_mppi: Bool = False,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
-        Data collection uses N_ENVS parallel GPU environments with policy-based
-        exploration (not MPPI). Each env has its own CPU replay buffer.
+        Data collection uses N_ENVS parallel GPU environments. After warmup,
+        action selection uses either policy-only sampling (default, fast) or
+        GPU-batched MPPI planning (use_mppi=True, higher quality).
+
         World model training (11 networks) runs fully on GPU.
 
         Args:
@@ -1540,6 +1541,10 @@ struct TDMPC2Agent[
             num_episodes: Target number of episodes to complete.
             verbose: Whether to print progress.
             print_every: Print interval in total steps (default: 50000).
+            use_mppi: If True, use GPU-batched MPPI for exploration after warmup.
+                Each env's action is selected by running 536-sample MPPI on GPU.
+                If False (default), uses direct policy sampling (faster but
+                no look-ahead planning).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
@@ -1614,7 +1619,6 @@ struct TDMPC2Agent[
         var env_pi_out_tensor = LayoutTensor[
             dtype, Layout.row_major(n_envs, Self.POL_OUT), MutAnyOrigin
         ](gs.env_pi_out_buf.unsafe_ptr())
-
 
         # Flat 1D views of batch data
         var batch_obs_flat_tensor = LayoutTensor[
@@ -1775,7 +1779,7 @@ struct TDMPC2Agent[
         q_param_ptrs[4] = gs.q5.params_buf.unsafe_ptr()
 
         var qt_param_ptrs = InlineArray[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], Self.num_q
         ](uninitialized=True)
         qt_param_ptrs[0] = gs.q1t_params_buf.unsafe_ptr()
         qt_param_ptrs[1] = gs.q2t_params_buf.unsafe_ptr()
@@ -1871,6 +1875,40 @@ struct TDMPC2Agent[
         ctx.enqueue_copy(gs.bins_buf, bins_host)
 
         # =================================================================
+        # MPPI GPU buffers (allocated if use_mppi=True)
+        # =================================================================
+        comptime MPPIBufs = MPPIGPUBuffers[
+            Self.WM.DynModel,  # EncModel placeholder
+            Self.WMOpt,  # EncOpt placeholder
+            Self.WM.DynModel,
+            Self.WMOpt,
+            Self.WM.RewModel,
+            Self.WMOpt,
+            Self.WM.PolModel,
+            Self.PIOpt,
+            Self.WM.QModel,
+            Self.WMOpt,
+            Self.ACT,
+            Self.LATENT,
+            Self.BINS,
+            Self.num_samples,
+            Self.num_pi_trajs,
+            Self.H,
+        ]
+        # Allocate MPPI buffers (conditional allocation not possible in Mojo,
+        # so we always allocate — cost is ~10MB GPU memory)
+        var mppi_bufs = MPPIBufs(ctx)
+
+        # Per-env MPPI warm-start state (one z0 upload buf + per-env prev_mean)
+        var mppi_z0_buf = ctx.enqueue_create_buffer[dtype](Self.LATENT)
+        var mppi_z0_host = ctx.enqueue_create_host_buffer[dtype](Self.LATENT)
+        var env_prev_means = List[List[Float64]](capacity=n_envs)
+        var env_t0_flags = List[Bool](capacity=n_envs)
+        for _ in range(n_envs):
+            env_prev_means.append(List[Float64]())
+            env_t0_flags.append(True)
+
+        # =================================================================
         # Initialize environments
         # =================================================================
 
@@ -1945,6 +1983,84 @@ struct TDMPC2Agent[
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
+            elif use_mppi:
+                # GPU-batched MPPI: encode all envs, then plan per-env
+                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
+                    ctx,
+                    env_z_tensor,
+                    env_obs_tensor,
+                    enc_params_tensor,
+                    gs.enc_env_ws_buf,
+                )
+                # Download z to CPU (small: n_envs * LATENT floats)
+                var mppi_z_host = ctx.enqueue_create_host_buffer[dtype](
+                    ENV_LATENT
+                )
+                ctx.enqueue_copy(mppi_z_host, gs.env_z_buf)
+                ctx.synchronize()
+
+                # Plan per-env sequentially (each batches 536 samples on GPU)
+                var mppi_z0_tensor = LayoutTensor[
+                    dtype, Layout.row_major(1, Self.LATENT), MutAnyOrigin
+                ](mppi_z0_buf.unsafe_ptr())
+
+                for env_idx in range(n_envs):
+                    # Upload z0 for this env
+                    for k in range(Self.LATENT):
+                        mppi_z0_host[k] = mppi_z_host[env_idx * Self.LATENT + k]
+                    ctx.enqueue_copy(mppi_z0_buf, mppi_z0_host)
+
+                    # Run GPU MPPI
+                    var mppi_seed = UInt32(
+                        total_steps * 1000003 + env_idx * 999983
+                    )
+                    var action = plan_gpu[
+                        Self.OBS,
+                        Self.ACT,
+                        Self.LATENT,
+                        Self.mlp_dim,
+                        Self.BINS,
+                        Self.num_q,
+                        Self.simplex_dim,
+                        Self.v_min,
+                        Self.v_max,
+                        Self.H,
+                        Self.num_samples,
+                        Self.num_pi_trajs,
+                        Self.num_iterations,
+                        Self.WM.DynModel,
+                        Self.WMOpt,
+                        Self.WM.RewModel,
+                        Self.WMOpt,
+                        Self.WM.PolModel,
+                        Self.PIOpt,
+                        Self.WM.QModel,
+                        Self.WMOpt,
+                    ](
+                        ctx,
+                        mppi_z0_tensor,
+                        dyn_params_tensor,
+                        rew_params_tensor,
+                        pol_params_tensor,
+                        qt_param_ptrs,
+                        bins_tensor,
+                        mppi_bufs,
+                        self.gamma,
+                        self.temperature,
+                        env_prev_means[env_idx],
+                        self.action_scale,
+                        False,  # not deterministic (exploration)
+                        env_t0_flags[env_idx],
+                        mppi_seed,
+                    )
+                    env_t0_flags[env_idx] = False
+
+                    # Write action into host buffer
+                    for k in range(Self.ACT):
+                        gs.env_act_host[env_idx * Self.ACT + k] = action[k]
+
+                # Upload all actions to GPU
+                ctx.enqueue_copy(gs.env_act_buf, gs.env_act_host)
             else:
                 # Policy-based exploration: encode obs → policy → sample actions
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
@@ -2021,6 +2137,10 @@ struct TDMPC2Agent[
                     recent_reward_sum += ep_r
                     recent_episode_count += 1
                     cpu_ep_rewards[env_idx] = 0.0
+                    # Reset MPPI warm-start for this env
+                    if use_mppi:
+                        env_t0_flags[env_idx] = True
+                        env_prev_means[env_idx] = List[Float64]()
 
                 # Build obs/action InlineArrays and add to per-env replay buffer
                 var obs_arr = InlineArray[Scalar[dtype], Self.OBS](fill=0)
@@ -2226,9 +2346,7 @@ struct TDMPC2Agent[
                 )
 
                 # Random 2-of-5 target Q subsampling (reference TD-MPC2)
-                var td_rng = PhiloxRandom(
-                    seed=td_q_rng_counter, offset=0
-                )
+                var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
                 td_q_rng_counter += 1
                 var td_rng_vals = td_rng.step_uniform()
                 var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
@@ -2268,12 +2386,8 @@ struct TDMPC2Agent[
                     gs.qt_batch_ws_buf,
                 )
                 ctx.enqueue_function[
-                    tdmpc2_decode_and_min_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
-                    tdmpc2_decode_and_min_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
+                    tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
+                    tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
                 ](
                     logits_tensor,
                     bins_tensor,
@@ -2733,9 +2847,7 @@ struct TDMPC2Agent[
                 # ── Proper DPG: backprop through avg of 2 random Q-nets ──
                 # Reference TD-MPC2: randomly subsample 2 of 5 Q-networks,
                 # average their gradients for the policy update.
-                var pi_rng = PhiloxRandom(
-                    seed=pi_q_rng_counter, offset=0
-                )
+                var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
                 pi_q_rng_counter += 1
                 var rng_vals = pi_rng.step_uniform()
                 var qi_a = Int(rng_vals[0] * 5.0) % 5
@@ -2828,9 +2940,7 @@ struct TDMPC2Agent[
 
                 # Advance z_sg via dynamics (stop-grad)
                 if t < Self.H - 1:
-                    Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[
-                        Self.BATCH
-                    ](
+                    Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         z_pred_tensor,
                         za_tensor,

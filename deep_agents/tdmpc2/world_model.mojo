@@ -117,8 +117,8 @@ struct WorldModel[
         NormedLinear[Self.LATENT_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
         Parallel[
-            Linear[Self.MLP_DIM, Self.ACTION_DIM],   # mean head
-            Linear[Self.MLP_DIM, Self.ACTION_DIM],   # log_std head
+            Linear[Self.MLP_DIM, Self.ACTION_DIM],  # mean head
+            Linear[Self.MLP_DIM, Self.ACTION_DIM],  # log_std head
         ],
     ]
 
@@ -420,9 +420,7 @@ struct WorldModel[
             for i in range(Self.ACTION_DIM):
                 mean[b, i] = out[b * POL_OUT + i]
                 # Clamp log_std to [-10, 2] for numerical stability
-                var ls = Float64(
-                    out[b * POL_OUT + Self.ACTION_DIM + i]
-                )
+                var ls = Float64(out[b * POL_OUT + Self.ACTION_DIM + i])
                 if ls < -10.0:
                     ls = -10.0
                 if ls > 2.0:

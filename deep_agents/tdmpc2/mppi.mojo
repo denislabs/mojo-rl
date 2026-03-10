@@ -7,16 +7,35 @@ MPPI plans in latent space over a horizon H by:
   4. Updating the action distribution using softmax-weighted elite candidates
   5. Selecting the first action of the best sequence (with optional noise)
 
+Provides both CPU (`plan()`) and GPU-batched (`plan_gpu()`) implementations.
+
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
 
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype
+from nn.constants import dtype, TPB
+from nn.model import Model
+from nn.optimizer import Optimizer
+from nn.training import Network
 from .world_model import WorldModel, decode_value_batch_scalar
+from .state import MPPIGPUBuffers
+from .kernels import (
+    mppi_broadcast_z0_kernel,
+    mppi_sample_actions_kernel,
+    mppi_accumulate_reward_kernel,
+    mppi_add_terminal_value_kernel,
+    mppi_copy_z_kernel,
+    tdmpc2_build_za_kernel,
+    tdmpc2_apply_tanh_build_za_kernel,
+    tdmpc2_q_decode_kernel,
+    tdmpc2_decode_and_min_kernel,
+    tdmpc2_zero_kernel,
+)
 
 
 fn plan[
@@ -394,3 +413,484 @@ fn _clamp(x: Float64, lo: Float64, hi: Float64) -> Float64:
     if x > hi:
         return hi
     return x
+
+
+# =============================================================================
+# GPU-Batched MPPI Planning
+# =============================================================================
+
+
+fn plan_gpu[
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+    MLP_DIM: Int,
+    NUM_BINS: Int,
+    NUM_Q: Int,
+    SIMPLEX_DIM: Int,
+    V_MIN: Float64,
+    V_MAX: Float64,
+    HORIZON: Int,
+    NUM_SAMPLES: Int,
+    NUM_PI_TRAJS: Int,
+    NUM_ITERATIONS: Int,
+    # Network types for GPU forward passes
+    DynModel: Model,
+    DynOpt: Optimizer,
+    RewModel: Model,
+    RewOpt: Optimizer,
+    PolModel: Model,
+    PolOpt: Optimizer,
+    QModel: Model,
+    QOpt: Optimizer,
+](
+    ctx: DeviceContext,
+    # z0 already encoded on GPU [1, LATENT_DIM]
+    z0_tensor: LayoutTensor[
+        dtype, Layout.row_major(1, LATENT_DIM), MutAnyOrigin
+    ],
+    # Network params on GPU (from TDMPC2GPUState)
+    dyn_params: LayoutTensor[
+        dtype, Layout.row_major(DynModel.PARAM_SIZE), MutAnyOrigin
+    ],
+    rew_params: LayoutTensor[
+        dtype, Layout.row_major(RewModel.PARAM_SIZE), MutAnyOrigin
+    ],
+    pol_params: LayoutTensor[
+        dtype, Layout.row_major(PolModel.PARAM_SIZE), MutAnyOrigin
+    ],
+    qt_param_ptrs: InlineArray[
+        UnsafePointer[Scalar[dtype], MutAnyOrigin], NUM_Q
+    ],
+    bins_tensor: LayoutTensor[dtype, Layout.row_major(NUM_BINS), MutAnyOrigin],
+    # MPPI GPU buffers
+    mut mb: MPPIGPUBuffers[
+        DynModel,  # EncModel placeholder (not used but needed for type)
+        DynOpt,  # EncOpt placeholder
+        DynModel,
+        DynOpt,
+        RewModel,
+        RewOpt,
+        PolModel,
+        PolOpt,
+        QModel,
+        QOpt,
+        ACTION_DIM,
+        LATENT_DIM,
+        NUM_BINS,
+        NUM_SAMPLES,
+        NUM_PI_TRAJS,
+        HORIZON,
+    ],
+    # Hyperparams
+    gamma: Float64,
+    temperature: Float64,
+    mut prev_mean: List[Float64],
+    action_scale: Float64 = 1.0,
+    deterministic: Bool = False,
+    t0: Bool = True,
+    rng_base_seed: UInt32 = 42,
+) raises -> InlineArray[Scalar[dtype], ACTION_DIM]:
+    """GPU-batched MPPI planning in latent space.
+
+    All TOTAL_SAMPLES (NUM_SAMPLES + NUM_PI_TRAJS) trajectory rollouts
+    are batched through the world model on GPU in parallel.
+    Only the lightweight distribution update (softmax weights, mean/std)
+    syncs back to CPU per iteration.
+
+    Args:
+        ctx: GPU device context.
+        z0_tensor: Encoded observation [1, LATENT_DIM] on GPU.
+        dyn_params: Dynamics network params on GPU.
+        rew_params: Reward network params on GPU.
+        pol_params: Policy network params on GPU.
+        qt_param_ptrs: Target Q-network param pointers (NUM_Q).
+        bins_tensor: Distribution bin centers [NUM_BINS] on GPU.
+        mb: MPPI GPU buffers (workspace + data).
+        gamma: Discount factor.
+        temperature: MPPI softmax temperature.
+        action_scale: Action scaling factor (default 1.0).
+        deterministic: If True, no exploration noise (eval mode).
+        t0: If True, first timestep of episode (no warm-start).
+        prev_mean: Previous plan mean [H * ACT] for warm-start (updated in-place).
+        rng_base_seed: Base seed for RNG (should vary per call).
+
+    Returns:
+        Selected action [ACTION_DIM] in [-action_scale, action_scale].
+    """
+    # ─── Compile-time constants ────────────────────────────────────────────
+    comptime TOTAL_SAMPLES = NUM_SAMPLES + NUM_PI_TRAJS
+    comptime ZA_DIM = LATENT_DIM + ACTION_DIM
+    comptime POL_OUT = PolModel.OUT_DIM
+    comptime STD_MIN: Float64 = 0.05
+    comptime STD_MAX: Float64 = 2.0
+    comptime MPPI_BLOCKS = (TOTAL_SAMPLES + TPB - 1) // TPB
+    comptime RETURNS_SIZE = TOTAL_SAMPLES
+    comptime RETURNS_BLOCKS = (RETURNS_SIZE + TPB - 1) // TPB
+
+    comptime DynNet = Network[DynModel, DynOpt]
+    comptime RewNet = Network[RewModel, RewOpt]
+    comptime PolNet = Network[PolModel, PolOpt]
+    comptime QNet = Network[QModel, QOpt]
+
+    # ─── LayoutTensor views over MPPI GPU buffers ──────────────────────────
+    var z_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ](mb.z_buf.unsafe_ptr())
+    var z_next_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ](mb.z_next_buf.unsafe_ptr())
+    var za_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, ZA_DIM), MutAnyOrigin
+    ](mb.za_buf.unsafe_ptr())
+    var act_step_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, ACTION_DIM), MutAnyOrigin
+    ](mb.act_step_buf.unsafe_ptr())
+    var all_actions_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ](mb.all_actions_buf.unsafe_ptr())
+    var rew_logits_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, NUM_BINS), MutAnyOrigin
+    ](mb.rew_logits_buf.unsafe_ptr())
+    var q_logits_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, NUM_BINS), MutAnyOrigin
+    ](mb.q_logits_buf.unsafe_ptr())
+    var returns_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
+    ](mb.returns_buf.unsafe_ptr())
+    var q_min_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
+    ](mb.q_min_buf.unsafe_ptr())
+    var pi_out_tensor = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, POL_OUT), MutAnyOrigin
+    ](mb.pi_out_buf.unsafe_ptr())
+    var mean_tensor = LayoutTensor[
+        dtype, Layout.row_major(HORIZON * ACTION_DIM), MutAnyOrigin
+    ](mb.mean_buf.unsafe_ptr())
+    var std_tensor = LayoutTensor[
+        dtype, Layout.row_major(HORIZON * ACTION_DIM), MutAnyOrigin
+    ](mb.std_buf.unsafe_ptr())
+
+    # Model-typed tensor views (same underlying buffers, but with Model.IN_DIM
+    # / Model.OUT_DIM dimensions so forward_gpu_no_cache type-checks)
+    var pol_out_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, PolModel.OUT_DIM),
+        MutAnyOrigin,
+    ](mb.pi_out_buf.unsafe_ptr())
+    var pol_in_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, PolModel.IN_DIM),
+        MutAnyOrigin,
+    ](mb.z_buf.unsafe_ptr())
+    var dyn_in_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, DynModel.IN_DIM),
+        MutAnyOrigin,
+    ](mb.za_buf.unsafe_ptr())
+    var dyn_out_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, DynModel.OUT_DIM),
+        MutAnyOrigin,
+    ](mb.z_next_buf.unsafe_ptr())
+    var rew_in_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, RewModel.IN_DIM),
+        MutAnyOrigin,
+    ](mb.za_buf.unsafe_ptr())
+    var rew_out_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, RewModel.OUT_DIM),
+        MutAnyOrigin,
+    ](mb.rew_logits_buf.unsafe_ptr())
+    var q_in_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, QModel.IN_DIM),
+        MutAnyOrigin,
+    ](mb.za_buf.unsafe_ptr())
+    var q_out_tensor = LayoutTensor[
+        dtype,
+        Layout.row_major(TOTAL_SAMPLES, QModel.OUT_DIM),
+        MutAnyOrigin,
+    ](mb.q_logits_buf.unsafe_ptr())
+
+    # ─── Kernel wrappers (compile-time parameterized) ──────────────────────
+    comptime broadcast_z0 = mppi_broadcast_z0_kernel[
+        dtype, TOTAL_SAMPLES, LATENT_DIM
+    ]
+    comptime sample_actions = mppi_sample_actions_kernel[
+        dtype, TOTAL_SAMPLES, NUM_PI_TRAJS, ACTION_DIM, HORIZON, POL_OUT
+    ]
+    comptime accum_reward = mppi_accumulate_reward_kernel[
+        dtype, TOTAL_SAMPLES, NUM_BINS
+    ]
+    comptime add_terminal = mppi_add_terminal_value_kernel[dtype, TOTAL_SAMPLES]
+    comptime copy_z = mppi_copy_z_kernel[dtype, TOTAL_SAMPLES, LATENT_DIM]
+    comptime build_za = tdmpc2_build_za_kernel[
+        dtype, TOTAL_SAMPLES, LATENT_DIM, ACTION_DIM
+    ]
+    comptime tanh_build_za = tdmpc2_apply_tanh_build_za_kernel[
+        dtype, TOTAL_SAMPLES, ACTION_DIM, LATENT_DIM, POL_OUT
+    ]
+    comptime q_decode = tdmpc2_q_decode_kernel[dtype, TOTAL_SAMPLES, NUM_BINS]
+    comptime decode_min = tdmpc2_decode_and_min_kernel[
+        dtype, TOTAL_SAMPLES, NUM_BINS
+    ]
+    comptime zero_returns = tdmpc2_zero_kernel[dtype, RETURNS_SIZE]
+
+    # ─── Initialize mean/std on CPU, upload to GPU ─────────────────────────
+    # Warm-start: shift previous plan's mean forward by 1 step
+    for i in range(HORIZON * ACTION_DIM):
+        mb.mean_host[i] = Scalar[dtype](0.0)
+        mb.std_host[i] = Scalar[dtype](0.5)
+
+    if not t0 and len(prev_mean) == HORIZON * ACTION_DIM:
+        for t in range(HORIZON - 1):
+            for a in range(ACTION_DIM):
+                mb.mean_host[t * ACTION_DIM + a] = Scalar[dtype](
+                    prev_mean[(t + 1) * ACTION_DIM + a]
+                )
+        # Last step stays 0
+
+    ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
+    ctx.enqueue_copy(mb.std_buf, mb.std_host)
+
+    # ─── Softmax weights storage (CPU-side) ────────────────────────────────
+    var weights = List[Float64](capacity=TOTAL_SAMPLES)
+
+    # ─── Main MPPI iterations ──────────────────────────────────────────────
+    for mppi_iter in range(NUM_ITERATIONS):
+        var rng_seed = rng_base_seed + UInt32(
+            mppi_iter * TOTAL_SAMPLES * HORIZON * ACTION_DIM * 2
+        )
+
+        # 1. Broadcast z0 to all samples
+        ctx.enqueue_function[broadcast_z0, broadcast_z0](
+            z0_tensor,
+            z_tensor,
+            grid_dim=(MPPI_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 2. Zero returns
+        ctx.enqueue_function[zero_returns, zero_returns](
+            returns_tensor,
+            grid_dim=(RETURNS_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 3. Horizon rollout (H sequential steps, each fully batched)
+        var discount = Scalar[dtype](1.0)
+        for t in range(HORIZON):
+            var step_seed = rng_seed + UInt32(
+                t * TOTAL_SAMPLES * ACTION_DIM + 1
+            )
+
+            # 3a. Policy forward on all samples (for policy trajectories)
+            PolModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+                ctx,
+                pol_out_tensor,
+                pol_in_tensor,
+                pol_params,
+                mb.pol_ws_buf,
+            )
+
+            # 3b. Sample actions (policy + MPPI distribution)
+            ctx.enqueue_function[sample_actions, sample_actions](
+                pi_out_tensor,
+                mean_tensor,
+                std_tensor,
+                act_step_tensor,
+                all_actions_tensor,
+                t,
+                Scalar[DType.uint32](step_seed),
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # 3c. Build za = [z, action]
+            ctx.enqueue_function[build_za, build_za](
+                z_tensor,
+                act_step_tensor,
+                za_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # 3d. Reward forward
+            RewModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+                ctx,
+                rew_out_tensor,
+                rew_in_tensor,
+                rew_params,
+                mb.rew_ws_buf,
+            )
+
+            # 3e. Accumulate discounted reward
+            ctx.enqueue_function[accum_reward, accum_reward](
+                rew_logits_tensor,
+                bins_tensor,
+                returns_tensor,
+                discount,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            discount = discount * Scalar[dtype](gamma)
+
+            # 3f. Dynamics forward (advance z)
+            DynModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+                ctx,
+                dyn_out_tensor,
+                dyn_in_tensor,
+                dyn_params,
+                mb.dyn_ws_buf,
+            )
+
+            # 3g. Copy z_next → z for next step
+            ctx.enqueue_function[copy_z, copy_z](
+                z_tensor,
+                z_next_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 4. Terminal value: policy → tanh → build za → Q-min
+        PolModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+            ctx,
+            pol_out_tensor,
+            pol_in_tensor,
+            pol_params,
+            mb.pol_ws_buf,
+        )
+
+        # Fused tanh(policy_mean) + build za
+        ctx.enqueue_function[tanh_build_za, tanh_build_za](
+            pi_out_tensor,
+            act_step_tensor,  # reused as terminal actions
+            z_tensor,
+            za_tensor,
+            grid_dim=(MPPI_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Q1: decode → q_min (initialize)
+        var qt1_params = LayoutTensor[
+            dtype, Layout.row_major(QModel.PARAM_SIZE), MutAnyOrigin
+        ](qt_param_ptrs[0])
+        QModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+            ctx,
+            q_out_tensor,
+            q_in_tensor,
+            qt1_params,
+            mb.q_ws_buf,
+        )
+        ctx.enqueue_function[q_decode, q_decode](
+            q_logits_tensor,
+            bins_tensor,
+            q_min_tensor,
+            grid_dim=(MPPI_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Q2..Q5: decode + min update
+        for qi in range(1, NUM_Q):
+            var qt_params = LayoutTensor[
+                dtype, Layout.row_major(QModel.PARAM_SIZE), MutAnyOrigin
+            ](qt_param_ptrs[qi])
+            QModel.forward_gpu_no_cache[TOTAL_SAMPLES](
+                ctx,
+                q_out_tensor,
+                q_in_tensor,
+                qt_params,
+                mb.q_ws_buf,
+            )
+            ctx.enqueue_function[decode_min, decode_min](
+                q_logits_tensor,
+                bins_tensor,
+                q_min_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 4b. Add terminal value to returns
+        ctx.enqueue_function[add_terminal, add_terminal](
+            q_min_tensor,
+            returns_tensor,
+            discount,
+            grid_dim=(MPPI_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 5. Download returns + actions to CPU for distribution update
+        ctx.enqueue_copy(mb.returns_host, mb.returns_buf)
+        ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)
+        ctx.synchronize()
+
+        # 6. CPU: softmax weights
+        var max_return = Float64(mb.returns_host[0])
+        for s in range(1, TOTAL_SAMPLES):
+            var v = Float64(mb.returns_host[s])
+            if v > max_return:
+                max_return = v
+
+        weights = List[Float64](capacity=TOTAL_SAMPLES)
+        var sum_w: Float64 = 0.0
+        for s in range(TOTAL_SAMPLES):
+            var w = exp(
+                temperature * (Float64(mb.returns_host[s]) - max_return)
+            )
+            weights.append(w)
+            sum_w += w
+
+        if sum_w < 1e-10:
+            sum_w = 1e-10
+        for s in range(TOTAL_SAMPLES):
+            weights[s] = weights[s] / sum_w
+
+        # 7. CPU: update mean and std
+        for t in range(HORIZON):
+            for a in range(ACTION_DIM):
+                var new_mean: Float64 = 0.0
+                for s in range(TOTAL_SAMPLES):
+                    var base = s * HORIZON * ACTION_DIM + t * ACTION_DIM
+                    new_mean += weights[s] * Float64(
+                        mb.all_actions_host[base + a]
+                    )
+                mb.mean_host[t * ACTION_DIM + a] = Scalar[dtype](new_mean)
+
+                var new_var: Float64 = 0.0
+                for s in range(TOTAL_SAMPLES):
+                    var base = s * HORIZON * ACTION_DIM + t * ACTION_DIM
+                    var diff = Float64(mb.all_actions_host[base + a]) - new_mean
+                    new_var += weights[s] * diff * diff
+
+                var new_std = sqrt(new_var + 1e-8)
+                new_std = _clamp(new_std, STD_MIN, STD_MAX)
+                mb.std_host[t * ACTION_DIM + a] = Scalar[dtype](new_std)
+
+        # 8. Upload updated mean/std to GPU for next iteration
+        ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
+        ctx.enqueue_copy(mb.std_buf, mb.std_host)
+
+    # ─── Store final mean for warm-starting next timestep ──────────────────
+    prev_mean = List[Float64](capacity=HORIZON * ACTION_DIM)
+    for i in range(HORIZON * ACTION_DIM):
+        prev_mean.append(Float64(mb.mean_host[i]))
+
+    # ─── Action selection: weighted random sampling ────────────────────────
+    var selected_s = _weighted_sample(weights, TOTAL_SAMPLES)
+
+    var result = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
+    for a in range(ACTION_DIM):
+        var act = Float64(
+            mb.all_actions_host[selected_s * HORIZON * ACTION_DIM + a]
+        )
+        # Add exploration noise scaled by current std
+        if not deterministic:
+            act += _gaussian_sample() * Float64(mb.std_host[a])
+        act = _clamp(act * action_scale, -action_scale, action_scale)
+        result[a] = Scalar[dtype](act)
+
+    return result^

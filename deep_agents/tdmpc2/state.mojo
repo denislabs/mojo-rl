@@ -22,6 +22,161 @@ from .world_model import WorldModel
 
 
 # =============================================================================
+# MPPIGPUBuffers — GPU buffer container for MPPI planning
+# =============================================================================
+
+
+struct MPPIGPUBuffers[
+    # Network model / optimizer types
+    EncModel: Model,
+    EncOpt: Optimizer,
+    DynModel: Model,
+    DynOpt: Optimizer,
+    RewModel: Model,
+    RewOpt: Optimizer,
+    PolModel: Model,
+    PolOpt: Optimizer,
+    QModel: Model,
+    QOpt: Optimizer,
+    # Dimension parameters
+    action_dim: Int,
+    latent_dim: Int,
+    num_bins: Int,
+    num_samples: Int,
+    num_pi_trajs: Int,
+    horizon: Int,
+]:
+    """GPU-resident buffers for MPPI planning.
+
+    Holds all device buffers needed for GPU-batched MPPI:
+      - Workspace buffers for network forward passes (TOTAL_SAMPLES-sized)
+      - Latent state buffers, action buffers, return buffers
+      - Host buffers for CPU distribution update (per-iteration sync)
+
+    Created once at the start of GPU training. Separate from TDMPC2GPUState
+    since MPPI buffers are only needed when using GPU MPPI planning.
+
+    Parameters:
+        EncModel: Network model and optimizer types.
+        EncOpt: Optimizer for the encoder network.
+        DynModel: Network model and optimizer types.
+        DynOpt: Optimizer for the dynamics network.
+        RewModel: Network model and optimizer types.
+        RewOpt: Optimizer for the reward network.
+        PolModel: Network model and optimizer types.
+        PolOpt: Optimizer for the policy network.
+        QModel: Network model and optimizer types.
+        QOpt: Optimizer for the Q network.
+        action_dim: Action space dimension.
+        latent_dim: Latent state dimension.
+        num_bins: Distributional RL bins.
+        num_samples: MPPI candidate trajectories.
+        num_pi_trajs: Policy-seeded trajectories.
+        horizon: Planning horizon H.
+    """
+
+    # ── Derived compile-time constants ──────────────────────────────────────
+    comptime TOTAL = Self.num_samples + Self.num_pi_trajs
+    comptime H = Self.horizon
+    comptime ACT = Self.action_dim
+    comptime LATENT = Self.latent_dim
+    comptime BINS = Self.num_bins
+    comptime ZA = Self.LATENT + Self.ACT
+    comptime POL_OUT = Self.PolModel.OUT_DIM
+
+    # Buffer sizes
+    comptime T_LATENT = Self.TOTAL * Self.LATENT
+    comptime T_ZA = Self.TOTAL * Self.ZA
+    comptime T_ACT = Self.TOTAL * Self.ACT
+    comptime T_BINS = Self.TOTAL * Self.BINS
+    comptime ALL_ACTIONS = Self.TOTAL * Self.H * Self.ACT
+    comptime MEAN_STD = Self.H * Self.ACT
+
+    # Workspace sizes per sample
+    comptime DYN_W = Network[
+        Self.DynModel, Self.DynOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime REW_W = Network[
+        Self.RewModel, Self.RewOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime POL_W = Network[
+        Self.PolModel, Self.PolOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime Q_W = Network[Self.QModel, Self.QOpt].WORKSPACE_SIZE_PER_SAMPLE
+
+    # ── Network workspace buffers (TOTAL_SAMPLES-sized) ─────────────────────
+    var dyn_ws_buf: DeviceBuffer[dtype]
+    var rew_ws_buf: DeviceBuffer[dtype]
+    var pol_ws_buf: DeviceBuffer[dtype]
+    var q_ws_buf: DeviceBuffer[dtype]
+
+    # ── MPPI data buffers ───────────────────────────────────────────────────
+    var z_buf: DeviceBuffer[dtype]  # [TOTAL, LATENT] current latent states
+    var z_next_buf: DeviceBuffer[dtype]  # [TOTAL, LATENT] dynamics output
+    var za_buf: DeviceBuffer[dtype]  # [TOTAL, ZA] concatenated (z, a)
+    var act_step_buf: DeviceBuffer[dtype]  # [TOTAL, ACT] current step actions
+    var all_actions_buf: DeviceBuffer[dtype]  # [TOTAL * H * ACT] all actions
+    var rew_logits_buf: DeviceBuffer[dtype]  # [TOTAL, BINS] reward logits
+    var q_logits_buf: DeviceBuffer[dtype]  # [TOTAL, BINS] Q logits (reused)
+    var returns_buf: DeviceBuffer[dtype]  # [TOTAL] discounted returns
+    var q_min_buf: DeviceBuffer[dtype]  # [TOTAL] min-Q terminal values
+    var pi_out_buf: DeviceBuffer[dtype]  # [TOTAL, POL_OUT] policy output
+
+    # ── Distribution buffers ────────────────────────────────────────────────
+    var mean_buf: DeviceBuffer[dtype]  # [H * ACT] MPPI mean (GPU)
+    var std_buf: DeviceBuffer[dtype]  # [H * ACT] MPPI std (GPU)
+
+    # ── Host buffers for CPU distribution update ────────────────────────────
+    var returns_host: HostBuffer[dtype]  # [TOTAL]
+    var all_actions_host: HostBuffer[dtype]  # [TOTAL * H * ACT]
+    var mean_host: HostBuffer[dtype]  # [H * ACT]
+    var std_host: HostBuffer[dtype]  # [H * ACT]
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all MPPI GPU and host buffers."""
+
+        # Network workspaces
+        self.dyn_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.TOTAL * Self.DYN_W
+        )
+        self.rew_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.TOTAL * Self.REW_W
+        )
+        self.pol_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.TOTAL * Self.POL_W
+        )
+        self.q_ws_buf = ctx.enqueue_create_buffer[dtype](Self.TOTAL * Self.Q_W)
+
+        # Data buffers
+        self.z_buf = ctx.enqueue_create_buffer[dtype](Self.T_LATENT)
+        self.z_next_buf = ctx.enqueue_create_buffer[dtype](Self.T_LATENT)
+        self.za_buf = ctx.enqueue_create_buffer[dtype](Self.T_ZA)
+        self.act_step_buf = ctx.enqueue_create_buffer[dtype](Self.T_ACT)
+        self.all_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ALL_ACTIONS
+        )
+        self.rew_logits_buf = ctx.enqueue_create_buffer[dtype](Self.T_BINS)
+        self.q_logits_buf = ctx.enqueue_create_buffer[dtype](Self.T_BINS)
+        self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.TOTAL)
+        self.q_min_buf = ctx.enqueue_create_buffer[dtype](Self.TOTAL)
+        self.pi_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.TOTAL * Self.POL_OUT
+        )
+
+        # Distribution buffers
+        self.mean_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
+        self.std_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
+
+        # Host buffers
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](Self.TOTAL)
+        self.all_actions_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ALL_ACTIONS
+        )
+        self.mean_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
+        self.std_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
+
+
+# =============================================================================
 # TDMPC2GPUState
 # =============================================================================
 
