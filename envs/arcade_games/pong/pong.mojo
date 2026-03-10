@@ -82,7 +82,7 @@ comptime S_LIVES: Int = 11
 comptime CPU_SPEED: Float64 = 1.8
 comptime CPU_REACTION_ZONE: Float64 = 2.0
 comptime WIN_SCORE: Int = 21
-comptime PONG_MAX_STEPS: Int = 10000
+comptime PONG_MAX_STEPS: Int = 5000
 
 
 # ============================================================================

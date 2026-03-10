@@ -1,6 +1,6 @@
 """Test native Breakout environment — CPU + GPU."""
 
-from envs.atari_games.breakout import BreakoutEnv
+from envs.arcade_games.breakout import BreakoutEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

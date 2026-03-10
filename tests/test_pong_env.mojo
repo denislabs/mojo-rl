@@ -1,6 +1,6 @@
 """Test native Pong environment — CPU path."""
 
-from envs.atari_games.pong import PongEnv
+from envs.arcade_games.pong import PongEnv
 
 
 fn main() raises:

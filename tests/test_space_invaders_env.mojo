@@ -1,6 +1,6 @@
 """Test native Space Invaders — CPU + GPU."""
 
-from envs.atari_games.space_invaders import SpaceInvadersEnv
+from envs.arcade_games.space_invaders import SpaceInvadersEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

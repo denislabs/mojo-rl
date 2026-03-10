@@ -1,6 +1,6 @@
 """Test native Pong environment — GPU path."""
 
-from envs.atari_games.pong import PongEnv
+from envs.arcade_games.pong import PongEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

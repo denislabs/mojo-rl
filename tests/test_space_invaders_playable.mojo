@@ -1,7 +1,7 @@
 """Playable Space Invaders — LEFT/RIGHT arrows to move, SPACE to fire."""
 
 from std.memory import alloc
-from envs.atari_games.space_invaders import SpaceInvadersEnv
+from envs.arcade_games.space_invaders import SpaceInvadersEnv
 from render.sdl.sdl_keyboard import get_keyboard_state
 from render.sdl.sdl_scancode import Scancode
 

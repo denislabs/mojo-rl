@@ -1,7 +1,7 @@
 """Playable Breakout — LEFT/RIGHT arrows to move, SPACE to fire."""
 
 from std.memory import alloc
-from envs.atari_games.breakout import BreakoutEnv
+from envs.arcade_games.breakout import BreakoutEnv
 from render.sdl.sdl_keyboard import get_keyboard_state
 from render.sdl.sdl_scancode import Scancode
 
