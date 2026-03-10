@@ -71,7 +71,10 @@ from core import (
     RenderableEnv,
 )
 from deep_agents.dqn.state import DQNGPUState, DQNCPUState
-from deep_agents.dqn.kernels import dqn_td_target_kernel, dqn_double_td_target_kernel
+from deep_agents.dqn.kernels import (
+    dqn_td_target_kernel,
+    dqn_double_td_target_kernel,
+)
 
 
 # =============================================================================
@@ -240,7 +243,7 @@ struct DQNCNNAgent[
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](obs.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs.unsafe_ptr()))
         var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
         var q_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
@@ -264,9 +267,9 @@ struct DQNCNNAgent[
         if not cpu_state.buffer.is_ready[Self.batch_size]():
             return 0.0
 
-        var batch_obs = InlineArray[
-            Scalar[dtype], Self.batch_size * Self.OBS
-        ](uninitialized=True)
+        var batch_obs = InlineArray[Scalar[dtype], Self.batch_size * Self.OBS](
+            uninitialized=True
+        )
         var batch_actions_tmp = InlineArray[Scalar[dtype], Self.batch_size](
             uninitialized=True
         )
@@ -791,6 +794,8 @@ struct DQNCNNAgent[
         if Self.double_dqn:
             algo_name = String("Double DQN CNN")
         var cpu_state = Self.CPUStateType()
+        var checkpoint_every = self.checkpoint_every
+        var checkpoint_path = self.checkpoint_path
         var metrics = run_offpolicy_discrete_train(
             self,
             cpu_state,
@@ -799,6 +804,8 @@ struct DQNCNNAgent[
             max_steps_per_episode,
             warmup_steps,
             train_every,
+            checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,

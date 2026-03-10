@@ -254,11 +254,11 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             ctx: GPU device context.
         """
         for i in range(Self.PARAM_SIZE):
-            self.params_host[i] = cpu.params[i]
+            self.params_host[i] = (cpu.params + i)[]
         ctx.enqueue_copy(self.params_buf, self.params_host)
 
         for i in range(Self.STATE_SIZE):
-            self.state_host[i] = cpu.optimizer_state[i]
+            self.state_host[i] = (cpu.optimizer_state + i)[]
         ctx.enqueue_copy(self.state_buf, self.state_host)
 
         self.step_num = cpu.step_num
@@ -279,7 +279,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         ctx.synchronize()
 
         for i in range(Self.PARAM_SIZE):
-            cpu.params[i] = self.params_host[i]
+            (cpu.params + i)[] = self.params_host[i]
         for i in range(Self.STATE_SIZE):
-            cpu.optimizer_state[i] = self.state_host[i]
+            (cpu.optimizer_state + i)[] = self.state_host[i]
         cpu.step_num = self.step_num

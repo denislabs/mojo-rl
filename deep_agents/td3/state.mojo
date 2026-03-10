@@ -98,9 +98,9 @@ struct TD3CPUState[
         self.actor = NetworkPair[Self.ActorModel, Self.ActorOpt]()
         self.actor.initialize[Xavier]()
         self.critic1 = NetworkPair[Self.CriticModel, Self.CriticOpt]()
-        self.critic1.initialize[Kaiming]()
+        self.critic1.initialize[Kaiming[]]()
         self.critic2 = NetworkPair[Self.CriticModel, Self.CriticOpt]()
-        self.critic2.initialize[Kaiming]()
+        self.critic2.initialize[Kaiming[]]()
 
         self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype

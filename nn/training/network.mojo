@@ -12,7 +12,7 @@ Usage:
 
     # Create and initialize state separately
     var state = NetworkState[M, Adam]()
-    state.initialize[Kaiming]()
+    state.initialize[Kaiming[]]()
 
     # CPU inference (batch=1)
     var p = state.params_view()

@@ -86,37 +86,35 @@ struct PPODiscreteState[
     var critic: NetworkState[Self.CriticModel, Self.CriticOpt]
 
     # Rollout buffers (heap-allocated Lists to avoid stack overflow)
-    var buffer_obs: List[Scalar[dtype]]      # [rollout_len * obs_dim]
-    var buffer_actions: List[Int]            # [rollout_len]
+    var buffer_obs: List[Scalar[dtype]]  # [rollout_len * obs_dim]
+    var buffer_actions: List[Int]  # [rollout_len]
     var buffer_rewards: List[Scalar[dtype]]  # [rollout_len]
-    var buffer_values: List[Scalar[dtype]]   # [rollout_len]
-    var buffer_log_probs: List[Scalar[dtype]] # [rollout_len]
-    var buffer_dones: List[Bool]             # [rollout_len]
-    var buffer_idx: Int                      # current fill position
+    var buffer_values: List[Scalar[dtype]]  # [rollout_len]
+    var buffer_log_probs: List[Scalar[dtype]]  # [rollout_len]
+    var buffer_dones: List[Bool]  # [rollout_len]
+    var buffer_idx: Int  # current fill position
 
     # Computed by compute_advantages (filled after collect_rollout)
-    var _advantages: List[Scalar[dtype]]     # [rollout_len]
-    var _returns: List[Scalar[dtype]]        # [rollout_len]
+    var _advantages: List[Scalar[dtype]]  # [rollout_len]
+    var _returns: List[Scalar[dtype]]  # [rollout_len]
 
     # Last observation after rollout ends (used to bootstrap value)
-    var _current_obs: List[Scalar[dtype]]    # [obs_dim]
+    var _current_obs: List[Scalar[dtype]]  # [obs_dim]
     var _env_initialized: Bool
 
     # Shuffled index buffer (reused across epochs in update_epochs)
-    var _indices: List[Int]                  # [rollout_len]
+    var _indices: List[Int]  # [rollout_len]
 
     fn __init__(out self):
         """Allocate networks (Xavier init), rollout buffers, and scratch."""
         # Initialize actor and critic with Xavier
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
-        self.actor.initialize[Xavier]()
+        self.actor.initialize[Xavier[]]()
         self.critic = NetworkState[Self.CriticModel, Self.CriticOpt]()
-        self.critic.initialize[Xavier]()
+        self.critic.initialize[Xavier[]]()
 
         # Allocate and zero-fill rollout buffers
-        self.buffer_obs = List[Scalar[dtype]](
-            capacity=Self.ROLLOUT * Self.OBS
-        )
+        self.buffer_obs = List[Scalar[dtype]](capacity=Self.ROLLOUT * Self.OBS)
         for _ in range(Self.ROLLOUT * Self.OBS):
             self.buffer_obs.append(Scalar[dtype](0))
 
@@ -176,7 +174,8 @@ struct PPODiscreteState[
         log_prob: Scalar[dtype],
         done: Bool,
     ) -> None:
-        """Store one step (obs, action, reward, value, log_prob, done) in the rollout buffer."""
+        """Store one step (obs, action, reward, value, log_prob, done) in the rollout buffer.
+        """
         var idx = self.buffer_idx
         for i in range(Self.OBS):
             self.buffer_obs[idx * Self.OBS + i] = obs[i]
@@ -236,24 +235,24 @@ struct PPOContinuousState[
     var critic: NetworkState[Self.CriticModel, Self.CriticOpt]
 
     # Rollout buffers
-    var buffer_obs: List[Scalar[dtype]]      # [rollout_len * obs_dim]
+    var buffer_obs: List[Scalar[dtype]]  # [rollout_len * obs_dim]
     var buffer_actions: List[Scalar[dtype]]  # [rollout_len * action_dim]
     var buffer_rewards: List[Scalar[dtype]]  # [rollout_len]
-    var buffer_values: List[Scalar[dtype]]   # [rollout_len]
-    var buffer_log_probs: List[Scalar[dtype]] # [rollout_len]
-    var buffer_dones: List[Bool]             # [rollout_len]
+    var buffer_values: List[Scalar[dtype]]  # [rollout_len]
+    var buffer_log_probs: List[Scalar[dtype]]  # [rollout_len]
+    var buffer_dones: List[Bool]  # [rollout_len]
     var buffer_idx: Int
 
     # Advantage and return scratch
-    var _advantages: List[Scalar[dtype]]     # [rollout_len]
-    var _returns: List[Scalar[dtype]]        # [rollout_len]
+    var _advantages: List[Scalar[dtype]]  # [rollout_len]
+    var _returns: List[Scalar[dtype]]  # [rollout_len]
 
     # Current obs for bootstrapping
-    var _current_obs: List[Scalar[dtype]]    # [obs_dim]
+    var _current_obs: List[Scalar[dtype]]  # [obs_dim]
     var _env_initialized: Bool
 
     # Shuffled index buffer
-    var _indices: List[Int]                  # [rollout_len]
+    var _indices: List[Int]  # [rollout_len]
 
     fn __init__(out self):
         """Allocate networks (actor Kaiming init only), rollout buffers, scratch.
@@ -267,13 +266,11 @@ struct PPOContinuousState[
         gradient magnitudes. Do NOT call critic.initialize[Kaiming]() here.
         """
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
-        self.actor.initialize[Kaiming]()
+        self.actor.initialize[Kaiming[]]()
         self.critic = NetworkState[Self.CriticModel, Self.CriticOpt]()
         # NOTE: critic intentionally NOT initialized here. See docstring above.
 
-        self.buffer_obs = List[Scalar[dtype]](
-            capacity=Self.ROLLOUT * Self.OBS
-        )
+        self.buffer_obs = List[Scalar[dtype]](capacity=Self.ROLLOUT * Self.OBS)
         for _ in range(Self.ROLLOUT * Self.OBS):
             self.buffer_obs.append(Scalar[dtype](0))
 
@@ -332,7 +329,8 @@ struct PPOContinuousState[
         log_prob: Scalar[dtype],
         done: Bool,
     ) -> None:
-        """Store one step (obs, action, reward, value, log_prob, done) in the rollout buffer."""
+        """Store one step (obs, action, reward, value, log_prob, done) in the rollout buffer.
+        """
         var idx = self.buffer_idx
         for i in range(Self.OBS):
             self.buffer_obs[idx * Self.OBS + i] = obs[i]
@@ -352,6 +350,7 @@ struct PPOContinuousState[
         """Reset the rollout buffer write pointer."""
         self.buffer_idx = 0
 
+
 # =============================================================================
 # PPODiscreteGPUState — GPU state container for discrete-action PPO
 # =============================================================================
@@ -367,7 +366,7 @@ struct PPODiscreteGPUState[
     rollout_len: Int,
     n_envs: Int,
     gpu_minibatch: Int,
-](Movable, GPUOnPolicyState):
+](GPUOnPolicyState, Movable):
     """GPU-resident state for discrete-action PPO training.
 
     Holds all DeviceBuffers needed for one GPU PPO training loop:
@@ -412,57 +411,67 @@ struct PPODiscreteGPUState[
     var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
 
     # Rollout buffers (ROLLOUT_LEN * N_ENVS elements)
-    var rollout_obs_buf: DeviceBuffer[dtype]       # [ROLLOUT_TOTAL * OBS_DIM]
-    var rollout_actions_buf: DeviceBuffer[dtype]   # [ROLLOUT_TOTAL]
-    var rollout_log_probs_buf: DeviceBuffer[dtype] # [ROLLOUT_TOTAL]
-    var rollout_values_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL]
-    var rollout_rewards_buf: DeviceBuffer[dtype]   # [ROLLOUT_TOTAL]
-    var rollout_dones_buf: DeviceBuffer[dtype]     # [ROLLOUT_TOTAL]
+    var rollout_obs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL * OBS_DIM]
+    var rollout_actions_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_log_probs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_values_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_rewards_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_dones_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
     var rollout_step: Int
 
     # Advantage and return buffers (filled by compute_advantages_gpu)
-    var advantages_buf: DeviceBuffer[dtype]        # [ROLLOUT_TOTAL]
-    var returns_buf: DeviceBuffer[dtype]           # [ROLLOUT_TOTAL]
+    var advantages_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var returns_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
 
     # Pinned host buffers for GAE computation
-    var rollout_rewards_host: HostBuffer[dtype]    # [ROLLOUT_TOTAL]
-    var rollout_values_host: HostBuffer[dtype]     # [ROLLOUT_TOTAL]
-    var rollout_dones_host: HostBuffer[dtype]      # [ROLLOUT_TOTAL]
-    var advantages_host: HostBuffer[dtype]         # [ROLLOUT_TOTAL]
-    var returns_host: HostBuffer[dtype]            # [ROLLOUT_TOTAL]
-    var bootstrap_values_host: HostBuffer[dtype]   # [N_ENVS]
+    var rollout_rewards_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_values_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_dones_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var advantages_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var returns_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var bootstrap_values_host: HostBuffer[dtype]  # [N_ENVS]
 
     # Minibatch scratch buffers
-    var mb_obs_buf: DeviceBuffer[dtype]            # [MB * OBS_DIM]
-    var mb_actions_buf: DeviceBuffer[dtype]        # [MB]
-    var mb_advantages_buf: DeviceBuffer[dtype]     # [MB]
-    var mb_returns_buf: DeviceBuffer[dtype]        # [MB]
+    var mb_obs_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var mb_actions_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_advantages_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_returns_buf: DeviceBuffer[dtype]  # [MB]
     var mb_old_log_probs_buf: DeviceBuffer[dtype]  # [MB]
-    var mb_old_values_buf: DeviceBuffer[dtype]     # [MB]
+    var mb_old_values_buf: DeviceBuffer[dtype]  # [MB]
     var mb_indices_buf: DeviceBuffer[DType.int32]  # [MB]
-    var mb_indices_host: HostBuffer[DType.int32]   # [MB]
+    var mb_indices_host: HostBuffer[DType.int32]  # [MB]
 
     # Training workspace buffers
-    var logits_buf: DeviceBuffer[dtype]                  # [N_ENVS * NUM_ACTIONS]
-    var actor_logits_buf: DeviceBuffer[dtype]            # [MB * NUM_ACTIONS]
-    var actor_cache_buf: DeviceBuffer[dtype]             # [MB * ActorModel.CACHE_SIZE]
-    var actor_grad_output_buf: DeviceBuffer[dtype]       # [MB * NUM_ACTIONS]
-    var actor_grad_input_buf: DeviceBuffer[dtype]        # [MB * OBS_DIM]
-    var critic_values_buf: DeviceBuffer[dtype]           # [MB]
-    var critic_cache_buf: DeviceBuffer[dtype]            # [MB * CriticModel.CACHE_SIZE]
-    var critic_grad_output_buf: DeviceBuffer[dtype]      # [MB]
-    var critic_grad_input_buf: DeviceBuffer[dtype]       # [MB * OBS_DIM]
-    var kl_divergences_buf: DeviceBuffer[dtype]          # [MB]
-    var kl_divergences_host: HostBuffer[dtype]           # [MB]
-    var mb_advantages_host: HostBuffer[dtype]            # [MB]
-    var actor_grad_partial_sums_buf: DeviceBuffer[dtype] # [ACTOR_GRAD_BLOCKS]
-    var critic_grad_partial_sums_buf: DeviceBuffer[dtype]# [CRITIC_GRAD_BLOCKS]
-    var actor_scale_buf: DeviceBuffer[dtype]             # [1]
-    var critic_scale_buf: DeviceBuffer[dtype]            # [1]
-    var actor_env_workspace_buf: DeviceBuffer[dtype]     # [N_ENVS * WORKSPACE_PER_SAMPLE]
-    var actor_mb_workspace_buf: DeviceBuffer[dtype]      # [MB * WORKSPACE_PER_SAMPLE]
-    var critic_env_workspace_buf: DeviceBuffer[dtype]    # [N_ENVS * WORKSPACE_PER_SAMPLE]
-    var critic_mb_workspace_buf: DeviceBuffer[dtype]     # [MB * WORKSPACE_PER_SAMPLE]
+    var logits_buf: DeviceBuffer[dtype]  # [N_ENVS * NUM_ACTIONS]
+    var actor_logits_buf: DeviceBuffer[dtype]  # [MB * NUM_ACTIONS]
+    var actor_cache_buf: DeviceBuffer[dtype]  # [MB * ActorModel.CACHE_SIZE]
+    var actor_grad_output_buf: DeviceBuffer[dtype]  # [MB * NUM_ACTIONS]
+    var actor_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var critic_values_buf: DeviceBuffer[dtype]  # [MB]
+    var critic_cache_buf: DeviceBuffer[dtype]  # [MB * CriticModel.CACHE_SIZE]
+    var critic_grad_output_buf: DeviceBuffer[dtype]  # [MB]
+    var critic_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var kl_divergences_buf: DeviceBuffer[dtype]  # [MB]
+    var kl_divergences_host: HostBuffer[dtype]  # [MB]
+    var mb_advantages_host: HostBuffer[dtype]  # [MB]
+    var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
+    var critic_grad_partial_sums_buf: DeviceBuffer[
+        dtype
+    ]  # [CRITIC_GRAD_BLOCKS]
+    var actor_scale_buf: DeviceBuffer[dtype]  # [1]
+    var critic_scale_buf: DeviceBuffer[dtype]  # [1]
+    var actor_env_workspace_buf: DeviceBuffer[
+        dtype
+    ]  # [N_ENVS * WORKSPACE_PER_SAMPLE]
+    var actor_mb_workspace_buf: DeviceBuffer[
+        dtype
+    ]  # [MB * WORKSPACE_PER_SAMPLE]
+    var critic_env_workspace_buf: DeviceBuffer[
+        dtype
+    ]  # [N_ENVS * WORKSPACE_PER_SAMPLE]
+    var critic_mb_workspace_buf: DeviceBuffer[
+        dtype
+    ]  # [MB * WORKSPACE_PER_SAMPLE]
 
     # Env-step scratch buffers (values and log_probs for select_actions_with_meta_gpu)
     var values_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
@@ -493,7 +502,9 @@ struct PPODiscreteGPUState[
         )
         self.rollout_step = 0
 
-        self.advantages_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.advantages_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
         self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
 
         self.rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
@@ -508,8 +519,12 @@ struct PPODiscreteGPUState[
         self.advantages_host = ctx.enqueue_create_host_buffer[dtype](
             Self.ROLLOUT_TOTAL
         )
-        self.returns_host = ctx.enqueue_create_host_buffer[dtype](Self.ROLLOUT_TOTAL)
-        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](Self.N)
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.N
+        )
 
         self.mb_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MB * Self.OBS)
         self.mb_actions_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
@@ -518,7 +533,9 @@ struct PPODiscreteGPUState[
         self.mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.mb_old_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.MB)
-        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](Self.MB)
+        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.MB
+        )
 
         self.logits_buf = ctx.enqueue_create_buffer[dtype](
             Self.N * Self.ACTIONS
@@ -544,7 +561,9 @@ struct PPODiscreteGPUState[
             Self.MB * Self.OBS
         )
         self.kl_divergences_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.MB
+        )
         self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
 
         self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
@@ -591,7 +610,8 @@ struct PPODiscreteGPUState[
         log_probs_buf: DeviceBuffer[dtype],
         values_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
+        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
+        """
         from deep_agents.ppo.kernels import _store_pre_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
@@ -624,9 +644,16 @@ struct PPODiscreteGPUState[
         comptime store_wrapper = _store_pre_step_kernel[dtype, N_ENVS, Self.OBS]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
         ctx.enqueue_function[store_wrapper, store_wrapper](
-            r_obs, r_actions, r_log_probs, r_values,
-            obs_t, actions_t, log_probs_t, values_t,
-            grid_dim=(blocks,), block_dim=(TPB,),
+            r_obs,
+            r_actions,
+            r_log_probs,
+            r_values,
+            obs_t,
+            actions_t,
+            log_probs_t,
+            values_t,
+            grid_dim=(blocks,),
+            block_dim=(TPB,),
         )
 
     fn gpu_store_post_step[
@@ -637,7 +664,8 @@ struct PPODiscreteGPUState[
         rewards_buf: DeviceBuffer[dtype],
         dones_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
+        """Store post-step data (rewards, dones) into rollout buffers, advance pointer.
+        """
         from deep_agents.ppo.kernels import _store_post_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
@@ -658,8 +686,12 @@ struct PPODiscreteGPUState[
         comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
         ctx.enqueue_function[store_wrapper, store_wrapper](
-            r_rewards, r_dones, rewards_t, dones_t,
-            grid_dim=(blocks,), block_dim=(TPB,),
+            r_rewards,
+            r_dones,
+            rewards_t,
+            dones_t,
+            grid_dim=(blocks,),
+            block_dim=(TPB,),
         )
         self.rollout_step += 1
 
@@ -687,7 +719,7 @@ struct PPOContinuousGPUState[
     rollout_len: Int,
     n_envs: Int,
     gpu_minibatch: Int,
-](Movable, GPUOnPolicyState):
+](GPUOnPolicyState, Movable):
     """GPU-resident state for continuous-action PPO training.
 
     Same layout as PPODiscreteGPUState but rollout_actions_buf is sized
@@ -727,17 +759,17 @@ struct PPOContinuousGPUState[
     var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
 
     # Rollout buffers
-    var rollout_obs_buf: DeviceBuffer[dtype]        # [ROLLOUT_TOTAL * OBS_DIM]
-    var rollout_actions_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL * ACTION_DIM]
+    var rollout_obs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL * OBS_DIM]
+    var rollout_actions_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL * ACTION_DIM]
     var rollout_log_probs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var rollout_values_buf: DeviceBuffer[dtype]     # [ROLLOUT_TOTAL]
-    var rollout_rewards_buf: DeviceBuffer[dtype]    # [ROLLOUT_TOTAL]
-    var rollout_dones_buf: DeviceBuffer[dtype]      # [ROLLOUT_TOTAL]
+    var rollout_values_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_rewards_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var rollout_dones_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
     var rollout_step: Int
 
     # Advantage and return buffers
-    var advantages_buf: DeviceBuffer[dtype]         # [ROLLOUT_TOTAL]
-    var returns_buf: DeviceBuffer[dtype]            # [ROLLOUT_TOTAL]
+    var advantages_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    var returns_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
 
     # Pinned host buffers for GAE
     var rollout_rewards_host: HostBuffer[dtype]
@@ -745,45 +777,47 @@ struct PPOContinuousGPUState[
     var rollout_dones_host: HostBuffer[dtype]
     var advantages_host: HostBuffer[dtype]
     var returns_host: HostBuffer[dtype]
-    var bootstrap_values_host: HostBuffer[dtype]    # [N_ENVS]
+    var bootstrap_values_host: HostBuffer[dtype]  # [N_ENVS]
 
     # Minibatch scratch
-    var mb_obs_buf: DeviceBuffer[dtype]             # [MB * OBS_DIM]
-    var mb_actions_buf: DeviceBuffer[dtype]         # [MB * ACTION_DIM]
-    var mb_advantages_buf: DeviceBuffer[dtype]      # [MB]
-    var mb_returns_buf: DeviceBuffer[dtype]         # [MB]
-    var mb_old_log_probs_buf: DeviceBuffer[dtype]   # [MB]
-    var mb_old_values_buf: DeviceBuffer[dtype]      # [MB]
-    var mb_indices_buf: DeviceBuffer[DType.int32]   # [MB]
-    var mb_indices_host: HostBuffer[DType.int32]    # [MB]
+    var mb_obs_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var mb_actions_buf: DeviceBuffer[dtype]  # [MB * ACTION_DIM]
+    var mb_advantages_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_returns_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_old_log_probs_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_old_values_buf: DeviceBuffer[dtype]  # [MB]
+    var mb_indices_buf: DeviceBuffer[DType.int32]  # [MB]
+    var mb_indices_host: HostBuffer[DType.int32]  # [MB]
 
     # Training workspace
-    var actor_means_buf: DeviceBuffer[dtype]         # [N_ENVS * ACTION_DIM]
-    var actor_logstds_buf: DeviceBuffer[dtype]       # [N_ENVS * ACTION_DIM]
-    var actor_logits_buf: DeviceBuffer[dtype]        # [MB * ACTION_DIM * 2]
-    var actor_cache_buf: DeviceBuffer[dtype]         # [MB * ActorModel.CACHE_SIZE]
-    var actor_grad_output_buf: DeviceBuffer[dtype]   # [MB * ACTION_DIM * 2]
-    var actor_grad_input_buf: DeviceBuffer[dtype]    # [MB * OBS_DIM]
-    var critic_values_buf: DeviceBuffer[dtype]       # [MB]
-    var critic_cache_buf: DeviceBuffer[dtype]        # [MB * CriticModel.CACHE_SIZE]
+    var actor_means_buf: DeviceBuffer[dtype]  # [N_ENVS * ACTION_DIM]
+    var actor_logstds_buf: DeviceBuffer[dtype]  # [N_ENVS * ACTION_DIM]
+    var actor_logits_buf: DeviceBuffer[dtype]  # [MB * ACTION_DIM * 2]
+    var actor_cache_buf: DeviceBuffer[dtype]  # [MB * ActorModel.CACHE_SIZE]
+    var actor_grad_output_buf: DeviceBuffer[dtype]  # [MB * ACTION_DIM * 2]
+    var actor_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var critic_values_buf: DeviceBuffer[dtype]  # [MB]
+    var critic_cache_buf: DeviceBuffer[dtype]  # [MB * CriticModel.CACHE_SIZE]
     var critic_grad_output_buf: DeviceBuffer[dtype]  # [MB]
-    var critic_grad_input_buf: DeviceBuffer[dtype]   # [MB * OBS_DIM]
-    var kl_divergences_buf: DeviceBuffer[dtype]      # [MB]
-    var kl_divergences_host: HostBuffer[dtype]       # [MB]
-    var mb_advantages_host: HostBuffer[dtype]        # [MB]
+    var critic_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS_DIM]
+    var kl_divergences_buf: DeviceBuffer[dtype]  # [MB]
+    var kl_divergences_host: HostBuffer[dtype]  # [MB]
+    var mb_advantages_host: HostBuffer[dtype]  # [MB]
     var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
-    var critic_grad_partial_sums_buf: DeviceBuffer[dtype] # [CRITIC_GRAD_BLOCKS]
-    var actor_scale_buf: DeviceBuffer[dtype]         # [1]
-    var critic_scale_buf: DeviceBuffer[dtype]        # [1]
+    var critic_grad_partial_sums_buf: DeviceBuffer[
+        dtype
+    ]  # [CRITIC_GRAD_BLOCKS]
+    var actor_scale_buf: DeviceBuffer[dtype]  # [1]
+    var critic_scale_buf: DeviceBuffer[dtype]  # [1]
     var actor_env_workspace_buf: DeviceBuffer[dtype]
     var actor_mb_workspace_buf: DeviceBuffer[dtype]
     var critic_env_workspace_buf: DeviceBuffer[dtype]
     var critic_mb_workspace_buf: DeviceBuffer[dtype]
 
     # Env-step scratch
-    var values_env_buf: DeviceBuffer[dtype]          # [N_ENVS]
-    var log_probs_env_buf: DeviceBuffer[dtype]       # [N_ENVS]
-    var sampled_actions_buf: DeviceBuffer[dtype]     # [N_ENVS * ACTION_DIM]
+    var values_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
+    var log_probs_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
+    var sampled_actions_buf: DeviceBuffer[dtype]  # [N_ENVS * ACTION_DIM]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU device and pinned host buffers."""
@@ -810,7 +844,9 @@ struct PPOContinuousGPUState[
         )
         self.rollout_step = 0
 
-        self.advantages_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
+        self.advantages_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
         self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
 
         self.rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
@@ -825,8 +861,12 @@ struct PPOContinuousGPUState[
         self.advantages_host = ctx.enqueue_create_host_buffer[dtype](
             Self.ROLLOUT_TOTAL
         )
-        self.returns_host = ctx.enqueue_create_host_buffer[dtype](Self.ROLLOUT_TOTAL)
-        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](Self.N)
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ROLLOUT_TOTAL
+        )
+        self.bootstrap_values_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.N
+        )
 
         self.mb_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MB * Self.OBS)
         self.mb_actions_buf = ctx.enqueue_create_buffer[dtype](
@@ -837,7 +877,9 @@ struct PPOContinuousGPUState[
         self.mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.mb_old_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.MB)
-        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](Self.MB)
+        self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.MB
+        )
 
         self.actor_means_buf = ctx.enqueue_create_buffer[dtype](
             Self.N * Self.ACTIONS
@@ -866,7 +908,9 @@ struct PPOContinuousGPUState[
             Self.MB * Self.OBS
         )
         self.kl_divergences_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.MB
+        )
         self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
 
         self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
@@ -916,7 +960,8 @@ struct PPOContinuousGPUState[
         log_probs_buf: DeviceBuffer[dtype],
         values_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
+        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
+        """
         from deep_agents.ppo.kernels import _store_continuous_pre_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
@@ -951,13 +996,19 @@ struct PPOContinuousGPUState[
         ]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
         ctx.enqueue_function[store_wrapper, store_wrapper](
-            r_obs, r_actions, r_log_probs, r_values,
-            obs_t, actions_t, log_probs_t, values_t,
-            grid_dim=(blocks,), block_dim=(TPB,),
+            r_obs,
+            r_actions,
+            r_log_probs,
+            r_values,
+            obs_t,
+            actions_t,
+            log_probs_t,
+            values_t,
+            grid_dim=(blocks,),
+            block_dim=(TPB,),
         )
 
     fn gpu_store_post_step[
-
         N_ENVS: Int
     ](
         mut self,
@@ -965,7 +1016,8 @@ struct PPOContinuousGPUState[
         rewards_buf: DeviceBuffer[dtype],
         dones_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
+        """Store post-step data (rewards, dones) into rollout buffers, advance pointer.
+        """
         from deep_agents.ppo.kernels import _store_post_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
@@ -986,8 +1038,12 @@ struct PPOContinuousGPUState[
         comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
         ctx.enqueue_function[store_wrapper, store_wrapper](
-            r_rewards, r_dones, rewards_t, dones_t,
-            grid_dim=(blocks,), block_dim=(TPB,),
+            r_rewards,
+            r_dones,
+            rewards_t,
+            dones_t,
+            grid_dim=(blocks,),
+            block_dim=(TPB,),
         )
         self.rollout_step += 1
 

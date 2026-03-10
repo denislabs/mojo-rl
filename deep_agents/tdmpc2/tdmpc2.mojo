@@ -1850,23 +1850,23 @@ struct TDMPC2Agent[
         # Target Q networks (params only — soft-updated on GPU, no optimizer state)
         var _q1t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q1t_host[i] = self.state.world_model.q1_target.params[i]
+            _q1t_host[i] = (self.state.world_model.q1_target.params + i)[]
         ctx.enqueue_copy(gs.q1t_params_buf, _q1t_host)
         var _q2t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q2t_host[i] = self.state.world_model.q2_target.params[i]
+            _q2t_host[i] = (self.state.world_model.q2_target.params + i)[]
         ctx.enqueue_copy(gs.q2t_params_buf, _q2t_host)
         var _q3t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q3t_host[i] = self.state.world_model.q3_target.params[i]
+            _q3t_host[i] = (self.state.world_model.q3_target.params + i)[]
         ctx.enqueue_copy(gs.q3t_params_buf, _q3t_host)
         var _q4t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q4t_host[i] = self.state.world_model.q4_target.params[i]
+            _q4t_host[i] = (self.state.world_model.q4_target.params + i)[]
         ctx.enqueue_copy(gs.q4t_params_buf, _q4t_host)
         var _q5t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         for i in range(Self.Q_P):
-            _q5t_host[i] = self.state.world_model.q5_target.params[i]
+            _q5t_host[i] = (self.state.world_model.q5_target.params + i)[]
         ctx.enqueue_copy(gs.q5t_params_buf, _q5t_host)
 
         # Upload fixed bins to GPU
@@ -3152,25 +3152,25 @@ struct TDMPC2Agent[
         ctx.enqueue_copy(q5_dl, gs.q5.params_buf)
         ctx.synchronize()
         for i in range(Self.ENC_P):
-            self.state.world_model.encoder.params[i] = enc_dl[i]
+            (self.state.world_model.encoder.params + i)[] = enc_dl[i]
         for i in range(Self.DYN_P):
-            self.state.world_model.dynamics.params[i] = dyn_dl[i]
+            (self.state.world_model.dynamics.params + i)[] = dyn_dl[i]
         for i in range(Self.REW_P):
-            self.state.world_model.reward_head.params[i] = rew_dl[i]
+            (self.state.world_model.reward_head.params + i)[] = rew_dl[i]
         for i in range(Self.TERM_P):
-            self.state.world_model.termination.params[i] = term_dl[i]
+            (self.state.world_model.termination.params + i)[] = term_dl[i]
         for i in range(Self.POL_P):
-            self.state.world_model.policy.params[i] = pol_dl[i]
+            (self.state.world_model.policy.params + i)[] = pol_dl[i]
         for i in range(Self.Q_P):
-            self.state.world_model.q1.params[i] = q1_dl[i]
+            (self.state.world_model.q1.params + i)[] = q1_dl[i]
         for i in range(Self.Q_P):
-            self.state.world_model.q2.params[i] = q2_dl[i]
+            (self.state.world_model.q2.params + i)[] = q2_dl[i]
         for i in range(Self.Q_P):
-            self.state.world_model.q3.params[i] = q3_dl[i]
+            (self.state.world_model.q3.params + i)[] = q3_dl[i]
         for i in range(Self.Q_P):
-            self.state.world_model.q4.params[i] = q4_dl[i]
+            (self.state.world_model.q4.params + i)[] = q4_dl[i]
         for i in range(Self.Q_P):
-            self.state.world_model.q5.params[i] = q5_dl[i]
+            (self.state.world_model.q5.params + i)[] = q5_dl[i]
 
         return metrics
 

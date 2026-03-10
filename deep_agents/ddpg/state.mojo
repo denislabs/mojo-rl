@@ -95,7 +95,7 @@ struct DDPGCPUState[
         self.actor = NetworkPair[Self.ActorModel, Self.ActorOpt]()
         self.actor.initialize[Xavier]()
         self.critic = NetworkPair[Self.CriticModel, Self.CriticOpt]()
-        self.critic.initialize[Kaiming]()
+        self.critic.initialize[Kaiming[]]()
 
         self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype

@@ -11,7 +11,7 @@ GPUNetworkPair mirrors the same interface over device memory.
 
 Usage:
     var actor = NetworkPair[ActorModel, Adam[lr]]()
-    actor.initialize[Kaiming]()
+    actor.initialize[Kaiming[]]()
 
     # Soft update target from online
     actor.soft_update(tau=0.005)

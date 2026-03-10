@@ -3,6 +3,7 @@ from .checkpoint import (
     write_checkpoint_header,
     write_float_section,
     write_float_section_list,
+    write_float_section_ptr,
     write_metadata_section,
     parse_checkpoint_header,
     read_checkpoint_file,

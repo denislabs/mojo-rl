@@ -2359,23 +2359,23 @@ struct DeepPPOAgent[
         # Actor params
         content += "actor_params:\n"
         for i in range(actor_param_size):
-            content += String(Float64(self.state.actor.params[i])) + "\n"
+            content += String(Float64((self.state.actor.params + i)[])) + "\n"
 
         content += "actor_optimizer_state:\n"
         for i in range(actor_state_size):
             content += (
-                String(Float64(self.state.actor.optimizer_state[i])) + "\n"
+                String(Float64((self.state.actor.optimizer_state + i)[])) + "\n"
             )
 
         # Critic params
         content += "critic_params:\n"
         for i in range(critic_param_size):
-            content += String(Float64(self.state.critic.params[i])) + "\n"
+            content += String(Float64((self.state.critic.params + i)[])) + "\n"
 
         content += "critic_optimizer_state:\n"
         for i in range(critic_state_size):
             content += (
-                String(Float64(self.state.critic.optimizer_state[i])) + "\n"
+                String(Float64((self.state.critic.optimizer_state + i)[])) + "\n"
             )
 
         # Metadata
@@ -2419,7 +2419,7 @@ struct DeepPPOAgent[
         # Load actor params
         var actor_params_start = find_section_start(lines, "actor_params:")
         for i in range(actor_param_size):
-            self.state.actor.params[i] = Scalar[dtype](
+            (self.state.actor.params + i)[] = Scalar[dtype](
                 atof(lines[actor_params_start + i])
             )
 
@@ -2427,14 +2427,14 @@ struct DeepPPOAgent[
             lines, "actor_optimizer_state:"
         )
         for i in range(actor_state_size):
-            self.state.actor.optimizer_state[i] = Scalar[dtype](
+            (self.state.actor.optimizer_state + i)[] = Scalar[dtype](
                 atof(lines[actor_state_start + i])
             )
 
         # Load critic params
         var critic_params_start = find_section_start(lines, "critic_params:")
         for i in range(critic_param_size):
-            self.state.critic.params[i] = Scalar[dtype](
+            (self.state.critic.params + i)[] = Scalar[dtype](
                 atof(lines[critic_params_start + i])
             )
 
@@ -2442,7 +2442,7 @@ struct DeepPPOAgent[
             lines, "critic_optimizer_state:"
         )
         for i in range(critic_state_size):
-            self.state.critic.optimizer_state[i] = Scalar[dtype](
+            (self.state.critic.optimizer_state + i)[] = Scalar[dtype](
                 atof(lines[critic_state_start + i])
             )
 

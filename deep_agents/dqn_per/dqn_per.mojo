@@ -93,7 +93,7 @@ struct DQNPERCPUState[
     fn __init__(out self, alpha: Float64 = 0.6, beta: Float64 = 0.4):
         """Allocate networks and prioritized replay buffer."""
         self.online = NetworkState[Self.Q_Model, Self.Q_Opt]()
-        self.online.initialize[Kaiming]()
+        self.online.initialize[Kaiming[]]()
         self.target = NetworkState[Self.Q_Model, Self.Q_Opt](copy=self.online)
         self.buffer = PrioritizedReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
@@ -284,7 +284,7 @@ struct DQNPERAgent[
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](obs.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs.unsafe_ptr()))
         var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
         var q_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
@@ -568,6 +568,8 @@ struct DQNPERAgent[
             TrainingMetrics object with episode rewards and statistics.
         """
         var cpu_state = Self.CPUStateType(alpha=0.6, beta=self.beta_start)
+        var checkpoint_every = self.checkpoint_every
+        var checkpoint_path = self.checkpoint_path
         var metrics = run_offpolicy_discrete_train(
             self,
             cpu_state,
@@ -576,6 +578,8 @@ struct DQNPERAgent[
             max_steps_per_episode,
             warmup_steps,
             train_every,
+            checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,

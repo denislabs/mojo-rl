@@ -131,50 +131,50 @@ struct WorldModel[
 
     # Network wrapper type aliases (kept for TDMPC2Agent constant access:
     # PARAM_SIZE, CACHE_SIZE, WORKSPACE_SIZE_PER_SAMPLE)
-    comptime EncoderNet = Network[Self.EncModel, Adam[LR = Self.ENC_LR]]
+    comptime EncoderNet = Network[Self.EncModel, Adam[LR=Self.ENC_LR]]
     comptime DynamicsNet = Network[
         Self.DynModel,
-        Adam[LR = Self.WM_LR],
+        Adam[LR=Self.WM_LR],
     ]
     comptime RewardNet = Network[
         Self.RewModel,
-        Adam[LR = Self.WM_LR],
+        Adam[LR=Self.WM_LR],
     ]
     comptime TermNet = Network[
         Self.TermModel,
-        Adam[LR = Self.WM_LR],
+        Adam[LR=Self.WM_LR],
     ]
     comptime PolicyNet = Network[
         Self.PolModel,
-        Adam[LR = Self.PI_LR],
+        Adam[LR=Self.PI_LR],
     ]
     comptime QNet = Network[
         Self.QModel,
-        Adam[LR = Self.WM_LR],
+        Adam[LR=Self.WM_LR],
     ]
 
     # -------------------------------------------------------------------------
     # Sub-network states (NetworkState replaces old stateful Network instances)
     # -------------------------------------------------------------------------
-    var encoder: NetworkState[Self.EncModel, Adam[LR = Self.ENC_LR]]
-    var dynamics: NetworkState[Self.DynModel, Adam[LR = Self.WM_LR]]
-    var reward_head: NetworkState[Self.RewModel, Adam[LR = Self.WM_LR]]
-    var termination: NetworkState[Self.TermModel, Adam[LR = Self.WM_LR]]
-    var policy: NetworkState[Self.PolModel, Adam[LR = Self.PI_LR]]
+    var encoder: NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]
+    var dynamics: NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]
+    var reward_head: NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]
+    var termination: NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]
+    var policy: NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]
 
     # Q-ensemble (NUM_Q=5 networks)
-    var q1: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q2: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q3: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q4: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q5: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q1: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q2: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q3: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q4: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q5: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
 
     # Target Q-networks (no gradient, soft-updated from live Qs)
-    var q1_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q2_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q3_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q4_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
-    var q5_target: NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]
+    var q1_target: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q2_target: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q3_target: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q4_target: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
+    var q5_target: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
 
     # Fixed bin values for distributional RL
     var bins: InlineArray[Float32, Self.NUM_BINS]
@@ -183,42 +183,42 @@ struct WorldModel[
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
-        self.encoder = NetworkState[Self.EncModel, Adam[LR = Self.ENC_LR]]()
-        self.encoder.initialize[Kaiming]()
+        self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]()
+        self.encoder.initialize[Kaiming[]]()
 
-        self.dynamics = NetworkState[Self.DynModel, Adam[LR = Self.WM_LR]]()
-        self.dynamics.initialize[Kaiming]()
+        self.dynamics = NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]()
+        self.dynamics.initialize[Kaiming[]]()
 
-        self.reward_head = NetworkState[Self.RewModel, Adam[LR = Self.WM_LR]]()
-        self.reward_head.initialize[Kaiming]()
+        self.reward_head = NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]()
+        self.reward_head.initialize[Kaiming[]]()
 
-        self.termination = NetworkState[Self.TermModel, Adam[LR = Self.WM_LR]]()
-        self.termination.initialize[Kaiming]()
+        self.termination = NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]()
+        self.termination.initialize[Kaiming[]]()
 
-        self.policy = NetworkState[Self.PolModel, Adam[LR = Self.PI_LR]]()
-        self.policy.initialize[Kaiming]()
+        self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]()
+        self.policy.initialize[Kaiming[]]()
 
-        self.q1 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
-        self.q1.initialize[Kaiming]()
-        self.q2 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
-        self.q2.initialize[Kaiming]()
-        self.q3 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
-        self.q3.initialize[Kaiming]()
-        self.q4 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
-        self.q4.initialize[Kaiming]()
-        self.q5 = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
-        self.q5.initialize[Kaiming]()
+        self.q1 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
+        self.q1.initialize[Kaiming[]]()
+        self.q2 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
+        self.q2.initialize[Kaiming[]]()
+        self.q3 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
+        self.q3.initialize[Kaiming[]]()
+        self.q4 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
+        self.q4.initialize[Kaiming[]]()
+        self.q5 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
+        self.q5.initialize[Kaiming[]]()
 
         # Initialize target Q networks with same weights as live Q networks
-        self.q1_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q1_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q1_target.copy_params_from(self.q1)
-        self.q2_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q2_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q2_target.copy_params_from(self.q2)
-        self.q3_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q3_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q3_target.copy_params_from(self.q3)
-        self.q4_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q4_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q4_target.copy_params_from(self.q4)
-        self.q5_target = NetworkState[Self.QModel, Adam[LR = Self.WM_LR]]()
+        self.q5_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q5_target.copy_params_from(self.q5)
 
         # Compute bin values

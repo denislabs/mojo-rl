@@ -348,7 +348,7 @@ struct DeepPPOContinuousAgent[
         )
         var stochastic_actor_params = LayoutTensor[
             dtype, Layout.row_major(STOCHASTIC_ACTOR_SIZE), MutAnyOrigin
-        ](self.state.actor.params.unsafe_ptr() + STOCHASTIC_ACTOR_OFFSET)
+        ](self.state.actor.params + STOCHASTIC_ACTOR_OFFSET)
 
         # Use per-action mean biases if provided, otherwise use centered initialization
         if len(action_mean_biases) > 0:
@@ -372,7 +372,7 @@ struct DeepPPOContinuousAgent[
         # PPOContinuousState.__init__() allocates the critic but does NOT
         # initialize it (see state.mojo docstring). We initialize it here so
         # the critic consumes RNG at exactly the same positions as the old code.
-        self.state.critic.initialize[Kaiming]()
+        self.state.critic.initialize[Kaiming[]]()
 
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -525,13 +525,13 @@ struct DeepPPOContinuousAgent[
         comptime sa_size = Self.HIDDEN * Self.ACTIONS + Self.ACTIONS + Self.ACTIONS
         var stochastic_actor_params = LayoutTensor[
             dtype, Layout.row_major(sa_size), MutAnyOrigin
-        ](s.actor.params.unsafe_ptr() + sa_offset)
+        ](s.actor.params + sa_offset)
         StochasticActor[Self.HIDDEN, Self.ACTIONS].init_params_small(
             stochastic_actor_params,
             weight_scale=0.01,
             log_std_init=-0.5,
         )
-        s.critic.initialize[Kaiming]()
+        s.critic.initialize[Kaiming[]]()
         return s^
 
     fn collect_rollout[
@@ -1332,25 +1332,30 @@ struct DeepPPOContinuousAgent[
         content += "train_step_count=" + String(self.train_step_count) + "\n"
 
         content += "[ACTOR_PARAMS]\n"
-        for i in range(len(self.state.actor.params)):
-            content += String(self.state.actor.params[i]) + "\n"
+        for i in range(Self.ActorModel.PARAM_SIZE):
+            content += String((self.state.actor.params + i)[]) + "\n"
 
         content += "[ACTOR_STATE]\n"
-        for i in range(len(self.state.actor.optimizer_state)):
-            content += String(self.state.actor.optimizer_state[i]) + "\n"
+        comptime ACTOR_STATE_SIZE = Self.ActorModel.PARAM_SIZE * Self.ActorOpt.STATE_PER_PARAM
+        for i in range(ACTOR_STATE_SIZE):
+            content += String((self.state.actor.optimizer_state + i)[]) + "\n"
 
         content += "[CRITIC_PARAMS]\n"
-        for i in range(len(self.state.critic.params)):
-            content += String(self.state.critic.params[i]) + "\n"
+        for i in range(Self.CriticModel.PARAM_SIZE):
+            content += String((self.state.critic.params + i)[]) + "\n"
 
         content += "[CRITIC_STATE]\n"
-        for i in range(len(self.state.critic.optimizer_state)):
-            content += String(self.state.critic.optimizer_state[i]) + "\n"
+        comptime CRITIC_STATE_SIZE = Self.CriticModel.PARAM_SIZE * Self.CriticOpt.STATE_PER_PARAM
+        for i in range(CRITIC_STATE_SIZE):
+            content += String((self.state.critic.optimizer_state + i)[]) + "\n"
 
         save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises:
         """Load agent state from a checkpoint file."""
+        comptime ACTOR_STATE_SIZE = Self.ActorModel.PARAM_SIZE * Self.ActorOpt.STATE_PER_PARAM
+        comptime CRITIC_STATE_SIZE = Self.CriticModel.PARAM_SIZE * Self.CriticOpt.STATE_PER_PARAM
+
         var content = read_checkpoint_file(path)
         if len(content) == 0:
             print("No checkpoint found at:", path)
@@ -1361,11 +1366,11 @@ struct DeepPPOContinuousAgent[
         # Load actor params
         var actor_start = find_section_start(lines, "[ACTOR_PARAMS]")
         if actor_start >= 0:
-            var idx = actor_start  # find_section_start already returns line after header
-            for i in range(len(self.state.actor.params)):
+            var idx = actor_start
+            for i in range(Self.ActorModel.PARAM_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        self.state.actor.params[i] = Scalar[dtype](
+                        (self.state.actor.params + i)[] = Scalar[dtype](
                             Float32(atof(lines[idx]))
                         )
                     except:
@@ -1375,11 +1380,11 @@ struct DeepPPOContinuousAgent[
         # Load actor optimizer state
         var actor_state_start = find_section_start(lines, "[ACTOR_STATE]")
         if actor_state_start >= 0:
-            var idx = actor_state_start  # find_section_start already returns line after header
-            for i in range(len(self.state.actor.optimizer_state)):
+            var idx = actor_state_start
+            for i in range(ACTOR_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        self.state.actor.optimizer_state[i] = Scalar[dtype](
+                        (self.state.actor.optimizer_state + i)[] = Scalar[dtype](
                             Float32(atof(lines[idx]))
                         )
                     except:
@@ -1389,11 +1394,11 @@ struct DeepPPOContinuousAgent[
         # Load critic params
         var critic_start = find_section_start(lines, "[CRITIC_PARAMS]")
         if critic_start >= 0:
-            var idx = critic_start  # find_section_start already returns line after header
-            for i in range(len(self.state.critic.params)):
+            var idx = critic_start
+            for i in range(Self.CriticModel.PARAM_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        self.state.critic.params[i] = Scalar[dtype](
+                        (self.state.critic.params + i)[] = Scalar[dtype](
                             Float32(atof(lines[idx]))
                         )
                     except:
@@ -1403,11 +1408,11 @@ struct DeepPPOContinuousAgent[
         # Load critic optimizer state
         var critic_state_start = find_section_start(lines, "[CRITIC_STATE]")
         if critic_state_start >= 0:
-            var idx = critic_state_start  # find_section_start already returns line after header
-            for i in range(len(self.state.critic.optimizer_state)):
+            var idx = critic_state_start
+            for i in range(CRITIC_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        self.state.critic.optimizer_state[i] = Scalar[dtype](
+                        (self.state.critic.optimizer_state + i)[] = Scalar[dtype](
                             Float32(atof(lines[idx]))
                         )
                     except:
@@ -1612,7 +1617,7 @@ struct DeepPPOContinuousAgent[
         var actor_params_buf = ctx.enqueue_create_buffer[dtype](
             Self.ActorModel.PARAM_SIZE
         )
-        ctx.enqueue_copy(actor_params_buf, self.state.actor.params.unsafe_ptr())
+        ctx.enqueue_copy(actor_params_buf, self.state.actor.params)
 
         # Workspace buffer for forward pass
         comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE

@@ -6,7 +6,7 @@ delegate all state management here, eliminating duplicated init/view code.
 
 Usage:
     var state = NetworkState[model_type, Adam]()
-    state.initialize[Kaiming]()
+    state.initialize[Kaiming[]]()
 
     # LayoutTensor views (zero-copy pointer casts)
     var p = state.params_view()
@@ -28,7 +28,7 @@ from ..initializer import Initializer, Xavier
 from ..constants import dtype
 from ..checkpoint import (
     write_checkpoint_header,
-    write_float_section_list,
+    write_float_section_ptr,
     write_metadata_section,
     parse_checkpoint_header,
     read_checkpoint_file,
@@ -40,6 +40,7 @@ from ..checkpoint import (
 )
 
 from layout import Layout, LayoutTensor
+from std.memory import alloc, memset
 
 
 struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
@@ -64,9 +65,9 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
     comptime STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
 
-    var params: List[Scalar[dtype]]
-    var grads: List[Scalar[dtype]]
-    var optimizer_state: List[Scalar[dtype]]
+    var params: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+    var grads: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+    var optimizer_state: UnsafePointer[Scalar[dtype], MutAnyOrigin]
     var step_num: Int
     var lr_scale: Float64
 
@@ -75,17 +76,14 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         self.step_num = 0
         self.lr_scale = 1.0
 
-        self.params = List[Scalar[dtype]](capacity=Self.PARAM_SIZE)
-        for _ in range(Self.PARAM_SIZE):
-            self.params.append(Scalar[dtype](0))
+        self.params = alloc[Scalar[dtype]](Self.PARAM_SIZE)
+        memset(self.params, 0, Self.PARAM_SIZE)
 
-        self.grads = List[Scalar[dtype]](capacity=Self.PARAM_SIZE)
-        for _ in range(Self.PARAM_SIZE):
-            self.grads.append(Scalar[dtype](0))
+        self.grads = alloc[Scalar[dtype]](Self.PARAM_SIZE)
+        memset(self.grads, 0, Self.PARAM_SIZE)
 
-        self.optimizer_state = List[Scalar[dtype]](capacity=Self.STATE_SIZE)
-        for _ in range(Self.STATE_SIZE):
-            self.optimizer_state.append(Scalar[dtype](0))
+        self.optimizer_state = alloc[Scalar[dtype]](Self.STATE_SIZE)
+        memset(self.optimizer_state, 0, Self.STATE_SIZE)
 
     fn __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
@@ -97,15 +95,15 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     fn __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
         self.lr_scale = take.lr_scale
-        self.params = take.params^
-        self.grads = take.grads^
-        self.optimizer_state = take.optimizer_state^
+        self.params = take.params
+        self.grads = take.grads
+        self.optimizer_state = take.optimizer_state
 
     # =========================================================================
     # Initialization
     # =========================================================================
 
-    fn initialize[INITIALIZER: Initializer = Xavier](mut self):
+    fn initialize[INITIALIZER: Initializer = Xavier[]](mut self):
         """Initialize params using the given initializer strategy.
 
         Delegates to MODEL.initialize_params which handles per-layer fan
@@ -116,7 +114,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             INITIALIZER: Weight initialization strategy (Xavier, Kaiming, etc.).
 
         Example:
-            state.initialize[Kaiming]()   # for ReLU networks
+            state.initialize[Kaiming[]]()   # for ReLU networks
             state.initialize[Xavier]()    # for tanh/sigmoid networks
         """
         var t = self.params_view()
@@ -130,9 +128,10 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """Return a LayoutTensor view over params (zero-copy pointer cast)."""
+
         return LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-        ](self.params.unsafe_ptr())
+        ](self.params)
 
     fn grads_view(
         self,
@@ -140,7 +139,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """Return a LayoutTensor view over grads (zero-copy pointer cast)."""
         return LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-        ](self.grads.unsafe_ptr())
+        ](self.grads)
 
     fn state_view(
         self,
@@ -154,7 +153,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             dtype,
             Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
             MutAnyOrigin,
-        ](self.optimizer_state.unsafe_ptr())
+        ](self.optimizer_state)
 
     # =========================================================================
     # Core Mutation
@@ -163,7 +162,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     fn zero_grads(mut self):
         """Zero all parameter gradients before a backward pass."""
         for i in range(Self.PARAM_SIZE):
-            self.grads[i] = 0
+            (self.grads + i)[] = 0
 
     fn set_lr_scale(mut self, scale: Float64):
         """Set the LR multiplier applied at each optimizer step.
@@ -200,7 +199,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             source: Network state to copy parameters from.
         """
         for i in range(Self.PARAM_SIZE):
-            self.params[i] = source.params[i]
+            (self.params + i)[] = (source.params + i)[]
 
     fn soft_update_from(mut self, source: Self, tau: Float64):
         """Soft update: self = tau * source + (1 - tau) * self.
@@ -214,7 +213,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         var tau_s = Scalar[dtype](tau)
         var one_m = Scalar[dtype](1.0 - tau)
         for i in range(Self.PARAM_SIZE):
-            self.params[i] = tau_s * source.params[i] + one_m * self.params[i]
+            (self.params + i)[] = tau_s * (source.params + i)[] + one_m * (self.params + i)[]
 
     # =========================================================================
     # Section-based helpers (for multi-network single-file checkpoints)
@@ -238,11 +237,13 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         Returns:
             String with two sections ready to append to a checkpoint file.
         """
-        var content = write_float_section_list(
-            prefix + "params:", self.params
+        var content = write_float_section_ptr(
+            prefix + "params:", self.params, Self.PARAM_SIZE
         )
-        content += write_float_section_list(
-            prefix + "optimizer_state:", self.optimizer_state
+        content += write_float_section_ptr(
+            prefix + "optimizer_state:",
+            self.optimizer_state,
+            Self.STATE_SIZE,
         )
         return content
 
@@ -260,13 +261,13 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             content, prefix + "params:", Self.PARAM_SIZE
         )
         for i in range(Self.PARAM_SIZE):
-            self.params[i] = loaded_params[i]
+            (self.params + i)[] = loaded_params[i]
 
         var loaded_state = read_float_section_list(
             content, prefix + "optimizer_state:", Self.STATE_SIZE
         )
         for i in range(Self.STATE_SIZE):
-            self.optimizer_state[i] = loaded_state[i]
+            (self.optimizer_state + i)[] = loaded_state[i]
 
     # =========================================================================
     # Checkpoint Save / Load (single-network file)
@@ -323,9 +324,9 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             ckpt: BinaryCheckpoint to add sections to.
             prefix: Section name prefix (e.g. "actor_", "critic_").
         """
-        ckpt.add_float_section(prefix + "params", self.params)
-        ckpt.add_float_section(
-            prefix + "optimizer_state", self.optimizer_state
+        ckpt.add_float_section_ptr(prefix + "params", self.params, Self.PARAM_SIZE)
+        ckpt.add_float_section_ptr(
+            prefix + "optimizer_state", self.optimizer_state, Self.STATE_SIZE
         )
 
     fn read_sections_binary(
@@ -341,13 +342,13 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             prefix + "params", Self.PARAM_SIZE
         )
         for i in range(Self.PARAM_SIZE):
-            self.params[i] = loaded_params[i]
+            (self.params + i)[] = loaded_params[i]
 
         var loaded_state = ckpt.get_float_section(
             prefix + "optimizer_state", Self.STATE_SIZE
         )
         for i in range(Self.STATE_SIZE):
-            self.optimizer_state[i] = loaded_state[i]
+            (self.optimizer_state + i)[] = loaded_state[i]
 
     fn save_checkpoint_binary(self, filepath: String) raises:
         """Save params, optimizer state, and step_num to a binary checkpoint.

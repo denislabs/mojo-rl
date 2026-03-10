@@ -116,11 +116,11 @@ struct SACCPUState[
     fn __init__(out self):
         """Allocate networks, replay buffer, and all scratch buffers."""
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
-        self.actor.initialize[Kaiming]()
+        self.actor.initialize[Kaiming[]]()
         self.critic1 = NetworkPair[Self.CriticModel, Self.CriticOpt]()
-        self.critic1.initialize[Kaiming]()
+        self.critic1.initialize[Kaiming[]]()
         self.critic2 = NetworkPair[Self.CriticModel, Self.CriticOpt]()
-        self.critic2.initialize[Kaiming]()
+        self.critic2.initialize[Kaiming[]]()
 
         self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype

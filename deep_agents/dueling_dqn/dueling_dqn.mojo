@@ -89,7 +89,7 @@ struct DuelingDQNCPUState[
     fn __init__(out self):
         """Allocate and Kaiming-initialize online; copy online → target."""
         self.online = NetworkState[Self.DuelingModel, Self.Opt]()
-        self.online.initialize[Kaiming]()
+        self.online.initialize[Kaiming[]]()
         self.target = NetworkState[Self.DuelingModel, Self.Opt](
             copy=self.online
         )
@@ -189,8 +189,13 @@ struct DuelingDQNAgent[
         LinearReLU[Self.OBS, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
         Parallel[
-            Sequential[LinearReLU[Self.HIDDEN, Self.STREAM_H], Linear[Self.STREAM_H, 1]],
-            Sequential[LinearReLU[Self.HIDDEN, Self.STREAM_H], Linear[Self.STREAM_H, Self.ACTIONS]],
+            Sequential[
+                LinearReLU[Self.HIDDEN, Self.STREAM_H], Linear[Self.STREAM_H, 1]
+            ],
+            Sequential[
+                LinearReLU[Self.HIDDEN, Self.STREAM_H],
+                Linear[Self.STREAM_H, Self.ACTIONS],
+            ],
         ],
     ]
     comptime DUELING_OUT = Self.DuelingModel.OUT_DIM  # = 1 + ACTIONS
@@ -264,7 +269,7 @@ struct DuelingDQNAgent[
         """
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH_N, Self.OBS), MutAnyOrigin
-        ](obs.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs.unsafe_ptr()))
         var out_arr = InlineArray[Scalar[dtype], BATCH_N * Self.DUELING_OUT](
             uninitialized=True
         )
@@ -413,9 +418,9 @@ struct DuelingDQNAgent[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](batch_obs.unsafe_ptr())
 
-        var out_arr = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.DUELING_OUT
-        ](uninitialized=True)
+        var out_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.DUELING_OUT](
+            uninitialized=True
+        )
         var out_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.DUELING_OUT), MutAnyOrigin
         ](out_arr.unsafe_ptr())
@@ -428,9 +433,7 @@ struct DuelingDQNAgent[
             MutAnyOrigin,
         ](cache_arr.unsafe_ptr())
         var p = cpu_state.online.params_view()
-        Self.DuelingNet.forward_with_cache[Self.BATCH](
-            obs_t, out_t, p, cache_t
-        )
+        Self.DuelingNet.forward_with_cache[Self.BATCH](obs_t, out_t, p, cache_t)
 
         # Compute Q-values: Q(s,a) = V(s) + (A(s,a) - mean(A))
         var q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
@@ -444,7 +447,9 @@ struct DuelingDQNAgent[
             mean_adv /= Scalar[dtype](Self.ACTIONS)
             for a in range(Self.ACTIONS):
                 var idx = b * Self.ACTIONS + a
-                q_arr[idx] = v_s + (out_arr[b * Self.DUELING_OUT + 1 + a] - mean_adv)
+                q_arr[idx] = v_s + (
+                    out_arr[b * Self.DUELING_OUT + 1 + a] - mean_adv
+                )
 
         # --- Phase 4: Compute loss and gradients ---
         var loss: Float64 = 0.0
@@ -494,9 +499,7 @@ struct DuelingDQNAgent[
 
         var g = cpu_state.online.grads_view()
         cpu_state.online.zero_grads()
-        Self.DuelingNet.backward[Self.BATCH](
-            dout_t, dobs_t, p, cache_t, g
-        )
+        Self.DuelingNet.backward[Self.BATCH](dout_t, dobs_t, p, cache_t, g)
         cpu_state.online.optimizer_step()
 
         # --- Phase 6: Soft update target network ---

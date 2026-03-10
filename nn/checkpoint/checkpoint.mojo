@@ -32,6 +32,7 @@ Usage:
 """
 
 from ..constants import dtype
+from layout import Layout, LayoutTensor
 
 
 struct CheckpointHeader(Copyable, Movable):
@@ -135,6 +136,29 @@ fn write_float_section_list(
     var content = section_name + "\n"
     for i in range(len(data)):
         content += String(Float64(data[i])) + "\n"
+    return content
+
+
+fn write_float_section_ptr(
+    section_name: String,
+    data: UnsafePointer[Scalar[dtype], _],
+    size: Int,
+) -> String:
+    """Generate string for a float array section from a raw pointer.
+
+    Works for any contiguous buffer (1D params, 2D optimizer state, etc.).
+
+    Args:
+        section_name: Name of the section (e.g., "params:" or "optimizer_state:").
+        data: Pointer to contiguous float data.
+        size: Total number of elements.
+
+    Returns:
+        Section string to write to file.
+    """
+    var content = section_name + "\n"
+    for i in range(size):
+        content += String(Float64((data + i)[])) + "\n"
     return content
 
 

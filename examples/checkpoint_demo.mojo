@@ -25,11 +25,11 @@ fn demo_network_checkpoint() raises:
 
     # Create and initialize a NetworkState
     var state = DemoState()
-    state.initialize[Kaiming]()
+    state.initialize[Kaiming[]]()
 
     print("Original params (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(state.params[i])))
+        print("  params[" + String(i) + "] = " + String(Float64((state.params + i)[])))
 
     # Save checkpoint
     state.save_checkpoint("network_checkpoint.ckpt")
@@ -37,21 +37,21 @@ fn demo_network_checkpoint() raises:
 
     # Create a new state (different random init)
     var loaded = DemoState()
-    loaded.initialize[Kaiming]()
+    loaded.initialize[Kaiming[]]()
     print("\nNew state params before load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(loaded.params[i])))
+        print("  params[" + String(i) + "] = " + String(Float64((loaded.params + i)[])))
 
     # Load checkpoint
     loaded.load_checkpoint("network_checkpoint.ckpt")
     print("\nNew state params after load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64(loaded.params[i])))
+        print("  params[" + String(i) + "] = " + String(Float64((loaded.params + i)[])))
 
     # Verify
     var all_match = True
     for i in range(DemoState.PARAM_SIZE):
-        if state.params[i] != loaded.params[i]:
+        if (state.params + i)[] != (loaded.params + i)[]:
             all_match = False
             break
 
@@ -82,8 +82,8 @@ fn demo_dqn_checkpoint() raises:
     print("  gamma = " + String(agent.gamma))
     print("  epsilon = " + String(agent.epsilon))
     print("  train_step_count = " + String(agent.train_step_count))
-    print("  online.params[0] = " + String(Float64(agent.online.params[0])))
-    print("  target.params[0] = " + String(Float64(agent.target.params[0])))
+    print("  online.params[0] = " + String(Float64(agent.online.params[])))
+    print("  target.params[0] = " + String(Float64(agent.target.params[])))
 
     # Save checkpoint (single file)
     agent.save_checkpoint("dqn_checkpoint.ckpt")
@@ -98,7 +98,7 @@ fn demo_dqn_checkpoint() raises:
     print("\nNew agent state before load:")
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
-    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[0])))
+    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[])))
 
     # Load checkpoint
     loaded_agent.load_checkpoint("dqn_checkpoint.ckpt")
@@ -107,17 +107,17 @@ fn demo_dqn_checkpoint() raises:
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
     print("  train_step_count = " + String(loaded_agent.train_step_count))
-    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[0])))
-    print("  target.params[0] = " + String(Float64(loaded_agent.target.params[0])))
+    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[])))
+    print("  target.params[0] = " + String(Float64(loaded_agent.target.params[])))
 
     # Verify
     alias PSIZE = DQNAgent[4, 2, 32, 1000, 32, lr=0.001].Q_Model.PARAM_SIZE
     var params_match = True
     for i in range(PSIZE):
-        if agent.online.params[i] != loaded_agent.online.params[i]:
+        if (agent.online.params + i)[] != loaded_(agent.online.params + i)[]:
             params_match = False
             break
-        if agent.target.params[i] != loaded_agent.target.params[i]:
+        if (agent.target.params + i)[] != loaded_(agent.target.params + i)[]:
             params_match = False
             break
 

@@ -34,6 +34,7 @@ Usage:
 """
 
 from ..constants import dtype
+from layout import Layout, LayoutTensor
 
 
 struct FloatSection(Copyable, Movable):
@@ -101,6 +102,21 @@ struct BinaryCheckpoint(Copyable, Movable):
             data: Float values to store.
         """
         self.sections.append(FloatSection(name, data))
+
+    fn add_float_section_ptr(
+        mut self, name: String, data: UnsafePointer[Scalar[dtype], _], size: Int
+    ):
+        """Add a named float section from a raw pointer.
+
+        Args:
+            name: Section name (e.g., "actor_params", "critic_optimizer_state").
+            data: Pointer to contiguous float data.
+            size: Number of float values.
+        """
+        var lst = List[Scalar[dtype]](capacity=size)
+        for i in range(size):
+            lst.append((data + i)[])
+        self.sections.append(FloatSection(name, lst^))
 
     fn add_metadata(mut self, key: String, value: String):
         """Add a metadata key=value pair.

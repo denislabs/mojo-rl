@@ -222,7 +222,7 @@ struct DQNAgent[
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](obs.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs.unsafe_ptr()))
         var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
         var q_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
@@ -830,6 +830,8 @@ struct DQNAgent[
         if Self.double_dqn:
             algo_name = String("Double DQN")
         var cpu_state = Self.CPUStateType()
+        var checkpoint_every = self.checkpoint_every
+        var checkpoint_path = self.checkpoint_path
         var metrics = run_offpolicy_discrete_train(
             self,
             cpu_state,
@@ -838,6 +840,8 @@ struct DQNAgent[
             max_steps_per_episode,
             warmup_steps,
             train_every,
+            checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,

@@ -17,6 +17,7 @@ with arithmetic helpers defined in xml_parser.mojo.
 
 from std.collections import InlineArray
 from .xml_parser import (
+    _split_spaces,
     _extract_section,
     _extract_opening_tag,
     _extract_attr,
@@ -175,7 +176,6 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         var sil_s = _extract_attr(jtag, "solimplimit")
         if len(sil_s) > 0:
             var parts = List[String]()
-            from .xml_parser import _split_spaces
 
             _split_spaces(sil_s, parts)
             if len(parts) >= 1:
@@ -226,7 +226,6 @@ fn _parse_defaults(xml: String) -> DefaultsData:
         var si0_s = _extract_attr(gtag, "solimp")
         if len(si0_s) > 0:
             var parts = List[String]()
-            from .xml_parser import _split_spaces
 
             _split_spaces(si0_s, parts)
             if len(parts) >= 1:
@@ -903,7 +902,6 @@ fn _fill_model[
                 var sil_s = _extract_attr(tag, "solimplimit")
                 if len(sil_s) > 0:
                     var parts2 = List[String]()
-                    from .xml_parser import _split_spaces
 
                     _split_spaces(sil_s, parts2)
                     if len(parts2) >= 1:
@@ -1092,7 +1090,6 @@ fn _fill_model[
                 var size_s = _extract_attr(tag, "size")
                 if len(size_s) > 0:
                     var parts = List[String]()
-                    from .xml_parser import _split_spaces
 
                     _split_spaces(size_s, parts)
                     if len(parts) >= 1:
@@ -1165,7 +1162,6 @@ fn _fill_model[
                 var size_s = _extract_attr(tag, "size")
                 if len(size_s) > 0:
                     var size_parts = List[String]()
-                    from .xml_parser import _split_spaces
 
                     _split_spaces(size_s, size_parts)
                     var s0 = Float64(0)
@@ -1247,7 +1243,6 @@ fn _fill_model[
                 var si_s = _extract_attr(tag, "solimp")
                 if len(si_s) > 0:
                     var sip = List[String]()
-                    from .xml_parser import _split_spaces
 
                     _split_spaces(si_s, sip)
                     if len(sip) >= 1:

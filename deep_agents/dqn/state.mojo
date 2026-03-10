@@ -181,7 +181,7 @@ struct DQNCPUState[
     fn __init__(out self):
         """Allocate and initialize online/target networks and replay buffer."""
         self.online = NetworkState[Self.Q_Model, Self.Q_Opt]()
-        self.online.initialize[Kaiming]()
+        self.online.initialize[Kaiming[]]()
         self.target = NetworkState[Self.Q_Model, Self.Q_Opt](copy=self.online)
         self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, dtype
