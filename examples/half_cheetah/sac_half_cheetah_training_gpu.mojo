@@ -44,8 +44,8 @@ comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 64
+comptime BATCH_SIZE = 1024
+comptime MAX_N_ENVS = 256
 
 # Training duration (off-policy uses steps, not episodes)
 comptime NUM_STEPS = 1_000_000
