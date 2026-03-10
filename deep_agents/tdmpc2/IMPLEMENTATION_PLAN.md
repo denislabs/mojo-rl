@@ -344,6 +344,7 @@ temperature       = 0.5      # MPPI softmax temperature
 - [x] `deep_agents/tdmpc2/tdmpc2.mojo` — Full agent with CPU + GPU training
 - [x] `deep_agents/tdmpc2/kernels.mojo` — GPU kernels for all training operations
 - [x] `deep_agents/tdmpc2/state.mojo` — CPU + GPU state management
+- [x] MPPI warm-start — shift previous plan's mean forward for consecutive timesteps
 
 ### Bug fixes applied
 
@@ -360,69 +361,33 @@ temperature       = 0.5      # MPPI softmax temperature
 
 ## Remaining TODOs
 
-### MPPI Warm-Start
+### ~~MPPI Warm-Start~~ ✅ DONE
 
-**Reference**: When not at the first timestep (t > 0), MPPI warm-starts the action
-distribution from the previous plan by shifting the mean forward:
-```python
-if not t0:
-    mean[:-1] = prev_mean[1:]  # Shift previous plan forward by 1 step
-```
-This gives MPPI a much better starting point for optimization since consecutive
-timesteps have similar optimal plans.
+Implemented: `plan()` accepts `t0` flag and `prev_mean` list. When `t0=False`,
+shifts `prev_mean[1:]` into `mean[:-1]` (last step zeros). Agent stores
+`_prev_mean` and `_episode_t0`, resetting at each episode start. Also fixed
+exploration noise to use `std[0]` instead of fixed 0.025 (matches reference).
 
-**Current Mojo**: Resets mean to zeros and std to 0.5 every timestep.
-
-**Fix**: Store the previous plan's mean/std in the agent state. On each `plan()` call
-(except the first of an episode), shift `prev_mean[1:]` into `mean[:-1]` and keep
-the last entry at zero. Requires adding `prev_mean: List[Float64]` to agent state
-and a `t0: Bool` flag to detect episode starts.
-
-**Files**: `deep_agents/tdmpc2/mppi.mojo`, `deep_agents/tdmpc2/tdmpc2.mojo` (pass previous plan)
+**Files**: `deep_agents/tdmpc2/mppi.mojo`, `deep_agents/tdmpc2/tdmpc2.mojo`
 
 ---
 
-### MPPI Gumbel-Softmax Action Selection
+### ~~MPPI Gumbel-Softmax Action Selection~~ ✅ DONE
 
-**Reference**: Uses Gumbel-softmax sampling over elite trajectory scores to select
-the final action, adding stochasticity to the planning process:
-```python
-rand_idx = torch.multinomial(score.squeeze(1).cpu(), 1)  # weighted random sample
-a = elite_actions[:, rand_idx]
-if not eval_mode:
-    a += std[0] * torch.randn(action_dim)
-```
-The weighted random sampling ensures diverse action selection proportional to
-trajectory quality, rather than always picking the absolute best.
+Implemented: Replaced deterministic argmax with `_weighted_sample()` (multinomial
+sampling proportional to softmax weights). Exploration noise now scales by `std[a]`
+at t=0 instead of fixed 0.025, matching the reference.
 
-**Current Mojo**: Deterministic argmax — always selects the highest-weight trajectory.
-Also adds fixed 0.025 noise instead of scaling by the current std.
-
-**Fix**: Implement weighted random sampling (multinomial from softmax scores).
-Use the current std[0] as exploration noise scale (not fixed 0.025).
-
-**Files**: `deep_agents/tdmpc2/mppi.mojo` (action selection section, ~line 320)
+**Files**: `deep_agents/tdmpc2/mppi.mojo`
 
 ---
 
-### Dynamic Discount Factor (gamma)
+### ~~Dynamic Discount Factor (gamma)~~ ✅ DONE
 
-**Reference**: Computes gamma dynamically based on episode length:
-```python
-discount = (episode_length / discount_denom - 1) / (episode_length / discount_denom)
-discount = clamp(discount, discount_min=0.95, discount_max=0.995)
-```
-With `discount_denom=5` and HalfCheetah's 1000-step episodes:
-`gamma = (200 - 1) / 200 = 0.995`
-
-This adapts the effective planning horizon to the task's episode length. Shorter
-episodes get smaller gamma (less bootstrapping), longer episodes get larger gamma.
-
-**Current Mojo**: Fixed `gamma=0.99` for all environments.
-
-**Fix**: Add `episode_length` as a constructor parameter. Compute gamma using the
-reference formula with `discount_denom=5`, clamped to [0.95, 0.995].
-For HalfCheetah (1000 steps), this gives gamma=0.995 instead of 0.99.
+Implemented: Constructor accepts `episode_length`, `discount_denom` (default 5.0),
+`discount_min` (0.95), `discount_max` (0.995). When `episode_length > 0`, computes
+`gamma = (L/d - 1) / (L/d)` clamped to [min, max]. E.g. HalfCheetah (1000 steps)
+→ gamma=0.995. When `episode_length=0` (default), uses the fixed `gamma` parameter.
 
 **Files**: `deep_agents/tdmpc2/tdmpc2.mojo` (constructor)
 

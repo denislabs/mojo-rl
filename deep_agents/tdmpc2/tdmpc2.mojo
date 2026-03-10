@@ -228,6 +228,10 @@ struct TDMPC2Agent[
     var total_steps: Int
     var train_step_count: Int
 
+    # MPPI warm-start state
+    var _prev_mean: List[Float64]
+    var _episode_t0: Bool
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -244,11 +248,16 @@ struct TDMPC2Agent[
         wm_lr: Float64 = 3e-4,
         enc_lr_scale: Float64 = 0.3,
         pi_lr: Float64 = 3e-4,
+        episode_length: Int = 0,
+        discount_denom: Float64 = 5.0,
+        discount_min: Float64 = 0.95,
+        discount_max: Float64 = 0.995,
     ):
         """Initialize TDMPC2 agent.
 
         Args:
-            gamma: Discount factor (default: 0.99).
+            gamma: Discount factor fallback (default: 0.99). Used only when
+                episode_length is 0 (dynamic discount disabled).
             rho: Temporal weight decay for horizon losses (default: 0.5).
             tau: Soft update coefficient for target Q-networks (default: 0.01).
             consistency_coef: Consistency loss weight (default: 2.0).
@@ -262,10 +271,25 @@ struct TDMPC2Agent[
             wm_lr: World model learning rate (default: 3e-4).
             enc_lr_scale: Encoder LR multiplier (default: 0.3).
             pi_lr: Policy learning rate (default: 3e-4).
+            episode_length: Max episode length for dynamic gamma (default: 0 = use
+                fixed gamma). E.g. 1000 for HalfCheetah → gamma=0.995.
+            discount_denom: Denominator for dynamic gamma formula (default: 5.0).
+            discount_min: Minimum dynamic gamma (default: 0.95).
+            discount_max: Maximum dynamic gamma (default: 0.995).
         """
         self.state = Self.CPUStateType()
 
-        self.gamma = gamma
+        # Dynamic discount: gamma = (L/d - 1) / (L/d), clamped to [min, max]
+        if episode_length > 0:
+            var ratio = Float64(episode_length) / discount_denom
+            var dyn_gamma = (ratio - 1.0) / ratio
+            if dyn_gamma < discount_min:
+                dyn_gamma = discount_min
+            if dyn_gamma > discount_max:
+                dyn_gamma = discount_max
+            self.gamma = dyn_gamma
+        else:
+            self.gamma = gamma
         self.rho = rho
         self.tau = tau
         self.consistency_coef = consistency_coef
@@ -278,6 +302,8 @@ struct TDMPC2Agent[
         self.warmup_steps = warmup_steps
         self.total_steps = 0
         self.train_step_count = 0
+        self._prev_mean = List[Float64]()
+        self._episode_t0 = True
 
     # =========================================================================
     # Action Selection
@@ -326,8 +352,8 @@ struct TDMPC2Agent[
         for i in range(Self.LATENT):
             z0[i] = z[i]
 
-        # MPPI planning
-        return plan[
+        # MPPI planning with warm-start
+        var action = plan[
             Self.OBS,
             Self.ACT,
             Self.LATENT,
@@ -348,7 +374,12 @@ struct TDMPC2Agent[
             self.temperature,
             self.action_scale,
             deterministic,
+            self._episode_t0,
+            self._prev_mean,
         )
+        # After first call in episode, subsequent calls warm-start
+        self._episode_t0 = False
+        return action^
 
     # =========================================================================
     # Store Transition
@@ -3080,6 +3111,8 @@ struct TDMPC2Agent[
             var episode_loss: Float64 = 0.0
             var done = False
             var steps = 0
+            # Reset MPPI warm-start for new episode
+            self._episode_t0 = True
 
             while not done:
                 # Build obs InlineArray from list

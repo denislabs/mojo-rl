@@ -50,6 +50,8 @@ fn plan[
     temperature: Float64,
     action_scale: Float64 = 1.0,
     deterministic: Bool = False,
+    t0: Bool = True,
+    mut prev_mean: List[Float64] = List[Float64](),
 ) -> InlineArray[Scalar[dtype], ACTION_DIM]:
     """MPPI planning in latent space.
 
@@ -60,6 +62,9 @@ fn plan[
         temperature: MPPI softmax temperature.
         action_scale: Action scaling factor (default 1.0 = [-1, 1]).
         deterministic: If True, add no exploration noise (eval mode).
+        t0: If True, this is the first timestep of an episode (no warm-start).
+        prev_mean: Previous plan's mean [HORIZON * ACTION_DIM] for warm-start.
+            Updated in-place with the new plan's mean on return.
 
     Returns:
         Selected action [ACTION_DIM] in [-action_scale, action_scale].
@@ -73,13 +78,24 @@ fn plan[
 
     # -------------------------------------------------------------------------
     # Initialize action distribution
-    # mean: [HORIZON, ACTION_DIM] = 0
+    # Warm-start: shift previous plan's mean forward by 1 step if not t0.
+    # mean: [HORIZON, ACTION_DIM]
     # std:  [HORIZON, ACTION_DIM] = 0.5
     # -------------------------------------------------------------------------
     var mean = List[Float64](capacity=HORIZON * ACTION_DIM)
     var std = List[Float64](capacity=HORIZON * ACTION_DIM)
+    if not t0 and len(prev_mean) == HORIZON * ACTION_DIM:
+        # Shift prev_mean[1:] into mean[:-1], last step = 0
+        for t in range(HORIZON - 1):
+            for a in range(ACTION_DIM):
+                mean.append(prev_mean[(t + 1) * ACTION_DIM + a])
+        # Last horizon step: zero (no info from previous plan)
+        for _ in range(ACTION_DIM):
+            mean.append(0.0)
+    else:
+        for _ in range(HORIZON * ACTION_DIM):
+            mean.append(0.0)
     for _ in range(HORIZON * ACTION_DIM):
-        mean.append(0.0)
         std.append(0.5)
 
     # -------------------------------------------------------------------------
@@ -317,27 +333,45 @@ fn plan[
                 std[t * ACTION_DIM + a] = new_std
 
     # -------------------------------------------------------------------------
-    # Action Selection: take the first action from the best trajectory
-    # Use Gumbel-softmax sampling: select elite via weighted random choice
+    # Store final mean for warm-starting the next timestep
     # -------------------------------------------------------------------------
-    # Find best action (highest weight ≈ highest return)
-    var best_s = 0
-    var max_w = weights[0]
-    for s in range(1, TOTAL_SAMPLES):
-        if weights[s] > max_w:
-            max_w = weights[s]
-            best_s = s
+    prev_mean = List[Float64](capacity=HORIZON * ACTION_DIM)
+    for i in range(HORIZON * ACTION_DIM):
+        prev_mean.append(mean[i])
+
+    # -------------------------------------------------------------------------
+    # Action Selection: weighted random sampling (multinomial) over scores
+    # Reference: rand_idx = torch.multinomial(score.squeeze(1).cpu(), 1)
+    # -------------------------------------------------------------------------
+    var selected_s = _weighted_sample(weights, TOTAL_SAMPLES)
 
     var result = InlineArray[Scalar[dtype], ACTION_DIM](uninitialized=True)
     for a in range(ACTION_DIM):
-        var act = actions[best_s * HORIZON * ACTION_DIM + a]
-        # Add exploration noise if not in eval mode
+        var act = actions[selected_s * HORIZON * ACTION_DIM + a]
+        # Add exploration noise scaled by current std (not fixed noise)
         if not deterministic:
-            act += _gaussian_sample() * 0.025
+            act += _gaussian_sample() * std[a]
         act = _clamp(act * action_scale, -action_scale, action_scale)
         result[a] = Scalar[dtype](act)
 
     return result^
+
+
+@always_inline
+fn _weighted_sample(weights: List[Float64], n: Int) -> Int:
+    """Multinomial sampling: draw one index proportional to weights.
+
+    Equivalent to torch.multinomial(weights, 1). Weights must be
+    non-negative and sum to ~1 (already normalized by MPPI softmax).
+    """
+    var u = random_float64()
+    var cumsum: Float64 = 0.0
+    for i in range(n):
+        cumsum += weights[i]
+        if u <= cumsum:
+            return i
+    # Fallback (rounding): return last
+    return n - 1
 
 
 @always_inline
