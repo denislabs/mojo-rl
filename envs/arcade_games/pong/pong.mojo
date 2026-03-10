@@ -79,8 +79,8 @@ comptime S_STEP_COUNT: Int = 9
 comptime S_SCORE: Int = 10
 comptime S_LIVES: Int = 11
 
-comptime CPU_SPEED: Float64 = 1.8
-comptime CPU_REACTION_ZONE: Float64 = 2.0
+comptime CPU_SPEED: Float64 = 1.0  # Slower CPU (was 1.8)
+comptime CPU_REACTION_ZONE: Float64 = 8.0  # Larger dead zone (was 2.0)
 comptime WIN_SCORE: Int = 21
 comptime PONG_MAX_STEPS: Int = 5000
 
@@ -300,6 +300,17 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             reward = Scalar[Self.dtype](1.0)
         elif scored_cpu:
             reward = Scalar[Self.dtype](-1.0)
+        else:
+            # Reward shaping: small bonus for tracking ball when it approaches
+            if self.state[S_BALL_VX] > 0:  # Ball moving toward agent
+                var dist = self.state[S_BALL_Y] - self.state[S_PADDLE_Y]
+                if dist < 0:
+                    dist = -dist
+                # Closer = more reward (max 0.01 when perfectly aligned)
+                var proximity = Scalar[Self.dtype](1.0) - dist / Scalar[
+                    Self.dtype
+                ](SCREEN_H)
+                reward = proximity * Scalar[Self.dtype](0.01)
 
         return (reward, self.done)
 
@@ -803,12 +814,20 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         states[i, S_SCORE] = p_score
 
         # --- Reward ---
-        var reward = Scalar[gpu_dtype](0.0)
         if scored_player:
-            reward = 1.0
+            rewards[i] = 1.0
         elif scored_cpu:
-            reward = -1.0
-        rewards[i] = reward
+            rewards[i] = -1.0
+        else:
+            # Reward shaping: small bonus for tracking ball when it approaches
+            if bvx > 0:  # Ball moving toward agent
+                var d = by - pad_y
+                if d < 0:
+                    d = -d
+                # proximity in [0,1], reward up to 0.01
+                rewards[i] = (1.0 - d / type_of(d)(SCREEN_H)) * 0.01
+            else:
+                rewards[i] = 0.0
 
         # --- Done ---
         var terminated = Int(p_score) >= WIN_SCORE or Int(c_score) >= WIN_SCORE

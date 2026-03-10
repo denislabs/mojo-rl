@@ -36,6 +36,38 @@ from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.math import exp, log, sqrt, cos, tanh
 from std.random.philox import Random as PhiloxRandom
+from std.math import abs as math_abs
+
+
+# =============================================================================
+# Symlog / Symexp (TD-MPC2 value normalization)
+# =============================================================================
+
+
+@always_inline
+fn _symlog[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
+    """Symmetric logarithm: sign(x) * ln(1 + |x|).
+
+    Compresses large values into a bounded range while preserving sign.
+    Used to encode TD targets and rewards into distributional bin space.
+    """
+    if x >= 0:
+        return log(Scalar[dtype](1.0) + x)
+    else:
+        return -log(Scalar[dtype](1.0) - x)
+
+
+@always_inline
+fn _symexp[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
+    """Inverse of symlog: sign(x) * (exp(|x|) - 1).
+
+    Converts from symlog space back to actual value space.
+    Used to decode Q-values from distributional representation.
+    """
+    if x >= 0:
+        return exp(x) - Scalar[dtype](1.0)
+    else:
+        return -(exp(-x) - Scalar[dtype](1.0))
 
 
 # =============================================================================
@@ -524,7 +556,8 @@ fn tdmpc2_q_decode_kernel[
         var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
 
-    values[i] = expected_val
+    # Apply symexp: bins are in symlog space, convert to actual value space
+    values[i] = _symexp[dtype](expected_val)
 
 
 @always_inline
@@ -563,11 +596,16 @@ fn tdmpc2_compute_td_targets_kernel[
 
     var r = Scalar[dtype](rewards[i][0])
     var d = Scalar[dtype](dones[i][0])
+    # q_next is in actual value space (already symexp'd by q_decode_kernel)
     var v_next = Scalar[dtype](q_next[i][0])
 
+    # Compute TD target in actual value space
     var td_val = r + gamma * (Scalar[dtype](1.0) - d) * v_next
 
-    # Clamp to [v_min, v_max]
+    # Apply symlog: compress to distributional bin space
+    td_val = _symlog[dtype](td_val)
+
+    # Clamp to [v_min, v_max] (now in symlog space)
     if td_val < v_min:
         td_val = v_min
     if td_val > v_max:
@@ -622,7 +660,10 @@ fn tdmpc2_compute_reward_targets_kernel[
 
     var r = Scalar[dtype](rewards[i][0])
 
-    # Clamp to [v_min, v_max]
+    # Apply symlog: compress reward to distributional bin space
+    r = _symlog[dtype](r)
+
+    # Clamp to [v_min, v_max] (now in symlog space)
     if r < v_min:
         r = v_min
     if r > v_max:
@@ -701,8 +742,11 @@ fn tdmpc2_q_decode_backward_kernel[
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         q_val = q_val + prob_k * Scalar[dtype](bins[k][0])
 
-    # d(-Q)/d(logits_k) = -softmax_k * (bin_k - Q) * rho / BATCH
-    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
+    # With symexp decode: Q_actual = symexp(Q_symlog)
+    # d(-Q_actual)/d(logits_k) = -symexp'(Q_symlog) * softmax_k * (bin_k - Q_symlog)
+    # where symexp'(x) = exp(|x|) for all x
+    var symexp_deriv = exp(math_abs(q_val))
+    var scale = -symexp_deriv * rho_weight / Scalar[dtype](BATCH_SIZE)
     for k in range(BINS):
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         grad_logits[i, k] = scale * prob_k * (Scalar[dtype](bins[k][0]) - q_val)
@@ -999,10 +1043,13 @@ fn tdmpc2_decode_and_min_kernel[
         var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
 
-    # In-place min update
+    # Apply symexp: convert from symlog space to actual value space
+    var actual_val = _symexp[dtype](expected_val)
+
+    # In-place min update (in actual value space)
     var cur = Scalar[dtype](q_min[i][0])
-    if expected_val < cur:
-        q_min[i] = expected_val
+    if actual_val < cur:
+        q_min[i] = actual_val
 
 
 @always_inline

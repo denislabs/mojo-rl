@@ -147,20 +147,46 @@ fn two_hot_encode_batch[
         targets[base + k + 1] = Float32(1.0) - upper_weight
 
 
+fn symlog(x: Float32) -> Float32:
+    """Symmetric logarithm: sign(x) * ln(1 + |x|).
+
+    Compresses large values into a bounded range while preserving sign.
+    Used by TD-MPC2 to encode targets into distributional bin space.
+    """
+    if x >= 0:
+        return log(Float32(1.0) + x)
+    else:
+        return -log(Float32(1.0) - x)
+
+
+fn symexp(x: Float32) -> Float32:
+    """Inverse of symlog: sign(x) * (exp(|x|) - 1).
+
+    Converts from symlog space back to actual value space.
+    Used by TD-MPC2 to decode Q-values from distributional representation.
+    """
+    if x >= 0:
+        return exp(x) - Float32(1.0)
+    else:
+        return -(exp(-x) - Float32(1.0))
+
+
 fn decode_value[
     NUM_BINS: Int
 ](
     logits: InlineArray[Float32, NUM_BINS],
     bins: InlineArray[Float32, NUM_BINS],
 ) -> Float32:
-    """Decode distributional value: sum_i(softmax(logits)_i * bins_i).
+    """Decode distributional value with symexp: symexp(sum_i(softmax(logits)_i * bins_i)).
+
+    Bins represent values in symlog space. Returns actual (non-symlog) value.
 
     Args:
         logits: Raw logits over bins [NUM_BINS].
-        bins: Bin values [NUM_BINS].
+        bins: Bin values [NUM_BINS] (in symlog space).
 
     Returns:
-        Expected value under the distribution.
+        Expected value in actual (non-symlog) space.
     """
     # Numerically stable softmax
     var max_val = logits[0]
@@ -172,12 +198,12 @@ fn decode_value[
     for i in range(NUM_BINS):
         sum_exp += exp(logits[i] - max_val)
 
-    var value = Float32(0.0)
+    var value_symlog = Float32(0.0)
     for i in range(NUM_BINS):
         var prob = exp(logits[i] - max_val) / sum_exp
-        value += prob * bins[i]
+        value_symlog += prob * bins[i]
 
-    return value
+    return symexp(value_symlog)
 
 
 fn decode_value_batch[
@@ -187,12 +213,14 @@ fn decode_value_batch[
     bins: InlineArray[Float32, NUM_BINS],
     mut values: InlineArray[Float32, BATCH],
 ):
-    """Batch decode distributional values.
+    """Batch decode distributional values with symexp.
+
+    Bins represent values in symlog space. Returns actual (non-symlog) values.
 
     Args:
         logits: Batch of logits [BATCH * NUM_BINS].
-        bins: Bin values [NUM_BINS].
-        values: Output expected values [BATCH] (written).
+        bins: Bin values [NUM_BINS] (in symlog space).
+        values: Output expected values [BATCH] in actual space (written).
     """
     for b in range(BATCH):
         var base = b * NUM_BINS
@@ -201,12 +229,13 @@ fn decode_value_batch[
         for i in range(1, NUM_BINS):
             if logits[base + i] > max_val:
                 max_val = logits[base + i]
-        # Compute expected value
+        # Compute expected value in symlog space
         var sum_exp = Float32(0.0)
         for i in range(NUM_BINS):
             sum_exp += exp(logits[base + i] - max_val)
-        var val = Float32(0.0)
+        var val_symlog = Float32(0.0)
         for i in range(NUM_BINS):
             var prob = exp(logits[base + i] - max_val) / sum_exp
-            val += prob * bins[i]
-        values[b] = val
+            val_symlog += prob * bins[i]
+        # Apply symexp to convert to actual space
+        values[b] = symexp(val_symlog)

@@ -662,14 +662,18 @@ fn decode_value_batch_scalar[
     logits: InlineArray[Float32, NUM_BINS],
     bins: InlineArray[Float32, NUM_BINS],
 ) -> Float32:
-    """Decode a single distributional value from logits.
+    """Decode a single distributional value from logits with symexp.
+
+    Bins represent values in symlog space. This function computes:
+      value_symlog = sum(softmax(logits) * bins)
+      value_actual = symexp(value_symlog)
 
     Args:
         logits: Raw logits over bins [NUM_BINS].
-        bins: Bin values [NUM_BINS].
+        bins: Bin values [NUM_BINS] (in symlog space).
 
     Returns:
-        Expected value under the softmax distribution.
+        Expected value in actual (non-symlog) space.
     """
     var max_val = logits[0]
     for i in range(1, NUM_BINS):
@@ -680,9 +684,13 @@ fn decode_value_batch_scalar[
     for i in range(NUM_BINS):
         sum_exp += exp(logits[i] - max_val)
 
-    var value = Float32(0.0)
+    var value_symlog = Float32(0.0)
     for i in range(NUM_BINS):
         var prob = exp(logits[i] - max_val) / sum_exp
-        value += prob * bins[i]
+        value_symlog += prob * bins[i]
 
-    return value
+    # Apply symexp: convert from symlog space to actual value space
+    if value_symlog >= 0:
+        return exp(value_symlog) - Float32(1.0)
+    else:
+        return -(exp(-value_symlog) - Float32(1.0))

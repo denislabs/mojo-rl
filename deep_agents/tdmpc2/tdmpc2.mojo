@@ -527,13 +527,20 @@ struct TDMPC2Agent[
             )
 
             # TD target: r + gamma * (1 - done) * V_next
+            # q_min_forward now returns symexp'd values (actual space)
             for b in range(Self.BATCH):
                 var r = Float64(self.state._batch_rewards[t * Self.BATCH + b])
                 var done = Float64(self.state._batch_dones[t * Self.BATCH + b])
                 var v_next = Float64(q_next_values[b])
                 var td_target = r + self.gamma * (1.0 - done) * v_next
 
-                # Encode as two-hot distribution
+                # Apply symlog: compress to distributional bin space
+                if td_target >= 0:
+                    td_target = log(1.0 + td_target)
+                else:
+                    td_target = -log(1.0 - td_target)
+
+                # Clamp to [v_min, v_max] (now in symlog space)
                 var clamp_td = td_target
                 if clamp_td < Self.v_min:
                     clamp_td = Self.v_min
@@ -640,6 +647,12 @@ struct TDMPC2Agent[
             var reward_loss: Float64 = 0.0
             for b in range(Self.BATCH):
                 var r = Float32(self.state._batch_rewards[t * Self.BATCH + b])
+                # Apply symlog to reward before two-hot encoding
+                if r >= 0:
+                    r = log(Float32(1.0) + r)
+                else:
+                    r = -log(Float32(1.0) - r)
+
                 # Compute log-softmax of reward logits
                 var max_l = Float32(self.state._rew_logits[b * Self.BINS])
                 for i in range(1, Self.BINS):
@@ -654,7 +667,7 @@ struct TDMPC2Agent[
                     )
                 var log_sum_exp = max_l + log(sum_exp)
 
-                # Two-hot reward target
+                # Two-hot reward target (r is already in symlog space)
                 var clamp_r = r
                 if clamp_r < Float32(Self.v_min):
                     clamp_r = Float32(Self.v_min)

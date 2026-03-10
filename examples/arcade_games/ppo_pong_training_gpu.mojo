@@ -140,7 +140,7 @@ fn main() raises:
                 ctx,
                 num_updates=NUM_UPDATES,
                 verbose=True,
-                print_every=1000,
+                print_every=100,
             )
 
             var end_time = perf_counter_ns()
