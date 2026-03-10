@@ -44,11 +44,11 @@ comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 1024
-comptime MAX_N_ENVS = 256
+comptime BATCH_SIZE = 256
+comptime MAX_N_ENVS = 32
 
 # Training duration (off-policy uses steps, not episodes)
-comptime NUM_STEPS = 5_000_000
+comptime NUM_STEPS = 1_000_000
 comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
@@ -135,7 +135,7 @@ fn main() raises:
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
-                gradient_steps=64,  # Decouple from n_envs (256 would be too slow)
+                # gradient_steps=0 uses n_envs (1:1 replay ratio)
                 sync_every=5_000,
                 verbose=True,
                 print_every=50_000,
