@@ -329,40 +329,113 @@ temperature       = 0.5      # MPPI softmax temperature
 
 ---
 
-## Implementation Roadmap
+## Implementation Status
 
-### Phase 1 — New Layers (1–2 days)
+### Completed
 
-- [ ] `nn/model/mish.mojo`
-- [ ] `nn/model/simnorm.mojo`
-- [ ] `nn/model/normed_linear.mojo`
+- [x] `nn/model/mish.mojo` — Mish activation
+- [x] `nn/model/simnorm.mojo` — Simplicial normalization
+- [x] `nn/model/normed_linear.mojo` — NormedLinear block
+- [x] `nn/loss/soft_cross_entropy.mojo` — Soft cross-entropy
+- [x] `nn/loss/two_hot.mojo` — Two-hot encoding + `symlog`/`symexp`
+- [x] `nn/replay/sequence_replay_buffer.mojo` — Sequence replay buffer
+- [x] `deep_agents/tdmpc2/world_model.mojo` — Full world model (encoder, dynamics, reward, termination, policy, Q-ensemble)
+- [x] `deep_agents/tdmpc2/mppi.mojo` — MPPI planner (CPU)
+- [x] `deep_agents/tdmpc2/tdmpc2.mojo` — Full agent with CPU + GPU training
+- [x] `deep_agents/tdmpc2/kernels.mojo` — GPU kernels for all training operations
+- [x] `deep_agents/tdmpc2/state.mojo` — CPU + GPU state management
 
-### Phase 2 — Losses & Replay (1–2 days)
+### Bug fixes applied
 
-- [ ] `nn/loss/soft_cross_entropy.mojo`
-- [ ] `nn/loss/two_hot.mojo`
-- [ ] `nn/replay/sequence_replay_buffer.mojo`
+- [x] **Symlog/symexp normalization** — bins represent symlog space; `symexp` applied when decoding Q-values, `symlog` applied to TD targets and reward targets before two-hot encoding. Without this, Q-values saturate at [-10, 10] boundaries.
+- [x] **Reward network trained on immediate rewards** — was incorrectly using TD targets (r + γV) instead of raw rewards.
+- [x] **Single optimizer step per training iteration** — was doing H optimizer steps inside the horizon loop.
+- [x] **Proper DPG policy gradient** — backprop through Q-network to get dQ/d(action), chained through tanh squashing. Original kernel ignored Q-values entirely.
+- [x] **Random 2-of-5 Q subsampling** — both TD targets (min of 2) and policy gradient (avg of 2) now randomly subsample 2 of 5 Q-networks per step, matching the reference.
+- [x] **Loss coefficients** — `consistency_coef: 20.0` (was 2.0), `reward_coef: 0.1` (was 0.5), matching reference defaults.
+- [x] **CPU policy uses avg(Q1, Q2)** — was using min, reference uses average for policy gradient.
+- [x] **Symexp derivative in policy gradient** — Q decode backward kernel includes `exp(|Q_symlog|)` factor for correct chain rule through symexp.
 
-### Phase 3 — World Model (3–5 days)
+---
 
-- [ ] `deep_agents/tdmpc2/world_model.mojo`
-  - [ ] Encoder head
-  - [ ] Dynamics head (with SimNorm output)
-  - [ ] Reward head (distributional)
-  - [ ] Termination head
-  - [ ] Policy head
-  - [ ] Q-function ensemble
+## Remaining TODOs
 
-### Phase 4 — Planning & Agent (3–5 days)
+### MPPI Warm-Start
 
-- [ ] `deep_agents/tdmpc2/mppi.mojo`
-- [ ] `deep_agents/tdmpc2/tdmpc2.mojo`
+**Reference**: When not at the first timestep (t > 0), MPPI warm-starts the action
+distribution from the previous plan by shifting the mean forward:
+```python
+if not t0:
+    mean[:-1] = prev_mean[1:]  # Shift previous plan forward by 1 step
+```
+This gives MPPI a much better starting point for optimization since consecutive
+timesteps have similar optimal plans.
 
-### Phase 5 — Validation (2–3 days)
+**Current Mojo**: Resets mean to zeros and std to 0.5 every timestep.
 
-- [ ] Test on `PendulumEnv` (simple baseline)
-- [ ] Benchmark on `HopperEnv`, `HalfCheetahEnv`
-- [ ] Sample efficiency comparison: SAC vs TDMPC2
+**Fix**: Store the previous plan's mean/std in the agent state. On each `plan()` call
+(except the first of an episode), shift `prev_mean[1:]` into `mean[:-1]` and keep
+the last entry at zero. Requires adding `prev_mean: List[Float64]` to agent state
+and a `t0: Bool` flag to detect episode starts.
+
+**Files**: `deep_agents/tdmpc2/mppi.mojo`, `deep_agents/tdmpc2/tdmpc2.mojo` (pass previous plan)
+
+---
+
+### MPPI Gumbel-Softmax Action Selection
+
+**Reference**: Uses Gumbel-softmax sampling over elite trajectory scores to select
+the final action, adding stochasticity to the planning process:
+```python
+rand_idx = torch.multinomial(score.squeeze(1).cpu(), 1)  # weighted random sample
+a = elite_actions[:, rand_idx]
+if not eval_mode:
+    a += std[0] * torch.randn(action_dim)
+```
+The weighted random sampling ensures diverse action selection proportional to
+trajectory quality, rather than always picking the absolute best.
+
+**Current Mojo**: Deterministic argmax — always selects the highest-weight trajectory.
+Also adds fixed 0.025 noise instead of scaling by the current std.
+
+**Fix**: Implement weighted random sampling (multinomial from softmax scores).
+Use the current std[0] as exploration noise scale (not fixed 0.025).
+
+**Files**: `deep_agents/tdmpc2/mppi.mojo` (action selection section, ~line 320)
+
+---
+
+### Dynamic Discount Factor (gamma)
+
+**Reference**: Computes gamma dynamically based on episode length:
+```python
+discount = (episode_length / discount_denom - 1) / (episode_length / discount_denom)
+discount = clamp(discount, discount_min=0.95, discount_max=0.995)
+```
+With `discount_denom=5` and HalfCheetah's 1000-step episodes:
+`gamma = (200 - 1) / 200 = 0.995`
+
+This adapts the effective planning horizon to the task's episode length. Shorter
+episodes get smaller gamma (less bootstrapping), longer episodes get larger gamma.
+
+**Current Mojo**: Fixed `gamma=0.99` for all environments.
+
+**Fix**: Add `episode_length` as a constructor parameter. Compute gamma using the
+reference formula with `discount_denom=5`, clamped to [0.95, 0.995].
+For HalfCheetah (1000 steps), this gives gamma=0.995 instead of 0.99.
+
+**Files**: `deep_agents/tdmpc2/tdmpc2.mojo` (constructor)
+
+---
+
+### MPPI GPU Batching (Performance)
+
+The MPPI loop currently runs on CPU, evaluating trajectories one at a time.
+GPU-batching all `num_samples=512` candidates through the world model in parallel
+is the single biggest performance opportunity. Target: a single batched
+`dynamics_forward[512 * H]` call per MPPI iteration.
+
+**Files**: `deep_agents/tdmpc2/mppi.mojo` (full rewrite for GPU)
 
 ---
 
@@ -376,30 +449,32 @@ for the target, while the predicted `z_pred` flows through the full computationa
 
 ### Q-Network Ensemble
 
-TDMPC2 uses 5 Q-networks and during the **policy update** randomly subsamples 2
-and takes their minimum. Implementation: an array of `Network[...]` instances with
-random index subsampling for `Q_min` computation.
+TDMPC2 uses 5 Q-networks. Random 2-of-5 subsampling is used for both:
+- **TD targets**: min of 2 randomly selected target Q-networks
+- **Policy gradient**: avg of 2 randomly selected online Q-networks (with DPG backprop)
 
-### Distributional RL — Scalar Decoding
+Implemented via PhiloxRandom counter-based RNG and pointer arrays for O(1) selection.
 
-Q-functions output logits over `NUM_BINS=101` bins. The scalar value is recovered as:
+### Distributional RL — Symlog Space
+
+Q-functions output logits over `NUM_BINS=101` bins spanning `[v_min, v_max]` in
+**symlog space**. The scalar value is recovered as:
 
 ```
-value = Σᵢ softmax(logits)ᵢ * bins[i]
+value_symlog = Σᵢ softmax(logits)ᵢ * bins[i]
+value_actual = symexp(value_symlog)
 ```
 
-where `bins` is a fixed tensor of 101 evenly spaced values in `[v_min, v_max]`.
+Targets are encoded in symlog space before two-hot encoding:
+```
+td_target_symlog = symlog(r + gamma * (1 - done) * V_next_actual)
+reward_target_symlog = symlog(r)
+```
+
+Where `symlog(x) = sign(x) * ln(1 + |x|)` and `symexp(x) = sign(x) * (exp(|x|) - 1)`.
 
 ### Two Separate Optimizers
 
 - **World model optimizer**: encoder + dynamics + reward + termination + Q-ensemble
-  with `enc_lr_scale=0.3` applied to encoder params (e.g., via separate param group or
-  learning rate masking)
-- **Policy optimizer**: policy head only, full `learning_rate`
-
-### MPPI Vectorization — Key Performance Opportunity
-
-The MPPI loop evaluates `num_samples=512` candidate trajectories per timestep.
-Running these as a batched GPU kernel (all 512 in parallel through the world model)
-is the single biggest performance lever over PyTorch-based TDMPC2 in LeRobot.
-Target: a single batched `dynamics_forward[512 * H]` call per MPPI iteration.
+  with `enc_lr_scale=0.3` applied to encoder params
+- **Policy optimizer**: policy head only, full `learning_rate=3e-4`
