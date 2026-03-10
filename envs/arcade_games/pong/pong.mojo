@@ -56,7 +56,7 @@ from ..core.gpu_renderer import (
 # ============================================================================
 
 comptime PADDLE_WIDTH: Int = 4
-comptime PADDLE_HEIGHT: Int = 16
+comptime PADDLE_HEIGHT: Int = 24  # Bigger paddle (was 16) for easier learning
 comptime PADDLE_SPEED: Float64 = 3.0
 comptime BALL_SIZE: Int = 2
 comptime BALL_SPEED: Float64 = 2.0
@@ -193,20 +193,21 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 self.state[S_PADDLE_Y] + Scalar[Self.dtype](PADDLE_SPEED),
             )
 
-        # CPU AI
+        # CPU AI — only tracks ball when ball moves toward CPU (vx < 0)
         var cpu_y = self.state[S_CPU_PADDLE_Y]
-        var ball_y = self.state[S_BALL_Y]
-        var diff = ball_y - cpu_y
-        if diff > Scalar[Self.dtype](CPU_REACTION_ZONE):
-            self.state[S_CPU_PADDLE_Y] = min(
-                Scalar[Self.dtype](SCREEN_H - PADDLE_HEIGHT // 2),
-                cpu_y + Scalar[Self.dtype](CPU_SPEED),
-            )
-        elif diff < Scalar[Self.dtype](-CPU_REACTION_ZONE):
-            self.state[S_CPU_PADDLE_Y] = max(
-                Scalar[Self.dtype](PADDLE_HEIGHT // 2),
-                cpu_y - Scalar[Self.dtype](CPU_SPEED),
-            )
+        if self.state[S_BALL_VX] < 0:
+            var ball_y = self.state[S_BALL_Y]
+            var diff = ball_y - cpu_y
+            if diff > Scalar[Self.dtype](CPU_REACTION_ZONE):
+                self.state[S_CPU_PADDLE_Y] = min(
+                    Scalar[Self.dtype](SCREEN_H - PADDLE_HEIGHT // 2),
+                    cpu_y + Scalar[Self.dtype](CPU_SPEED),
+                )
+            elif diff < Scalar[Self.dtype](-CPU_REACTION_ZONE):
+                self.state[S_CPU_PADDLE_Y] = max(
+                    Scalar[Self.dtype](PADDLE_HEIGHT // 2),
+                    cpu_y - Scalar[Self.dtype](CPU_SPEED),
+                )
 
         # Serve timer
         if self.state[S_SERVE_TIMER] > 0:
@@ -231,6 +232,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var by = self.state[S_BALL_Y]
         var pad_y = self.state[S_PADDLE_Y]
         var half_h = Scalar[Self.dtype](PADDLE_HEIGHT // 2)
+        var agent_hit = False
 
         if (
             bx >= Scalar[Self.dtype](RIGHT_PADDLE_X)
@@ -243,6 +245,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var hit_pos = (by - pad_y) / half_h
             self.state[S_BALL_VY] = hit_pos * Scalar[Self.dtype](MAX_BALL_VY)
             self.state[S_BALL_X] = Scalar[Self.dtype](RIGHT_PADDLE_X - 1)
+            agent_hit = True
 
         # Paddle collision (CPU = left)
         var cpu_pad_y = self.state[S_CPU_PADDLE_Y]
@@ -300,17 +303,9 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             reward = Scalar[Self.dtype](1.0)
         elif scored_cpu:
             reward = Scalar[Self.dtype](-1.0)
-        else:
-            # Reward shaping: small bonus for tracking ball when it approaches
-            if self.state[S_BALL_VX] > 0:  # Ball moving toward agent
-                var dist = self.state[S_BALL_Y] - self.state[S_PADDLE_Y]
-                if dist < 0:
-                    dist = -dist
-                # Closer = more reward (max 0.01 when perfectly aligned)
-                var proximity = Scalar[Self.dtype](1.0) - dist / Scalar[
-                    Self.dtype
-                ](SCREEN_H)
-                reward = proximity * Scalar[Self.dtype](0.01)
+        elif agent_hit:
+            # Reward for returning the ball
+            reward = Scalar[Self.dtype](0.1)
 
         return (reward, self.done)
 
@@ -712,16 +707,17 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             if pad_y > Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2):
                 pad_y = Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2)
 
-        # --- CPU AI ---
-        var diff = by - cpu_y
-        if diff > Scalar[gpu_dtype](CPU_REACTION_ZONE):
-            cpu_y = cpu_y + Scalar[gpu_dtype](CPU_SPEED)
-            if cpu_y > Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2):
-                cpu_y = Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2)
-        elif diff < Scalar[gpu_dtype](-CPU_REACTION_ZONE):
-            cpu_y = cpu_y - Scalar[gpu_dtype](CPU_SPEED)
-            if cpu_y < Scalar[gpu_dtype](PADDLE_HEIGHT // 2):
-                cpu_y = Scalar[gpu_dtype](PADDLE_HEIGHT // 2)
+        # --- CPU AI — only tracks when ball approaches (vx < 0) ---
+        if bvx < 0:
+            var diff = by - cpu_y
+            if diff > Scalar[gpu_dtype](CPU_REACTION_ZONE):
+                cpu_y = cpu_y + Scalar[gpu_dtype](CPU_SPEED)
+                if cpu_y > Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2):
+                    cpu_y = Scalar[gpu_dtype](SCREEN_H - PADDLE_HEIGHT // 2)
+            elif diff < Scalar[gpu_dtype](-CPU_REACTION_ZONE):
+                cpu_y = cpu_y - Scalar[gpu_dtype](CPU_SPEED)
+                if cpu_y < Scalar[gpu_dtype](PADDLE_HEIGHT // 2):
+                    cpu_y = Scalar[gpu_dtype](PADDLE_HEIGHT // 2)
 
         states[i, S_PADDLE_Y] = pad_y
         states[i, S_CPU_PADDLE_Y] = cpu_y
@@ -747,6 +743,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             bvy = -bvy
 
         # --- Agent paddle collision (right) ---
+        var agent_hit = False
         if (
             bx >= Scalar[gpu_dtype](RIGHT_PADDLE_X)
             and bx <= Scalar[gpu_dtype](RIGHT_PADDLE_X + PADDLE_WIDTH)
@@ -758,6 +755,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var hit_pos = (by - pad_y) / Scalar[gpu_dtype](PADDLE_HEIGHT // 2)
             bvy = hit_pos * Scalar[gpu_dtype](MAX_BALL_VY)
             bx = Scalar[gpu_dtype](RIGHT_PADDLE_X - 1)
+            agent_hit = True
 
         # --- CPU paddle collision (left) ---
         if (
@@ -818,16 +816,10 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
             rewards[i] = 1.0
         elif scored_cpu:
             rewards[i] = -1.0
+        elif agent_hit:
+            rewards[i] = 0.1  # Reward for returning the ball
         else:
-            # Reward shaping: small bonus for tracking ball when it approaches
-            if bvx > 0:  # Ball moving toward agent
-                var d = by - pad_y
-                if d < 0:
-                    d = -d
-                # proximity in [0,1], reward up to 0.01
-                rewards[i] = (1.0 - d / type_of(d)(SCREEN_H)) * 0.01
-            else:
-                rewards[i] = 0.0
+            rewards[i] = 0.0
 
         # --- Done ---
         var terminated = Int(p_score) >= WIN_SCORE or Int(c_score) >= WIN_SCORE
