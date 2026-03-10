@@ -21,11 +21,15 @@ Ported from CuLE (BSD-3): cule/atari/tia.hpp (rendering logic)
 """
 
 from .atari_state import AtariState
-from .palette import palette_r, palette_g, palette_b
+from .palette import NTSC_PALETTE, palette_r, palette_g, palette_b
 from .tables import player_mask, missile_mask, ball_mask, playfield_mask
 from .flags import (
     FRAME_WIDTH, FRAME_HEIGHT,
     TIA_PF_PRIORITY, TIA_PF_SCORE, TIA_VBLANK,
+    CX_M0P1, CX_M0P0, CX_M1P0, CX_M1P1,
+    CX_P0PF, CX_P0BL, CX_P1PF, CX_P1BL,
+    CX_M0PF, CX_M0BL, CX_M1PF, CX_M1BL,
+    CX_BLPF, CX_P0P1, CX_M0M1,
 )
 
 # Frame buffer size: 160x210 pixels, 4 bytes per pixel (BGRA)
@@ -83,6 +87,21 @@ fn _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
 
 
 @always_inline
+fn _write_pixel_bgra(
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    offset: Int,
+    color_idx: UInt8,
+    palette: InlineArray[UInt32, 256],
+):
+    """Write one BGRA pixel using a pre-materialized palette."""
+    var rgb = palette[Int(color_idx)]
+    buf[offset + 0] = UInt8(rgb & 0xFF)           # B
+    buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)    # G
+    buf[offset + 2] = UInt8((rgb >> 16) & 0xFF)   # R
+    buf[offset + 3] = 0xFF                         # A
+
+
+@always_inline
 fn render_scanline_bgra(
     state: AtariState,
     scanline: Int,
@@ -93,8 +112,6 @@ fn render_scanline_bgra(
     Must be called DURING frame execution, after the CPU has executed
     this scanline's worth of cycles (so TIA registers reflect the game's
     writes for this line).
-
-    Also updates collision detection for this scanline.
 
     Args:
         state: Current AtariState (TIA registers for this scanline).
@@ -107,6 +124,9 @@ fn render_scanline_bgra(
     # During VBLANK, the display is blanked — output background color
     var is_blanked = (state.tia_flags & TIA_VBLANK) != 0
 
+    # Materialize palette ONCE per scanline (avoids 3 copies per pixel)
+    var palette = materialize[NTSC_PALETTE]()
+
     var row_offset = scanline * FRAME_WIDTH * 4
     for x in range(FRAME_WIDTH):
         var color_idx: UInt8
@@ -115,15 +135,86 @@ fn render_scanline_bgra(
         else:
             color_idx = _get_pixel_color(state, x)
 
-        var r = palette_r(color_idx)
-        var g = palette_g(color_idx)
-        var b = palette_b(color_idx)
+        _write_pixel_bgra(buf, row_offset + x * 4, color_idx, palette)
 
-        var offset = row_offset + x * 4
-        buf[offset + 0] = b      # B
-        buf[offset + 1] = g      # G
-        buf[offset + 2] = r      # R
-        buf[offset + 3] = 0xFF   # A
+
+@always_inline
+fn render_scanline_with_collision_bgra(
+    mut state: AtariState,
+    scanline: Int,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Render one scanline AND update collision in a single pass.
+
+    Computes masks (player, missile, ball, playfield) once per pixel and
+    uses them for both rendering and collision detection. This halves the
+    total mask computations compared to separate render + collision passes.
+    """
+    if scanline < 0 or scanline >= FRAME_HEIGHT:
+        return
+
+    var is_blanked = (state.tia_flags & TIA_VBLANK) != 0
+    var palette = materialize[NTSC_PALETTE]()
+    var pf_priority = (state.tia_flags & TIA_PF_PRIORITY) != 0
+    var pf_score = (state.tia_flags & TIA_PF_SCORE) != 0
+    var row_offset = scanline * FRAME_WIDTH * 4
+
+    for x in range(FRAME_WIDTH):
+        # Compute all masks ONCE
+        var pf = playfield_mask(state, x)
+        var p0 = player_mask(state, 0, x)
+        var p1 = player_mask(state, 1, x)
+        var m0 = missile_mask(state, 0, x)
+        var m1 = missile_mask(state, 1, x)
+        var bl = ball_mask(state, x)
+
+        # --- Collision detection (reuse masks) ---
+        if m0 and p1: state.collision = state.collision | CX_M0P1
+        if m0 and p0: state.collision = state.collision | CX_M0P0
+        if m1 and p0: state.collision = state.collision | CX_M1P0
+        if m1 and p1: state.collision = state.collision | CX_M1P1
+        if p0 and pf: state.collision = state.collision | CX_P0PF
+        if p0 and bl: state.collision = state.collision | CX_P0BL
+        if p1 and pf: state.collision = state.collision | CX_P1PF
+        if p1 and bl: state.collision = state.collision | CX_P1BL
+        if m0 and pf: state.collision = state.collision | CX_M0PF
+        if m0 and bl: state.collision = state.collision | CX_M0BL
+        if m1 and pf: state.collision = state.collision | CX_M1PF
+        if m1 and bl: state.collision = state.collision | CX_M1BL
+        if bl and pf: state.collision = state.collision | CX_BLPF
+        if p0 and p1: state.collision = state.collision | CX_P0P1
+        if m0 and m1: state.collision = state.collision | CX_M0M1
+
+        # --- Rendering (reuse masks) ---
+        var color_idx: UInt8
+        if is_blanked:
+            color_idx = state.colubk
+        elif pf_priority:
+            if pf or bl:
+                if pf_score and pf:
+                    color_idx = state.colup0 if x < 80 else state.colup1
+                else:
+                    color_idx = state.colupf
+            elif p0 or m0:
+                color_idx = state.colup0
+            elif p1 or m1:
+                color_idx = state.colup1
+            else:
+                color_idx = state.colubk
+        else:
+            if p0 or m0:
+                color_idx = state.colup0
+            elif p1 or m1:
+                color_idx = state.colup1
+            elif pf or bl:
+                if pf_score and pf:
+                    color_idx = state.colup0 if x < 80 else state.colup1
+                else:
+                    color_idx = state.colupf
+            else:
+                color_idx = state.colubk
+
+        _write_pixel_bgra(buf, row_offset + x * 4, color_idx, palette)
 
 
 @always_inline
@@ -144,6 +235,7 @@ fn render_pixel_range_bgra(
         return
 
     var is_blanked = (state.tia_flags & TIA_VBLANK) != 0
+    var palette = materialize[NTSC_PALETTE]()
     var row_offset = scanline * FRAME_WIDTH * 4
 
     for x in range(start_pixel, end_pixel):
@@ -153,15 +245,7 @@ fn render_pixel_range_bgra(
         else:
             color_idx = _get_pixel_color(state, x)
 
-        var r = palette_r(color_idx)
-        var g = palette_g(color_idx)
-        var b = palette_b(color_idx)
-
-        var offset = row_offset + x * 4
-        buf[offset + 0] = b      # B
-        buf[offset + 1] = g      # G
-        buf[offset + 2] = r      # R
-        buf[offset + 3] = 0xFF   # A
+        _write_pixel_bgra(buf, row_offset + x * 4, color_idx, palette)
 
 
 fn render_frame_bgra(
@@ -188,14 +272,16 @@ fn render_frame_rgb(
     3 bytes per pixel (R, G, B). Used for RL observations.
     Same static-snapshot caveat as render_frame_bgra().
     """
+    var palette = materialize[NTSC_PALETTE]()
     for y in range(FRAME_HEIGHT):
         var row_offset = y * FRAME_WIDTH * 3
         for x in range(FRAME_WIDTH):
             var color_idx = _get_pixel_color(state, x)
+            var rgb = palette[Int(color_idx)]
             var offset = row_offset + x * 3
-            buf[offset + 0] = palette_r(color_idx)
-            buf[offset + 1] = palette_g(color_idx)
-            buf[offset + 2] = palette_b(color_idx)
+            buf[offset + 0] = UInt8((rgb >> 16) & 0xFF)
+            buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)
+            buf[offset + 2] = UInt8(rgb & 0xFF)
 
 
 fn render_frame_grayscale(
@@ -207,10 +293,13 @@ fn render_frame_grayscale(
     1 byte per pixel (Y luminance). Used for preprocessed RL observations.
     Same static-snapshot caveat as render_frame_bgra().
     """
-    from .palette import palette_grayscale
-
+    var palette = materialize[NTSC_PALETTE]()
     for y in range(FRAME_HEIGHT):
         var row_offset = y * FRAME_WIDTH
         for x in range(FRAME_WIDTH):
             var color_idx = _get_pixel_color(state, x)
-            buf[row_offset + x] = palette_grayscale(color_idx)
+            var rgb = palette[Int(color_idx)]
+            var r = Int((rgb >> 16) & 0xFF)
+            var g = Int((rgb >> 8) & 0xFF)
+            var b = Int(rgb & 0xFF)
+            buf[row_offset + x] = UInt8((77 * r + 150 * g + 29 * b) >> 8)

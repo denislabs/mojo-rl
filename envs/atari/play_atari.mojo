@@ -62,21 +62,15 @@ fn main() raises:
             )
             step_count += 1
 
-            # Debug TIA state every 120 frames (~2 sec)
-            if step_count % 120 == 1:
-                var s = env.state.copy()
+            # Debug TIA state every 300 frames (~5 sec)
+            if step_count % 300 == 1:
                 print(
-                    "TIA: P0=(" + String(Int(s.pos_p0)) + "," + String(Int(s.grp0))
-                    + ") P1=(" + String(Int(s.pos_p1)) + "," + String(Int(s.grp1))
-                    + ") BL=" + String(Int(s.pos_bl))
-                    + " COLUP0=" + String(Int(s.colup0))
-                    + " COLUP1=" + String(Int(s.colup1))
-                    + " COLUPF=" + String(Int(s.colupf))
-                    + " COLUBK=" + String(Int(s.colubk))
-                    + " PF=" + String(Int(s.pf0)) + "/" + String(Int(s.pf1)) + "/" + String(Int(s.pf2))
-                    + " paddle=" + String(Int(s.paddle_pos))
-                    + " RAM13=" + String(Int(s.ram[13]))
-                    + " RAM14=" + String(Int(s.ram[14]))
+                    "P0=" + String(Int(env.state.pos_p0))
+                    + " P1=" + String(Int(env.state.pos_p1))
+                    + " BL=" + String(Int(env.state.pos_bl))
+                    + " paddle=" + String(Int(env.state.paddle_pos))
+                    + " RAM13=" + String(Int(env.state.ram[13]))
+                    + " RAM14=" + String(Int(env.state.ram[14]))
                 )
 
             # Extract game state from RAM

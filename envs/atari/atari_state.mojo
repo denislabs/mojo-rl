@@ -113,6 +113,13 @@ struct AtariState(Copyable, Movable):
     var current_bank: UInt8  # Currently active ROM bank
 
     # ========================================================================
+    # Mid-scanline PF snapshot (captured at cycle ~49 for score rendering)
+    # ========================================================================
+    var pf0_mid: UInt8          # PF0 at beam midpoint (used for left half)
+    var pf1_mid: UInt8          # PF1 at beam midpoint
+    var pf2_mid: UInt8          # PF2 at beam midpoint
+
+    # ========================================================================
     # Paddle controller state
     # ========================================================================
     var paddle_pos: UInt8       # Paddle position (0=top, 255=bottom)
@@ -187,6 +194,11 @@ struct AtariState(Copyable, Movable):
 
         # Bank
         self.current_bank = 0
+
+        # PF midpoint snapshot
+        self.pf0_mid = 0
+        self.pf1_mid = 0
+        self.pf2_mid = 0
 
         # Paddle
         self.paddle_pos = 128  # Center position

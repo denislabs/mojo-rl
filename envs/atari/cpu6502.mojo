@@ -656,6 +656,7 @@ fn _run_scanline(
     mut state: AtariState,
     rom: UnsafePointer[UInt8],
     rom_size: Int,
+    overflow: Int = 0,
 ) -> Int:
     """Execute one scanline's worth of CPU cycles with clock tracking.
 
@@ -670,13 +671,42 @@ fn _run_scanline(
     1 CPU cycle = 3 TIA color clocks. 76 CPU cycles = 228 clocks/line.
     HBLANK occupies clocks 0-67, visible area is clocks 68-227.
 
-    Returns: total CPU cycles executed for this scanline.
+    Args:
+        overflow: CPU cycles carried over from the previous scanline's
+            last instruction (0-6). The beam is already this many cycles
+            into the current scanline. Matches ALE's myClocksToEndOfScanLine
+            approach for accurate frame timing.
+
+    Returns: total CPU cycles consumed (including overflow). The caller
+        should compute the new overflow as (return_value - CPU_CLOCKS_PER_LINE).
     """
-    var line_cycles: Int = 0
+    var line_cycles: Int = overflow
+    var saved_mid = False
+
+    # If WSYNC carried over from previous scanline (instruction that set WSYNC
+    # overflowed past the scanline boundary), consume remaining cycles now.
+    if state.wsync:
+        state.wsync = False
+        if line_cycles < CPU_CLOCKS_PER_LINE:
+            riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
+            line_cycles = CPU_CLOCKS_PER_LINE
+
     while line_cycles < CPU_CLOCKS_PER_LINE:
         # Update TIA clock position BEFORE instruction executes,
         # so any RESP writes during this instruction see the correct beam pos
         state.clock = UInt16(line_cycles * 3)
+
+        # Snapshot PF registers between left-digit and right-digit PF writes.
+        # In Pong's score kernel: left-digit PF is written at cycles 0-15,
+        # right-digit PF is written at cycles ~47-56. Capturing at cycle 36
+        # ensures we have the left-digit values. For non-score scanlines,
+        # PF is set early and stable, so snapshot equals final values.
+        if not saved_mid and line_cycles >= 36:
+            state.pf0_mid = state.pf0
+            state.pf1_mid = state.pf1
+            state.pf2_mid = state.pf2
+            saved_mid = True
+
         var cycles = Int(execute_one(state, rom, rom_size))
         riot_update_timer(state, UInt32(cycles))
         line_cycles += cycles
@@ -688,6 +718,17 @@ fn _run_scanline(
             if line_cycles < CPU_CLOCKS_PER_LINE:
                 riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
                 line_cycles = CPU_CLOCKS_PER_LINE
+            # If line_cycles >= CPU_CLOCKS_PER_LINE, WSYNC extends into next
+            # scanline — keep wsync=True so next _run_scanline handles it.
+            elif line_cycles > CPU_CLOCKS_PER_LINE:
+                state.wsync = True
+
+    # If midpoint was never reached (e.g. WSYNC before cycle 49), use final PF
+    if not saved_mid:
+        state.pf0_mid = state.pf0
+        state.pf1_mid = state.pf1
+        state.pf2_mid = state.pf2
+
     return line_cycles
 
 
@@ -699,12 +740,15 @@ fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
     - state.collision has been updated by TIA scanline processing
     - Game-specific reward/lives/terminal should be extracted from RAM
     """
+    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
     for _ in range(TOTAL_SCANLINES):
-        _ = _run_scanline(state, rom, rom_size)
-        # Charge paddle capacitor each scanline
+        # Charge paddle capacitor before scanline (game reads INPT during execution)
         if state.paddle_charge < 255:
             state.paddle_charge += 1
+        var total = _run_scanline(state, rom, rom_size, overflow)
+        overflow = total - CPU_CLOCKS_PER_LINE
 
+    state.cpu_cycles = UInt32(overflow)  # Persist for next frame
     state.frame_number += 1
 
 
@@ -714,13 +758,18 @@ fn run_frame_with_video(
     rom_size: Int,
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
-    """Execute one frame with incremental per-instruction pixel rendering.
+    """Execute one frame with scanline-by-scanline pixel rendering.
 
     The Atari 2600 is a "racing the beam" system: the CPU updates TIA
-    registers mid-scanline (e.g. Pong changes PF registers to show different
-    score digits on left/right halves). Pixels are rendered incrementally
-    after each CPU instruction, so register changes take effect at the
-    correct beam position.
+    registers mid-frame. Each scanline may have different graphics.
+
+    For mid-scanline PF writes (e.g. score digits in Pong), _run_scanline
+    captures a PF snapshot at the beam midpoint (~cycle 49). The renderer
+    uses this snapshot for left-half pixels and the final PF for right-half.
+
+    Cycle overflow from each scanline's last instruction is carried forward
+    to the next scanline (matching ALE's myClocksToEndOfScanLine approach).
+    This prevents VSYNC drift that causes vertical display shaking.
 
     Args:
         state: Emulator state (modified in place).
@@ -728,78 +777,37 @@ fn run_frame_with_video(
         rom_size: ROM size in bytes.
         frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
     """
-    from .tia import tia_update_collision
-    from .frame_render import render_pixel_range_bgra
-    from .flags import (
-        TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH,
-        HBLANK_CLOCKS,
-    )
+    from .frame_render import render_scanline_with_collision_bgra
+    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH
 
-    var visible_line: Int = 0
-    var saw_vsync = False
+    # Use state.scanline to track visible line position across frames.
+    # This handles the case where VSYNC falls near the 262-scanline loop
+    # boundary — visible_line persists correctly across calls.
+    var visible_line = Int(state.scanline)
+    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
 
     for _ in range(TOTAL_SCANLINES):
-        # Determine if this scanline is visible BEFORE executing it
-        var is_visible = saw_vsync and (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH
-
-        if is_visible:
-            # Incremental rendering: execute instructions one at a time,
-            # rendering pixels between instructions as the beam advances
-            var line_cycles: Int = 0
-            var last_pixel: Int = 0  # Next pixel to render
-
-            while line_cycles < CPU_CLOCKS_PER_LINE:
-                state.clock = UInt16(line_cycles * 3)
-                var cycles = Int(execute_one(state, rom, rom_size))
-                riot_update_timer(state, UInt32(cycles))
-                line_cycles += cycles
-
-                # Convert CPU position to pixel: TIA clock = cycles*3, visible starts at HBLANK
-                var tia_clock = line_cycles * 3
-                var current_pixel = tia_clock - HBLANK_CLOCKS
-                if current_pixel < 0:
-                    current_pixel = 0
-                if current_pixel > FRAME_WIDTH:
-                    current_pixel = FRAME_WIDTH
-
-                # Render pixels from last position to current beam position
-                if current_pixel > last_pixel:
-                    render_pixel_range_bgra(
-                        state, visible_line, last_pixel, current_pixel, frame_buf
-                    )
-                    last_pixel = current_pixel
-
-                # WSYNC: halt until end of scanline
-                if state.wsync:
-                    state.wsync = False
-                    if line_cycles < CPU_CLOCKS_PER_LINE:
-                        riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
-                        line_cycles = CPU_CLOCKS_PER_LINE
-
-            # Render any remaining pixels at end of scanline
-            if last_pixel < FRAME_WIDTH:
-                render_pixel_range_bgra(
-                    state, visible_line, last_pixel, FRAME_WIDTH, frame_buf
-                )
-
-            # Update collision registers
-            for pixel in range(FRAME_WIDTH):
-                tia_update_collision(state, pixel)
-
-            visible_line += 1
-        else:
-            # Non-visible scanline: just execute CPU (no rendering)
-            _ = _run_scanline(state, rom, rom_size)
-
-        # Charge paddle capacitor each scanline
+        # Charge paddle capacitor before scanline so game reads correct
+        # charge during execution (matches real hardware continuous charging)
         if state.paddle_charge < 255:
             state.paddle_charge += 1
 
+        var total = _run_scanline(state, rom, rom_size, overflow)
+        overflow = total - CPU_CLOCKS_PER_LINE
+
         # Detect VSYNC — marks the start of a new frame
         if (state.tia_flags & TIA_VSYNC) != 0:
-            saw_vsync = True
-            visible_line = 0
+            visible_line = 0  # Reset visible line counter
 
+        # Combined render + collision in one pass (halves mask computations)
+        # Render when VBLANK is clear (no need for saw_vsync gate since
+        # visible_line is reset by VSYNC and persists across calls)
+        if (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
+            render_scanline_with_collision_bgra(state, visible_line, frame_buf)
+            visible_line += 1
+
+    state.scanline = UInt16(visible_line)  # Persist for next frame
+    state.cpu_cycles = UInt32(overflow)    # Persist overflow for next frame
     state.frame_number += 1
 
 

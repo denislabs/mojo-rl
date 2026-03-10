@@ -315,11 +315,9 @@ fn _hm_to_signed(hm: UInt8) -> Int:
 @always_inline
 fn _clamp_pos(pos: Int) -> UInt8:
     """Clamp position to [0, 159] with wrapping."""
-    var p = pos
-    while p < 0:
+    var p = pos % FRAME_WIDTH
+    if p < 0:
         p += FRAME_WIDTH
-    while p >= FRAME_WIDTH:
-        p -= FRAME_WIDTH
     return UInt8(p)
 
 
@@ -338,6 +336,7 @@ fn _apply_hmove(mut state: AtariState):
 # TIA Collision Detection (per-scanline)
 # ============================================================================
 
+@always_inline
 @always_inline
 fn tia_update_collision(mut state: AtariState, clock_pos: Int):
     """Update collision registers for one pixel position.
