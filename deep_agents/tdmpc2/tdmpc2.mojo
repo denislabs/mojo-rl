@@ -68,6 +68,8 @@ from .kernels import (
     tdmpc2_compute_td_targets_kernel,
     tdmpc2_compute_reward_targets_kernel,
     tdmpc2_policy_grad_kernel,
+    tdmpc2_q_decode_backward_kernel,
+    tdmpc2_action_tanh_chain_kernel,
     tdmpc2_apply_tanh_kernel,
     tdmpc2_q_min_reduce_kernel,
     tdmpc2_zero_kernel,

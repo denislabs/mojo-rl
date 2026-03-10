@@ -32,7 +32,7 @@ comptime HIDDEN_DIM = 128
 # DQN hyperparameters
 comptime BUFFER_CAPACITY = 100_000
 comptime BATCH_SIZE = 256
-comptime N_ENVS = 128  # Parallel environments on GPU
+comptime N_ENVS = 256  # Parallel environments on GPU
 
 # Training duration — Pong episodes are long (~2000-5000 steps each)
 # so we need many total transitions to see enough episodes
@@ -121,7 +121,7 @@ fn main() raises:
                 gradient_steps=0,  # 1:1 replay ratio
                 sync_every=10_000,
                 verbose=True,
-                print_every=10_000,
+                print_every=100_000,
                 environment_name="Pong",
             )
 

@@ -653,6 +653,122 @@ fn tdmpc2_compute_reward_targets_kernel[
 
 
 @always_inline
+fn tdmpc2_q_decode_backward_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    grad_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    rho_weight: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Backward through distributional Q decode for policy gradient.
+
+    Q = sum(softmax(logits) * bins)
+    d(-Q)/d(logits_k) = -softmax_k * (bin_k - Q) * rho / BATCH
+
+    WRITES (not accumulates) to grad_logits.
+
+    Args:
+        logits: Q-network output logits [BATCH, BINS].
+        bins: Bin centers [BINS].
+        grad_logits: Output gradient [BATCH, BINS].
+        rho_weight: Rho^t temporal decay weight.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    # Softmax
+    var max_l = Scalar[dtype](logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
+
+    # Compute Q = E[bins] under softmax
+    var q_val = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        q_val = q_val + prob_k * Scalar[dtype](bins[k][0])
+
+    # d(-Q)/d(logits_k) = -softmax_k * (bin_k - Q) * rho / BATCH
+    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
+    for k in range(BINS):
+        var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        grad_logits[i, k] = scale * prob_k * (Scalar[dtype](bins[k][0]) - q_val)
+
+
+@always_inline
+fn tdmpc2_action_tanh_chain_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+    ZA_DIM: Int = LATENT_DIM + ACTION_DIM,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    grad_za: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ZA_DIM), MutAnyOrigin
+    ],
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    grad_pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    entropy_coef: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Chain dQ/d(action) through tanh to get dQ/d(policy_mean).
+
+    Given grad_za from Q backward (dL/d(za)):
+    - Extract dL/d(action) = grad_za[:, LATENT_DIM:]
+    - Chain through tanh: dL/d(mean_j) = dL/d(action_j) * tanh'(mean_j)
+    - Add entropy gradient for log_std
+
+    ACCUMULATES into grad_pi_out.
+
+    Args:
+        grad_za: Gradient from Q backward [BATCH, ZA_DIM].
+        pi_out: Policy output [BATCH, POL_OUT] (mean | log_std).
+        grad_pi_out: Output gradient for policy backward [BATCH, POL_OUT].
+        entropy_coef: Entropy regularization coefficient.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var ent_scale = entropy_coef / Scalar[dtype](BATCH_SIZE)
+
+    for j in range(ACTION_DIM):
+        # dL/d(action_j) from Q backward
+        var grad_action = Scalar[dtype](grad_za[i, LATENT_DIM + j][0])
+
+        # tanh derivative: d(tanh(u))/du = 1 - tanh(u)^2
+        var mean_raw = Scalar[dtype](pi_out[i, j][0])
+        var t = Scalar[dtype](tanh(Float32(mean_raw)))
+        var tanh_deriv = Scalar[dtype](1.0) - t * t
+
+        # dL/d(mean_j) = dL/d(action_j) * tanh'(mean_j)
+        grad_pi_out[i, j] = grad_pi_out[i, j] + grad_action * tanh_deriv
+
+        # Entropy gradient for log_std: maximize entropy → -entropy_coef/B
+        grad_pi_out[i, ACTION_DIM + j] = (
+            grad_pi_out[i, ACTION_DIM + j] - ent_scale
+        )
+
+
+# Legacy kernel kept for compatibility but replaced by proper DPG chain above
+@always_inline
 fn tdmpc2_policy_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
@@ -669,57 +785,9 @@ fn tdmpc2_policy_grad_kernel[
     rho_weight: Scalar[dtype],
     entropy_coef: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Compute gradient for tanh-squashed Gaussian policy update.
-
-    Policy loss: L = -rho * mean(Q(z, pi(z))) + entropy_coef * mean(-log_prob)
-
-    Gradient of -E[Q(z, tanh(mean))]:
-      d(-Q)/d(mean_j) = -Q_i * tanh'(mean_j) * rho / BATCH
-    The Q-value scales the gradient so the policy learns to output
-    actions that lead to higher Q-values.
-
-    ACCUMULATES into grad_pi_out.
-
-    Args:
-        pi_out: Policy network output [BATCH, ACTION_DIM * 2] (mean | log_std).
-        q_values: Q-values for the actions [BATCH].
-        grad_pi_out: Gradient accumulation buffer [BATCH, ACTION_DIM * 2].
-        rho_weight: Rho^t temporal decay weight.
-        entropy_coef: Entropy regularization coefficient.
-    """
-    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
-    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
-
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= BATCH_SIZE:
-        return
-
-    var q_i = Scalar[dtype](q_values[i][0])
-    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
-    var ent_scale = entropy_coef / Scalar[dtype](BATCH_SIZE)
-
-    for j in range(ACTION_DIM):
-        var mean_raw = Scalar[dtype](pi_out[i, j][0])
-
-        # tanh derivative at the pre-squash mean
-        var t = Scalar[dtype](tanh(Float32(mean_raw)))
-        var tanh_deriv = Scalar[dtype](1.0) - t * t
-
-        # d(-Q)/d(mean_j) = -rho/B * Q_i * tanh'(mean_j)
-        # Q_i scales the gradient: higher Q → stronger push in that direction
-        grad_pi_out[i, j] = grad_pi_out[i, j] + scale * q_i * tanh_deriv
-
-        # Gradient w.r.t. log_std: entropy bonus
-        # maximize entropy → gradient = -entropy_coef/B
-        var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
-        if log_std_raw < LOG_STD_MIN:
-            log_std_raw = LOG_STD_MIN
-        elif log_std_raw > LOG_STD_MAX:
-            log_std_raw = LOG_STD_MAX
-
-        grad_pi_out[i, ACTION_DIM + j] = (
-            grad_pi_out[i, ACTION_DIM + j] - ent_scale
-        )
+    """DEPRECATED: Use tdmpc2_q_decode_backward_kernel + Q backward +
+    tdmpc2_action_tanh_chain_kernel for proper deterministic policy gradient."""
+    pass
 
 
 @always_inline
