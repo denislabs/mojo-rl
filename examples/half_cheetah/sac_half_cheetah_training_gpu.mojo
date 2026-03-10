@@ -135,7 +135,7 @@ fn main() raises:
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
-                # gradient_steps=0 uses n_envs (1:1 replay ratio)
+                gradient_steps=64,  # Decouple from n_envs (256 would be too slow)
                 sync_every=5_000,
                 verbose=True,
                 print_every=50_000,
