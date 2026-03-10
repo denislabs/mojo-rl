@@ -90,6 +90,7 @@ struct AtariState(Copyable, Movable):
     var scanline: UInt16    # Current scanline (0-261)
     var clock: UInt16       # Clock within scanline (0-227)
     var cpu_cycles: UInt32  # Cycles executed this frame
+    var wsync: Bool         # WSYNC requested — halt CPU until end of scanline
 
     # ========================================================================
     # RL State (12 bytes)
@@ -110,6 +111,12 @@ struct AtariState(Copyable, Movable):
     # ROM bank state (for bank-switched cartridges)
     # ========================================================================
     var current_bank: UInt8  # Currently active ROM bank
+
+    # ========================================================================
+    # Paddle controller state
+    # ========================================================================
+    var paddle_pos: UInt8       # Paddle position (0=top, 255=bottom)
+    var paddle_charge: UInt8    # Capacitor charge counter (reset by VBLANK bit 7)
 
     fn __init__(out self):
         """Initialize to power-on defaults."""
@@ -165,6 +172,7 @@ struct AtariState(Copyable, Movable):
         self.scanline = 0
         self.clock = 0
         self.cpu_cycles = 0
+        self.wsync = False
 
         # RL
         self.reward = 0
@@ -179,6 +187,10 @@ struct AtariState(Copyable, Movable):
 
         # Bank
         self.current_bank = 0
+
+        # Paddle
+        self.paddle_pos = 128  # Center position
+        self.paddle_charge = 0
 
     fn reset(mut self):
         """Reset to power-on state (preserves nothing)."""

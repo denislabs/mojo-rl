@@ -652,6 +652,45 @@ fn cpu_reset(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
 # Run One Frame
 # ============================================================================
 
+fn _run_scanline(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8],
+    rom_size: Int,
+) -> Int:
+    """Execute one scanline's worth of CPU cycles with clock tracking.
+
+    Updates state.clock before each instruction so that RESP0/RESP1
+    writes capture the correct beam position. This is critical because
+    the Atari 2600 positions sprites by timing writes to RESPx.
+
+    Handles WSYNC: when the game writes to WSYNC, the CPU halts until
+    the end of the current scanline. This is the primary mechanism
+    games use to synchronize sprite positioning timing.
+
+    1 CPU cycle = 3 TIA color clocks. 76 CPU cycles = 228 clocks/line.
+    HBLANK occupies clocks 0-67, visible area is clocks 68-227.
+
+    Returns: total CPU cycles executed for this scanline.
+    """
+    var line_cycles: Int = 0
+    while line_cycles < CPU_CLOCKS_PER_LINE:
+        # Update TIA clock position BEFORE instruction executes,
+        # so any RESP writes during this instruction see the correct beam pos
+        state.clock = UInt16(line_cycles * 3)
+        var cycles = Int(execute_one(state, rom, rom_size))
+        riot_update_timer(state, UInt32(cycles))
+        line_cycles += cycles
+
+        # WSYNC: game requested halt until end of scanline
+        # Consume remaining cycles — next instruction runs at start of next line
+        if state.wsync:
+            state.wsync = False
+            if line_cycles < CPU_CLOCKS_PER_LINE:
+                riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
+                line_cycles = CPU_CLOCKS_PER_LINE
+    return line_cycles
+
+
 fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
     """Execute one full frame (~262 scanlines × 76 CPU cycles).
 
@@ -660,13 +699,11 @@ fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
     - state.collision has been updated by TIA scanline processing
     - Game-specific reward/lives/terminal should be extracted from RAM
     """
-    var cycles_per_frame = TOTAL_SCANLINES * CPU_CLOCKS_PER_LINE
-    var cycles_executed: Int = 0
-
-    while cycles_executed < cycles_per_frame:
-        var cycles = Int(execute_one(state, rom, rom_size))
-        riot_update_timer(state, UInt32(cycles))
-        cycles_executed += cycles
+    for _ in range(TOTAL_SCANLINES):
+        _ = _run_scanline(state, rom, rom_size)
+        # Charge paddle capacitor each scanline
+        if state.paddle_charge < 255:
+            state.paddle_charge += 1
 
     state.frame_number += 1
 
@@ -677,19 +714,13 @@ fn run_frame_with_video(
     rom_size: Int,
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
-    """Execute one frame with scanline-by-scanline pixel rendering.
+    """Execute one frame with incremental per-instruction pixel rendering.
 
     The Atari 2600 is a "racing the beam" system: the CPU updates TIA
-    registers mid-frame. Each scanline may have different graphics.
-
-    Synchronization strategy:
-    1. Run scanlines until the game asserts VSYNC (frame start signal)
-    2. Once VSYNC seen, wait for VBLANK to clear (visible area begins)
-    3. Render scanlines while VBLANK is off, up to 210 lines
-    4. Continue through overscan until cycle budget exhausted
-
-    This follows the game's own timing signals instead of hardcoded
-    scanline numbers, preventing vertical rolling.
+    registers mid-scanline (e.g. Pong changes PF registers to show different
+    score digits on left/right halves). Pixels are rendered incrementally
+    after each CPU instruction, so register changes take effect at the
+    correct beam position.
 
     Args:
         state: Emulator state (modified in place).
@@ -698,37 +729,76 @@ fn run_frame_with_video(
         frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
     """
     from .tia import tia_update_collision
-    from .frame_render import render_scanline_bgra
-    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH
+    from .frame_render import render_pixel_range_bgra
+    from .flags import (
+        TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH,
+        HBLANK_CLOCKS,
+    )
 
     var visible_line: Int = 0
     var saw_vsync = False
-    var cycles_per_frame = TOTAL_SCANLINES * CPU_CLOCKS_PER_LINE
-    var total_cycles: Int = 0
 
-    while total_cycles < cycles_per_frame:
-        # Execute one scanline's worth of CPU cycles
-        var line_cycles: Int = 0
-        while line_cycles < CPU_CLOCKS_PER_LINE:
-            var cycles = Int(execute_one(state, rom, rom_size))
-            riot_update_timer(state, UInt32(cycles))
-            line_cycles += cycles
-        total_cycles += line_cycles
+    for _ in range(TOTAL_SCANLINES):
+        # Determine if this scanline is visible BEFORE executing it
+        var is_visible = saw_vsync and (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH
+
+        if is_visible:
+            # Incremental rendering: execute instructions one at a time,
+            # rendering pixels between instructions as the beam advances
+            var line_cycles: Int = 0
+            var last_pixel: Int = 0  # Next pixel to render
+
+            while line_cycles < CPU_CLOCKS_PER_LINE:
+                state.clock = UInt16(line_cycles * 3)
+                var cycles = Int(execute_one(state, rom, rom_size))
+                riot_update_timer(state, UInt32(cycles))
+                line_cycles += cycles
+
+                # Convert CPU position to pixel: TIA clock = cycles*3, visible starts at HBLANK
+                var tia_clock = line_cycles * 3
+                var current_pixel = tia_clock - HBLANK_CLOCKS
+                if current_pixel < 0:
+                    current_pixel = 0
+                if current_pixel > FRAME_WIDTH:
+                    current_pixel = FRAME_WIDTH
+
+                # Render pixels from last position to current beam position
+                if current_pixel > last_pixel:
+                    render_pixel_range_bgra(
+                        state, visible_line, last_pixel, current_pixel, frame_buf
+                    )
+                    last_pixel = current_pixel
+
+                # WSYNC: halt until end of scanline
+                if state.wsync:
+                    state.wsync = False
+                    if line_cycles < CPU_CLOCKS_PER_LINE:
+                        riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
+                        line_cycles = CPU_CLOCKS_PER_LINE
+
+            # Render any remaining pixels at end of scanline
+            if last_pixel < FRAME_WIDTH:
+                render_pixel_range_bgra(
+                    state, visible_line, last_pixel, FRAME_WIDTH, frame_buf
+                )
+
+            # Update collision registers
+            for pixel in range(FRAME_WIDTH):
+                tia_update_collision(state, pixel)
+
+            visible_line += 1
+        else:
+            # Non-visible scanline: just execute CPU (no rendering)
+            _ = _run_scanline(state, rom, rom_size)
+
+        # Charge paddle capacitor each scanline
+        if state.paddle_charge < 255:
+            state.paddle_charge += 1
 
         # Detect VSYNC — marks the start of a new frame
         if (state.tia_flags & TIA_VSYNC) != 0:
             saw_vsync = True
-            visible_line = 0  # Reset visible line counter
-
-        # Only render after we've seen VSYNC (so we're synchronized),
-        # when VBLANK is off (visible area), and we haven't filled 210 lines
-        if saw_vsync and (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
-            # Update collision registers for this scanline
-            for pixel in range(FRAME_WIDTH):
-                tia_update_collision(state, pixel)
-            # Render this scanline's pixels into the buffer
-            render_scanline_bgra(state, visible_line, frame_buf)
-            visible_line += 1
+            visible_line = 0
 
     state.frame_number += 1
 

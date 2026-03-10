@@ -120,6 +120,7 @@ struct AtariRenderer(Movable):
     var key_left: Bool
     var key_right: Bool
     var key_fire: Bool
+    var key_reset: Bool
     var current_action: UInt8
 
     # Video recording
@@ -152,6 +153,7 @@ struct AtariRenderer(Movable):
         self.key_left = False
         self.key_right = False
         self.key_fire = False
+        self.key_reset = False
         self.current_action = ACTION_NOOP
 
         self.recorder = VideoRecorder()
@@ -175,6 +177,7 @@ struct AtariRenderer(Movable):
         self.key_left = take.key_left
         self.key_right = take.key_right
         self.key_fire = take.key_fire
+        self.key_reset = take.key_reset
         self.current_action = take.current_action
         self.recorder = take.recorder^
         self.recording_counter = take.recording_counter
@@ -264,6 +267,8 @@ struct AtariRenderer(Movable):
             self.key_right = True
         elif key == Int(Keycode.SDLK_SPACE):
             self.key_fire = True
+        elif key == Int(Keycode.SDLK_R):
+            self.key_reset = True
         elif key == Int(Keycode.SDLK_P):
             self.paused = not self.paused
         elif key == Int(Keycode.SDLK_V):
@@ -289,9 +294,16 @@ struct AtariRenderer(Movable):
             self.key_right = False
         elif key == Int(Keycode.SDLK_SPACE):
             self.key_fire = False
+        elif key == Int(Keycode.SDLK_R):
+            self.key_reset = False
 
     fn _update_action(mut self):
         """Convert current key state to an ALE action."""
+        # RESET takes priority over everything
+        if self.key_reset:
+            self.current_action = ACTION_RESET
+            return
+
         var up = self.key_up
         var down = self.key_down
         var left = self.key_left

@@ -48,6 +48,7 @@ from deep_agents.ppo.kernels import (
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
 )
+from deep_agents.core.utils import print_progress_bar, clear_progress_bar
 
 from .state import TDMPC2GPUState, TDMPC2CPUState
 from .world_model import WorldModel, decode_value_batch_scalar
@@ -1799,6 +1800,10 @@ struct TDMPC2Agent[
         var recent_reward_sum: Float64 = 0.0
         var recent_episode_count: Int = 0
         var next_print = print_every
+        var progress_interval = print_every // 20
+        if progress_interval < n_envs:
+            progress_interval = n_envs
+        var next_progress = progress_interval
         var grad_norm_max = Scalar[dtype](10.0)
 
         # CPU-side per-env episode reward accumulators
@@ -1940,6 +1945,17 @@ struct TDMPC2Agent[
             total_steps += n_envs
             t_data_collection += Int(perf_counter_ns() - _t0_dc)
 
+            # Progress bar (no GPU sync, pure CPU counters)
+            if verbose and total_steps >= next_progress:
+                var interval_start = next_print - print_every
+                print_progress_bar(
+                    total_steps - interval_start,
+                    print_every,
+                    self.train_step_count,
+                    "TD-MPC2 (GPU)",
+                )
+                next_progress += progress_interval
+
             # Print progress periodically
             if verbose and total_steps >= next_print:
                 if recent_episode_count > 0:
@@ -1947,19 +1963,23 @@ struct TDMPC2Agent[
                         recent_episode_count
                     )
 
+                clear_progress_bar()
                 print(
-                    "TDMPC2 | Step",
-                    total_steps,
-                    "| Ep:",
-                    completed_episodes,
-                    "| AvgR:",
-                    String(last_avg_reward)[:7],
-                    "| Train:",
-                    self.train_step_count,
+                    "TD-MPC2 (GPU) | Step "
+                    + String(total_steps)
+                    + " | Ep: "
+                    + String(completed_episodes)
+                    + " / "
+                    + String(num_episodes)
+                    + " | AvgR: "
+                    + String(last_avg_reward)[:7]
+                    + " | Train: "
+                    + String(self.train_step_count)
                 )
                 recent_reward_sum = 0.0
                 recent_episode_count = 0
                 next_print += print_every
+                next_progress = next_print - print_every + progress_interval
 
             # Reset done environments (reuse model from workspace)
             ENV.selective_reset_kernel_gpu[n_envs, ENV.STATE_SIZE](
@@ -2802,6 +2822,7 @@ struct TDMPC2Agent[
         # Print timing summary
         # =================================================================
         if verbose:
+            clear_progress_bar()
             var total_ns = (
                 t_data_collection
                 + t_replay_sample
@@ -2949,6 +2970,8 @@ struct TDMPC2Agent[
         mut env: ENV,
         num_episodes: Int = 200,
         updates_per_step: Int = 1,
+        verbose: Bool = True,
+        print_every: Int = 10,
     ) -> TrainingMetrics:
         """Run the TDMPC2 training loop.
 
@@ -2970,6 +2993,13 @@ struct TDMPC2Agent[
         var t_observe: Int = 0
         var t_update: Int = 0
         var total_train_steps: Int = 0
+
+        # Progress bar: ~20 updates per print interval
+        var progress_interval = print_every // 20
+        if progress_interval < 1:
+            progress_interval = 1
+        var next_progress = progress_interval
+        var next_print_ep = print_every
 
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()
@@ -3023,19 +3053,37 @@ struct TDMPC2Agent[
                 0.0,
             )
 
-            if episode % 10 == 0:
-                print(
-                    "Episode",
-                    episode,
-                    "| reward:",
-                    episode_reward,
-                    "| steps:",
-                    self.total_steps,
-                    "| train steps:",
-                    self.train_step_count,
+            # Progress bar
+            if verbose and episode + 1 >= next_progress:
+                var interval_pos = (episode + 1) % print_every
+                if interval_pos == 0:
+                    interval_pos = print_every
+                print_progress_bar(
+                    interval_pos, print_every, total_train_steps, "TD-MPC2"
                 )
+                next_progress += progress_interval
+
+            # Full stats line
+            if verbose and (episode + 1) % print_every == 0:
+                var avg_r = metrics.mean_reward_last_n(print_every)
+                clear_progress_bar()
+                print(
+                    "TD-MPC2 | Ep "
+                    + String(episode + 1)
+                    + " / "
+                    + String(num_episodes)
+                    + " | AvgR: "
+                    + String(avg_r)[:7]
+                    + " | Steps: "
+                    + String(self.total_steps)
+                    + " | Train: "
+                    + String(self.train_step_count)
+                )
+                next_progress = (episode + 1) + progress_interval
 
         # Print CPU timing summary
+        if verbose:
+            clear_progress_bar()
         var total_ns = t_select_action + t_env_step + t_observe + t_update
         var total_ms = Float64(total_ns) / 1e6
 

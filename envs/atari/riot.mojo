@@ -25,9 +25,9 @@ from .ram import read_ram, write_ram
 @always_inline
 fn set_action(mut state: AtariState, action: UInt8):
     """Map an ALE action to joystick flags in sys_flags."""
-    # Clear all controller direction flags
+    # Clear all controller flags (including RESET so it doesn't stick)
     state.sys_flags = state.sys_flags & ~(
-        FLAG_CON_UP | FLAG_CON_DOWN | FLAG_CON_LEFT | FLAG_CON_RIGHT | FLAG_CON_FIRE
+        FLAG_CON_UP | FLAG_CON_DOWN | FLAG_CON_LEFT | FLAG_CON_RIGHT | FLAG_CON_FIRE | FLAG_CON_RESET
     )
 
     # Set flags based on action
@@ -43,6 +43,20 @@ fn set_action(mut state: AtariState, action: UInt8):
         state.sys_flags = state.sys_flags | FLAG_CON_FIRE
     if action == ACTION_RESET:
         state.sys_flags = state.sys_flags | FLAG_CON_RESET
+
+    # Update paddle position for paddle-based games (Pong, Breakout, etc.)
+    # UP moves paddle up (decrease position), DOWN moves it down (increase)
+    comptime PADDLE_DELTA: Int = 3
+    if (state.sys_flags & FLAG_CON_UP) != 0:
+        if Int(state.paddle_pos) >= PADDLE_DELTA:
+            state.paddle_pos = UInt8(Int(state.paddle_pos) - PADDLE_DELTA)
+        else:
+            state.paddle_pos = 0
+    if (state.sys_flags & FLAG_CON_DOWN) != 0:
+        if Int(state.paddle_pos) + PADDLE_DELTA <= 255:
+            state.paddle_pos = UInt8(Int(state.paddle_pos) + PADDLE_DELTA)
+        else:
+            state.paddle_pos = 255
 
 
 @always_inline

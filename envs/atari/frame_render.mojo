@@ -126,6 +126,44 @@ fn render_scanline_bgra(
         buf[offset + 3] = 0xFF   # A
 
 
+@always_inline
+fn render_pixel_range_bgra(
+    state: AtariState,
+    scanline: Int,
+    start_pixel: Int,
+    end_pixel: Int,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Render a range of pixels [start_pixel, end_pixel) on one scanline.
+
+    Used for incremental rendering during CPU execution, so mid-scanline
+    register writes (e.g. PF changes for score digits) take effect at the
+    correct pixel position.
+    """
+    if scanline < 0 or scanline >= FRAME_HEIGHT:
+        return
+
+    var is_blanked = (state.tia_flags & TIA_VBLANK) != 0
+    var row_offset = scanline * FRAME_WIDTH * 4
+
+    for x in range(start_pixel, end_pixel):
+        var color_idx: UInt8
+        if is_blanked:
+            color_idx = state.colubk
+        else:
+            color_idx = _get_pixel_color(state, x)
+
+        var r = palette_r(color_idx)
+        var g = palette_g(color_idx)
+        var b = palette_b(color_idx)
+
+        var offset = row_offset + x * 4
+        buf[offset + 0] = b      # B
+        buf[offset + 1] = g      # G
+        buf[offset + 2] = r      # R
+        buf[offset + 3] = 0xFF   # A
+
+
 fn render_frame_bgra(
     state: AtariState,
     buf: UnsafePointer[UInt8, MutAnyOrigin],

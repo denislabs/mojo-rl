@@ -24,6 +24,7 @@ from .flags import (
     CX_P0PF, CX_P0BL, CX_P1PF, CX_P1BL,
     CX_M0PF, CX_M0BL, CX_M1PF, CX_M1BL,
     CX_BLPF, CX_P0P1, CX_M0M1,
+    FLAG_CON_FIRE,
 )
 from .tables import (
     player_mask, missile_mask, ball_mask,
@@ -82,10 +83,24 @@ fn tia_read(state: AtariState, addr: UInt8) -> UInt8:
         return val
 
     # Input ports (0x08-0x0D)
+    elif reg == 0x08:  # INPT0 - Paddle 0 (Player 0 paddle)
+        # Paddle: bit 7 = 1 when capacitor charge >= paddle position
+        if state.paddle_charge >= state.paddle_pos:
+            return 0x80
+        return 0x00
+    elif reg == 0x09:  # INPT1 - Paddle 1 (right paddle in Pong)
+        # Same paddle input — Pong reads INPT1 for the human player
+        if state.paddle_charge >= state.paddle_pos:
+            return 0x80
+        return 0x00
+    elif reg == 0x0A:  # INPT2 - Paddle 2
+        return 0x80
+    elif reg == 0x0B:  # INPT3 - Paddle 3
+        return 0x80
     elif reg == 0x0C:  # INPT4 - Player 0 fire button
-        if (state.sys_flags & UInt32(1 << 4)) != 0:  # FLAG_CON_FIRE
-            return 0x00  # Button pressed (active low... but INPT4 bit 7)
-        return 0x80  # Not pressed
+        if (state.sys_flags & FLAG_CON_FIRE) != 0:
+            return 0x00  # Button pressed (bit 7 = 0)
+        return 0x80  # Not pressed (bit 7 = 1)
     elif reg == 0x0D:  # INPT5 - Player 1 fire button
         return 0x80  # Not pressed (no player 2)
     else:
@@ -95,6 +110,24 @@ fn tia_read(state: AtariState, addr: UInt8) -> UInt8:
 # ============================================================================
 # TIA Register Write
 # ============================================================================
+
+@always_inline
+fn _resp_pos(clock: Int) -> UInt8:
+    """Convert TIA clock to pixel position (0-159) for RESPx strobe.
+
+    state.clock is set at instruction START, but the RESP write happens
+    on the last cycle of the store instruction. For STA zeropage (3 cycles):
+      - Write occurs 2 CPU cycles after start = +6 TIA clocks
+      - TIA RESP hardware delay = +5 TIA clocks
+      - Total offset from instruction start = +11 TIA clocks
+    """
+    # ALE: if hpos < HBLANK then pos=3, else pos = ((hpos - HBLANK) + 5) % 160
+    # Our clock is at instruction start, so add 6 for STA write cycle
+    var hpos = clock + 6  # Approximate TIA clock at write time
+    if hpos < HBLANK_CLOCKS:
+        return 3  # ALE default when in HBLANK
+    return UInt8(((hpos - HBLANK_CLOCKS) + 5) % FRAME_WIDTH)
+
 
 @always_inline
 fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
@@ -112,10 +145,12 @@ fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
             state.tia_flags = state.tia_flags | TIA_VBLANK
         else:
             state.tia_flags = state.tia_flags & ~TIA_VBLANK
+        # Bit 7: dump paddle capacitors (ground INPT0-INPT3)
+        if (value & 0x80) != 0:
+            state.paddle_charge = 0
 
     elif reg == 0x02:  # WSYNC — halt CPU until end of scanline
-        # In our frame-based emulation, we just advance the clock
-        pass
+        state.wsync = True
 
     elif reg == 0x04:  # NUSIZ0
         state.nusiz0 = value & 0x37
@@ -172,20 +207,19 @@ fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
         state.pf2 = value
 
     elif reg == 0x10:  # RESP0 — reset player 0 position
-        # Position = current clock - HBLANK. Simplified: use current clock
-        state.pos_p0 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+        state.pos_p0 = _resp_pos(Int(state.clock))
 
     elif reg == 0x11:  # RESP1
-        state.pos_p1 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+        state.pos_p1 = _resp_pos(Int(state.clock))
 
     elif reg == 0x12:  # RESM0
-        state.pos_m0 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+        state.pos_m0 = _resp_pos(Int(state.clock))
 
     elif reg == 0x13:  # RESM1
-        state.pos_m1 = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+        state.pos_m1 = _resp_pos(Int(state.clock))
 
     elif reg == 0x14:  # RESBL
-        state.pos_bl = UInt8(Int(state.clock) - HBLANK_CLOCKS) if Int(state.clock) >= HBLANK_CLOCKS else 0
+        state.pos_bl = _resp_pos(Int(state.clock))
 
     elif reg == 0x1B:  # GRP0
         state.grp0_old = state.grp0

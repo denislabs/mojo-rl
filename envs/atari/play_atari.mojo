@@ -18,7 +18,7 @@ from envs.atari.renderer import AtariRenderer
 from envs.atari.riot import set_action
 from envs.atari.cpu6502 import run_frame_with_video
 from envs.atari.games.pong import PongDef
-from envs.atari.flags import ACTION_NOOP
+from envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
 
 fn main() raises:
@@ -55,11 +55,29 @@ fn main() raises:
 
         if not renderer.paused:
             # Set the action and run one frame with video rendering
-            set_action(env.state, renderer.current_action)
+            var act = renderer.current_action
+            set_action(env.state, act)
             run_frame_with_video(
                 env.state, env.rom, env.rom_size, renderer.get_pixel_buffer()
             )
             step_count += 1
+
+            # Debug TIA state every 120 frames (~2 sec)
+            if step_count % 120 == 1:
+                var s = env.state.copy()
+                print(
+                    "TIA: P0=(" + String(Int(s.pos_p0)) + "," + String(Int(s.grp0))
+                    + ") P1=(" + String(Int(s.pos_p1)) + "," + String(Int(s.grp1))
+                    + ") BL=" + String(Int(s.pos_bl))
+                    + " COLUP0=" + String(Int(s.colup0))
+                    + " COLUP1=" + String(Int(s.colup1))
+                    + " COLUPF=" + String(Int(s.colupf))
+                    + " COLUBK=" + String(Int(s.colubk))
+                    + " PF=" + String(Int(s.pf0)) + "/" + String(Int(s.pf1)) + "/" + String(Int(s.pf2))
+                    + " paddle=" + String(Int(s.paddle_pos))
+                    + " RAM13=" + String(Int(s.ram[13]))
+                    + " RAM14=" + String(Int(s.ram[14]))
+                )
 
             # Extract game state from RAM
             var score = PongDef.get_score(env.state.ram)
