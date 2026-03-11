@@ -1743,15 +1743,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](state_buf)
 
         var model = LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+        ](model_buf)
 
         var workspace = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
-        ](workspace_buf.unsafe_ptr())
+        ](workspace_buf)
 
         # --- Stage 0: forward dynamics at (q0, v0) ---
         comptime stage0_kernel = Self.rk4_stage_kernel[

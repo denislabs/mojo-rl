@@ -465,7 +465,7 @@ struct ModelDefFromXML[
         copy_invweight0_to_buffer(model, host_buf)
 
         # Copy to GPU
-        ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
+        ctx.enqueue_copy(model_buf, host_buf)
 
         # Recompute invweight0 on GPU for accuracy
         Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
@@ -500,13 +500,13 @@ struct ModelDefFromXML[
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](state_buf)
         var model = LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+        ](model_buf)
         var workspace = LayoutTensor[
             DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
-        ](ws_buf.unsafe_ptr())
+        ](ws_buf)
 
         @always_inline
         fn invweight0_kernel(
@@ -855,6 +855,10 @@ struct ModelDefFromXML[
         )
         ctx.synchronize()
 
+        # Keep buffers alive until kernel completes (prevent ASAP destruction)
+        _ = state_buf^
+        _ = ws_buf^
+
     # =========================================================================
     # GPU: Joints / Actuators kernel delegates
     # =========================================================================
@@ -877,10 +881,10 @@ struct ModelDefFromXML[
         """
         var states = LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var actions = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
+        ](actions_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -890,7 +894,7 @@ struct ModelDefFromXML[
                 DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -926,7 +930,7 @@ struct ModelDefFromXML[
         """GPU kernel: clamp qpos to joint limits for limited joints."""
         var states = LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -975,18 +979,18 @@ struct ModelDefFromXML[
     ) raises:
         """GPU kernel: extract qpos[obs_qpos_skip:] + qvel[:] as observation."""
         var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+        ](states_buf)
         var obs = LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
         fn obs_kernel(
             states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
             ],
             obs: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -1079,7 +1083,7 @@ struct ModelDefFromXML[
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

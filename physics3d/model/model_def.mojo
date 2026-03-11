@@ -380,7 +380,7 @@ trait ModelDefLike:
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -653,8 +653,8 @@ struct ModelDef[
     ):
         Self.setup_solver_params(model)
         Self.Bodies.setup_model(model)
-        Self.Joints.setup_model[Defaults = Self.Defaults](model)
-        Self.Geoms.setup_model[Defaults = Self.Defaults](model)
+        Self.Joints.setup_model[Defaults=Self.Defaults](model)
+        Self.Geoms.setup_model[Defaults=Self.Defaults](model)
         Self.Sites.setup_model(model)
         Self.Joints.reset_data(data)
         Self.finalize(model, data)
@@ -686,13 +686,13 @@ struct ModelDef[
 
         # Direct writes (no Model struct)
         Self.Bodies.write_to_buffer[DTYPE, Self.NBODY](host_buf)
-        Self.Joints.write_to_buffer[
-            DTYPE, Self.NBODY, Defaults = Self.Defaults
-        ](host_buf)
+        Self.Joints.write_to_buffer[DTYPE, Self.NBODY, Defaults=Self.Defaults](
+            host_buf
+        )
 
         comptime if Self.NGEOM > 0:
             Self.Geoms.write_to_buffer[
-                DTYPE, Self.NBODY, Self.NJOINT, Defaults = Self.Defaults
+                DTYPE, Self.NBODY, Self.NJOINT, Defaults=Self.Defaults
             ](host_buf)
 
         comptime if Self.NSITE > 0:
@@ -709,7 +709,7 @@ struct ModelDef[
         # Derived computations on buffer
         comptime if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
             var geom_masses = Self.Geoms.compute_geom_masses[
-                DTYPE, Defaults = Self.Defaults
+                DTYPE, Defaults=Self.Defaults
             ]()
             compute_inertia_from_geoms_buffer[
                 DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM
@@ -719,7 +719,7 @@ struct ModelDef[
             Self._settotalmass_buffer[DTYPE](host_buf)
 
         # Copy to GPU (invweight0 slots are still zero)
-        ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
+        ctx.enqueue_copy(model_buf, host_buf)
 
         # Compute invweight0 on GPU (avoids CPU stack overflow)
         Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
@@ -853,13 +853,13 @@ struct ModelDef[
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](state_buf)
         var model = LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+        ](model_buf)
         var workspace = LayoutTensor[
             DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
-        ](ws_buf.unsafe_ptr())
+        ](ws_buf)
 
         # Kernel: init state to zero, run FK + mass matrix + LDL, compute invweight0
         @always_inline
@@ -1241,6 +1241,10 @@ struct ModelDef[
         )
         ctx.synchronize()
 
+        # Keep buffers alive until kernel completes (prevent ASAP destruction)
+        _ = state_buf^
+        _ = ws_buf^
+
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
     fn reset_data[
@@ -1377,7 +1381,7 @@ struct ModelDef[
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

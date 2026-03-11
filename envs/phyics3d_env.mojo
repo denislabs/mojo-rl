@@ -1002,7 +1002,9 @@ struct Phyics3dEnv[
                 dones[env] = Scalar[gpu_dtype](0.0)
 
             # terminated_out = only true termination (for replay buffer TD targets)
-            terminated_out[env] = Scalar[gpu_dtype](1.0) if is_terminated else Scalar[gpu_dtype](0.0)
+            terminated_out[env] = Scalar[gpu_dtype](
+                1.0
+            ) if is_terminated else Scalar[gpu_dtype](0.0)
 
         ctx.enqueue_function[extract_kernel, extract_kernel](
             states,

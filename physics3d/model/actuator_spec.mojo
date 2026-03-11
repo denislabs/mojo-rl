@@ -322,7 +322,7 @@ trait ActuatorsLike:
         GDTYPE: DType,
         NV: Int,
     ](
-        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin],
+        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin, ...],
         env: Int,
         qderiv_offset: Int,
     ):
@@ -572,7 +572,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         GDTYPE: DType,
         NV: Int,
     ](
-        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin],
+        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin, ...],
         env: Int,
         qderiv_offset: Int,
     ):
@@ -607,10 +607,10 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         """Launch kernel to apply actuator actions for all envs."""
         var states = LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var actions = LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
+        ](actions_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -689,7 +689,7 @@ struct _EmptyActuators(ActuatorsLike):
         GDTYPE: DType,
         NV: Int,
     ](
-        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin],
+        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin, ...],
         env: Int,
         qderiv_offset: Int,
     ):

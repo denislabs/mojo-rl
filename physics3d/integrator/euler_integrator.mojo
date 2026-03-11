@@ -1368,14 +1368,28 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         if tid == 0 and valid_env:
             # 1. Forward kinematics
             forward_kinematics_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
             ](env, state, model)
 
             # 2. Compute body velocities
             compute_body_velocities_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
             ](env, state, model)
 
             # 3. Zero contact count
@@ -1384,14 +1398,30 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
             # 4. Compute cdof
             compute_cdof_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace)
 
             # 5. Compute composite rigid body inertia
             compute_composite_inertia_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace)
 
         barrier()
@@ -1404,13 +1434,38 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 # Sparse mass matrix — only tid==0 (not parallelized)
                 if tid == 0:
                     compute_mass_matrix_sparse_gpu[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
-                        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
-                    ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        NM,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                        WS_SIZE,
+                    ](
+                        env,
+                        state,
+                        model,
+                        workspace,
+                        sp_row_nnz,
+                        sp_row_adr,
+                        sp_col_ind,
+                    )
             else:
                 compute_mass_matrix_full_gpu_mt[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
                 ](env, tid, STEP_THREADS, state, model, workspace)
 
         barrier()
@@ -1454,8 +1509,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
             # 8. Compute bias forces
             compute_bias_forces_rne_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
             ](env, state, model, workspace)
 
         barrier()
@@ -1470,7 +1533,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         if valid_env:
             for i in range(tid, NV, STEP_THREADS):
                 var qfrc = rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
-                var bias_val = rebind[Scalar[DTYPE]](workspace[env, bias_idx + i])
+                var bias_val = rebind[Scalar[DTYPE]](
+                    workspace[env, bias_idx + i]
+                )
                 workspace[env, fnet_idx + i] = qfrc - bias_val
 
         barrier()
@@ -1488,10 +1553,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             for j in range(NJOINT):
                 var joint_off_d = model_joint_offset[NBODY](j)
                 var jnt_type_d = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off_d + JOINT_IDX_TYPE])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off_d + JOINT_IDX_TYPE]
+                    )
                 )
                 var dof_adr_d = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off_d + JOINT_IDX_DOF_ADR])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off_d + JOINT_IDX_DOF_ADR]
+                    )
                 )
                 var damp_d = rebind[Scalar[DTYPE]](
                     model[0, joint_off_d + JOINT_IDX_DAMPING]
@@ -1536,10 +1605,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
                 )
                 var dof_adr = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_DOF_ADR]
+                    )
                 )
                 var qpos_adr = Int(
-                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                    )
                 )
                 var stiff = rebind[Scalar[DTYPE]](
                     model[0, joint_off + JOINT_IDX_STIFFNESS]
@@ -1559,9 +1632,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                             var cur = rebind[Scalar[DTYPE]](
                                 workspace[env, fnet_idx + dof_adr + d]
                             )
-                            workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
-                                qpos_d - sref
-                            )
+                            workspace[
+                                env, fnet_idx + dof_adr + d
+                            ] = cur - stiff * (qpos_d - sref)
                     elif jnt_type == JNT_BALL:
                         for d in range(3):
                             var qpos_d = rebind[Scalar[DTYPE]](
@@ -1570,9 +1643,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                             var cur = rebind[Scalar[DTYPE]](
                                 workspace[env, fnet_idx + dof_adr + d]
                             )
-                            workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
-                                qpos_d - sref
-                            )
+                            workspace[
+                                env, fnet_idx + dof_adr + d
+                            ] = cur - stiff * (qpos_d - sref)
                     else:
                         var qpos_d = rebind[Scalar[DTYPE]](
                             state[env, qpos_off_stiff + qpos_adr]
@@ -1594,9 +1667,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                                 workspace[env, fnet_idx + dof_adr + d]
                             )
                             if v > VEL_THRESH:
-                                workspace[env, fnet_idx + dof_adr + d] = cur - floss
+                                workspace[env, fnet_idx + dof_adr + d] = (
+                                    cur - floss
+                                )
                             elif v < -VEL_THRESH:
-                                workspace[env, fnet_idx + dof_adr + d] = cur + floss
+                                workspace[env, fnet_idx + dof_adr + d] = (
+                                    cur + floss
+                                )
                     elif jnt_type == JNT_BALL:
                         for d in range(3):
                             var v = rebind[Scalar[DTYPE]](
@@ -1606,9 +1683,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                                 workspace[env, fnet_idx + dof_adr + d]
                             )
                             if v > VEL_THRESH:
-                                workspace[env, fnet_idx + dof_adr + d] = cur - floss
+                                workspace[env, fnet_idx + dof_adr + d] = (
+                                    cur - floss
+                                )
                             elif v < -VEL_THRESH:
-                                workspace[env, fnet_idx + dof_adr + d] = cur + floss
+                                workspace[env, fnet_idx + dof_adr + d] = (
+                                    cur + floss
+                                )
                     else:
                         var v = rebind[Scalar[DTYPE]](
                             state[env, qvel_off + dof_adr]
@@ -2156,15 +2237,15 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](state_buf)
 
         var model = LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+        ](model_buf)
 
         var workspace = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
-        ](workspace_buf.unsafe_ptr())
+        ](workspace_buf)
 
         # Launch step kernel: single-threaded or multi-threaded
         comptime if STEP_THREADS > 1:
@@ -2238,9 +2319,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
         ]
 
-        ctx.enqueue_function[
-            contact_kernel_wrapper, contact_kernel_wrapper
-        ](
+        ctx.enqueue_function[contact_kernel_wrapper, contact_kernel_wrapper](
             state,
             model,
             grid_dim=(ENV_BLOCKS,),

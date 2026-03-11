@@ -451,7 +451,7 @@ trait JointsLike:
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -589,7 +589,7 @@ struct _EmptyJoints(JointsLike):
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -873,7 +873,7 @@ struct Joints[*J: JointSpec](JointsLike):
         OBS_DIM: Int,
     ](
         states: LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         obs: LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -1106,11 +1106,11 @@ struct Joints[*J: JointSpec](JointsLike):
     ) raises:
         """Launch kernel to extract observations for all envs."""
         var states = LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+        ](states_buf)
         var obs = LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1155,10 +1155,10 @@ struct Joints[*J: JointSpec](JointsLike):
         """Launch kernel to apply actions for all envs."""
         var states = LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var actions = LayoutTensor[
-            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
+        ](actions_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1198,7 +1198,7 @@ struct Joints[*J: JointSpec](JointsLike):
         """Launch kernel to enforce joint limits for all envs."""
         var states = LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 

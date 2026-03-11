@@ -50,7 +50,7 @@ fn compute_cvel_gpu[
     """
     var states = LayoutTensor[
         DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-    ](states_buf.unsafe_ptr())
+    ](states_buf)
 
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 

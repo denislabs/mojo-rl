@@ -64,7 +64,7 @@ fn compute_cfrc_ext_gpu[
 ](
     ctx: DeviceContext,
     mut states_buf: DeviceBuffer[DTYPE],
-    model_buf: DeviceBuffer[DTYPE],
+    mut model_buf: DeviceBuffer[DTYPE],
 ) raises:
     """Compute cfrc_ext for all environments on GPU.
 
@@ -78,10 +78,10 @@ fn compute_cfrc_ext_gpu[
     """
     var states = LayoutTensor[
         DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-    ](states_buf.unsafe_ptr())
+    ](states_buf)
     var model = LayoutTensor[
         DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-    ](model_buf.unsafe_ptr())
+    ](model_buf)
 
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
