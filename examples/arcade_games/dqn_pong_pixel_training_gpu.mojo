@@ -33,7 +33,7 @@ comptime NUM_ACTIONS = 3  # NOOP, UP, DOWN
 
 # DQN CNN hyperparameters — smaller buffers/batch due to large obs size
 comptime BUFFER_CAPACITY = 10_000
-comptime BATCH_SIZE = 32
+comptime BATCH_SIZE = 256
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
 # Training duration
