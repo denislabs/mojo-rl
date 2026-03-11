@@ -19,7 +19,6 @@ Usage:
 
 from std.math import exp
 from std.random import random_float64, seed
-from std.time import perf_counter_ns
 
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -184,14 +183,6 @@ struct DQNCNNAgent[
     # Training state
     var train_step_count: Int
 
-    # Perf sub-timings (ns accumulators for do_gpu_train_step breakdown)
-    var _t_sample_ns: Int
-    var _t_fwd_ns: Int
-    var _t_td_grad_ns: Int
-    var _t_bwd_ns: Int
-    var _t_opt_ns: Int
-    var _t_train_calls: Int
-
     # Auto-checkpoint
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -213,12 +204,6 @@ struct DQNCNNAgent[
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.train_step_count = 0
-        self._t_sample_ns = 0
-        self._t_fwd_ns = 0
-        self._t_td_grad_ns = 0
-        self._t_bwd_ns = 0
-        self._t_opt_ns = 0
-        self._t_train_calls = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
@@ -583,8 +568,6 @@ struct DQNCNNAgent[
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         # Sample batch
-        ctx.synchronize()
-        var _ts0 = Int(perf_counter_ns())
         gpu_state.buffer.sample[BATCH](
             ctx,
             UInt32(self.train_step_count),
@@ -595,9 +578,6 @@ struct DQNCNNAgent[
             gpu_state.s_done,
             gpu_state.s_idx,
         )
-        ctx.synchronize()
-        var _ts1 = Int(perf_counter_ns())
-        self._t_sample_ns += _ts1 - _ts0
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
@@ -646,9 +626,6 @@ struct DQNCNNAgent[
         Self.Q_Network.forward_gpu[BATCH](
             ctx, next_obs_t, next_q_t, p_target, gpu_state.train_ws
         )
-        ctx.synchronize()
-        var _ts2 = Int(perf_counter_ns())
-        self._t_fwd_ns += _ts2 - _ts1
 
         # TD targets
         var gamma_s = Scalar[dtype](self.gamma)
@@ -749,52 +726,15 @@ struct DQNCNNAgent[
             block_dim=(TPB,),
         )
 
-        ctx.synchronize()
-        var _ts3 = Int(perf_counter_ns())
-        self._t_td_grad_ns += _ts3 - _ts2
-
         # Backward + optimizer step
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
         Self.Q_Network.backward_gpu[BATCH](
             ctx, grad_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws
         )
-        ctx.synchronize()
-        var _ts4 = Int(perf_counter_ns())
-        self._t_bwd_ns += _ts4 - _ts3
-
         gpu_state.online.optimizer_step(ctx)
-        ctx.synchronize()
-        var _ts5 = Int(perf_counter_ns())
-        self._t_opt_ns += _ts5 - _ts4
 
-        self._t_train_calls += 1
         self.train_step_count += 1
-
-        # Print sub-timing breakdown every 1000 gradient steps
-        if self._t_train_calls % 1000 == 0:
-            var n = Float64(self._t_train_calls)
-            print(
-                "  TRAIN_DETAIL ("
-                + String(self._t_train_calls)
-                + " steps) | sample="
-                + String(Float64(self._t_sample_ns) / 1e6 / n)[:6]
-                + " fwd="
-                + String(Float64(self._t_fwd_ns) / 1e6 / n)[:6]
-                + " td_grad="
-                + String(Float64(self._t_td_grad_ns) / 1e6 / n)[:6]
-                + " bwd="
-                + String(Float64(self._t_bwd_ns) / 1e6 / n)[:6]
-                + " opt="
-                + String(Float64(self._t_opt_ns) / 1e6 / n)[:6]
-                + " ms/step"
-            )
-            self._t_sample_ns = 0
-            self._t_fwd_ns = 0
-            self._t_td_grad_ns = 0
-            self._t_bwd_ns = 0
-            self._t_opt_ns = 0
-            self._t_train_calls = 0
 
     fn get_action_scale(self) -> Float64:
         return 1.0
