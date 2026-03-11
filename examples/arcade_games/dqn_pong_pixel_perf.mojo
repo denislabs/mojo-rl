@@ -1,4 +1,4 @@
-"""Quick perf timing for DQN CNN on Pong pixels. Runs 5K steps only."""
+"""Quick perf timing for DQN CNN on Pong pixels. Runs 3K steps only."""
 
 from std.random import seed
 from std.gpu.host import DeviceContext
@@ -16,7 +16,7 @@ comptime dtype = DType.float32
 
 fn main() raises:
     seed(42)
-    print("DQN CNN Pong Pixel — PERF TEST (5K steps)")
+    print("DQN CNN Pong Pixel — PERF TEST (3K steps)")
     print("=" * 50)
 
     with DeviceContext() as ctx:
@@ -38,12 +38,12 @@ fn main() raises:
         try:
             var metrics = agent.train_gpu[PongPixelEnv[dtype]](
                 ctx,
-                num_steps=5_000,
+                num_steps=3_000,
                 warmup_steps=500,
                 gradient_steps=0,
                 sync_every=10_000,
                 verbose=True,
-                print_every=5_000,
+                print_every=3_000,
                 environment_name="Pong-Perf",
             )
         except e:
