@@ -9,16 +9,16 @@ Run with:
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from nn.constants import dtype
-from nn.model.linear import Linear
-from nn.model.relu import ReLU
-from nn.model.tanh import Tanh
-from nn.model.stochastic_actor import StochasticActor
-from nn.model.sequential import Sequential
-from nn.loss.mse import MSELoss
-from nn.optimizer.adam import Adam
-from nn.training.trainer import Trainer
-from nn.initializer.initializers import Kaiming
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model.linear import Linear
+from mojo_rl.nn.model.relu import ReLU
+from mojo_rl.nn.model.tanh import Tanh
+from mojo_rl.nn.model.stochastic_actor import StochasticActor
+from mojo_rl.nn.model.sequential import Sequential
+from mojo_rl.nn.loss.mse import MSELoss
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.initializer.initializers import Kaiming
 
 from std.gpu.host import DeviceContext
 

@@ -9,11 +9,11 @@ from std.random import seed
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.hopper import Hopper
-from envs.hopper.hopper_def import HopperConstantsGPU
-from core import ContAction
-from nn import dtype as gpu_dtype
-from physics3d.gpu.constants import (
+from mojo_rl.envs.hopper import Hopper
+from mojo_rl.envs.hopper.hopper_def import HopperConstantsGPU
+from mojo_rl.core import ContAction
+from mojo_rl.nn import dtype as gpu_dtype
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     metadata_offset,
     META_IDX_STEP_COUNT,
@@ -94,7 +94,15 @@ fn main() raises:
         for step in range(25):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 10
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
+            ](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -173,7 +181,15 @@ fn main() raises:
         for step in range(200):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
+            ](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -199,7 +215,15 @@ fn main() raises:
         for step in range(200):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
+            ](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
@@ -232,7 +256,15 @@ fn main() raises:
         for step in range(100):
             Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 50
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, obs_buf)
+            ](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)

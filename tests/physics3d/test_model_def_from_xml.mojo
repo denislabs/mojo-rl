@@ -18,11 +18,11 @@ Expected output:
   enforce_limits clamped correctly
 """
 
-from physics3d.parser import parse_xml, ModelDefFromXML
-from physics3d.parser import parse_xml_full
-from physics3d.parser.xml_parser import parse_xml_model_data
-from physics3d.types import Model, Data, ConeType
-from physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml_full
+from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from std.testing import assert_true, TestSuite
 
 

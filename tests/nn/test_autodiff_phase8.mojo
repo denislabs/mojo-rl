@@ -9,8 +9,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs, sqrt, exp
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     Dense,
     DenseReLU,
@@ -22,7 +22,7 @@ from nn.autodiff import (
     Residual,
     Repeat,
 )
-from nn.model.sequential import Sequential
+from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
@@ -67,21 +67,38 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Test 1: Compile-time dimension checks
 # =============================================================================
 
+
 fn test_attention_dims() -> Int:
     print_header("ScaledDotProductAttention dimension checks")
     var fails = 0
 
     # Single head, dim=4, seq_len=3
     comptime Attn1 = ScaledDotProductAttention[4, 1, 3]
-    check(Attn1.IN_DIM == 3 * 4 * 3, "IN_DIM = seq*dim*3 = " + String(Attn1.IN_DIM), fails)
-    check(Attn1.OUT_DIM == 3 * 4, "OUT_DIM = seq*dim = " + String(Attn1.OUT_DIM), fails)
+    check(
+        Attn1.IN_DIM == 3 * 4 * 3,
+        "IN_DIM = seq*dim*3 = " + String(Attn1.IN_DIM),
+        fails,
+    )
+    check(
+        Attn1.OUT_DIM == 3 * 4,
+        "OUT_DIM = seq*dim = " + String(Attn1.OUT_DIM),
+        fails,
+    )
     check(Attn1.PARAM_SIZE == 0, "PARAM_SIZE = 0", fails)
     check(Attn1.head_dim == 4, "head_dim = dim/n_heads = 4", fails)
 
     # Multi-head: dim=8, n_heads=2, seq_len=4
     comptime Attn2 = ScaledDotProductAttention[8, 2, 4]
-    check(Attn2.IN_DIM == 4 * 8 * 3, "IN_DIM = 4*8*3 = " + String(Attn2.IN_DIM), fails)
-    check(Attn2.OUT_DIM == 4 * 8, "OUT_DIM = 4*8 = " + String(Attn2.OUT_DIM), fails)
+    check(
+        Attn2.IN_DIM == 4 * 8 * 3,
+        "IN_DIM = 4*8*3 = " + String(Attn2.IN_DIM),
+        fails,
+    )
+    check(
+        Attn2.OUT_DIM == 4 * 8,
+        "OUT_DIM = 4*8 = " + String(Attn2.OUT_DIM),
+        fails,
+    )
     check(Attn2.head_dim == 4, "head_dim = 8/2 = 4", fails)
     check(
         Attn2.CACHE_SIZE == 3 * 4 * 8 + 2 * 4 * 4,
@@ -95,6 +112,7 @@ fn test_attention_dims() -> Int:
 # =============================================================================
 # Test 2: Single-head attention forward matches manual computation
 # =============================================================================
+
 
 fn test_single_head_forward() -> Int:
     print_header("Single-head attention forward correctness")
@@ -113,23 +131,37 @@ fn test_single_head_forward() -> Int:
     # V0 = [1, 2], V1 = [3, 4]
     var inp = make_list(BATCH * Attn.IN_DIM)
     # Q
-    inp[0] = 1; inp[1] = 0  # Q0
-    inp[2] = 0; inp[3] = 1  # Q1
+    inp[0] = 1
+    inp[1] = 0  # Q0
+    inp[2] = 0
+    inp[3] = 1  # Q1
     # K
-    inp[4] = 1; inp[5] = 0  # K0
-    inp[6] = 0; inp[7] = 1  # K1
+    inp[4] = 1
+    inp[5] = 0  # K0
+    inp[6] = 0
+    inp[7] = 1  # K1
     # V
-    inp[8] = 1; inp[9] = 2  # V0
-    inp[10] = 3; inp[11] = 4  # V1
+    inp[8] = 1
+    inp[9] = 2  # V0
+    inp[10] = 3
+    inp[11] = 4  # V1
 
     var out_data = make_list(BATCH * Attn.OUT_DIM)
     var cache_data = make_list(BATCH * Attn.CACHE_SIZE)
     var params_data = make_list(1)  # PARAM_SIZE=0, but need at least 1
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin](params_data.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin
+    ](params_data.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     Attn.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -164,22 +196,34 @@ fn test_single_head_forward() -> Int:
     var tol: Float64 = 1e-5
     check(
         math_abs(Float64(out_data[0]) - expected_00) < tol,
-        "out[0,0] = " + String(Float64(out_data[0])) + " expected " + String(expected_00),
+        "out[0,0] = "
+        + String(Float64(out_data[0]))
+        + " expected "
+        + String(expected_00),
         fails,
     )
     check(
         math_abs(Float64(out_data[1]) - expected_01) < tol,
-        "out[0,1] = " + String(Float64(out_data[1])) + " expected " + String(expected_01),
+        "out[0,1] = "
+        + String(Float64(out_data[1]))
+        + " expected "
+        + String(expected_01),
         fails,
     )
     check(
         math_abs(Float64(out_data[2]) - expected_10) < tol,
-        "out[1,0] = " + String(Float64(out_data[2])) + " expected " + String(expected_10),
+        "out[1,0] = "
+        + String(Float64(out_data[2]))
+        + " expected "
+        + String(expected_10),
         fails,
     )
     check(
         math_abs(Float64(out_data[3]) - expected_11) < tol,
-        "out[1,1] = " + String(Float64(out_data[3])) + " expected " + String(expected_11),
+        "out[1,1] = "
+        + String(Float64(out_data[3]))
+        + " expected "
+        + String(expected_11),
         fails,
     )
 
@@ -189,6 +233,7 @@ fn test_single_head_forward() -> Int:
 # =============================================================================
 # Test 3: Multi-head attention produces correct output shape
 # =============================================================================
+
 
 fn test_multi_head_forward() -> Int:
     print_header("Multi-head attention forward (dim=4, heads=2, seq=3)")
@@ -206,10 +251,18 @@ fn test_multi_head_forward() -> Int:
     var cache_data = make_list(BATCH * Attn.CACHE_SIZE)
     var params_data = make_list(1)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin](params_data.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin
+    ](params_data.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     Attn.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -228,11 +281,24 @@ fn test_multi_head_forward() -> Int:
             for i in range(SEQ):
                 var row_sum: Float64 = 0.0
                 for j in range(SEQ):
-                    var idx = b * Attn.CACHE_SIZE + attn_offset + h * SEQ * SEQ + i * SEQ + j
+                    var idx = (
+                        b * Attn.CACHE_SIZE
+                        + attn_offset
+                        + h * SEQ * SEQ
+                        + i * SEQ
+                        + j
+                    )
                     row_sum += Float64(cache_data[idx])
                 check(
                     math_abs(row_sum - 1.0) < 1e-5,
-                    "attn weights sum=1 (b=" + String(b) + " h=" + String(h) + " i=" + String(i) + ") sum=" + String(row_sum),
+                    "attn weights sum=1 (b="
+                    + String(b)
+                    + " h="
+                    + String(h)
+                    + " i="
+                    + String(i)
+                    + ") sum="
+                    + String(row_sum),
                     fails,
                 )
 
@@ -242,6 +308,7 @@ fn test_multi_head_forward() -> Int:
 # =============================================================================
 # Test 4: Finite difference gradient check
 # =============================================================================
+
 
 fn test_attention_grad() -> Int:
     print_header("ScaledDotProductAttention gradient check (finite diff)")
@@ -264,13 +331,27 @@ fn test_attention_grad() -> Int:
     var gi_data = make_list(BATCH * Attn.IN_DIM)
     var gp_data = make_list(1)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin](params_data.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin
+    ](params_data.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Attn.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Attn.eval[BATCH](inp_t, out_t, p_t, c_t)
     Attn.vjp[BATCH](go_t, gi_t, p_t, c_t, gp_t)
@@ -287,18 +368,30 @@ fn test_attention_grad() -> Int:
         inp[idx] = Scalar[dtype](Float64(orig) + eps)
         var out_plus = make_list(BATCH * Attn.OUT_DIM)
         var cache_plus = make_list(BATCH * Attn.CACHE_SIZE)
-        var inp_t2 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-        var out_t2 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](out_plus.unsafe_ptr())
-        var c_t2 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin](cache_plus.unsafe_ptr())
+        var inp_t2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+        ](inp.unsafe_ptr())
+        var out_t2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+        ](out_plus.unsafe_ptr())
+        var c_t2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin
+        ](cache_plus.unsafe_ptr())
         Attn.eval[BATCH](inp_t2, out_t2, p_t, c_t2)
 
         # f(x - eps)
         inp[idx] = Scalar[dtype](Float64(orig) - eps)
         var out_minus = make_list(BATCH * Attn.OUT_DIM)
         var cache_minus = make_list(BATCH * Attn.CACHE_SIZE)
-        var inp_t3 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-        var out_t3 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin](out_minus.unsafe_ptr())
-        var c_t3 = LayoutTensor[dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin](cache_minus.unsafe_ptr())
+        var inp_t3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.IN_DIM), MutAnyOrigin
+        ](inp.unsafe_ptr())
+        var out_t3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.OUT_DIM), MutAnyOrigin
+        ](out_minus.unsafe_ptr())
+        var c_t3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Attn.CACHE_SIZE), MutAnyOrigin
+        ](cache_minus.unsafe_ptr())
         Attn.eval[BATCH](inp_t3, out_t3, p_t, c_t3)
 
         inp[idx] = orig
@@ -306,7 +399,11 @@ fn test_attention_grad() -> Int:
         # FD gradient: sum_j go[j] * (f_plus[j] - f_minus[j]) / (2*eps)
         var fd_grad: Float64 = 0.0
         for j in range(BATCH * Attn.OUT_DIM):
-            fd_grad += Float64(go_data[j]) * (Float64(out_plus[j]) - Float64(out_minus[j])) / (2.0 * eps)
+            fd_grad += (
+                Float64(go_data[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2.0 * eps)
+            )
 
         var analytic = Float64(gi_data[idx])
         var err = math_abs(fd_grad - analytic)
@@ -319,7 +416,11 @@ fn test_attention_grad() -> Int:
 
     check(
         max_err < 2e-2,
-        "max relative error = " + String(max_err) + " (checked " + String(n_checked) + " inputs, tol 2e-2)",
+        "max relative error = "
+        + String(max_err)
+        + " (checked "
+        + String(n_checked)
+        + " inputs, tol 2e-2)",
         fails,
     )
 
@@ -329,6 +430,7 @@ fn test_attention_grad() -> Int:
 # =============================================================================
 # Test 5: AutoDiffChain composition with attention
 # =============================================================================
+
 
 fn test_chain_with_attention() -> Int:
     print_header("AutoDiffChain composition: MatMul -> Attention")
@@ -343,9 +445,21 @@ fn test_chain_with_attention() -> Int:
     comptime Attn = ScaledDotProductAttention[DIM, HEADS, SEQ]
     comptime Chain = AutoDiffChain[Proj, Attn]
 
-    check(Chain.IN_DIM == SEQ * DIM, "Chain IN_DIM = " + String(Chain.IN_DIM), fails)
-    check(Chain.OUT_DIM == SEQ * DIM, "Chain OUT_DIM = " + String(Chain.OUT_DIM), fails)
-    check(Chain.PARAM_SIZE == Proj.PARAM_SIZE, "Chain PARAM_SIZE = " + String(Chain.PARAM_SIZE), fails)
+    check(
+        Chain.IN_DIM == SEQ * DIM,
+        "Chain IN_DIM = " + String(Chain.IN_DIM),
+        fails,
+    )
+    check(
+        Chain.OUT_DIM == SEQ * DIM,
+        "Chain OUT_DIM = " + String(Chain.OUT_DIM),
+        fails,
+    )
+    check(
+        Chain.PARAM_SIZE == Proj.PARAM_SIZE,
+        "Chain PARAM_SIZE = " + String(Chain.PARAM_SIZE),
+        fails,
+    )
 
     # Forward pass
     comptime BATCH = 1
@@ -354,10 +468,18 @@ fn test_chain_with_attention() -> Int:
     var out_data = make_list(BATCH * Chain.OUT_DIM)
     var cache_data = make_list(BATCH * Chain.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     Chain.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -373,9 +495,15 @@ fn test_chain_with_attention() -> Int:
     var gi_data = make_list(BATCH * Chain.IN_DIM)
     var gp_data = make_list(Chain.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Chain.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -400,8 +528,11 @@ fn test_chain_with_attention() -> Int:
 # Test 6: Residual + Attention (Transformer block pattern)
 # =============================================================================
 
+
 fn test_residual_attention() -> Int:
-    print_header("Residual[AutoDiffChain[Proj, Attention]] — transformer block pattern")
+    print_header(
+        "Residual[AutoDiffChain[Proj, Attention]] — transformer block pattern"
+    )
     var fails = 0
     seed(42)
 
@@ -409,11 +540,23 @@ fn test_residual_attention() -> Int:
     comptime SEQ = 2
     comptime HEADS = 2
     comptime SD = SEQ * DIM  # flattened sequence dim
-    comptime AttnBlock = AutoDiffChain[MatMul[SD, SD * 3], BiasAdd[SD * 3], ScaledDotProductAttention[DIM, HEADS, SEQ]]
+    comptime AttnBlock = AutoDiffChain[
+        MatMul[SD, SD * 3],
+        BiasAdd[SD * 3],
+        ScaledDotProductAttention[DIM, HEADS, SEQ],
+    ]
     comptime ResAttn = Residual[AttnBlock]
 
-    check(ResAttn.IN_DIM == SD, "ResAttn IN_DIM = " + String(ResAttn.IN_DIM), fails)
-    check(ResAttn.OUT_DIM == SD, "ResAttn OUT_DIM = " + String(ResAttn.OUT_DIM), fails)
+    check(
+        ResAttn.IN_DIM == SD,
+        "ResAttn IN_DIM = " + String(ResAttn.IN_DIM),
+        fails,
+    )
+    check(
+        ResAttn.OUT_DIM == SD,
+        "ResAttn OUT_DIM = " + String(ResAttn.OUT_DIM),
+        fails,
+    )
 
     comptime BATCH = 2
     var inp = make_rand_list(BATCH * ResAttn.IN_DIM)
@@ -421,10 +564,18 @@ fn test_residual_attention() -> Int:
     var out_data = make_list(BATCH * ResAttn.OUT_DIM)
     var cache_data = make_list(BATCH * ResAttn.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, ResAttn.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, ResAttn.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(ResAttn.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, ResAttn.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ResAttn.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ResAttn.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(ResAttn.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ResAttn.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     ResAttn.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -432,16 +583,26 @@ fn test_residual_attention() -> Int:
     var diff: Float64 = 0
     for i in range(BATCH * SD):
         diff += math_abs(Float64(out_data[i]) - Float64(inp[i]))
-    check(diff > 1e-6, "Residual output differs from input (diff=" + String(diff) + ")", fails)
+    check(
+        diff > 1e-6,
+        "Residual output differs from input (diff=" + String(diff) + ")",
+        fails,
+    )
 
     # Backward
     var go_data = make_rand_list(BATCH * ResAttn.OUT_DIM)
     var gi_data = make_list(BATCH * ResAttn.IN_DIM)
     var gp_data = make_list(ResAttn.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, ResAttn.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, ResAttn.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(ResAttn.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ResAttn.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ResAttn.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(ResAttn.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     ResAttn.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -459,6 +620,7 @@ fn test_residual_attention() -> Int:
 # Test 7: Transformer composites compile and run
 # =============================================================================
 
+
 fn test_transformer_composites() -> Int:
     print_header("Transformer composites: Sequential[ResAttn, ResFFN] compiles")
     var fails = 0
@@ -472,23 +634,35 @@ fn test_transformer_composites() -> Int:
 
     # Attention sub-block: project to QKV, attend, project back
     comptime AttnInner = AutoDiffChain[
-        MatMul[SD, SD * 3], BiasAdd[SD * 3],
+        MatMul[SD, SD * 3],
+        BiasAdd[SD * 3],
         ScaledDotProductAttention[DIM, HEADS, SEQ],
     ]
     comptime ResAttn = Residual[AttnInner]
 
     # FFN sub-block
     comptime FFNInner = AutoDiffChain[
-        MatMul[SD, FF_DIM], BiasAdd[FF_DIM], ReLUOp[FF_DIM],
-        MatMul[FF_DIM, SD], BiasAdd[SD],
+        MatMul[SD, FF_DIM],
+        BiasAdd[FF_DIM],
+        ReLUOp[FF_DIM],
+        MatMul[FF_DIM, SD],
+        BiasAdd[SD],
     ]
     comptime ResFFN = Residual[FFNInner]
 
     # Full transformer layer
     comptime TransformerLayer = Sequential[ResAttn, ResFFN]
 
-    check(TransformerLayer.IN_DIM == SD, "TransformerLayer IN_DIM = " + String(TransformerLayer.IN_DIM), fails)
-    check(TransformerLayer.OUT_DIM == SD, "TransformerLayer OUT_DIM = " + String(TransformerLayer.OUT_DIM), fails)
+    check(
+        TransformerLayer.IN_DIM == SD,
+        "TransformerLayer IN_DIM = " + String(TransformerLayer.IN_DIM),
+        fails,
+    )
+    check(
+        TransformerLayer.OUT_DIM == SD,
+        "TransformerLayer OUT_DIM = " + String(TransformerLayer.OUT_DIM),
+        fails,
+    )
 
     comptime BATCH = 1
     var inp = make_rand_list(BATCH * TransformerLayer.IN_DIM)
@@ -496,10 +670,20 @@ fn test_transformer_composites() -> Int:
     var out_data = make_list(BATCH * TransformerLayer.OUT_DIM)
     var cache_data = make_list(BATCH * TransformerLayer.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, TransformerLayer.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, TransformerLayer.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(TransformerLayer.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, TransformerLayer.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, TransformerLayer.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, TransformerLayer.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(TransformerLayer.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH, TransformerLayer.CACHE_SIZE),
+        MutAnyOrigin,
+    ](cache_data.unsafe_ptr())
 
     TransformerLayer.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -515,9 +699,15 @@ fn test_transformer_composites() -> Int:
     var gi_data = make_list(BATCH * TransformerLayer.IN_DIM)
     var gp_data = make_list(TransformerLayer.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, TransformerLayer.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, TransformerLayer.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(TransformerLayer.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, TransformerLayer.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, TransformerLayer.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(TransformerLayer.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     TransformerLayer.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -535,6 +725,7 @@ fn test_transformer_composites() -> Int:
 # Test 8: Repeat[N, TransformerLayer] compiles and runs
 # =============================================================================
 
+
 fn test_stacked_transformer() -> Int:
     print_header("Repeat[2, TransformerLayer] — stacked transformer")
     var fails = 0
@@ -547,13 +738,17 @@ fn test_stacked_transformer() -> Int:
     comptime SD = SEQ * DIM
 
     comptime AttnInner = AutoDiffChain[
-        MatMul[SD, SD * 3], BiasAdd[SD * 3],
+        MatMul[SD, SD * 3],
+        BiasAdd[SD * 3],
         ScaledDotProductAttention[DIM, HEADS, SEQ],
     ]
     comptime ResAttn = Residual[AttnInner]
     comptime FFNInner = AutoDiffChain[
-        MatMul[SD, FF_DIM], BiasAdd[FF_DIM], ReLUOp[FF_DIM],
-        MatMul[FF_DIM, SD], BiasAdd[SD],
+        MatMul[SD, FF_DIM],
+        BiasAdd[FF_DIM],
+        ReLUOp[FF_DIM],
+        MatMul[FF_DIM, SD],
+        BiasAdd[SD],
     ]
     comptime ResFFN = Residual[FFNInner]
     comptime Layer = Sequential[ResAttn, ResFFN]
@@ -561,16 +756,26 @@ fn test_stacked_transformer() -> Int:
     # Stack 2 layers with shared weights
     comptime Encoder = Repeat[2, Layer]
 
-    check(Encoder.IN_DIM == SD, "Encoder IN_DIM = " + String(Encoder.IN_DIM), fails)
-    check(Encoder.OUT_DIM == SD, "Encoder OUT_DIM = " + String(Encoder.OUT_DIM), fails)
+    check(
+        Encoder.IN_DIM == SD,
+        "Encoder IN_DIM = " + String(Encoder.IN_DIM),
+        fails,
+    )
+    check(
+        Encoder.OUT_DIM == SD,
+        "Encoder OUT_DIM = " + String(Encoder.OUT_DIM),
+        fails,
+    )
     check(
         Encoder.PARAM_SIZE == Layer.PARAM_SIZE,
-        "Encoder PARAM_SIZE = Layer PARAM_SIZE (shared weights) = " + String(Encoder.PARAM_SIZE),
+        "Encoder PARAM_SIZE = Layer PARAM_SIZE (shared weights) = "
+        + String(Encoder.PARAM_SIZE),
         fails,
     )
     check(
         Encoder.CACHE_SIZE == Layer.CACHE_SIZE * 2,
-        "Encoder CACHE_SIZE = 2 * Layer CACHE_SIZE = " + String(Encoder.CACHE_SIZE),
+        "Encoder CACHE_SIZE = 2 * Layer CACHE_SIZE = "
+        + String(Encoder.CACHE_SIZE),
         fails,
     )
 
@@ -580,10 +785,18 @@ fn test_stacked_transformer() -> Int:
     var out_data = make_list(BATCH * Encoder.OUT_DIM)
     var cache_data = make_list(BATCH * Encoder.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, Encoder.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, Encoder.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Encoder.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Encoder.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Encoder.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Encoder.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Encoder.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Encoder.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     Encoder.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -592,16 +805,26 @@ fn test_stacked_transformer() -> Int:
         if math_abs(Float64(out_data[i])) > 1e-10:
             has_output = True
             break
-    check(has_output, "Repeat[2, TransformerLayer] produces non-zero output", fails)
+    check(
+        has_output,
+        "Repeat[2, TransformerLayer] produces non-zero output",
+        fails,
+    )
 
     # Backward
     var go_data = make_rand_list(BATCH * Encoder.OUT_DIM)
     var gi_data = make_list(BATCH * Encoder.IN_DIM)
     var gp_data = make_list(Encoder.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, Encoder.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Encoder.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Encoder.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Encoder.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Encoder.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Encoder.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Encoder.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -610,7 +833,11 @@ fn test_stacked_transformer() -> Int:
         if math_abs(Float64(gi_data[i])) > 1e-10:
             has_gi = True
             break
-    check(has_gi, "Repeat[2, TransformerLayer] backward produces grad_input", fails)
+    check(
+        has_gi,
+        "Repeat[2, TransformerLayer] backward produces grad_input",
+        fails,
+    )
 
     return fails
 
@@ -618,6 +845,7 @@ fn test_stacked_transformer() -> Int:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

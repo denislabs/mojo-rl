@@ -18,12 +18,12 @@ Run with:
 from std.random import seed, random_float64
 from std.math import exp, tanh as math_tanh, abs as math_abs
 
-from nn.constants import dtype
-from nn.model.model import Model
-from nn.model.linear import Linear
-from nn.model.relu import ReLU
-from nn.model.sequential import Sequential
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model.model import Model
+from mojo_rl.nn.model.linear import Linear
+from mojo_rl.nn.model.relu import ReLU
+from mojo_rl.nn.model.sequential import Sequential
+from mojo_rl.nn.autodiff import (
     MatMul,
     BiasAdd,
     ReLUOp,
@@ -34,7 +34,7 @@ from nn.autodiff import (
     LinearReLUAD,
     LinearTanhAD,
 )
-from nn.initializer import Kaiming
+from mojo_rl.nn.initializer import Kaiming
 from layout import Layout, LayoutTensor
 
 
@@ -74,6 +74,7 @@ fn check_close(
 # 1. MatMul forward + vjp
 # =============================================================================
 
+
 fn test_matmul() -> Int:
     print_header("MatMul forward + vjp")
     var fails = 0
@@ -108,9 +109,9 @@ fn test_matmul() -> Int:
     var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](
         inp.unsafe_ptr()
     )
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-    ](out.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin](
+        out.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(MatMul[IN, OUT].PARAM_SIZE), MutAnyOrigin
     ](params.unsafe_ptr())
@@ -151,12 +152,12 @@ fn test_matmul() -> Int:
     for _ in range(IN * OUT):
         gp.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-    ](go.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-    ](gi.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](
+        gi.unsafe_ptr()
+    )
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(MatMul[IN, OUT].PARAM_SIZE), MutAnyOrigin
     ](gp.unsafe_ptr())
@@ -182,6 +183,7 @@ fn test_matmul() -> Int:
 # =============================================================================
 # 2. BiasAdd forward + vjp
 # =============================================================================
+
 
 fn test_bias_add() -> Int:
     print_header("BiasAdd forward + vjp")
@@ -210,12 +212,12 @@ fn test_bias_add() -> Int:
     var dummy = List[Scalar[dtype]](capacity=1)
     dummy.append(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(BiasAdd[DIM].PARAM_SIZE), MutAnyOrigin
     ](params.unsafe_ptr())
@@ -248,12 +250,12 @@ fn test_bias_add() -> Int:
     for _ in range(DIM):
         gp.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi.unsafe_ptr()
+    )
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(BiasAdd[DIM].PARAM_SIZE), MutAnyOrigin
     ](gp.unsafe_ptr())
@@ -278,6 +280,7 @@ fn test_bias_add() -> Int:
 # 3. ReLUOp forward + vjp
 # =============================================================================
 
+
 fn test_relu_op() -> Int:
     print_header("ReLUOp forward + vjp")
     var fails = 0
@@ -300,12 +303,12 @@ fn test_relu_op() -> Int:
     var pdummy = List[Scalar[dtype]](capacity=1)
     pdummy.append(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(ReLUOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](pdummy.unsafe_ptr())
@@ -334,12 +337,12 @@ fn test_relu_op() -> Int:
     var gpdummy = List[Scalar[dtype]](capacity=1)
     gpdummy.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi.unsafe_ptr()
+    )
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(ReLUOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](gpdummy.unsafe_ptr())
@@ -362,6 +365,7 @@ fn test_relu_op() -> Int:
 # 4. TanhOp forward + vjp
 # =============================================================================
 
+
 fn test_tanh_op() -> Int:
     print_header("TanhOp forward + vjp")
     var fails = 0
@@ -383,12 +387,12 @@ fn test_tanh_op() -> Int:
     var pdummy = List[Scalar[dtype]](capacity=1)
     pdummy.append(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(TanhOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](pdummy.unsafe_ptr())
@@ -419,12 +423,12 @@ fn test_tanh_op() -> Int:
     var gpdummy = List[Scalar[dtype]](capacity=1)
     gpdummy.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi.unsafe_ptr()
+    )
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(TanhOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](gpdummy.unsafe_ptr())
@@ -445,6 +449,7 @@ fn test_tanh_op() -> Int:
 # =============================================================================
 # 5. SigmoidOp forward + vjp
 # =============================================================================
+
 
 fn test_sigmoid_op() -> Int:
     print_header("SigmoidOp forward + vjp")
@@ -467,12 +472,12 @@ fn test_sigmoid_op() -> Int:
     var pdummy = List[Scalar[dtype]](capacity=1)
     pdummy.append(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(SigmoidOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](pdummy.unsafe_ptr())
@@ -503,12 +508,12 @@ fn test_sigmoid_op() -> Int:
     var gpdummy = List[Scalar[dtype]](capacity=1)
     gpdummy.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi.unsafe_ptr()
+    )
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(SigmoidOp[DIM].PARAM_SIZE), MutAnyOrigin
     ](gpdummy.unsafe_ptr())
@@ -528,6 +533,7 @@ fn test_sigmoid_op() -> Int:
 # =============================================================================
 # 6. AutoDiffChain forward matches Sequential[Linear, ReLU]
 # =============================================================================
+
 
 fn test_chain_forward_matches_sequential() -> Int:
     print_header("AutoDiffChain forward == Sequential[Linear, ReLU]")
@@ -626,7 +632,9 @@ fn test_chain_forward_matches_sequential() -> Int:
         if d > max_diff:
             max_diff = d
 
-    if not check_close(max_diff, 0.0, 1e-4, "forward max_diff=" + String(max_diff)):
+    if not check_close(
+        max_diff, 0.0, 1e-4, "forward max_diff=" + String(max_diff)
+    ):
         fails += 1
 
     return fails
@@ -635,6 +643,7 @@ fn test_chain_forward_matches_sequential() -> Int:
 # =============================================================================
 # 7. AutoDiffChain backward matches Sequential backward
 # =============================================================================
+
 
 fn test_chain_backward_matches_sequential() -> Int:
     print_header("AutoDiffChain backward == Sequential backward")
@@ -692,9 +701,9 @@ fn test_chain_backward_matches_sequential() -> Int:
     for _ in range(PS):
         ad_gp.append(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, H), MutAnyOrigin
-    ](go.unsafe_ptr())
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, H), MutAnyOrigin](
+        go.unsafe_ptr()
+    )
     var ad_gi_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
     ](ad_gi.unsafe_ptr())
@@ -750,7 +759,9 @@ fn test_chain_backward_matches_sequential() -> Int:
         var d = math_abs(Float64(ad_gi[i]) - Float64(seq_gi[i]))
         if d > max_gi:
             max_gi = d
-    if not check_close(max_gi, 0.0, 1e-3, "grad_input max_diff=" + String(max_gi)):
+    if not check_close(
+        max_gi, 0.0, 1e-3, "grad_input max_diff=" + String(max_gi)
+    ):
         fails += 1
 
     # Compare grad_params
@@ -759,7 +770,9 @@ fn test_chain_backward_matches_sequential() -> Int:
         var d = math_abs(Float64(ad_gp[i]) - Float64(seq_gp[i]))
         if d > max_gp:
             max_gp = d
-    if not check_close(max_gp, 0.0, 1e-3, "grad_params max_diff=" + String(max_gp)):
+    if not check_close(
+        max_gp, 0.0, 1e-3, "grad_params max_diff=" + String(max_gp)
+    ):
         fails += 1
 
     return fails
@@ -768,6 +781,7 @@ fn test_chain_backward_matches_sequential() -> Int:
 # =============================================================================
 # 8. Training convergence (manual SGD loop, XOR)
 # =============================================================================
+
 
 fn test_training_convergence() -> Int:
     print_header("Training convergence — XOR with AutoDiffChain MLP")
@@ -783,8 +797,11 @@ fn test_training_convergence() -> Int:
     comptime LR: Float64 = 0.05
 
     comptime MLP = AutoDiffChain[
-        MatMul[IN_D, H], BiasAdd[H], ReLUOp[H],
-        MatMul[H, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, H],
+        BiasAdd[H],
+        ReLUOp[H],
+        MatMul[H, OUT_D],
+        BiasAdd[OUT_D],
     ]
 
     print("  MLP: MatMul[2,16] -> BiasAdd -> ReLU -> MatMul[16,1] -> BiasAdd")
@@ -902,6 +919,7 @@ fn test_training_convergence() -> Int:
 # =============================================================================
 # 9. Convenience alias dimensions
 # =============================================================================
+
 
 fn test_convenience_aliases() -> Int:
     print_header("Convenience alias dimensions")

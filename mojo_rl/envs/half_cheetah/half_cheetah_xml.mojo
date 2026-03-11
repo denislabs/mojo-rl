@@ -1,5 +1,5 @@
-from physics3d.parser import parse_xml, ModelDefFromXML
-from physics3d.types import ConeType
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.types import ConeType
 
 comptime half_cheetah_xml = """
 <mujoco model="cheetah">
@@ -71,19 +71,19 @@ comptime pm = parse_xml(half_cheetah_xml)
 
 comptime HalfCheetahModel = ModelDefFromXML[
     xml=half_cheetah_xml,
-    nbody = pm.NBODY,
-    njoint = pm.NJOINT,
-    nq = pm.NQ,
-    nv = pm.NV,
-    ngeom = pm.NGEOM,
-    nact = pm.NACT,
-    ntex = pm.NTEX,
-    nmat = pm.NMAT,
-    nlight = pm.NLIGHT,
-    ncam = pm.NCAM,
-    nsite = pm.NSITE,
+    nbody=pm.NBODY,
+    njoint=pm.NJOINT,
+    nq=pm.NQ,
+    nv=pm.NV,
+    ngeom=pm.NGEOM,
+    nact=pm.NACT,
+    ntex=pm.NTEX,
+    nmat=pm.NMAT,
+    nlight=pm.NLIGHT,
+    ncam=pm.NCAM,
+    nsite=pm.NSITE,
     max_contacts=20,
     obs_qpos_skip=1,
-    timestep = pm.TIMESTEP,
-    cone_type = ConeType.PYRAMIDAL,  # MuJoCo default (XML has no <option cone=...>)
+    timestep=pm.TIMESTEP,
+    cone_type=ConeType.PYRAMIDAL,  # MuJoCo default (XML has no <option cone=...>)
 ]

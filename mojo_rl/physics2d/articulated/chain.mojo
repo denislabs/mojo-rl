@@ -6,8 +6,9 @@ such as those used in Hopper, Walker2d, and HalfCheetah planar environments.
 
 from std.math import cos, sin, sqrt
 from layout import LayoutTensor, Layout
+from std.collections import InlineArray
 
-from physics_gpu.constants import (
+from ..constants import (
     dtype,
     BODY_STATE_SIZE,
     JOINT_DATA_SIZE,
@@ -135,7 +136,7 @@ struct ArticulatedChain[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-        parent_indices: StaticTuple[Int, NUM_BODIES],
+        parent_indices: InlineArray[Int, Self.NUM_BODIES],
     ):
         """Compute world-space transforms for all links from joint angles.
 
@@ -143,7 +144,7 @@ struct ArticulatedChain[
         Propagates transforms through the kinematic chain.
         """
         # Process each link in order (assuming topological sort)
-        for i in range(1, NUM_BODIES):
+        for i in range(1, Self.NUM_BODIES):
             var parent_idx = parent_indices[i]
             if parent_idx < 0:
                 continue  # Root body, already positioned
@@ -158,7 +159,7 @@ struct ArticulatedChain[
 
             # Get joint connecting parent to child (joint i-1 connects body i-1 to body i)
             var joint_idx = i - 1
-            if joint_idx >= 0 and joint_idx < NUM_JOINTS:
+            if joint_idx >= 0 and joint_idx < Self.NUM_JOINTS:
                 var joint_off = JOINTS_OFFSET + joint_idx * JOINT_DATA_SIZE
 
                 # Get joint anchors (local coordinates)
@@ -206,13 +207,13 @@ struct ArticulatedChain[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-        out angles: StaticTuple[Scalar[dtype], NUM_JOINTS],
+        mut angles: InlineArray[Scalar[dtype], Self.NUM_JOINTS],
     ):
         """Extract joint angles from body states.
 
         Joint angle = angle_b - angle_a - reference_angle
         """
-        for j in range(NUM_JOINTS):
+        for j in range(Self.NUM_JOINTS):
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
 
             var body_a = Int(state[env, joint_off + JOINT_BODY_A])
@@ -226,7 +227,7 @@ struct ArticulatedChain[
                 env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_ANGLE
             ]
 
-            angles[j] = angle_b - angle_a - ref_angle
+            angles[j] = rebind[Scalar[dtype]](angle_b - angle_a - ref_angle)
 
     @staticmethod
     fn get_joint_velocities[
@@ -239,13 +240,13 @@ struct ArticulatedChain[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-        out velocities: StaticTuple[Scalar[dtype], NUM_JOINTS],
+        mut velocities: InlineArray[Scalar[dtype], Self.NUM_JOINTS],
     ):
         """Extract joint angular velocities from body states.
 
         Joint velocity = omega_b - omega_a
         """
-        for j in range(NUM_JOINTS):
+        for j in range(Self.NUM_JOINTS):
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
 
             var body_a = Int(state[env, joint_off + JOINT_BODY_A])
@@ -258,7 +259,7 @@ struct ArticulatedChain[
                 env, BODIES_OFFSET + body_b * BODY_STATE_SIZE + IDX_OMEGA
             ]
 
-            velocities[j] = omega_b - omega_a
+            velocities[j] = rebind[Scalar[dtype]](omega_b - omega_a)
 
     # =========================================================================
     # Motor Control
@@ -275,14 +276,14 @@ struct ArticulatedChain[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-        actions: StaticTuple[Scalar[dtype], NUM_JOINTS],
+        actions: InlineArray[Scalar[dtype], Self.NUM_JOINTS],
         max_torque: Scalar[dtype] = Scalar[dtype](DEFAULT_MAX_TORQUE),
     ):
         """Apply motor torques to joints based on action inputs.
 
         Actions are interpreted as target torques, clamped to max_torque.
         """
-        for j in range(NUM_JOINTS):
+        for j in range(Self.NUM_JOINTS):
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
 
             var body_a = Int(state[env, joint_off + JOINT_BODY_A])
@@ -317,7 +318,7 @@ struct ArticulatedChain[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-        target_angles: StaticTuple[Scalar[dtype], NUM_JOINTS],
+        target_angles: InlineArray[Scalar[dtype], Self.NUM_JOINTS],
         kp: Scalar[dtype] = Scalar[dtype](DEFAULT_KP),
         kd: Scalar[dtype] = Scalar[dtype](DEFAULT_KD),
         max_torque: Scalar[dtype] = Scalar[dtype](DEFAULT_MAX_TORQUE),
@@ -326,7 +327,7 @@ struct ArticulatedChain[
 
         torque = kp * (target - current) - kd * velocity
         """
-        for j in range(NUM_JOINTS):
+        for j in range(Self.NUM_JOINTS):
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
 
             var body_a = Int(state[env, joint_off + JOINT_BODY_A])
@@ -397,12 +398,12 @@ struct ArticulatedChain[
         var root_off = BODIES_OFFSET
 
         return (
-            state[env, root_off + IDX_X],
-            state[env, root_off + IDX_Y],
-            state[env, root_off + IDX_ANGLE],
-            state[env, root_off + IDX_VX],
-            state[env, root_off + IDX_VY],
-            state[env, root_off + IDX_OMEGA],
+            rebind[Scalar[dtype]](state[env, root_off + IDX_X]),
+            rebind[Scalar[dtype]](state[env, root_off + IDX_Y]),
+            rebind[Scalar[dtype]](state[env, root_off + IDX_ANGLE]),
+            rebind[Scalar[dtype]](state[env, root_off + IDX_VX]),
+            rebind[Scalar[dtype]](state[env, root_off + IDX_VY]),
+            rebind[Scalar[dtype]](state[env, root_off + IDX_OMEGA]),
         )
 
     @staticmethod
@@ -421,11 +422,11 @@ struct ArticulatedChain[
         var com_x = Scalar[dtype](0.0)
         var com_y = Scalar[dtype](0.0)
 
-        for i in range(NUM_BODIES):
+        for i in range(Self.NUM_BODIES):
             var body_off = BODIES_OFFSET + i * BODY_STATE_SIZE
-            var mass = state[env, body_off + IDX_MASS]
-            var x = state[env, body_off + IDX_X]
-            var y = state[env, body_off + IDX_Y]
+            var mass = rebind[Scalar[dtype]](state[env, body_off + IDX_MASS])
+            var x = rebind[Scalar[dtype]](state[env, body_off + IDX_X])
+            var y = rebind[Scalar[dtype]](state[env, body_off + IDX_Y])
 
             com_x += mass * x
             com_y += mass * y

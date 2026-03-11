@@ -5,7 +5,7 @@ ready-to-use model definitions. All conform to the Model trait and
 work with Trainer, NetworkState, optimizers, and losses.
 
 Usage:
-    from nn.composites import ResBlock, ResNet, LeNet8x8, NatureDQN, FFN
+    from mojo_rl.nn.composites import ResBlock, ResNet, LeNet8x8, NatureDQN, FFN
 """
 
 from .model import (

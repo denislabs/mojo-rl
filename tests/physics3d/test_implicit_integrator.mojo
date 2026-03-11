@@ -1,14 +1,16 @@
 """Test for full implicit integrator compilation and basic functionality."""
 
-from physics3d.dynamics.lu_factorization import (
+from mojo_rl.physics3d.dynamics.lu_factorization import (
     lu_factor,
     lu_solve,
     compute_M_inv_from_lu,
 )
-from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
-from physics3d.integrator.implicit_integrator import ImplicitIntegrator
-from physics3d.solver.pgs_solver import PGSSolver
-from physics3d.types import Model, Data
+from mojo_rl.physics3d.dynamics.velocity_derivatives import (
+    compute_rne_vel_derivative,
+)
+from mojo_rl.physics3d.integrator.implicit_integrator import ImplicitIntegrator
+from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
+from mojo_rl.physics3d.types import Model, Data
 from std.testing import assert_true, TestSuite
 
 

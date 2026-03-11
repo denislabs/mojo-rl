@@ -19,10 +19,10 @@ Expected output:
 """
 
 from std.collections import InlineArray
-from physics3d.parser import ParsedModel, parse_xml
-from physics3d.types import Model, Data, ConeType
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from mojo_rl.physics3d.parser import ParsedModel, parse_xml
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from std.testing import assert_true, TestSuite
 
 # =============================================================================

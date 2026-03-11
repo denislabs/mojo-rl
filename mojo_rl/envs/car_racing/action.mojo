@@ -3,7 +3,7 @@
 This module defines the action representation for the GPU-enabled CarRacing environment.
 """
 
-from core import Action
+from mojo_rl.core import Action
 
 
 struct CarRacingAction[DTYPE: DType](

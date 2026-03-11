@@ -20,8 +20,8 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.dqn_cnn import DQNCNNAgent
-from envs.arcade_games.pong import PongPixelEnv
+from mojo_rl.deep_agents.dqn_cnn import DQNCNNAgent
+from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 
 # =============================================================================

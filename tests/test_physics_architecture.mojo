@@ -6,7 +6,7 @@ results to the original PhysicsWorld API.
 
 from std.gpu.host import DeviceContext
 
-from physics2d import (
+from mojo_rl.physics2d import (
     dtype,
     PhysicsWorld,
     PhysicsLayout,

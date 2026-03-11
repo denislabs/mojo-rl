@@ -13,8 +13,8 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander_gpu import LunarLanderGPU, gpu_dtype
+from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.envs.lunar_lander_gpu import LunarLanderGPU, gpu_dtype
 
 
 # =============================================================================
@@ -149,7 +149,12 @@ fn main() raises:
 
             # Step environments
             LunarLanderGPU.step_kernel_gpu[EVAL_ENVS, OBS_DIM](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
             )
             ctx.synchronize()
 

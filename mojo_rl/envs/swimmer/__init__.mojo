@@ -20,8 +20,8 @@ Action space (2D):
 Reward: x_velocity - 0.0001 * sum(action²). Never terminates.
 
 Example usage:
-    from envs.swimmer import Swimmer
-    from core import ContAction
+    from mojo_rl.envs.swimmer import Swimmer
+    from mojo_rl.core import ContAction
 
     var env = Swimmer()
     var state = env.reset()

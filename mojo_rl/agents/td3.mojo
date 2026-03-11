@@ -16,9 +16,9 @@ References:
 - Original code: https://github.com/sfujim/TD3
 
 Example usage:
-    from core import PolynomialFeatures, ContinuousReplayBuffer
-    from agents.td3 import TD3Agent
-    from envs import PendulumEnv
+    from mojo_rl.core import PolynomialFeatures, ContinuousReplayBuffer
+    from mojo_rl.agents.td3 import TD3Agent
+    from mojo_rl.envs import PendulumEnv
 
     var env = PendulumEnv()
     var features = PendulumEnv.make_poly_features(degree=2)
@@ -47,17 +47,17 @@ Example usage:
 
 from std.math import exp, tanh, sqrt
 from std.random import random_float64
-from core.continuous_replay_buffer import (
+from mojo_rl.core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
-from core import (
+from mojo_rl.core import (
     PolynomialFeatures,
     TrainingMetrics,
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from nn.gpu.random import gaussian_noise
+from mojo_rl.nn.gpu.random import gaussian_noise
 
 
 struct TD3Agent(Copyable, Movable):
@@ -131,21 +131,21 @@ struct TD3Agent(Copyable, Movable):
         """Initialize TD3 agent.
 
         Args:
-            num_state_features: Dimensionality of state feature vectors
-            action_scale: Maximum action magnitude (output clipped to [-action_scale, action_scale])
-            actor_lr: Actor learning rate (lower is more stable)
-            critic_lr: Critic learning rate
-            discount_factor: Discount factor γ
-            tau: Soft update rate for target networks (typical: 0.001-0.01)
-            noise_std: Initial standard deviation of Gaussian exploration noise
-            noise_std_min: Minimum noise after decay
-            noise_decay: Noise decay rate per episode (1.0 = no decay)
-            reward_scale: Scale factor for rewards (helps with large reward ranges)
-            updates_per_step: Number of gradient updates per environment step
-            policy_delay: Update actor every policy_delay critic updates (default: 2)
-            target_noise_std: Standard deviation of target policy smoothing noise
-            target_noise_clip: Clip range for target noise (default: 0.5)
-            init_std: Standard deviation for weight initialization
+            num_state_features: Dimensionality of state feature vectors.
+            action_scale: Maximum action magnitude (output clipped to [-action_scale, action_scale]).
+            actor_lr: Actor learning rate (lower is more stable).
+            critic_lr: Critic learning rate.
+            discount_factor: Discount factor γ.
+            tau: Soft update rate for target networks (typical: 0.001-0.01).
+            noise_std: Initial standard deviation of Gaussian exploration noise.
+            noise_std_min: Minimum noise after decay.
+            noise_decay: Noise decay rate per episode (1.0 = no decay).
+            reward_scale: Scale factor for rewards (helps with large reward ranges).
+            updates_per_step: Number of gradient updates per environment step.
+            policy_delay: Update actor every policy_delay critic updates (default: 2).
+            target_noise_std: Standard deviation of target policy smoothing noise.
+            target_noise_clip: Clip range for target noise (default: 0.5).
+            init_std: Standard deviation for weight initialization.
         """
         self.num_state_features = num_state_features
         self.num_critic_features = num_state_features + 2  # +2 for [a, a²]
@@ -282,10 +282,10 @@ struct TD3Agent(Copyable, Movable):
         μ(s) = tanh(w · φ(s)) * action_scale
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Deterministic action in [-action_scale, action_scale]
+            Deterministic action in [-action_scale, action_scale].
         """
         var raw_output = self._compute_actor_output(
             features, self.actor_weights
@@ -298,10 +298,10 @@ struct TD3Agent(Copyable, Movable):
         a = μ(s) + N(0, σ²)
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Noisy action clipped to [-action_scale, action_scale]
+            Noisy action clipped to [-action_scale, action_scale].
         """
         var action = self.select_action(features)
 
@@ -405,11 +405,11 @@ struct TD3Agent(Copyable, Movable):
         Q1(s, a) = w · [φ(s); a; a²]
 
         Args:
-            state_features: State feature vector φ(s)
-            action: Action value
+            state_features: State feature vector φ(s).
+            action: Action value.
 
         Returns:
-            Q1-value estimate
+            Q1-value estimate.
         """
         var critic_features = self._build_critic_features(
             state_features, action
@@ -428,11 +428,11 @@ struct TD3Agent(Copyable, Movable):
         Q2(s, a) = w · [φ(s); a; a²]
 
         Args:
-            state_features: State feature vector φ(s)
-            action: Action value
+            state_features: State feature vector φ(s).
+            action: Action value.
 
         Returns:
-            Q2-value estimate
+            Q2-value estimate.
         """
         var critic_features = self._build_critic_features(
             state_features, action
@@ -475,11 +475,11 @@ struct TD3Agent(Copyable, Movable):
         """Get minimum Q-value from twin critics (for conservative estimates).
 
         Args:
-            state_features: State feature vector φ(s)
-            action: Action value
+            state_features: State feature vector φ(s).
+            action: Action value.
 
         Returns:
-            min(Q1(s,a), Q2(s,a))
+            Min(Q1(s,a), Q2(s,a)).
         """
         var q1 = self.get_q1_value(state_features, action)
         var q2 = self.get_q2_value(state_features, action)
@@ -501,7 +501,7 @@ struct TD3Agent(Copyable, Movable):
            - Soft update all target networks
 
         Args:
-            batch: List of ContinuousTransition objects
+            batch: List of ContinuousTransition objects.
         """
         if len(batch) == 0:
             return
@@ -743,15 +743,19 @@ struct TD3Agent(Copyable, Movable):
                 var state_features = features.get_features_simd4(obs)
 
                 # Select action (with or without noise)
-                var action: Float64
+                var action: Scalar[E.dtype]
                 if episode < warmup_episodes:
                     # Random exploration during warmup
-                    action = (random_float64() * 2.0 - 1.0) * self.action_scale
+                    action = Scalar[E.dtype](
+                        (random_float64() * 2.0 - 1.0) * self.action_scale
+                    )
                 else:
-                    action = self.select_action_with_noise(state_features)
+                    action = Scalar[E.dtype](
+                        self.select_action_with_noise(state_features)
+                    )
 
                 # Take action in environment
-                var result = _step_continuous_f64(env, action)
+                var result = env.step_continuous(action)
                 var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
@@ -763,7 +767,11 @@ struct TD3Agent(Copyable, Movable):
                 # Store transition in replay buffer with scaled reward
                 var scaled_reward = reward * self.reward_scale
                 buffer.push(
-                    state_features, action, scaled_reward, next_features, done
+                    state_features,
+                    Float64(action),
+                    scaled_reward,
+                    next_features,
+                    done,
                 )
 
                 # Update agent if we have enough samples
@@ -871,7 +879,7 @@ struct TD3Agent(Copyable, Movable):
                 # Use deterministic action (no noise)
                 var action = self.select_action(state_features)
 
-                var result = _step_continuous_f64(env, action)
+                var result = env.step_continuous(action)
                 var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
@@ -935,16 +943,3 @@ fn _list_to_simd4_f64[
     for i in range(n):
         result[i] = Float64(obs[i])
     return result
-
-
-fn _step_continuous_f64[
-    E: BoxContinuousActionEnv
-](mut env: E, action: Float64) -> Tuple[
-    List[Scalar[E.dtype]], Scalar[E.dtype], Bool
-]:
-    """Step the environment with a Float64 action.
-
-    Using E: BoxContinuousActionEnv alone (not combined with RenderableEnv)
-    allows the Mojo compiler to unify E.dtype for action.cast and step_continuous.
-    """
-    return _step_continuous_f64(env, action)

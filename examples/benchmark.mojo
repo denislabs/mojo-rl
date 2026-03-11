@@ -1,8 +1,8 @@
 """Benchmark all RL algorithms on GridWorld."""
 
-from core import evaluate_tabular
-from envs import GridWorldEnv
-from agents import (
+from mojo_rl.core import evaluate_tabular
+from mojo_rl.envs import GridWorldEnv
+from mojo_rl.agents import (
     QLearningAgent,
     SARSAAgent,
     ExpectedSARSAAgent,

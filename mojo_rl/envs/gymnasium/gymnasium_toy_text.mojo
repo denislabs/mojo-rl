@@ -11,7 +11,7 @@ All implement DiscreteEnv and RenderableEnv traits.
 """
 
 from std.python import Python, PythonObject
-from core import State, Action, DiscreteEnv, RenderableEnv
+from mojo_rl.core import State, Action, DiscreteEnv, RenderableEnv
 
 
 # ============================================================================

@@ -4,8 +4,8 @@ Wraps AtariEnvironment with the standard RL trait interface, providing
 RAM or pixel observations for use with DQN and other discrete-action agents.
 
 Usage:
-    from envs.atari import AtariEnv, load_rom
-    from envs.atari.games import PongDef
+    from mojo_rl.envs.atari import AtariEnv, load_rom
+    from mojo_rl.envs.atari.games import PongDef
 
     var rom = load_rom("pong.bin")
     var env = AtariEnv[PongDef](rom.data, rom.size)  # RAM mode (128D obs)
@@ -17,7 +17,7 @@ Usage:
 """
 
 from std.memory import alloc, memset
-from core import State, Action, BoxDiscreteActionEnv
+from mojo_rl.core import State, Action, BoxDiscreteActionEnv
 from .environment import AtariEnvironment, GameDef
 from .cpu6502 import run_frame, run_frame_with_video
 from .riot import set_action

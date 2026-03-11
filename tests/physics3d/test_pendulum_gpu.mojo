@@ -16,9 +16,9 @@ from std.testing import assert_true
 from std.math import sqrt, sin, cos, pi
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from physics3d.types import Model, Data
-from physics3d.integrator import DefaultIntegrator
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.integrator import DefaultIntegrator
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size,
     qpos_offset,
@@ -26,8 +26,8 @@ from physics3d.gpu.constants import (
     xpos_offset,
     integrator_workspace_size,
 )
-from physics3d.solver import PGSSolver
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.solver import PGSSolver
+from mojo_rl.physics3d.gpu.buffer_utils import (
     create_state_buffer,
     create_model_buffer,
     copy_model_to_buffer,

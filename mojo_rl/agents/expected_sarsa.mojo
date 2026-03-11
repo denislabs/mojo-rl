@@ -1,6 +1,11 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core import (
+    TabularAgent,
+    DiscreteEnv,
+    RenderableEnv,
+    TrainingMetrics,
+)
 
 
 struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
@@ -65,7 +70,7 @@ struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.q_table.get_best_action(state_idx)
 

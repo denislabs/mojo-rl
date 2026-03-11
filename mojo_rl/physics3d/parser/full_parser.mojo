@@ -70,7 +70,12 @@ from .flat_model import (
     CAM_MODE_TARGETBODY,
     CAM_MODE_TARGETBODYCOM,
 )
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
 
 
 # =============================================================================

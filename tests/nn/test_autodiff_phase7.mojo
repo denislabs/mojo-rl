@@ -12,8 +12,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     Conv2D,
     MaxPool2D,
@@ -58,6 +58,7 @@ fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
 # Test 1: Conv2D 1x1 conv = pointwise matmul
 # =============================================================================
 
+
 fn test_conv2d_1x1() -> Int:
     print_header("Conv2D 1x1 conv = pointwise matmul")
     var fails = 0
@@ -76,10 +77,18 @@ fn test_conv2d_1x1() -> Int:
     var output = make_list(BATCH * C.OUT_DIM)
     var cache = make_list(BATCH * C.CACHE_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     C.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
@@ -95,13 +104,19 @@ fn test_conv2d_1x1() -> Int:
                 for w in range(W):
                     var expected: Float64 = Float64(params[OUT_CH * IN_CH + oc])
                     for ic in range(IN_CH):
-                        expected += Float64(params[oc * IN_CH + ic]) * Float64(inp[b * C.IN_DIM + ic * H * W + h * W + w])
-                    var got = Float64(output[b * C.OUT_DIM + oc * H * W + h * W + w])
+                        expected += Float64(params[oc * IN_CH + ic]) * Float64(
+                            inp[b * C.IN_DIM + ic * H * W + h * W + w]
+                        )
+                    var got = Float64(
+                        output[b * C.OUT_DIM + oc * H * W + h * W + w]
+                    )
                     var d = math_abs(expected - got)
                     if d > max_err:
                         max_err = d
 
-    check(max_err < 1e-4, "1x1 conv forward max_err = " + String(max_err), fails)
+    check(
+        max_err < 1e-4, "1x1 conv forward max_err = " + String(max_err), fails
+    )
 
     return fails
 
@@ -110,6 +125,7 @@ fn test_conv2d_1x1() -> Int:
 # Test 2: Conv2D known 3x3 kernel on 5x5 input
 # =============================================================================
 
+
 fn test_conv2d_3x3() -> Int:
     print_header("Conv2D 3x3 kernel on 5x5 input")
     var fails = 0
@@ -117,7 +133,9 @@ fn test_conv2d_3x3() -> Int:
     comptime BATCH = 1
     comptime C = Conv2D[1, 1, 3, 1, 0, 5, 5]
 
-    check(C.out_h == 3, "out_h = 3 for 5x5 input, 3x3 kernel, no padding", fails)
+    check(
+        C.out_h == 3, "out_h = 3 for 5x5 input, 3x3 kernel, no padding", fails
+    )
     check(C.out_w == 3, "out_w = 3", fails)
 
     # Input: 1..25
@@ -132,10 +150,18 @@ fn test_conv2d_3x3() -> Int:
     var output = make_list(C.OUT_DIM)
     var cache = make_list(BATCH * C.CACHE_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     C.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
@@ -157,7 +183,11 @@ fn test_conv2d_3x3() -> Int:
         if d > max_err:
             max_err = d
 
-    check(max_err < 1e-5, "3x3 center kernel forward max_err = " + String(max_err), fails)
+    check(
+        max_err < 1e-5,
+        "3x3 center kernel forward max_err = " + String(max_err),
+        fails,
+    )
 
     return fails
 
@@ -165,6 +195,7 @@ fn test_conv2d_3x3() -> Int:
 # =============================================================================
 # Test 3: Conv2D finite difference gradient check
 # =============================================================================
+
 
 fn test_conv2d_grad() -> Int:
     print_header("Conv2D finite difference gradient check")
@@ -184,13 +215,27 @@ fn test_conv2d_grad() -> Int:
     var grad_input = make_list(BATCH * C.IN_DIM)
     var grad_params = make_list(C.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(C.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     C.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
     C.vjp[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
@@ -204,22 +249,34 @@ fn test_conv2d_grad() -> Int:
         inp[idx] = orig + Scalar[dtype](eps)
         var out_plus = make_list(BATCH * C.OUT_DIM)
         var cache_tmp = make_list(BATCH * C.CACHE_SIZE)
-        var out_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](out_plus.unsafe_ptr())
-        var cch_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache_tmp.unsafe_ptr())
+        var out_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+        ](out_plus.unsafe_ptr())
+        var cch_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp.unsafe_ptr())
         C.eval[BATCH](inp_lt, out_lt2, par_lt, cch_lt2)
 
         inp[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * C.OUT_DIM)
         var cache_tmp2 = make_list(BATCH * C.CACHE_SIZE)
-        var out_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](out_minus.unsafe_ptr())
-        var cch_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache_tmp2.unsafe_ptr())
+        var out_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+        ](out_minus.unsafe_ptr())
+        var cch_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp2.unsafe_ptr())
         C.eval[BATCH](inp_lt, out_lt3, par_lt, cch_lt3)
 
         inp[idx] = orig
 
         var fd_grad: Float64 = 0
         for j in range(BATCH * C.OUT_DIM):
-            fd_grad += Float64(grad_output[j]) * (Float64(out_plus[j]) - Float64(out_minus[j])) / (2 * eps)
+            fd_grad += (
+                Float64(grad_output[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2 * eps)
+            )
 
         var analytic = Float64(grad_input[idx])
         var denom = max(math_abs(fd_grad), math_abs(analytic), 1e-3)
@@ -227,7 +284,11 @@ fn test_conv2d_grad() -> Int:
         if err > max_input_err:
             max_input_err = err
 
-    check(max_input_err < 0.05, "Conv2D input grad FD max_rel_err = " + String(max_input_err), fails)
+    check(
+        max_input_err < 0.05,
+        "Conv2D input grad FD max_rel_err = " + String(max_input_err),
+        fails,
+    )
 
     # Param gradient check
     var max_param_err: Float64 = 0
@@ -236,22 +297,34 @@ fn test_conv2d_grad() -> Int:
         params[idx] = orig + Scalar[dtype](eps)
         var out_plus = make_list(BATCH * C.OUT_DIM)
         var cache_tmp = make_list(BATCH * C.CACHE_SIZE)
-        var out_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](out_plus.unsafe_ptr())
-        var cch_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache_tmp.unsafe_ptr())
+        var out_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+        ](out_plus.unsafe_ptr())
+        var cch_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp.unsafe_ptr())
         C.eval[BATCH](inp_lt, out_lt2, par_lt, cch_lt2)
 
         params[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * C.OUT_DIM)
         var cache_tmp2 = make_list(BATCH * C.CACHE_SIZE)
-        var out_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin](out_minus.unsafe_ptr())
-        var cch_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin](cache_tmp2.unsafe_ptr())
+        var out_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
+        ](out_minus.unsafe_ptr())
+        var cch_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp2.unsafe_ptr())
         C.eval[BATCH](inp_lt, out_lt3, par_lt, cch_lt3)
 
         params[idx] = orig
 
         var fd_grad: Float64 = 0
         for j in range(BATCH * C.OUT_DIM):
-            fd_grad += Float64(grad_output[j]) * (Float64(out_plus[j]) - Float64(out_minus[j])) / (2 * eps)
+            fd_grad += (
+                Float64(grad_output[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2 * eps)
+            )
 
         var analytic = Float64(grad_params[idx])
         var denom = max(math_abs(fd_grad), math_abs(analytic), 1e-3)
@@ -259,7 +332,11 @@ fn test_conv2d_grad() -> Int:
         if err > max_param_err:
             max_param_err = err
 
-    check(max_param_err < 1e-2, "Conv2D param grad FD max_rel_err = " + String(max_param_err), fails)
+    check(
+        max_param_err < 1e-2,
+        "Conv2D param grad FD max_rel_err = " + String(max_param_err),
+        fails,
+    )
 
     return fails
 
@@ -267,6 +344,7 @@ fn test_conv2d_grad() -> Int:
 # =============================================================================
 # Test 4: MaxPool2D known output
 # =============================================================================
+
 
 fn test_maxpool2d_forward() -> Int:
     print_header("MaxPool2D known output")
@@ -287,17 +365,41 @@ fn test_maxpool2d_forward() -> Int:
     var cache = make_list(BATCH * P.CACHE_SIZE)
     var params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
-    check(Float64(output[0]) == 6.0, "pool[0,0] = 6 (got " + String(output[0]) + ")", fails)
-    check(Float64(output[1]) == 8.0, "pool[0,1] = 8 (got " + String(output[1]) + ")", fails)
-    check(Float64(output[2]) == 14.0, "pool[1,0] = 14 (got " + String(output[2]) + ")", fails)
-    check(Float64(output[3]) == 16.0, "pool[1,1] = 16 (got " + String(output[3]) + ")", fails)
+    check(
+        Float64(output[0]) == 6.0,
+        "pool[0,0] = 6 (got " + String(output[0]) + ")",
+        fails,
+    )
+    check(
+        Float64(output[1]) == 8.0,
+        "pool[0,1] = 8 (got " + String(output[1]) + ")",
+        fails,
+    )
+    check(
+        Float64(output[2]) == 14.0,
+        "pool[1,0] = 14 (got " + String(output[2]) + ")",
+        fails,
+    )
+    check(
+        Float64(output[3]) == 16.0,
+        "pool[1,1] = 16 (got " + String(output[3]) + ")",
+        fails,
+    )
 
     return fails
 
@@ -305,6 +407,7 @@ fn test_maxpool2d_forward() -> Int:
 # =============================================================================
 # Test 5: MaxPool2D gradient routing
 # =============================================================================
+
 
 fn test_maxpool2d_grad() -> Int:
     print_header("MaxPool2D gradient routing")
@@ -321,10 +424,18 @@ fn test_maxpool2d_grad() -> Int:
     var cache = make_list(BATCH * P.CACHE_SIZE)
     var params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
@@ -337,9 +448,15 @@ fn test_maxpool2d_grad() -> Int:
     var grad_input = make_list(P.IN_DIM)
     var grad_params = make_list(P.PARAM_SIZE)
 
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     P.vjp[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
 
@@ -362,6 +479,7 @@ fn test_maxpool2d_grad() -> Int:
 # Test 6: AvgPool2D forward
 # =============================================================================
 
+
 fn test_avgpool2d_forward() -> Int:
     print_header("AvgPool2D forward")
     var fails = 0
@@ -380,17 +498,41 @@ fn test_avgpool2d_forward() -> Int:
     var cache = make_list(P.CACHE_SIZE)
     var params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
-    check(math_abs(Float64(output[0]) - 3.5) < 1e-5, "avg[0,0] = 3.5 (got " + String(output[0]) + ")", fails)
-    check(math_abs(Float64(output[1]) - 5.5) < 1e-5, "avg[0,1] = 5.5 (got " + String(output[1]) + ")", fails)
-    check(math_abs(Float64(output[2]) - 11.5) < 1e-5, "avg[1,0] = 11.5 (got " + String(output[2]) + ")", fails)
-    check(math_abs(Float64(output[3]) - 13.5) < 1e-5, "avg[1,1] = 13.5 (got " + String(output[3]) + ")", fails)
+    check(
+        math_abs(Float64(output[0]) - 3.5) < 1e-5,
+        "avg[0,0] = 3.5 (got " + String(output[0]) + ")",
+        fails,
+    )
+    check(
+        math_abs(Float64(output[1]) - 5.5) < 1e-5,
+        "avg[0,1] = 5.5 (got " + String(output[1]) + ")",
+        fails,
+    )
+    check(
+        math_abs(Float64(output[2]) - 11.5) < 1e-5,
+        "avg[1,0] = 11.5 (got " + String(output[2]) + ")",
+        fails,
+    )
+    check(
+        math_abs(Float64(output[3]) - 13.5) < 1e-5,
+        "avg[1,1] = 13.5 (got " + String(output[3]) + ")",
+        fails,
+    )
 
     return fails
 
@@ -398,6 +540,7 @@ fn test_avgpool2d_forward() -> Int:
 # =============================================================================
 # Test 7: AvgPool2D gradient (uniform distribution)
 # =============================================================================
+
 
 fn test_avgpool2d_grad() -> Int:
     print_header("AvgPool2D gradient (uniform distribution)")
@@ -411,10 +554,18 @@ fn test_avgpool2d_grad() -> Int:
     var cache = make_list(P.CACHE_SIZE)
     var params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
@@ -425,9 +576,15 @@ fn test_avgpool2d_grad() -> Int:
     var grad_input = make_list(P.IN_DIM)
     var grad_params = make_list(P.PARAM_SIZE)
 
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     P.vjp[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
 
@@ -437,7 +594,11 @@ fn test_avgpool2d_grad() -> Int:
         if err > max_err:
             max_err = err
 
-    check(max_err < 1e-5, "AvgPool2D uniform grad max_err = " + String(max_err), fails)
+    check(
+        max_err < 1e-5,
+        "AvgPool2D uniform grad max_err = " + String(max_err),
+        fails,
+    )
 
     return fails
 
@@ -445,6 +606,7 @@ fn test_avgpool2d_grad() -> Int:
 # =============================================================================
 # Test 8: AvgPool2D finite difference gradient check
 # =============================================================================
+
 
 fn test_avgpool2d_fd() -> Int:
     print_header("AvgPool2D finite difference gradient check")
@@ -463,13 +625,27 @@ fn test_avgpool2d_fd() -> Int:
     var grad_input = make_list(BATCH * P.IN_DIM)
     var grad_params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
     P.vjp[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
@@ -481,29 +657,47 @@ fn test_avgpool2d_fd() -> Int:
         inp[idx] = orig + Scalar[dtype](eps)
         var out_plus = make_list(BATCH * P.OUT_DIM)
         var cache_tmp = make_list(P.CACHE_SIZE)
-        var out_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](out_plus.unsafe_ptr())
-        var cch_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache_tmp.unsafe_ptr())
+        var out_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+        ](out_plus.unsafe_ptr())
+        var cch_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp.unsafe_ptr())
         P.eval[BATCH](inp_lt, out_lt2, par_lt, cch_lt2)
 
         inp[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * P.OUT_DIM)
         var cache_tmp2 = make_list(P.CACHE_SIZE)
-        var out_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](out_minus.unsafe_ptr())
-        var cch_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache_tmp2.unsafe_ptr())
+        var out_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+        ](out_minus.unsafe_ptr())
+        var cch_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp2.unsafe_ptr())
         P.eval[BATCH](inp_lt, out_lt3, par_lt, cch_lt3)
 
         inp[idx] = orig
 
         var fd_grad: Float64 = 0
         for j in range(BATCH * P.OUT_DIM):
-            fd_grad += Float64(grad_output[j]) * (Float64(out_plus[j]) - Float64(out_minus[j])) / (2 * eps)
+            fd_grad += (
+                Float64(grad_output[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2 * eps)
+            )
 
         var analytic = Float64(grad_input[idx])
-        var err = math_abs(fd_grad - analytic) / (math_abs(fd_grad) + math_abs(analytic) + 1e-8)
+        var err = math_abs(fd_grad - analytic) / (
+            math_abs(fd_grad) + math_abs(analytic) + 1e-8
+        )
         if err > max_err:
             max_err = err
 
-    check(max_err < 1e-3, "AvgPool2D input grad FD max_rel_err = " + String(max_err), fails)
+    check(
+        max_err < 1e-3,
+        "AvgPool2D input grad FD max_rel_err = " + String(max_err),
+        fails,
+    )
 
     return fails
 
@@ -511,6 +705,7 @@ fn test_avgpool2d_fd() -> Int:
 # =============================================================================
 # Test 9: MaxPool2D finite difference gradient check
 # =============================================================================
+
 
 fn test_maxpool2d_fd() -> Int:
     print_header("MaxPool2D finite difference gradient check")
@@ -532,13 +727,27 @@ fn test_maxpool2d_fd() -> Int:
     var grad_input = make_list(BATCH * P.IN_DIM)
     var grad_params = make_list(P.PARAM_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, P.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     P.eval[BATCH](inp_lt, out_lt, par_lt, cch_lt)
     P.vjp[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
@@ -550,29 +759,47 @@ fn test_maxpool2d_fd() -> Int:
         inp[idx] = orig + Scalar[dtype](eps)
         var out_plus = make_list(BATCH * P.OUT_DIM)
         var cache_tmp = make_list(BATCH * P.CACHE_SIZE)
-        var out_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](out_plus.unsafe_ptr())
-        var cch_lt2 = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache_tmp.unsafe_ptr())
+        var out_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+        ](out_plus.unsafe_ptr())
+        var cch_lt2 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp.unsafe_ptr())
         P.eval[BATCH](inp_lt, out_lt2, par_lt, cch_lt2)
 
         inp[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * P.OUT_DIM)
         var cache_tmp2 = make_list(BATCH * P.CACHE_SIZE)
-        var out_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin](out_minus.unsafe_ptr())
-        var cch_lt3 = LayoutTensor[dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin](cache_tmp2.unsafe_ptr())
+        var out_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
+        ](out_minus.unsafe_ptr())
+        var cch_lt3 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
+        ](cache_tmp2.unsafe_ptr())
         P.eval[BATCH](inp_lt, out_lt3, par_lt, cch_lt3)
 
         inp[idx] = orig
 
         var fd_grad: Float64 = 0
         for j in range(BATCH * P.OUT_DIM):
-            fd_grad += Float64(grad_output[j]) * (Float64(out_plus[j]) - Float64(out_minus[j])) / (2 * eps)
+            fd_grad += (
+                Float64(grad_output[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2 * eps)
+            )
 
         var analytic = Float64(grad_input[idx])
-        var err = math_abs(fd_grad - analytic) / (math_abs(fd_grad) + math_abs(analytic) + 1e-8)
+        var err = math_abs(fd_grad - analytic) / (
+            math_abs(fd_grad) + math_abs(analytic) + 1e-8
+        )
         if err > max_err:
             max_err = err
 
-    check(max_err < 1e-3, "MaxPool2D input grad FD max_rel_err = " + String(max_err), fails)
+    check(
+        max_err < 1e-3,
+        "MaxPool2D input grad FD max_rel_err = " + String(max_err),
+        fails,
+    )
 
     return fails
 
@@ -580,6 +807,7 @@ fn test_maxpool2d_fd() -> Int:
 # =============================================================================
 # Test 10: Conv2D -> ReLU -> MaxPool2D -> Flatten -> Dense composition
 # =============================================================================
+
 
 fn test_conv_pool_dense_composition() -> Int:
     print_header("Conv2D -> ReLU -> MaxPool2D -> Flatten -> Dense compiles")
@@ -601,7 +829,9 @@ fn test_conv_pool_dense_composition() -> Int:
     ]
 
     check(Chain.IN_DIM == 64, "Chain IN_DIM = " + String(Chain.IN_DIM), fails)
-    check(Chain.OUT_DIM == 10, "Chain OUT_DIM = " + String(Chain.OUT_DIM), fails)
+    check(
+        Chain.OUT_DIM == 10, "Chain OUT_DIM = " + String(Chain.OUT_DIM), fails
+    )
 
     print("  INFO: Chain PARAM_SIZE = " + String(Chain.PARAM_SIZE))
     print("  INFO: Chain CACHE_SIZE = " + String(Chain.CACHE_SIZE))
@@ -614,10 +844,18 @@ fn test_conv_pool_dense_composition() -> Int:
     var output = make_list(BATCH * Chain.OUT_DIM)
     var cache = make_list(BATCH * Chain.CACHE_SIZE)
 
-    var inp_lt = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_lt = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin](output.unsafe_ptr())
-    var par_lt = LayoutTensor[dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var cch_lt = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+    var inp_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin
+    ](output.unsafe_ptr())
+    var par_lt = LayoutTensor[
+        dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cch_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
+    ](cache.unsafe_ptr())
 
     Chain.forward[BATCH](inp_lt, out_lt, par_lt, cch_lt)
 
@@ -634,9 +872,15 @@ fn test_conv_pool_dense_composition() -> Int:
     var grad_input = make_list(BATCH * Chain.IN_DIM)
     var grad_params = make_list(Chain.PARAM_SIZE)
 
-    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin](grad_output.unsafe_ptr())
-    var gi_lt = LayoutTensor[dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin](grad_input.unsafe_ptr())
-    var gp_lt = LayoutTensor[dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin](grad_params.unsafe_ptr())
+    var go_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.OUT_DIM), MutAnyOrigin
+    ](grad_output.unsafe_ptr())
+    var gi_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Chain.IN_DIM), MutAnyOrigin
+    ](grad_input.unsafe_ptr())
+    var gp_lt = LayoutTensor[
+        dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
+    ](grad_params.unsafe_ptr())
 
     Chain.backward[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
 
@@ -655,6 +899,7 @@ fn test_conv_pool_dense_composition() -> Int:
 # Test 11: Conv2D with padding preserves spatial dims
 # =============================================================================
 
+
 fn test_conv2d_padding() -> Int:
     print_header("Conv2D with padding=1 preserves spatial dims")
     var fails = 0
@@ -671,6 +916,7 @@ fn test_conv2d_padding() -> Int:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print("Phase 7: Spatial Primitives — Conv2D, MaxPool2D, AvgPool2D")

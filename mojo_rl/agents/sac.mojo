@@ -21,9 +21,9 @@ References:
 - Haarnoja et al. (2018): "Soft Actor-Critic Algorithms and Applications"
 
 Example usage:
-    from core import PolynomialFeatures, ContinuousReplayBuffer
-    from agents.sac import SACAgent
-    from envs import PendulumEnv
+    from mojo_rl.core import PolynomialFeatures, ContinuousReplayBuffer
+    from mojo_rl.agents.sac import SACAgent
+    from mojo_rl.envs import PendulumEnv
 
     var env = PendulumEnv()
     var features = PendulumEnv.make_poly_features(degree=2)
@@ -45,17 +45,17 @@ Example usage:
 
 from std.math import exp, tanh, sqrt, log
 from std.random import random_float64
-from core.continuous_replay_buffer import (
+from mojo_rl.core.continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
-from core import (
+from mojo_rl.core import (
     PolynomialFeatures,
     TrainingMetrics,
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from nn.gpu.random import gaussian_noise
+from mojo_rl.nn.gpu.random import gaussian_noise
 
 
 struct SACAgent(Copyable, Movable):
@@ -124,17 +124,17 @@ struct SACAgent(Copyable, Movable):
         """Initialize SAC agent.
 
         Args:
-            num_state_features: Dimensionality of state feature vectors
-            action_scale: Maximum action magnitude
-            actor_lr: Actor learning rate
-            critic_lr: Critic learning rate
-            discount_factor: Discount factor γ
-            tau: Soft update rate for target networks
-            alpha: Initial entropy coefficient (temperature)
-            auto_alpha: Whether to automatically tune alpha
-            alpha_lr: Learning rate for alpha tuning
-            target_entropy: Target entropy for automatic tuning (default: -1 for 1D action)
-            init_std: Standard deviation for weight initialization
+            num_state_features: Dimensionality of state feature vectors.
+            action_scale: Maximum action magnitude.
+            actor_lr: Actor learning rate.
+            critic_lr: Critic learning rate.
+            discount_factor: Discount factor γ.
+            tau: Soft update rate for target networks.
+            alpha: Initial entropy coefficient (temperature).
+            auto_alpha: Whether to automatically tune alpha.
+            alpha_lr: Learning rate for alpha tuning.
+            target_entropy: Target entropy for automatic tuning (default: -1 for 1D action).
+            init_std: Standard deviation for weight initialization.
         """
         self.num_state_features = num_state_features
         self.num_critic_features = num_state_features + 2
@@ -269,10 +269,10 @@ struct SACAgent(Copyable, Movable):
         π(a|s) = tanh(μ(s) + σ(s) * ε) * action_scale, where ε ~ N(0, 1)
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Sampled action in [-action_scale, action_scale]
+            Sampled action in [-action_scale, action_scale].
         """
         var mean_logstd = self._compute_mean_logstd(features)
         var mean = mean_logstd[0]
@@ -292,10 +292,10 @@ struct SACAgent(Copyable, Movable):
         """Select deterministic action (mean of policy) for evaluation.
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Deterministic action (tanh(mean) * scale)
+            Deterministic action (tanh(mean) * scale).
         """
         var mean_logstd = self._compute_mean_logstd(features)
         var mean = mean_logstd[0]
@@ -312,10 +312,10 @@ struct SACAgent(Copyable, Movable):
         where u is the pre-squashed action.
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Tuple of (action, log_probability)
+            Tuple of (action, log_probability).
         """
         var mean_logstd = self._compute_mean_logstd(features)
         var mean = mean_logstd[0]
@@ -443,7 +443,7 @@ struct SACAgent(Copyable, Movable):
         4. Soft update target networks
 
         Args:
-            batch: List of ContinuousTransition objects
+            batch: List of ContinuousTransition objects.
         """
         if len(batch) == 0:
             return
@@ -755,7 +755,7 @@ struct SACAgent(Copyable, Movable):
             var episode_reward: Float64 = 0.0
             var steps = 0
 
-            for step in range(max_steps_per_episode):
+            for _ in range(max_steps_per_episode):
                 var state_features = features.get_features_simd4(obs)
 
                 # Select action
@@ -766,7 +766,7 @@ struct SACAgent(Copyable, Movable):
                     action = self.select_action(state_features)
 
                 # Take action
-                var result = _step_continuous_f64(env, action)
+                var result = env.step_continuous_vec[DType.float64]([action])
                 var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
@@ -869,7 +869,7 @@ struct SACAgent(Copyable, Movable):
                 var state_features = features.get_features_simd4(obs)
                 var action = self.select_action_deterministic(state_features)
 
-                var result = _step_continuous_f64(env, action)
+                var result = env.step_continuous(action)
                 var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4_f64(next_obs_list)
                 var reward = Float64(result[1])
@@ -926,16 +926,3 @@ fn _list_to_simd4_f64[
     for i in range(n):
         result[i] = Float64(obs[i])
     return result
-
-
-fn _step_continuous_f64[
-    E: BoxContinuousActionEnv
-](mut env: E, action: Float64) -> Tuple[
-    List[Scalar[E.dtype]], Scalar[E.dtype], Bool
-]:
-    """Step the environment with a Float64 action.
-
-    Using E: BoxContinuousActionEnv alone (not combined with RenderableEnv)
-    allows the Mojo compiler to unify E.dtype for action.cast and step_continuous.
-    """
-    return _step_continuous_f64(env, action)

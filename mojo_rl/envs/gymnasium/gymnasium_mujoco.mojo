@@ -22,7 +22,7 @@ Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 """
 
 from std.python import Python, PythonObject
-from core import State, Action, BoxContinuousActionEnv, RenderableEnv
+from mojo_rl.core import State, Action, BoxContinuousActionEnv, RenderableEnv
 
 
 # ============================================================================

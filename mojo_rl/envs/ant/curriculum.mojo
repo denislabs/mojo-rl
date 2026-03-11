@@ -13,7 +13,7 @@ Usage:
     Ant.update_curriculum_gpu(ctx, model_buf, params)
 """
 
-from core.env_traits import CurriculumScheduler
+from mojo_rl.core.env_traits import CurriculumScheduler
 
 
 @fieldwise_init
@@ -63,14 +63,16 @@ struct AntCurriculum(CurriculumScheduler):
         # Linear interpolation: initial + progress * (final - initial)
         params.append(
             Scalar[DTYPE](Self.initial_min_height)
-            + p * (
+            + p
+            * (
                 Scalar[DTYPE](Self.final_min_height)
                 - Scalar[DTYPE](Self.initial_min_height)
             )
         )
         params.append(
             Scalar[DTYPE](Self.initial_max_height)
-            + p * (
+            + p
+            * (
                 Scalar[DTYPE](Self.final_max_height)
                 - Scalar[DTYPE](Self.initial_max_height)
             )

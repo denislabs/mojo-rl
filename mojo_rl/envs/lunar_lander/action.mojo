@@ -1,4 +1,4 @@
-from core import Action
+from mojo_rl.core import Action
 
 
 @fieldwise_init

@@ -10,7 +10,7 @@ Expected output for the inline HalfCheetah XML:
   NACT   = 6  (6 motor actuators)
 """
 
-from physics3d.parser import ParsedModel, parse_xml
+from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from std.io.file import open
 from std.testing import assert_true, TestSuite
 

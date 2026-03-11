@@ -1,12 +1,12 @@
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import Network, NetworkPair
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from nn.constants import dtype
-from nn.initializer import Xavier, Kaiming
-from deep_agents.core import GPUOffPolicyState, OffPolicyState
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import Network, NetworkPair
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.initializer import Xavier, Kaiming
+from mojo_rl.deep_agents.core import GPUOffPolicyState, OffPolicyState
 from std.gpu.host import DeviceContext, DeviceBuffer
-from nn.training import GPUNetworkPair
+from mojo_rl.nn.training import GPUNetworkPair
 
 # =============================================================================
 # TD3CPUState — CPU buffer container for TD3

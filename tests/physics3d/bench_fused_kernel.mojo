@@ -23,10 +23,10 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import NewtonSolver
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.gpu.constants import (
     TPB,
     state_size,
     model_size_with_invweight,
@@ -35,8 +35,8 @@ from physics3d.gpu.constants import (
     qfrc_offset,
     integrator_workspace_size,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -64,9 +64,7 @@ fn noop_kernel[
     DTYPE: DType,
     BATCH: Int,
     SIZE: Int,
-](
-    buf: LayoutTensor[DTYPE, Layout.row_major(BATCH, SIZE), MutAnyOrigin],
-):
+](buf: LayoutTensor[DTYPE, Layout.row_major(BATCH, SIZE), MutAnyOrigin],):
     """No-op kernel: just reads thread index and exits."""
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
@@ -80,9 +78,7 @@ fn noop_2d_kernel[
     DTYPE: DType,
     BATCH: Int,
     SIZE: Int,
-](
-    buf: LayoutTensor[DTYPE, Layout.row_major(BATCH, SIZE), MutAnyOrigin],
-):
+](buf: LayoutTensor[DTYPE, Layout.row_major(BATCH, SIZE), MutAnyOrigin],):
     """No-op 2D kernel (solver-shaped grid): reads thread index and exits."""
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     var tid_y = Int(thread_idx.y)
@@ -97,11 +93,9 @@ fn noop_2d_kernel[
 # =============================================================================
 
 
-fn bench_noop_launches[BATCH: Int](
-    ctx: DeviceContext,
-    num_launches: Int,
-    launches_per_iter: Int,
-) raises:
+fn bench_noop_launches[
+    BATCH: Int
+](ctx: DeviceContext, num_launches: Int, launches_per_iter: Int,) raises:
     """Benchmark pure kernel launch overhead with no-op kernels."""
     comptime SIZE = 16
     var buf = ctx.enqueue_create_buffer[DTYPE](BATCH * SIZE)
@@ -193,18 +187,15 @@ fn bench_noop_launches[BATCH: Int](
         "ms (",
         String(noop_3x_ms / Float64(num_launches) * 1000.0)[:6],
         "us/iter, overhead=",
-        String((noop_3x_ms - noop_1d_ms) / Float64(num_launches) * 1000.0)[
-            :6
-        ],
+        String((noop_3x_ms - noop_1d_ms) / Float64(num_launches) * 1000.0)[:6],
         "us extra)",
     )
     print()
 
 
-fn bench_physics_step[BATCH: Int](
-    ctx: DeviceContext,
-    num_substeps: Int,
-) raises:
+fn bench_physics_step[
+    BATCH: Int
+](ctx: DeviceContext, num_substeps: Int,) raises:
     """Benchmark the actual 3-kernel physics step."""
 
     comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -246,7 +237,14 @@ fn bench_physics_step[BATCH: Int](
     # === Warmup ===
     for _ in range(10):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
         ](ctx, state_buf, model_buf, ws_buf)
     ctx.synchronize()
@@ -262,7 +260,14 @@ fn bench_physics_step[BATCH: Int](
     var t0 = perf_counter_ns()
     for _ in range(num_substeps):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
         ](ctx, state_buf, model_buf, ws_buf)
     ctx.synchronize()
@@ -298,11 +303,11 @@ fn bench_physics_step[BATCH: Int](
     print()
 
 
-fn bench_physics_with_sync[BATCH: Int](
-    ctx: DeviceContext,
-    num_substeps: Int,
-) raises:
-    """Benchmark with synchronize after each kernel to isolate per-kernel timing."""
+fn bench_physics_with_sync[
+    BATCH: Int
+](ctx: DeviceContext, num_substeps: Int,) raises:
+    """Benchmark with synchronize after each kernel to isolate per-kernel timing.
+    """
 
     comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -347,7 +352,14 @@ fn bench_physics_with_sync[BATCH: Int](
     # Warmup
     for _ in range(10):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
         ](ctx, state_buf, model_buf, ws_buf)
     ctx.synchronize()
@@ -371,25 +383,60 @@ fn bench_physics_with_sync[BATCH: Int](
     ](ws_buf.unsafe_ptr())
 
     comptime step_wrapper = EulerIntegrator[SOLVER=NewtonSolver].step_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
+        NGEOM,
     ]
     comptime contact_wrapper = EulerIntegrator[
         SOLVER=NewtonSolver
     ].contact_detection_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        NGEOM,
     ]
     comptime solver_wrapper = NewtonSolver.solve_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, NV, BATCH, WS_SIZE, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        NV,
+        BATCH,
+        WS_SIZE,
+        NGEOM,
         CONE_TYPE=HalfCheetahModel.CONE_TYPE,
     ]
     comptime finalize_wrapper = EulerIntegrator[
         SOLVER=NewtonSolver
     ].step_finalize_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        WS_SIZE,
     ]
 
     var step_ns: Int = 0
@@ -400,21 +447,28 @@ fn bench_physics_with_sync[BATCH: Int](
     for _ in range(num_substeps):
         var ts0 = perf_counter_ns()
         ctx.enqueue_function[step_wrapper, step_wrapper](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.synchronize()
         var ts1 = perf_counter_ns()
 
         ctx.enqueue_function[contact_wrapper, contact_wrapper](
-            state, model,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.synchronize()
         var ts_contact = perf_counter_ns()
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -422,8 +476,11 @@ fn bench_physics_with_sync[BATCH: Int](
         var ts2 = perf_counter_ns()
 
         ctx.enqueue_function[finalize_wrapper, finalize_wrapper](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.synchronize()
         var ts3 = perf_counter_ns()
@@ -490,15 +547,17 @@ fn bench_physics_with_sync[BATCH: Int](
         "us/substep)",
     )
     print(
-        "    NOTE: sync after each kernel adds overhead vs pipelined execution.",
+        (
+            "    NOTE: sync after each kernel adds overhead vs pipelined"
+            " execution."
+        ),
     )
     print()
 
 
-fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
-    ctx: DeviceContext,
-    num_substeps: Int,
-) raises:
+fn bench_physics_step_mt[
+    BATCH: Int, STEP_THREADS: Int
+](ctx: DeviceContext, num_substeps: Int,) raises:
     """Benchmark multi-threaded step kernel vs single-threaded."""
 
     comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
@@ -538,7 +597,14 @@ fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
     # Warmup
     for _ in range(10):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
             STEP_THREADS=1,
         ](ctx, state_buf, model_buf, ws_buf)
@@ -553,7 +619,14 @@ fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
     var t0 = perf_counter_ns()
     for _ in range(num_substeps):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
             STEP_THREADS=1,
         ](ctx, state_buf, model_buf, ws_buf)
@@ -572,7 +645,14 @@ fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
     # Warmup
     for _ in range(10):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
             STEP_THREADS=STEP_THREADS,
         ](ctx, state_buf, model_buf, ws_buf)
@@ -587,7 +667,14 @@ fn bench_physics_step_mt[BATCH: Int, STEP_THREADS: Int](
     var t2 = perf_counter_ns()
     for _ in range(num_substeps):
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM,
             CONE_TYPE=HalfCheetahModel.CONE_TYPE,
             STEP_THREADS=STEP_THREADS,
         ](ctx, state_buf, model_buf, ws_buf)
@@ -641,7 +728,10 @@ fn main() raises:
     print()
     print("Environment: HalfCheetah (NQ=9, NV=9, MAX_CONTACTS=20)")
     print("Solver: Newton (solver_threads=20)")
-    print("4 kernel launches per substep: step(1D) + contact(1D) + solve(2D) + finalize(1D)")
+    print(
+        "4 kernel launches per substep: step(1D) + contact(1D) + solve(2D) +"
+        " finalize(1D)"
+    )
     print()
 
     with DeviceContext() as ctx:
@@ -688,9 +778,7 @@ fn main() raises:
         print("-" * 70)
         print("Section 5: Impact estimate for training (batch=256)")
         print("-" * 70)
-        print(
-            "  Per rollout: 512 steps × 5 frame_skip = 2560 physics substeps"
-        )
+        print("  Per rollout: 512 steps × 5 frame_skip = 2560 physics substeps")
         print("  Per rollout: 2560 × 4 launches = 10240 kernel launches")
         print(
             "  If fusion saves 3 launches/substep: 7680 fewer launches/rollout"

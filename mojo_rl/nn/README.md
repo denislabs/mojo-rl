@@ -117,7 +117,7 @@ comptime DenseTanh[i, o] = AutoDiffChain[MatMul[i, o], BiasAdd[o], TanhOp[o]]
 ## Usage
 
 ```mojo
-from nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
+from mojo_rl.nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
 
 # Define model at compile time: 4 -> 64 (ReLU) -> 64 (ReLU) -> 2
 comptime MLP = Sequential[Linear[4, 64], ReLU[64], Linear[64, 64], ReLU[64], Linear[64, 2]]

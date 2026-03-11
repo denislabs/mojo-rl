@@ -15,7 +15,7 @@ from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from physics2d.car.constants import (
+from mojo_rl.physics2d.car.constants import (
     TILE_DATA_SIZE,
     TILE_V0_X,
     TILE_V0_Y,
@@ -29,7 +29,7 @@ from physics2d.car.constants import (
     MAX_TRACK_TILES,
     ROAD_FRICTION,
 )
-from physics2d import dtype
+from mojo_rl.physics2d import dtype
 
 from .constants import CRConstants
 

@@ -4,7 +4,7 @@ This SAC (Soft Actor-Critic) implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state
 - Network (all-static) for stateless forward/backward ops via LayoutTensor
 - Sequential composition with Linear output layer (state-dependent log_std)
-- ReplayBuffer from nn.replay for experience replay
+- ReplayBuffer from mojo_rl.nn.replay for experience replay
 - OffPolicyAgent trait for shared training loop
 
 Features:
@@ -18,8 +18,8 @@ Features:
 - Checkpoint via NetworkState.write_sections / read_sections
 
 Usage:
-    from deep_agents.sac import DeepSACAgent
-    from envs import PendulumEnv
+    from mojo_rl.deep_agents.sac import DeepSACAgent
+    from mojo_rl.envs import PendulumEnv
 
     var env = PendulumEnv()
     var agent = DeepSACAgent[3, 1, 256, 100000, 64]()
@@ -34,18 +34,25 @@ Deep Reinforcement Learning with a Stochastic Actor" (2018)
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential, Parallel
-from nn.model.stochastic_actor import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import (
+    Model,
+    Linear,
+    LinearReLU,
+    LinearTanh,
+    Sequential,
+    Parallel,
+)
+from mojo_rl.nn.model.stochastic_actor import (
     rsample,
     rsample_with_cache,
     rsample_backward,
     sample_action,
     get_deterministic_action,
 )
-from nn.optimizer import Optimizer, Adam
-from nn.initializer import Kaiming
-from nn.training import (
+from mojo_rl.nn.optimizer import Optimizer, Adam
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.training import (
     Network,
     NetworkState,
     NetworkPair,
@@ -53,7 +60,7 @@ from nn.training import (
     GPUNetworkPair,
 )
 from .state import SACCPUState, SACGPUState
-from deep_agents.core import (
+from mojo_rl.deep_agents.core import (
     obs_to_inline,
     concat_obs_action_batch,
     store_continuous_transition,
@@ -67,10 +74,10 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 
-from nn.gpu.random import gaussian_noise
-from deep_agents.core.kernels import (
+from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
     actor_grad_from_critic_kernel,
@@ -84,7 +91,7 @@ from .kernels import (
     add_ci_grads_kernel,
 )
 from std.gpu.host import DeviceContext, DeviceBuffer
-from nn.checkpoint import (
+from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
     parse_checkpoint_header,
@@ -96,7 +103,7 @@ from nn.checkpoint import (
     set_metadata_value_bool,
     save_checkpoint_file,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -160,8 +167,10 @@ struct DeepSACAgent[
         LinearReLU[Self.OBS, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
         Parallel[
-            Linear[Self.HIDDEN, Self.ACTIONS],       # mean head
-            LinearTanh[Self.HIDDEN, Self.ACTIONS],   # log_std head (tanh-clamped)
+            Linear[Self.HIDDEN, Self.ACTIONS],  # mean head
+            LinearTanh[
+                Self.HIDDEN, Self.ACTIONS
+            ],  # log_std head (tanh-clamped)
         ],
     ]
     comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
@@ -844,7 +853,9 @@ struct DeepSACAgent[
         if self.train_step_count % self.policy_delay == 0:
             # Step 3: Build critic input with sampled actions: concat(obs, curr_act)
             var new_ci_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.BATCH, Self.CRITIC_IN),
+                MutAnyOrigin,
             ](cpu_state._new_ci.unsafe_ptr())
             concat_obs_action_batch[Self.OBS, Self.ACTIONS, Self.BATCH](
                 new_ci_t, obs_t, curr_act_t
@@ -872,7 +883,9 @@ struct DeepSACAgent[
                 cpu_state._q_grad[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
 
             var d_new_ci_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.BATCH, Self.CRITIC_IN),
+                MutAnyOrigin,
             ](cpu_state._d_ci.unsafe_ptr())
 
             # Backward through critic to get action gradient — don't update critic
@@ -904,9 +917,9 @@ struct DeepSACAgent[
             var grad_mean_arr = InlineArray[
                 Scalar[dtype], Self.BATCH * Self.ACTIONS
             ](uninitialized=True)
-            var grad_ls_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-                uninitialized=True
-            )
+            var grad_ls_arr = InlineArray[
+                Scalar[dtype], Self.BATCH * Self.ACTIONS
+            ](uninitialized=True)
 
             var grad_lp_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
@@ -934,7 +947,9 @@ struct DeepSACAgent[
             # tanh derivative is handled by LinearTanh in model backward
             comptime AFFINE_SCALE = Scalar[dtype](0.5 * 7.0)
             var actor_grad_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.ACTOR_OUT), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.BATCH, Self.ACTOR_OUT),
+                MutAnyOrigin,
             ](cpu_state._actor_grad_arr.unsafe_ptr())
             for b in range(Self.BATCH):
                 for a in range(Self.ACTIONS):
@@ -943,7 +958,7 @@ struct DeepSACAgent[
                     ] = grad_mean_arr[b * Self.ACTIONS + a]
                     cpu_state._actor_grad_arr[
                         b * Self.ACTOR_OUT + Self.ACTIONS + a
-                    ] = grad_ls_arr[b * Self.ACTIONS + a] * AFFINE_SCALE
+                    ] = (grad_ls_arr[b * Self.ACTIONS + a] * AFFINE_SCALE)
 
             # Step 9: Backward through actor network
             var d_obs_t = LayoutTensor[
@@ -975,10 +990,18 @@ struct DeepSACAgent[
                 var beta1: Float64 = 0.9
                 var beta2: Float64 = 0.999
                 var eps: Float64 = 1e-8
-                self.alpha_adam_m = beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
-                self.alpha_adam_v = beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
-                var m_hat = self.alpha_adam_m / (1.0 - beta1 ** Float64(self.alpha_adam_t))
-                var v_hat = self.alpha_adam_v / (1.0 - beta2 ** Float64(self.alpha_adam_t))
+                self.alpha_adam_m = (
+                    beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
+                )
+                self.alpha_adam_v = (
+                    beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
+                )
+                var m_hat = self.alpha_adam_m / (
+                    1.0 - beta1 ** Float64(self.alpha_adam_t)
+                )
+                var v_hat = self.alpha_adam_v / (
+                    1.0 - beta2 ** Float64(self.alpha_adam_t)
+                )
                 self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                 self.alpha = exp(self.log_alpha)
 
@@ -1420,7 +1443,6 @@ struct DeepSACAgent[
         # ----- Phase 10: Delayed actor update (every policy_delay critic steps) -----
         # CleanRL uses policy_frequency=2: update actor + alpha only every 2 critic updates
         if self.train_step_count % self.policy_delay == 0:
-
             # 10a: Actor forward with cache on sampled obs → actor_out
             var actor_out_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
@@ -1430,7 +1452,12 @@ struct DeepSACAgent[
             ](gpu_state.actor_cache.unsafe_ptr())
 
             Self.ActorNet.forward_gpu_with_cache[BATCH](
-                ctx, obs_t, actor_out_t, p_actor, actor_cache_t, gpu_state.actor_ws
+                ctx,
+                obs_t,
+                actor_out_t,
+                p_actor,
+                actor_cache_t,
+                gpu_state.actor_ws,
             )
 
             # 10b: sac_rsample with cache → curr_act, curr_lp, eps_cache (for backward)
@@ -1485,7 +1512,9 @@ struct DeepSACAgent[
                 d: LayoutTensor[
                     dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
                 ],
-                o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+                o: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+                ],
                 a: LayoutTensor[
                     dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
                 ],
@@ -1509,7 +1538,12 @@ struct DeepSACAgent[
             ](gpu_state.new_q_cache.unsafe_ptr())
 
             Self.CriticNet.forward_gpu_with_cache[BATCH](
-                ctx, new_ci_t, new_q_t, p_c1, new_q_cache_t, gpu_state.critic1_ws
+                ctx,
+                new_ci_t,
+                new_q_t,
+                p_c1,
+                new_q_cache_t,
+                gpu_state.critic1_ws,
             )
 
             # Q2 forward on policy actions (reuse q2_out/q2_cache — Phase 9 is done)
@@ -1521,7 +1555,12 @@ struct DeepSACAgent[
             ](gpu_state.q2_cache.unsafe_ptr())
 
             Self.CriticNet.forward_gpu_with_cache[BATCH](
-                ctx, new_ci_t, new_q2_t, p_c2, new_q2_cache_t, gpu_state.critic2_ws
+                ctx,
+                new_ci_t,
+                new_q2_t,
+                p_c2,
+                new_q2_cache_t,
+                gpu_state.critic2_ws,
             )
 
             # 10d2: min(Q1, Q2) mask → dq1 goes to dq, dq2 goes to q2_grad
@@ -1534,10 +1573,18 @@ struct DeepSACAgent[
 
             @always_inline
             fn min_q_mask(
-                dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-                dq2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-                q1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-                q2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+                dq1: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+                ],
+                dq2: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+                ],
+                q1: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+                ],
+                q2: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+                ],
             ):
                 min_q_dq_kernel[dtype, BATCH](dq1, dq2, q1, q2)
 
@@ -1619,7 +1666,9 @@ struct DeepSACAgent[
                     dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
                 ],
             ):
-                actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](da, dnc)
+                actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](
+                    da, dnc
+                )
 
             ctx.enqueue_function[extract_act_grad, extract_act_grad](
                 grad_act_t,
@@ -1715,10 +1764,18 @@ struct DeepSACAgent[
                 var beta1: Float64 = 0.9
                 var beta2: Float64 = 0.999
                 var eps: Float64 = 1e-8
-                self.alpha_adam_m = beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
-                self.alpha_adam_v = beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
-                var m_hat = self.alpha_adam_m / (1.0 - beta1 ** Float64(self.alpha_adam_t))
-                var v_hat = self.alpha_adam_v / (1.0 - beta2 ** Float64(self.alpha_adam_t))
+                self.alpha_adam_m = (
+                    beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
+                )
+                self.alpha_adam_v = (
+                    beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
+                )
+                var m_hat = self.alpha_adam_m / (
+                    1.0 - beta1 ** Float64(self.alpha_adam_t)
+                )
+                var v_hat = self.alpha_adam_v / (
+                    1.0 - beta2 ** Float64(self.alpha_adam_t)
+                )
                 self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                 self.alpha = exp(self.log_alpha)
 
@@ -1979,12 +2036,6 @@ struct DeepSACAgent[
         set_metadata_value_int(
             metadata, "train_step_count", self.train_step_count
         )
-        set_metadata_value_float(
-            metadata, "alpha_adam_m", self.alpha_adam_m
-        )
-        set_metadata_value_float(
-            metadata, "alpha_adam_v", self.alpha_adam_v
-        )
-        set_metadata_value_int(
-            metadata, "alpha_adam_t", self.alpha_adam_t
-        )
+        set_metadata_value_float(metadata, "alpha_adam_m", self.alpha_adam_m)
+        set_metadata_value_float(metadata, "alpha_adam_v", self.alpha_adam_v)
+        set_metadata_value_int(metadata, "alpha_adam_t", self.alpha_adam_t)

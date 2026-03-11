@@ -1,6 +1,11 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, TrainingMetrics, RenderableEnv
+from mojo_rl.core import (
+    TabularAgent,
+    DiscreteEnv,
+    TrainingMetrics,
+    RenderableEnv,
+)
 
 
 struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
@@ -114,7 +119,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var rand = random_float64()
         if rand < self.epsilon:
             # random_si64 is inclusive on both ends, so use num_actions - 1
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.q_table.get_best_action(state_idx)
 
@@ -170,7 +175,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
             for _ in range(self.n_planning):
                 # Randomly select a previously visited state-action pair
                 # random_si64 is inclusive on both ends, so use num_visited - 1
-                var rand_idx = Int(random_si64(0, self.num_visited - 1))
+                var rand_idx = Int(random_si64(0, Int64(self.num_visited - 1)))
                 var pair_idx = self.visited_pairs[rand_idx]
 
                 var s = pair_idx // self.num_actions

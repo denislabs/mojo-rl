@@ -437,11 +437,14 @@ struct Renderer2D(Movable):
         """Draw a line between two points.
 
         Args:
-            x1, y1: Start point.
-            x2, y2: End point.
+            x1: Start point x.
+            y1: Start point y.
+            x2: End point x.
+            y2: End point y.
             color: Line color.
             width: Line width (approximated for width > 1).
         """
+
         self._set_color(color)
 
         if width == 1:
@@ -505,7 +508,8 @@ struct Renderer2D(Movable):
         """Draw a circle.
 
         Args:
-            center_x, center_y: Center point.
+            center_x: Center point x.
+            center_y: Center point y.
             radius: Circle radius.
             color: Circle color.
             filled: If True, draw filled circle; otherwise outline.
@@ -671,9 +675,7 @@ struct Renderer2D(Movable):
                 self.screenshot_requested = False
                 try:
                     var fname = (
-                        "screenshot_"
-                        + String(self.screenshot_counter)
-                        + ".jpg"
+                        "screenshot_" + String(self.screenshot_counter) + ".jpg"
                     )
                     self.save_screenshot(fname)
                     self.screenshot_counter += 1

@@ -1,7 +1,7 @@
 """Deep PPO (Proximal Policy Optimization) Agent for Continuous Action Spaces.
 
 This PPO implementation supports continuous action spaces using a Gaussian policy:
-- Network wrapper from nn.training for stateless model + params management
+- Network wrapper from mojo_rl.nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - StochasticActor for Gaussian policy with reparameterization trick
 - Clipped surrogate objective for stable policy updates
@@ -20,8 +20,8 @@ Architecture (CleanRL-style with Tanh activations):
 - Critic: obs -> hidden (Tanh) -> hidden (Tanh) -> 1 (value)
 
 Usage:
-    from deep_agents.ppo_continuous import DeepPPOContinuousAgent
-    from envs import CarRacingEnv
+    from mojo_rl.deep_agents.ppo_continuous import DeepPPOContinuousAgent
+    from mojo_rl.envs import CarRacingEnv
 
     var env = CarRacingEnv(continuous=True)
     var agent = DeepPPOContinuousAgent[13, 3, 256]()
@@ -41,28 +41,28 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn import (
     DenseTanh,
     Dense,
     Sequential,
     StochasticActor,
 )
-from nn.optimizer import Adam
-from nn.initializer import Xavier, Kaiming
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.checkpoint import (
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Xavier, Kaiming
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from nn.gpu import (
+from mojo_rl.nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
 )
-from deep_agents.core.kernels import (
+from mojo_rl.deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,
@@ -70,8 +70,8 @@ from deep_agents.core.kernels import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from nn.gpu.random import gaussian_noise
-from core import (
+from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -79,11 +79,11 @@ from core import (
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
-from render import Renderer2D
+from mojo_rl.render import Renderer2D
 from std.memory import UnsafePointer
-from core.utils.gae import compute_gae_inline
-from core.utils.normalization import normalize_inline, RunningMeanStd
-from core.utils.shuffle import shuffle_indices_inline
+from mojo_rl.core.utils.gae import compute_gae_inline
+from mojo_rl.core.utils.normalization import normalize_inline, RunningMeanStd
+from mojo_rl.core.utils.shuffle import shuffle_indices_inline
 from .kernels import (
     _sample_continuous_actions_kernel,
     _store_continuous_pre_step_kernel,
@@ -293,7 +293,7 @@ struct DeepPPOContinuousAgentOld[
             obs_noise_std: Std dev of Gaussian noise added to observations (default: 0.0).
         """
         self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
-        self.actor.initialize[Kaiming]()
+        self.actor.initialize[Kaiming[]]()
 
         # Re-initialize StochasticActor with small weights for stable RL training
         # This is crucial: Kaiming init produces large initial means which breaks training
@@ -309,7 +309,7 @@ struct DeepPPOContinuousAgentOld[
         )
         var stochastic_actor_params = LayoutTensor[
             dtype, Layout.row_major(STOCHASTIC_ACTOR_SIZE), MutAnyOrigin
-        ](self.actor.params.unsafe_ptr() + STOCHASTIC_ACTOR_OFFSET)
+        ](self.actor.params + STOCHASTIC_ACTOR_OFFSET)
 
         # Use per-action mean biases if provided, otherwise use centered initialization
         if len(action_mean_biases) > 0:
@@ -329,7 +329,7 @@ struct DeepPPOContinuousAgentOld[
             )
 
         self.critic = NetworkState[Self.CriticModel, Adam[Self.critic_lr]]()
-        self.critic.initialize[Kaiming]()
+        self.critic.initialize[Kaiming[]]()
 
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -481,19 +481,27 @@ struct DeepPPOContinuousAgentOld[
         content += "train_step_count=" + String(self.train_step_count) + "\n"
 
         content += "[ACTOR_PARAMS]\n"
-        for i in range(len(self.actor.params)):
+        comptime ACTOR_PARAM_SIZE = Self.ActorModel.PARAM_SIZE
+        for i in range(ACTOR_PARAM_SIZE):
             content += String(self.actor.params[i]) + "\n"
 
         content += "[ACTOR_STATE]\n"
-        for i in range(len(self.actor.optimizer_state)):
+        comptime ACTOR_STATE_SIZE = Self.ActorModel.PARAM_SIZE * Adam[
+            Self.actor_lr
+        ].STATE_PER_PARAM
+        for i in range(ACTOR_STATE_SIZE):
             content += String(self.actor.optimizer_state[i]) + "\n"
 
         content += "[CRITIC_PARAMS]\n"
-        for i in range(len(self.critic.params)):
+        comptime CRITIC_PARAM_SIZE = Self.CriticModel.PARAM_SIZE
+        for i in range(CRITIC_PARAM_SIZE):
             content += String(self.critic.params[i]) + "\n"
 
         content += "[CRITIC_STATE]\n"
-        for i in range(len(self.critic.optimizer_state)):
+        comptime CRITIC_STATE_SIZE = Self.CriticModel.PARAM_SIZE * Adam[
+            Self.critic_lr
+        ].STATE_PER_PARAM
+        for i in range(CRITIC_STATE_SIZE):
             content += String(self.critic.optimizer_state[i]) + "\n"
 
         save_checkpoint_file(path, content)
@@ -507,11 +515,18 @@ struct DeepPPOContinuousAgentOld[
 
         var lines = split_lines(content)
 
+        comptime ACTOR_STATE_SIZE = Self.ActorModel.PARAM_SIZE * Adam[
+            Self.actor_lr
+        ].STATE_PER_PARAM
+        comptime CRITIC_STATE_SIZE = Self.CriticModel.PARAM_SIZE * Adam[
+            Self.critic_lr
+        ].STATE_PER_PARAM
+
         # Load actor params
         var actor_start = find_section_start(lines, "[ACTOR_PARAMS]")
         if actor_start >= 0:
             var idx = actor_start  # find_section_start already returns line after header
-            for i in range(len(self.actor.params)):
+            for i in range(Self.ActorModel.PARAM_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
                         self.actor.params[i] = Scalar[dtype](
@@ -525,7 +540,7 @@ struct DeepPPOContinuousAgentOld[
         var actor_state_start = find_section_start(lines, "[ACTOR_STATE]")
         if actor_state_start >= 0:
             var idx = actor_state_start  # find_section_start already returns line after header
-            for i in range(len(self.actor.optimizer_state)):
+            for i in range(ACTOR_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
                         self.actor.optimizer_state[i] = Scalar[dtype](
@@ -539,7 +554,7 @@ struct DeepPPOContinuousAgentOld[
         var critic_start = find_section_start(lines, "[CRITIC_PARAMS]")
         if critic_start >= 0:
             var idx = critic_start  # find_section_start already returns line after header
-            for i in range(len(self.critic.params)):
+            for i in range(Self.CriticModel.PARAM_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
                         self.critic.params[i] = Scalar[dtype](
@@ -553,7 +568,7 @@ struct DeepPPOContinuousAgentOld[
         var critic_state_start = find_section_start(lines, "[CRITIC_STATE]")
         if critic_state_start >= 0:
             var idx = critic_state_start  # find_section_start already returns line after header
-            for i in range(len(self.critic.optimizer_state)):
+            for i in range(CRITIC_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
                         self.critic.optimizer_state[i] = Scalar[dtype](
@@ -761,7 +776,7 @@ struct DeepPPOContinuousAgentOld[
         var actor_params_buf = ctx.enqueue_create_buffer[dtype](
             Self.ActorModel.PARAM_SIZE
         )
-        ctx.enqueue_copy(actor_params_buf, self.actor.params.unsafe_ptr())
+        ctx.enqueue_copy(actor_params_buf, self.actor.params)
 
         # Workspace buffer for forward pass
         comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE

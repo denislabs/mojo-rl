@@ -13,13 +13,13 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import (
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
     HalfCheetahCurriculum,
 )
-from nn import dtype as gpu_dtype
+from mojo_rl.nn import dtype as gpu_dtype
 
 
 # =============================================================================

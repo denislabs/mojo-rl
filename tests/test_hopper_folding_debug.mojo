@@ -1,6 +1,6 @@
 """Debug Hopper body folding: check body-body collisions and joint limits."""
 from std.random import seed
-from envs.hopper import Hopper
+from mojo_rl.envs.hopper import Hopper
 
 
 fn main():

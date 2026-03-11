@@ -1,7 +1,7 @@
 """Debug solver: check constraint building and solving for a single contact."""
 from std.random import seed
-from envs.hopper import Hopper
-from physics3d.constraints.constraint_data import (
+from mojo_rl.envs.hopper import Hopper
+from mojo_rl.physics3d.constraints.constraint_data import (
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
     CNSTR_FRICTION_T2,

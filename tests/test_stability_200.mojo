@@ -1,6 +1,6 @@
 """Quick stability test: 200 env steps with all +1.0 actions."""
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah import HalfCheetah
 
 
 fn main():

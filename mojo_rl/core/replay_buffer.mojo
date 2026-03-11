@@ -155,7 +155,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
         # Sample random indices
         for _ in range(batch_size):
             # random_si64 is inclusive on both ends, so use size - 1
-            var idx = Int(random_si64(0, self.size - 1))
+            var idx = Int(random_si64(0, Int64(self.size - 1)))
             batch.append(
                 Transition(
                     self.states[idx],
@@ -180,7 +180,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
 
         for _ in range(batch_size):
             # random_si64 is inclusive on both ends, so use size - 1
-            indices.append(Int(random_si64(0, self.size - 1)))
+            indices.append(Int(random_si64(0, Int64(self.size - 1))))
 
         return indices^
 
@@ -296,7 +296,7 @@ struct PrioritizedReplayBuffer(Movable):
     var rewards: List[Float64]
     var next_states: List[Int]
     var dones: List[Bool]
-    var tree: SumTree  # Sum-tree for O(log n) sampling
+    var tree: SumTree[DType.float64]  # Sum-tree for O(log n) sampling
 
     var capacity: Int
     var size: Int
@@ -316,10 +316,10 @@ struct PrioritizedReplayBuffer(Movable):
         """Initialize prioritized buffer with sum-tree.
 
         Args:
-            capacity: Maximum number of transitions to store
-            alpha: Priority exponent (0 = uniform, 1 = full prioritization)
-            beta: Initial importance sampling exponent (annealed to 1)
-            epsilon: Small constant to ensure non-zero priority
+            capacity: Maximum number of transitions to store.
+            alpha: Priority exponent (0 = uniform, 1 = full prioritization).
+            beta: Initial importance sampling exponent (annealed to 1).
+            epsilon: Small constant to ensure non-zero priority.
         """
         self.capacity = capacity
         self.size = 0
@@ -330,7 +330,7 @@ struct PrioritizedReplayBuffer(Movable):
         self.max_priority = 1.0  # Initial max priority
 
         # Initialize sum-tree
-        self.tree = SumTree(capacity)
+        self.tree = SumTree[DType.float64](capacity)
 
         # Pre-allocate storage
         self.states = List[Int]()
@@ -399,8 +399,8 @@ struct PrioritizedReplayBuffer(Movable):
         """Update priority for a transition after computing TD error.
 
         Args:
-            idx: Buffer index returned from sample()
-            td_error: TD error |Q(s,a) - (r + γ max_a' Q(s',a'))|
+            idx: Buffer index returned from sample().
+            td_error: TD error |Q(s,a) - (r + γ max_a' Q(s',a'))|.
         """
         var priority = self._compute_priority(td_error)
         self.tree.update(idx, priority)
@@ -417,8 +417,8 @@ struct PrioritizedReplayBuffer(Movable):
         """Batch update priorities for multiple transitions.
 
         Args:
-            indices: Buffer indices returned from sample()
-            td_errors: TD errors for each transition
+            indices: Buffer indices returned from sample().
+            td_errors: TD errors for each transition.
         """
         for i in range(len(indices)):
             self.update_priority(indices[i], td_errors[i])
@@ -432,7 +432,7 @@ struct PrioritizedReplayBuffer(Movable):
         and samples one transition from each segment.
 
         Args:
-            batch_size: Number of transitions to sample
+            batch_size: Number of transitions to sample.
             beta: Importance sampling exponent. If -1, uses self.beta.
                   Should be annealed from initial value to 1 during training.
 
@@ -497,8 +497,8 @@ struct PrioritizedReplayBuffer(Movable):
         """Anneal beta from beta_start to 1.0 based on training progress.
 
         Args:
-            progress: Training progress from 0.0 to 1.0
-            beta_start: Initial beta value
+            progress: Training progress from 0.0 to 1.0.
+            beta_start: Initial beta value.
         """
         self.beta = beta_start + progress * (1.0 - beta_start)
 

@@ -23,8 +23,8 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.bipedal_walker import BipedalWalker, BWConstants
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
 
 
 # =============================================================================

@@ -27,25 +27,28 @@ from std.math import abs, sqrt
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
-from physics3d.dynamics.bias_forces import compute_bias_forces_rne
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_cdof,
+    compute_composite_inertia,
+)
+from mojo_rl.physics3d.dynamics.bias_forces import compute_bias_forces_rne
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
 )
-from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import (
+from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.constraints.constraint_builder import (
     build_constraints,
     writeback_forces,
 )
-from physics3d.constraints.constraint_data import (
+from mojo_rl.physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
@@ -53,8 +56,8 @@ from physics3d.constraints.constraint_data import (
     CNSTR_LIMIT,
     CNSTR_PYRAMID_EDGE,
 )
-from physics3d.solver import NewtonSolver
-from physics3d.solver.primal_common import (
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.solver.primal_common import (
     compute_total_cost_with_D,
     primal_D,
     compute_jar,
@@ -63,9 +66,14 @@ from physics3d.solver.primal_common import (
     PRIMAL_QUADRATIC,
     PRIMAL_CONE,
 )
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -376,7 +384,7 @@ fn compare_pyramidal_solver(
 
     # 10. Build constraints (PYRAMIDAL cone)
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE = ConeType.PYRAMIDAL](
+    build_constraints[CONE_TYPE=ConeType.PYRAMIDAL](
         model, data, cdof, M_inv, dt, constraints
     )
 
@@ -444,7 +452,7 @@ fn compare_pyramidal_solver(
         qacc0.append(qacc[i])
 
     # 12. Solve constraints (modifies qacc in-place)
-    NewtonSolver.solve[CONE_TYPE = ConeType.PYRAMIDAL](
+    NewtonSolver.solve[CONE_TYPE=ConeType.PYRAMIDAL](
         model, data, M_inv, constraints, qacc, dt
     )
 

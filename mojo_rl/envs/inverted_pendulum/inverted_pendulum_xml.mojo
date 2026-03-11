@@ -1,4 +1,4 @@
-from physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime inverted_pendulum_xml = """
 <mujoco model="inverted pendulum">

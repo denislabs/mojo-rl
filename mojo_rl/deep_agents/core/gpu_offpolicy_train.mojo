@@ -55,15 +55,18 @@ Usage:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
-from core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
-from nn.constants import dtype
-from deep_agents.core.kernels import (
+from mojo_rl.core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
+from mojo_rl.nn.constants import dtype
+from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
 )
-from deep_agents.core.utils import print_progress_bar, clear_progress_bar
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 
 
 # =============================================================================
@@ -527,7 +530,10 @@ fn run_offpolicy_continuous_train_gpu[
         # Reset done environments (reuse model from workspace)
         # ------------------------------------------------------------------
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+            ctx,
+            states_buf,
+            dones_buf,
+            rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
@@ -861,7 +867,10 @@ fn run_offpolicy_discrete_train_gpu[
 
         # Reuse model from workspace for reset
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+            ctx,
+            states_buf,
+            dones_buf,
+            rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 

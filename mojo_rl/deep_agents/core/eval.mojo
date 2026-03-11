@@ -9,7 +9,7 @@ Key differences from the per-agent evaluate():
 - No render support (use agent.evaluate() with RenderableEnv for that)
 
 Usage:
-    from core.eval import run_offpolicy_continuous_eval
+    from mojo_rl.core.eval import run_offpolicy_continuous_eval
 
     var metrics = run_offpolicy_continuous_eval(
         agent, env, num_episodes=10, verbose=True
@@ -23,9 +23,17 @@ Usage:
         ).mean_reward()
 """
 
-from core import TrainingMetrics
-from core import BoxDiscreteActionEnv, BoxContinuousActionEnv, RenderableEnv
-from .offpolicy_train import OffPolicyAgent, OffPolicyContinuousAgent, OffPolicyDiscreteAgent
+from mojo_rl.core import TrainingMetrics
+from mojo_rl.core import (
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+    RenderableEnv,
+)
+from .offpolicy_train import (
+    OffPolicyAgent,
+    OffPolicyContinuousAgent,
+    OffPolicyDiscreteAgent,
+)
 from .onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAgent
 
 
@@ -290,6 +298,7 @@ fn run_offpolicy_discrete_eval[
             )
 
     return metrics^
+
 
 # =============================================================================
 # Shared Evaluation Loop — Continuous Actions (OffPolicyContinuousAgent)
@@ -634,6 +643,7 @@ fn run_offpolicy_discrete_eval[
         env.close_renderer()
 
     return metrics^
+
 
 # =============================================================================
 # Shared Evaluation Loop — Discrete Actions (OnPolicyDiscreteAgent)

@@ -18,7 +18,7 @@ Complexity: O(MAX_ROWS * NV * α(NV)) ≈ O(MAX_ROWS * NV).
 
 Usage
 -----
-    from physics3d.solver.island_detection import detect_islands, IslandData
+    from mojo_rl.physics3d.solver.island_detection import detect_islands, IslandData
     var islands = detect_islands(constraints)
     # islands.num_islands  — number of independent sub-problems
     # islands.dof_island[d]  — island id for DOF d (-1 if unconstrained)

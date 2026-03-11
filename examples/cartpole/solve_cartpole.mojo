@@ -27,9 +27,12 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from envs import CartPoleEnv
-from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
-from render import Renderer2D
+from mojo_rl.envs import CartPoleEnv
+from mojo_rl.agents.tiled_qlearning import (
+    TiledQLearningAgent,
+    TiledSARSALambdaAgent,
+)
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

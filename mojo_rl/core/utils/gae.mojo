@@ -18,7 +18,7 @@ References:
     - Schulman et al. (2016): "High-Dimensional Continuous Control Using GAE"
 
 Example usage:
-    from core.utils.gae import compute_gae, compute_gae_inline
+    from mojo_rl.core.utils.gae import compute_gae, compute_gae_inline
 
     # For List-based code (tile-coded PPO)
     var advantages = compute_gae(rewards, values, next_value, done, gamma, lambda_)

@@ -71,7 +71,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Initialization
     # =========================================================================
 
-    fn initialize[INITIALIZER: Initializer = Kaiming](mut self):
+    fn initialize[INITIALIZER: Initializer = Kaiming[]](mut self):
         """Initialize online params with INITIALIZER, then hard-copy to target.
 
         Parameters:

@@ -8,8 +8,8 @@ Run with:
 
 from std.time import perf_counter_ns
 from std.random import random_float64
-from deep_agents import DeepDDPGAgent
-from envs.pendulum import PendulumEnv
+from mojo_rl.deep_agents import DeepDDPGAgent
+from mojo_rl.envs.pendulum import PendulumEnv
 
 
 fn benchmark_train_step() raises:

@@ -5,7 +5,7 @@ permutations of indices, commonly used in PPO and other algorithms
 that perform multiple epochs over collected data.
 
 Example usage:
-    from core.utils.shuffle import shuffle_indices, shuffle_indices_inline
+    from mojo_rl.core.utils.shuffle import shuffle_indices, shuffle_indices_inline
 
     # For List-based code
     var indices = List[Int]()

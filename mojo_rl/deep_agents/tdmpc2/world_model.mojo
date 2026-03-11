@@ -23,8 +23,8 @@ from std.math import exp, log, sqrt
 from std.random import random_float64
 
 from layout import Layout, LayoutTensor
-from nn.constants import dtype
-from nn.model import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import (
     Linear,
     Sequential,
     Parallel,
@@ -33,10 +33,10 @@ from nn.model import (
     SimNorm,
     LayerNorm,
 )
-from nn.optimizer import Adam
-from nn.initializer import Kaiming
-from nn.training import Network, NetworkState
-from nn.loss.two_hot import (
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
     decode_value_batch,

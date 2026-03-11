@@ -24,12 +24,12 @@ Expected output:
   FK round-trip succeeds, torso xpos_z ≈ 0.7
 """
 
-from physics3d.parser import ParsedModel, parse_xml
-from physics3d.parser import FlatModelDef
-from physics3d.parser import parse_xml_full
-from physics3d.types import Model, Data, ConeType
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
+from mojo_rl.physics3d.parser import ParsedModel, parse_xml
+from mojo_rl.physics3d.parser import FlatModelDef
+from mojo_rl.physics3d.parser import parse_xml_full
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
 from std.testing import assert_true, TestSuite
 
 

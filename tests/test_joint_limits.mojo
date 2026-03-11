@@ -1,6 +1,6 @@
 """Test: check joint positions and limits with +1.0 actions."""
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah import HalfCheetah
 
 
 fn main():

@@ -23,8 +23,8 @@ Usage:
 from std.collections import InlineArray
 from std.builtin.variadics import Variadic
 from std.random.philox import Random as PhiloxRandom
-from render import Color, Renderer3D, Light, Camera3D
-from math3d import Vec3 as _Vec3G, Quat as _QuatG
+from mojo_rl.render import Color, Renderer3D, Light, Camera3D
+from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from .body_spec import BodySpec
 from .joint_spec import JointSpec

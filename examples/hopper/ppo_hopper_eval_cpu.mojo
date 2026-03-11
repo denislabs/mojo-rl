@@ -10,8 +10,8 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper import Hopper, HopperConfig
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.hopper import Hopper, HopperConfig
 
 
 # =============================================================================

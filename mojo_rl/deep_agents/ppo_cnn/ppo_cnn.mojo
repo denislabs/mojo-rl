@@ -11,8 +11,8 @@ Reuses PPO state containers (PPODiscreteState, PPODiscreteGPUState) and
 PPO kernels — only the model architecture differs from DeepPPOAgent.
 
 Usage:
-    from deep_agents.ppo_cnn import DeepPPOCNNAgent
-    from envs.arcade_games.pong import PongPixelEnv
+    from mojo_rl.deep_agents.ppo_cnn import DeepPPOCNNAgent
+    from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
     var agent = DeepPPOCNNAgent[num_actions=3]()
     with DeviceContext() as ctx:
@@ -29,8 +29,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import (
     Sequential,
     Model,
     Conv2DReLU,
@@ -38,21 +38,21 @@ from nn.model import (
     LinearReLU,
     Linear,
 )
-from nn.optimizer import Adam
-from nn.initializer import Xavier
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.checkpoint import (
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from nn.gpu import (
+from mojo_rl.nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
 )
-from deep_agents.core.kernels import (
+from mojo_rl.deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,
@@ -60,34 +60,37 @@ from deep_agents.core.kernels import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from core.utils.gae import compute_gae_inline
-from core.utils.softmax import (
+from mojo_rl.core.utils.gae import compute_gae_inline
+from mojo_rl.core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
     argmax_probs_inline,
 )
-from core.utils.normalization import normalize_inline
-from core.utils.shuffle import shuffle_indices_inline
-from deep_agents.ppo.state import PPODiscreteState, PPODiscreteGPUState
-from deep_agents.core.onpolicy_train import OnPolicyAgent, OnPolicyDiscreteAgent
-from deep_agents.core.onpolicy_helpers import (
+from mojo_rl.core.utils.normalization import normalize_inline
+from mojo_rl.core.utils.shuffle import shuffle_indices_inline
+from mojo_rl.deep_agents.ppo.state import PPODiscreteState, PPODiscreteGPUState
+from mojo_rl.deep_agents.core.onpolicy_train import (
+    OnPolicyAgent,
+    OnPolicyDiscreteAgent,
+)
+from mojo_rl.deep_agents.core.onpolicy_helpers import (
     compute_gae_list,
     normalize_advantages_list,
     fisher_yates_shuffle,
 )
-from deep_agents.core.gpu_onpolicy_train import (
+from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyDiscreteAgent,
     run_onpolicy_discrete_train_gpu,
 )
-from deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 
-from deep_agents.ppo.kernels import (
+from mojo_rl.deep_agents.ppo.kernels import (
     ppo_actor_grad_kernel,
     ppo_actor_grad_with_kl_kernel,
     ppo_critic_grad_kernel,
@@ -948,7 +951,8 @@ struct DeepPPOCNNAgent[
         content += "critic_optimizer_state:\n"
         for i in range(critic_state_size):
             content += (
-                String(Float64((self.state.critic.optimizer_state + i)[])) + "\n"
+                String(Float64((self.state.critic.optimizer_state + i)[]))
+                + "\n"
             )
 
         content += "metadata:\n"
@@ -1067,7 +1071,7 @@ fn _sample_actions_kernel[
         if l > max_logit:
             max_logit = l
 
-    var sum_exp = (logits[i, 0] - logits[i, 0])
+    var sum_exp = logits[i, 0] - logits[i, 0]
     for a in range(NUM_ACTIONS):
         var logit_val = logits[i, a] - max_logit
         sum_exp = sum_exp + exp(logit_val)

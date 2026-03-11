@@ -12,7 +12,7 @@ These wrappers conform to the core environment traits for use with generic agent
 """
 
 from std.python import Python, PythonObject
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     DiscreteEnv,

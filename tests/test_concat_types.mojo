@@ -16,9 +16,12 @@ Run: cd mojo-rl && pixi run mojo run tests/test_concat_types.mojo
 To reproduce errors: uncomment ONE failing test function at a time.
 """
 
-from nn.autodiff import (
-    DiffOp, OpID, AutoDiffChain,
-    FusedMatMulBias, FusedMatMulBiasReLU,
+from mojo_rl.nn.autodiff import (
+    DiffOp,
+    OpID,
+    AutoDiffChain,
+    FusedMatMulBias,
+    FusedMatMulBiasReLU,
 )
 from std.builtin.variadics import Variadic
 
@@ -30,13 +33,14 @@ fn test_slice_works():
     print("=== slice_types (WORKS) ===")
     comptime ops = Variadic.types[
         T=DiffOp,
-        FusedMatMulBiasReLU[2, 4], FusedMatMulBias[4, 1],
+        FusedMatMulBiasReLU[2, 4],
+        FusedMatMulBias[4, 1],
     ]
     comptime sliced = Variadic.slice_types[element_types=ops, start=0, end=2]
-    comptime n = Variadic.size(sliced)         # OK
+    comptime n = Variadic.size(sliced)  # OK
     print("  size =", n)
     print("  sliced[0].OP_ID =", sliced[0].OP_ID)  # OK
-    comptime Fused = AutoDiffChain[*sliced]    # OK
+    comptime Fused = AutoDiffChain[*sliced]  # OK
     print("  AutoDiffChain IN=", Fused.IN_DIM, "OUT=", Fused.OUT_DIM)
     print("  PASS")
 

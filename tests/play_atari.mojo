@@ -13,12 +13,12 @@ Controls:
 Requires ROM files in 'roms/' (symlink to ale_py/roms/).
 """
 
-from envs.atari.environment import AtariEnvironment, load_rom
-from envs.atari.renderer import AtariRenderer
-from envs.atari.riot import set_action
-from envs.atari.cpu6502 import run_frame_with_video
-from envs.atari.games.pong import PongDef
-from envs.atari.flags import ACTION_NOOP, ACTION_RESET
+from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
+from mojo_rl.envs.atari.renderer import AtariRenderer
+from mojo_rl.envs.atari.riot import set_action
+from mojo_rl.envs.atari.cpu6502 import run_frame_with_video
+from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
 
 fn main() raises:
@@ -29,7 +29,9 @@ fn main() raises:
     print("ROM loaded: " + String(rom_data.size) + " bytes")
 
     # Create environment (frame_skip=1 for interactive play)
-    var env = AtariEnvironment(rom_data.data, rom_data.size, frame_skip=1, max_frames=0)
+    var env = AtariEnvironment(
+        rom_data.data, rom_data.size, frame_skip=1, max_frames=0
+    )
     env.reset()
     print("Environment reset. Starting interactive play...")
     print("")
@@ -65,12 +67,18 @@ fn main() raises:
             # Debug TIA state every 300 frames (~5 sec)
             if step_count % 300 == 1:
                 print(
-                    "P0=" + String(Int(env.state.pos_p0))
-                    + " P1=" + String(Int(env.state.pos_p1))
-                    + " BL=" + String(Int(env.state.pos_bl))
-                    + " paddle=" + String(Int(env.state.paddle_pos))
-                    + " RAM13=" + String(Int(env.state.ram[13]))
-                    + " RAM14=" + String(Int(env.state.ram[14]))
+                    "P0="
+                    + String(Int(env.state.pos_p0))
+                    + " P1="
+                    + String(Int(env.state.pos_p1))
+                    + " BL="
+                    + String(Int(env.state.pos_bl))
+                    + " paddle="
+                    + String(Int(env.state.paddle_pos))
+                    + " RAM13="
+                    + String(Int(env.state.ram[13]))
+                    + " RAM14="
+                    + String(Int(env.state.ram[14]))
                 )
 
             # Extract game state from RAM
@@ -81,8 +89,11 @@ fn main() raises:
             # Auto-reset on terminal
             if env.state.terminal:
                 print(
-                    "Game over! Score: " + String(score)
-                    + " (step " + String(step_count) + ")"
+                    "Game over! Score: "
+                    + String(score)
+                    + " (step "
+                    + String(step_count)
+                    + ")"
                 )
                 env.reset()
                 step_count = 0

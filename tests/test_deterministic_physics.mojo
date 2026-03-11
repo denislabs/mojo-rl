@@ -12,8 +12,8 @@ from std.random import seed
 
 from std.gpu.host import DeviceContext
 
-from envs.lunar_lander import LunarLanderEnv, LunarLanderAction
-from envs.lunar_lander_gpu_v3 import gpu_dtype
+from mojo_rl.envs.lunar_lander import LunarLanderEnv, LunarLanderAction
+from mojo_rl.envs.lunar_lander_gpu_v3 import gpu_dtype
 
 # Constants matching GPU
 comptime SCALE: Float64 = 30.0

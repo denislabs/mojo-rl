@@ -14,7 +14,7 @@ GPU workspace per env (PIXEL_WS_PER_ENV = 36625 float32):
   [36624]            frame_idx (ring buffer write position)
 
 Usage:
-    from envs.arcade_games.pong import PongPixelEnv
+    from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
     # GPU training with CNN DQN
     var metrics = agent.train_gpu[PongPixelEnv[DType.float32]](ctx, ...)
@@ -22,21 +22,25 @@ Usage:
 
 from std.random import random_float64
 from std.memory import alloc, memset
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     BoxDiscreteActionEnv,
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from render import Renderer2D, SDL_Color
-from nn.gpu import random_range, xorshift32
+from mojo_rl.render import Renderer2D, SDL_Color
+from mojo_rl.nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype
-from ..core.gpu_env import FRAME_BUF_F32_SIZE, FRAME_STACK_F32_SIZE, PIXEL_WS_PER_ENV
+from ..core.gpu_env import (
+    FRAME_BUF_F32_SIZE,
+    FRAME_STACK_F32_SIZE,
+    PIXEL_WS_PER_ENV,
+)
 from ..core.colors import (
     SCREEN_W,
     SCREEN_H,
@@ -475,9 +479,9 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
             # 3. Resize to 84×84 and push to frame stack, output obs
             var env_obs = obs_ptr + idx * PIXEL_OBS_DIM
-            _resize_and_push[FRAME_BUF_F32_SIZE, FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE](
-                frame_buf, env_ws, env_obs
-            )
+            _resize_and_push[
+                FRAME_BUF_F32_SIZE, FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
+            ](frame_buf, env_ws, env_obs)
 
         ctx.enqueue_function[pixel_step_wrapper, pixel_step_wrapper](
             states,
@@ -501,7 +505,8 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments. Frame stack is initialized in init_step_workspace_gpu."""
+        """Reset all environments. Frame stack is initialized in init_step_workspace_gpu.
+        """
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -568,9 +573,9 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 return
 
             # Reset physics
-            PongEnv[DType.float32].selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                states, dones, Scalar[DType.uint32](rng_seed)
-            )
+            PongEnv[DType.float32].selective_reset_kernel[
+                BATCH_SIZE, STATE_SIZE
+            ](states, dones, Scalar[DType.uint32](rng_seed))
 
             # Clear frame stack for this env
             var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
@@ -580,9 +585,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             # Reset frame index
             env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
 
-        ctx.enqueue_function[
-            selective_reset_wrapper, selective_reset_wrapper
-        ](
+        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
             states,
             dones,
             workspace_ptr,

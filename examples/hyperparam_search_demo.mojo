@@ -7,11 +7,14 @@ Run with:
     pixi run mojo run examples/hyperparam_search_demo.mojo
 """
 
-from envs.gridworld import GridWorldEnv
-from agents.qlearning import QLearningAgent
-from core.hyperparam.param_space import TabularParamSpace, TabularHyperparams
-from core.hyperparam.search_result import SearchResults, TrialResult
-from core.hyperparam.agent_factories import make_qlearning_agent
+from mojo_rl.envs.gridworld import GridWorldEnv
+from mojo_rl.agents.qlearning import QLearningAgent
+from mojo_rl.core.hyperparam.param_space import (
+    TabularParamSpace,
+    TabularHyperparams,
+)
+from mojo_rl.core.hyperparam.search_result import SearchResults, TrialResult
+from mojo_rl.core.hyperparam.agent_factories import make_qlearning_agent
 
 
 fn run_grid_search(

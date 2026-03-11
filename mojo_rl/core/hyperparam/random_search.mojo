@@ -5,9 +5,12 @@ search space. This is often more efficient than grid search for
 high-dimensional parameter spaces (Bergstra & Bengio, 2012).
 """
 
-from core import TrainingMetrics
-from core.hyperparam.param_space import TabularHyperparams, TabularParamSpace
-from core.hyperparam.search_result import TrialResult, SearchResults
+from mojo_rl.core import TrainingMetrics
+from mojo_rl.core.hyperparam.param_space import (
+    TabularHyperparams,
+    TabularParamSpace,
+)
+from mojo_rl.core.hyperparam.search_result import TrialResult, SearchResults
 
 
 fn create_random_search_results(
@@ -88,7 +91,9 @@ fn print_random_progress(
     )
 
 
-fn print_random_search_header(num_trials: Int, num_episodes: Int, max_steps: Int):
+fn print_random_search_header(
+    num_trials: Int, num_episodes: Int, max_steps: Int
+):
     """Print header information for random search.
 
     Args:

@@ -24,7 +24,7 @@ struct DiscreteSpace(Space):
     fn sample(self) -> Int:
         """Sample a random integer from [0, n)."""
         # random_si64 is inclusive on both ends, so use n - 1
-        return Int(random_si64(0, self.n - 1))
+        return Int(random_si64(0, Int64(self.n - 1)))
 
     fn contains(self, element: Int) -> Bool:
         """Check if element is in [0, n)."""

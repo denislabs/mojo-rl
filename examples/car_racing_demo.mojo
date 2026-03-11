@@ -10,9 +10,9 @@ Usage:
 from std.time import sleep
 from std.random import random_float64
 
-from envs.car_racing import CarRacing, CarRacingAction
-from envs.car_racing.constants import CRConstants
-from render import Renderer2D
+from mojo_rl.envs.car_racing import CarRacing, CarRacingAction
+from mojo_rl.envs.car_racing.constants import CRConstants
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

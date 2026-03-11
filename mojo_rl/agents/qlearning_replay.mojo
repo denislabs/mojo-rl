@@ -1,6 +1,6 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
-from core import (
+from mojo_rl.core import (
     TabularAgent,
     ReplayBuffer,
     DiscreteEnv,
@@ -28,10 +28,18 @@ struct QLearningReplayAgent(
     - More stable learning
     - Precursor to DQN-style algorithms
 
-    Parameters:
-        buffer_size: Maximum number of transitions to store.
+    Args:
+        q_table: QTable for storing Q-values.
+        learning_rate: Learning rate for Q-learning updates.
+        discount_factor: Discount factor for future rewards.
+        epsilon: Initial exploration rate.
+        epsilon_decay: Epsilon decay per episode.
+        epsilon_min: Minimum epsilon value.
+        num_actions: Number of actions.
+        num_states: Number of states.
+        buffer: Replay buffer for storing transitions.
         batch_size: Number of transitions to sample per update.
-        min_buffer_size: Minimum buffer size before learning starts
+        min_buffer_size: Minimum buffer size before learning starts.
     """
 
     var q_table: QTable
@@ -104,7 +112,7 @@ struct QLearningReplayAgent(
         var rand = random_float64()
         if rand < self.epsilon:
             # random_si64 is inclusive on both ends, so use num_actions - 1
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.q_table.get_best_action(state_idx)
 

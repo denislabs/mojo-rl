@@ -1,8 +1,11 @@
 """Demo of Prioritized Experience Replay buffers."""
 
-from core.replay_buffer import PrioritizedReplayBuffer, PrioritizedTransition
-from core.sum_tree import SumTree
-from nn.replay import PrioritizedReplayBuffer as DeepPER
+from mojo_rl.core.replay_buffer import (
+    PrioritizedReplayBuffer,
+    PrioritizedTransition,
+)
+from mojo_rl.core.sum_tree import SumTree
+from mojo_rl.nn.replay import PrioritizedReplayBuffer as DeepPER
 
 
 fn test_sum_tree():

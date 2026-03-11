@@ -11,9 +11,9 @@ Run with:
 
 from std.builtin.variadics import Variadic
 
-from nn.constants import dtype
-from nn.autodiff.op import DiffOp, OpID
-from nn.autodiff import MatMul, BiasAdd, ReLUOp, TanhOp, SigmoidOp
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff.op import DiffOp, OpID
+from mojo_rl.nn.autodiff import MatMul, BiasAdd, ReLUOp, TanhOp, SigmoidOp
 
 
 # =============================================================================
@@ -209,6 +209,7 @@ fn test_pattern_matching() -> Int:
 # Approach B: variadic type list rewriting (build new pack)
 # =============================================================================
 
+
 fn test_comptime_type_selection() -> Int:
     """Test Approach A: comptime conditional type alias."""
     print("\n" + "=" * 70)
@@ -216,7 +217,7 @@ fn test_comptime_type_selection() -> Int:
     print("=" * 70)
     var fails = 0
 
-    from nn.autodiff import (
+    from mojo_rl.nn.autodiff import (
         AutoDiffChain,
         FusedMatMulBias,
         FusedMatMulBiasReLU,
@@ -241,7 +242,10 @@ fn test_comptime_type_selection() -> Int:
     comptime Fused = AutoDiffChain[FusedMatMulBiasReLU[3, 4]]
 
     comptime if Unfused.PARAM_SIZE == Fused.PARAM_SIZE:
-        print("  PASS: Unfused.PARAM_SIZE == Fused.PARAM_SIZE = " + String(Unfused.PARAM_SIZE))
+        print(
+            "  PASS: Unfused.PARAM_SIZE == Fused.PARAM_SIZE = "
+            + String(Unfused.PARAM_SIZE)
+        )
     else:
         print("  FAIL: PARAM_SIZE mismatch")
         fails += 1
@@ -272,6 +276,7 @@ fn test_comptime_type_selection() -> Int:
 # E.g., a 3-op chain that matches MatMul+BiasAdd+ReLU -> single fused op.
 # A 5-op chain that matches [MBR, MB] -> [FusedMBR, FusedMB].
 # =============================================================================
+
 
 struct AutoFuse1[*OPS: DiffOp]:
     """Auto-fuse a single-pattern chain.
@@ -367,6 +372,7 @@ fn test_auto_fuse_detection() -> Int:
 #   # -> resolves to AutoDiffChain[FusedMatMulBiasReLU[3,4]]
 # =============================================================================
 
+
 fn test_comptime_type_rewrite() -> Int:
     """Test if we can use comptime if to select between fused/unfused types
     and actually use the result for computation."""
@@ -375,7 +381,7 @@ fn test_comptime_type_rewrite() -> Int:
     print("=" * 70)
     var fails = 0
 
-    from nn.autodiff import AutoDiffChain, FusedMatMulBiasReLU
+    from mojo_rl.nn.autodiff import AutoDiffChain, FusedMatMulBiasReLU
     from layout import Layout, LayoutTensor
     from std.random import seed, random_float64
 
@@ -398,7 +404,11 @@ fn test_comptime_type_rewrite() -> Int:
 
         # Verify they have compatible PARAM_SIZE
         comptime if FusedModel.PARAM_SIZE == UnfusedModel.PARAM_SIZE:
-            print("  PASS: comptime type rewrite produced compatible PARAM_SIZE = " + String(FusedModel.PARAM_SIZE))
+            print(
+                "  PASS: comptime type rewrite produced compatible"
+                " PARAM_SIZE = "
+                + String(FusedModel.PARAM_SIZE)
+            )
         else:
             print("  FAIL: PARAM_SIZE mismatch after rewrite")
             fails += 1
@@ -419,37 +429,58 @@ fn test_comptime_type_rewrite() -> Int:
 
         # Fused forward
         var f_out = List[Scalar[dtype]](capacity=BATCH * OUT_D)
-        var f_cache = List[Scalar[dtype]](capacity=BATCH * FusedModel.CACHE_SIZE)
+        var f_cache = List[Scalar[dtype]](
+            capacity=BATCH * FusedModel.CACHE_SIZE
+        )
         for _ in range(BATCH * OUT_D):
             f_out.append(0)
         for _ in range(BATCH * FusedModel.CACHE_SIZE):
             f_cache.append(0)
 
-        var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-        var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-        var fp_t = LayoutTensor[dtype, Layout.row_major(FusedModel.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, FusedModel.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
+        var inp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+        ](inp.unsafe_ptr())
+        var fo_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+        ](f_out.unsafe_ptr())
+        var fp_t = LayoutTensor[
+            dtype, Layout.row_major(FusedModel.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var fc_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, FusedModel.CACHE_SIZE), MutAnyOrigin
+        ](f_cache.unsafe_ptr())
 
         var fused = FusedModel()
         fused.forward[BATCH](inp_t, fo_t, fp_t, fc_t)
 
         # Unfused forward
         var u_out = List[Scalar[dtype]](capacity=BATCH * OUT_D)
-        var u_cache = List[Scalar[dtype]](capacity=BATCH * UnfusedModel.CACHE_SIZE)
+        var u_cache = List[Scalar[dtype]](
+            capacity=BATCH * UnfusedModel.CACHE_SIZE
+        )
         for _ in range(BATCH * OUT_D):
             u_out.append(0)
         for _ in range(BATCH * UnfusedModel.CACHE_SIZE):
             u_cache.append(0)
 
-        var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
-        var up_t = LayoutTensor[dtype, Layout.row_major(UnfusedModel.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, UnfusedModel.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
+        var uo_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+        ](u_out.unsafe_ptr())
+        var up_t = LayoutTensor[
+            dtype, Layout.row_major(UnfusedModel.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var uc_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, UnfusedModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](u_cache.unsafe_ptr())
 
         var unfused = UnfusedModel()
         unfused.forward[BATCH](inp_t, uo_t, up_t, uc_t)
 
         # Compare
         from std.math import abs as math_abs
+
         var max_d: Float64 = 0
         for i in range(BATCH * OUT_D):
             var d = math_abs(Float64(f_out[i]) - Float64(u_out[i]))
@@ -457,7 +488,10 @@ fn test_comptime_type_rewrite() -> Int:
                 max_d = d
 
         if max_d < 1e-5:
-            print("  PASS: fused output matches unfused, max_diff = " + String(max_d))
+            print(
+                "  PASS: fused output matches unfused, max_diff = "
+                + String(max_d)
+            )
         else:
             print("  FAIL: output mismatch, max_diff = " + String(max_d))
             fails += 1
@@ -484,7 +518,7 @@ fn test_multi_layer_fusion() -> Int:
     print("=" * 70)
     var fails = 0
 
-    from nn.autodiff import (
+    from mojo_rl.nn.autodiff import (
         AutoDiffChain,
         FusedMatMulBias,
         FusedMatMulBiasReLU,
@@ -500,14 +534,20 @@ fn test_multi_layer_fusion() -> Int:
 
     # The unfused chain: 3->4 (relu) -> 4->2 (linear)
     comptime Unfused = AutoDiffChain[
-        MatMul[IN_D, HIDDEN], BiasAdd[HIDDEN], ReLUOp[HIDDEN],
-        MatMul[HIDDEN, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, HIDDEN],
+        BiasAdd[HIDDEN],
+        ReLUOp[HIDDEN],
+        MatMul[HIDDEN, OUT_D],
+        BiasAdd[OUT_D],
     ]
 
     # Pattern detection on the unfused chain
     comptime FA = FusionAnalyzer[
-        MatMul[IN_D, HIDDEN], BiasAdd[HIDDEN], ReLUOp[HIDDEN],
-        MatMul[HIDDEN, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, HIDDEN],
+        BiasAdd[HIDDEN],
+        ReLUOp[HIDDEN],
+        MatMul[HIDDEN, OUT_D],
+        BiasAdd[OUT_D],
     ]
 
     # Verify patterns detected at correct positions
@@ -533,12 +573,22 @@ fn test_multi_layer_fusion() -> Int:
     comptime if Fused.PARAM_SIZE == Unfused.PARAM_SIZE:
         print("  PASS: PARAM_SIZE match = " + String(Fused.PARAM_SIZE))
     else:
-        print("  FAIL: PARAM_SIZE mismatch fused=" + String(Fused.PARAM_SIZE) + " unfused=" + String(Unfused.PARAM_SIZE))
+        print(
+            "  FAIL: PARAM_SIZE mismatch fused="
+            + String(Fused.PARAM_SIZE)
+            + " unfused="
+            + String(Unfused.PARAM_SIZE)
+        )
         fails += 1
 
     # Verify IN_DIM/OUT_DIM match
     comptime if Fused.IN_DIM == Unfused.IN_DIM and Fused.OUT_DIM == Unfused.OUT_DIM:
-        print("  PASS: IN_DIM=" + String(Fused.IN_DIM) + " OUT_DIM=" + String(Fused.OUT_DIM))
+        print(
+            "  PASS: IN_DIM="
+            + String(Fused.IN_DIM)
+            + " OUT_DIM="
+            + String(Fused.OUT_DIM)
+        )
     else:
         print("  FAIL: dim mismatch")
         fails += 1
@@ -565,10 +615,18 @@ fn test_multi_layer_fusion() -> Int:
     for _ in range(BATCH * Fused.CACHE_SIZE):
         f_cache.append(0)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-    var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-    var fp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var fo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](f_out.unsafe_ptr())
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var fc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](f_cache.unsafe_ptr())
 
     var fused_model = Fused()
     fused_model.forward[BATCH](inp_t, fo_t, fp_t, fc_t)
@@ -581,15 +639,22 @@ fn test_multi_layer_fusion() -> Int:
     for _ in range(BATCH * Unfused.CACHE_SIZE):
         u_cache.append(0)
 
-    var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
-    var up_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
+    var uo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](u_out.unsafe_ptr())
+    var up_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var uc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](u_cache.unsafe_ptr())
 
     var unfused_model = Unfused()
     unfused_model.forward[BATCH](inp_t, uo_t, up_t, uc_t)
 
     # Compare
     from std.math import abs as math_abs
+
     var max_d: Float64 = 0
     for i in range(BATCH * OUT_D):
         var d = math_abs(Float64(f_out[i]) - Float64(u_out[i]))
@@ -597,7 +662,10 @@ fn test_multi_layer_fusion() -> Int:
             max_d = d
 
     if max_d < 1e-5:
-        print("  PASS: multi-layer fused matches unfused, max_diff = " + String(max_d))
+        print(
+            "  PASS: multi-layer fused matches unfused, max_diff = "
+            + String(max_d)
+        )
     else:
         print("  FAIL: output mismatch, max_diff = " + String(max_d))
         fails += 1
@@ -615,9 +683,15 @@ fn test_multi_layer_fusion() -> Int:
     for _ in range(Fused.PARAM_SIZE):
         f_grads.append(0)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out.unsafe_ptr())
-    var fgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](f_grad_in.unsafe_ptr())
-    var fg_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_grads.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](grad_out.unsafe_ptr())
+    var fgi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](f_grad_in.unsafe_ptr())
+    var fg_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](f_grads.unsafe_ptr())
 
     fused_model.backward[BATCH](go_t, fgi_t, fp_t, fc_t, fg_t)
 
@@ -628,8 +702,12 @@ fn test_multi_layer_fusion() -> Int:
     for _ in range(Unfused.PARAM_SIZE):
         u_grads.append(0)
 
-    var ugi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](u_grad_in.unsafe_ptr())
-    var ug_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](u_grads.unsafe_ptr())
+    var ugi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](u_grad_in.unsafe_ptr())
+    var ug_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](u_grads.unsafe_ptr())
 
     unfused_model.backward[BATCH](go_t, ugi_t, up_t, uc_t, ug_t)
 
@@ -641,9 +719,13 @@ fn test_multi_layer_fusion() -> Int:
             max_gi = d
 
     if max_gi < 1e-5:
-        print("  PASS: backward grad_input matches, max_diff = " + String(max_gi))
+        print(
+            "  PASS: backward grad_input matches, max_diff = " + String(max_gi)
+        )
     else:
-        print("  FAIL: backward grad_input mismatch, max_diff = " + String(max_gi))
+        print(
+            "  FAIL: backward grad_input mismatch, max_diff = " + String(max_gi)
+        )
         fails += 1
 
     # Compare param grads
@@ -654,9 +736,14 @@ fn test_multi_layer_fusion() -> Int:
             max_pg = d
 
     if max_pg < 1e-5:
-        print("  PASS: backward param_grads matches, max_diff = " + String(max_pg))
+        print(
+            "  PASS: backward param_grads matches, max_diff = " + String(max_pg)
+        )
     else:
-        print("  FAIL: backward param_grads mismatch, max_diff = " + String(max_pg))
+        print(
+            "  FAIL: backward param_grads mismatch, max_diff = "
+            + String(max_pg)
+        )
         fails += 1
 
     return fails

@@ -12,11 +12,11 @@ Also defines HalfCheetahParams — the environment-specific parameters
 robot definition. Replaces the former constants.mojo.
 """
 
-from physics3d.model.body_spec import CapsuleBody
-from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_renderer import ModelRenderer
-from physics3d.types import ConeType
-from physics3d.model import (
+from mojo_rl.physics3d.model.body_spec import CapsuleBody
+from mojo_rl.physics3d.model.joint_spec import HingeJoint, SlideJoint
+from mojo_rl.physics3d.model.model_renderer import ModelRenderer
+from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.model import (
     Bodies,
     Joints,
     Geoms,
@@ -28,18 +28,22 @@ from physics3d.model import (
     Lights,
     Cameras,
 )
-from physics3d.model.actuator_spec import MotorActuator
-from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
-from physics3d.model.texture_spec import (
+from mojo_rl.physics3d.model.actuator_spec import MotorActuator
+from mojo_rl.physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
+from mojo_rl.physics3d.model.texture_spec import (
     CheckerTexture,
     FlatTexture,
     GradientTexture,
 )
-from physics3d.model.material_spec import Material, PlaneMaterial, GeomMaterial
-from physics3d.model.camera_spec import TrackCamera
-from physics3d.model.light_spec import DirectionalLight
-from render import Color
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.model.material_spec import (
+    Material,
+    PlaneMaterial,
+    GeomMaterial,
+)
+from mojo_rl.physics3d.model.camera_spec import TrackCamera
+from mojo_rl.physics3d.model.light_spec import DirectionalLight
+from mojo_rl.render import Color
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size,
     qpos_offset,
@@ -103,7 +107,7 @@ comptime Torso = CapsuleBody[
     iyy_override=0.885655,
     izz_override=0.017961,
     conaffinity=0,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
 ]
 
 # Body 2: Back Thigh
@@ -114,19 +118,19 @@ comptime BThigh = CapsuleBody[
     name="bthigh",
     radius=_R,
     half_length=0.145,
-    pos_x= -0.5,
+    pos_x=-0.5,
     # body_quat = identity (default)
     ipos_x=0.1,
-    ipos_z= -0.13,
+    ipos_z=-0.13,
     # MuJoCo iquat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
     # Our (x,y,z,w) = (0, -0.9463, 0, -0.32329)
-    iquat_y= -0.946300,
-    iquat_w= -0.323290,
+    iquat_y=-0.946300,
+    iquat_w=-0.323290,
     ixx_override=0.016844,
     iyy_override=0.016844,
     izz_override=0.001576,
     conaffinity=0,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
 ]
 
 # Body 3: Back Shin
@@ -138,18 +142,18 @@ comptime BShin = CapsuleBody[
     radius=_R,
     half_length=0.15,
     pos_x=0.16,
-    pos_z= -0.25,
-    ipos_x= -0.14,
-    ipos_z= -0.07,
+    pos_z=-0.25,
+    ipos_x=-0.14,
+    ipos_z=-0.07,
     # MuJoCo iquat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
     # Our (x,y,z,w) = (0, -0.849481, 0, 0.52762)
-    iquat_y= -0.849481,
+    iquat_y=-0.849481,
     iquat_w=0.527620,
     ixx_override=0.018267,
     iyy_override=0.018267,
     izz_override=0.001623,
     conaffinity=0,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
 ]
 
 # Body 4: Back Foot
@@ -160,19 +164,19 @@ comptime BFoot = CapsuleBody[
     name="bfoot",
     radius=_R,
     half_length=0.094,
-    pos_x= -0.28,
-    pos_z= -0.14,
+    pos_x=-0.28,
+    pos_z=-0.14,
     ipos_x=0.03,
-    ipos_z= -0.097,
+    ipos_z=-0.097,
     # MuJoCo iquat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
     # Our (x,y,z,w) = (0, -0.13459, 0, 0.990901)
-    iquat_y= -0.134590,
+    iquat_y=-0.134590,
     iquat_w=0.990901,
     ixx_override=0.006352,
     iyy_override=0.006352,
     izz_override=0.001102,
     conaffinity=0,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
 ]
 
 # Body 5: Front Thigh
@@ -185,8 +189,8 @@ comptime FThigh = CapsuleBody[
     half_length=0.133,
     pos_x=0.5,
     # body_quat = identity (default)
-    ipos_x= -0.07,
-    ipos_z= -0.12,
+    ipos_x=-0.07,
+    ipos_z=-0.12,
     # MuJoCo iquat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
     # Our (x,y,z,w) = (0, 0.257081, 0, 0.96639)
     iquat_y=0.257081,
@@ -195,7 +199,7 @@ comptime FThigh = CapsuleBody[
     iyy_override=0.013740,
     izz_override=0.001464,
     conaffinity=0,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
 ]
 
 # Body 6: Front Shin
@@ -206,19 +210,19 @@ comptime FShin = CapsuleBody[
     name="fshin",
     radius=_R,
     half_length=0.106,
-    pos_x= -0.14,
-    pos_z= -0.24,
+    pos_x=-0.14,
+    pos_z=-0.24,
     ipos_x=0.065,
-    ipos_z= -0.09,
+    ipos_z=-0.09,
     # MuJoCo iquat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     # Our (x,y,z,w) = (0, -0.29552, 0, 0.955336)
-    iquat_y= -0.295520,
+    iquat_y=-0.295520,
     iquat_w=0.955336,
     ixx_override=0.008222,
     iyy_override=0.008222,
     izz_override=0.001213,
     conaffinity=0,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
 ]
 
 # Body 7: Front Foot
@@ -230,18 +234,18 @@ comptime FFoot = CapsuleBody[
     radius=_R,
     half_length=0.07,
     pos_x=0.13,
-    pos_z= -0.18,
+    pos_z=-0.18,
     ipos_x=0.045,
-    ipos_z= -0.07,
+    ipos_z=-0.07,
     # MuJoCo iquat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     # Our (x,y,z,w) = (0, -0.29552, 0, 0.955336)
-    iquat_y= -0.295520,
+    iquat_y=-0.295520,
     iquat_w=0.955336,
     ixx_override=0.003529,
     iyy_override=0.003529,
     izz_override=0.000879,
     conaffinity=0,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
 ]
 
 
@@ -285,7 +289,7 @@ comptime BThighJ = HingeJoint[
     body_idx=2,
     # pos = (0,0,0) default — joint at body origin
     tau_limit=120.0,
-    range_min= -0.52,
+    range_min=-0.52,
     range_max=1.05,
     damping=6.0,
     stiffness=240.0,
@@ -295,7 +299,7 @@ comptime BThighJ = HingeJoint[
 comptime BShinJ = HingeJoint[
     body_idx=3,
     tau_limit=90.0,
-    range_min= -0.785,
+    range_min=-0.785,
     range_max=0.785,
     damping=4.5,
     stiffness=180.0,
@@ -305,7 +309,7 @@ comptime BShinJ = HingeJoint[
 comptime BFootJ = HingeJoint[
     body_idx=4,
     tau_limit=60.0,
-    range_min= -0.4,
+    range_min=-0.4,
     range_max=0.785,
     damping=3.0,
     stiffness=120.0,
@@ -315,7 +319,7 @@ comptime BFootJ = HingeJoint[
 comptime FThighJ = HingeJoint[
     body_idx=5,
     tau_limit=120.0,
-    range_min= -1.0,
+    range_min=-1.0,
     range_max=0.7,
     damping=4.5,
     stiffness=180.0,
@@ -325,7 +329,7 @@ comptime FThighJ = HingeJoint[
 comptime FShinJ = HingeJoint[
     body_idx=6,
     tau_limit=60.0,
-    range_min= -1.2,
+    range_min=-1.2,
     range_max=0.87,
     damping=3.0,
     stiffness=120.0,
@@ -335,7 +339,7 @@ comptime FShinJ = HingeJoint[
 comptime FFootJ = HingeJoint[
     body_idx=7,
     tau_limit=30.0,
-    range_min= -0.5,
+    range_min=-0.5,
     range_max=0.5,
     damping=1.5,
     stiffness=60.0,
@@ -450,9 +454,9 @@ comptime GroundGeom = Plane[
     size_x=40.0,
     size_y=40.0,
     material_name="MatPlane",
-    shininess = MatPlane.SHININESS,
-    specular = MatPlane.SPECULAR,
-    reflectance = MatPlane.REFLECTANCE,
+    shininess=MatPlane.SHININESS,
+    specular=MatPlane.SPECULAR,
+    reflectance=MatPlane.REFLECTANCE,
 ]
 
 # Body capsule geoms with local pos/quat from MuJoCo
@@ -464,9 +468,9 @@ comptime TorsoGeom = FromToCapsule[
     body_idx=1,
     radius=_R,
     # MuJoCo: fromto="-.5 0 0 .5 0 0"
-    from_x= -0.5,
+    from_x=-0.5,
     to_x=0.5,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
     material_name="geom",
 ]
 comptime BThighGeom = Capsule[
@@ -474,23 +478,23 @@ comptime BThighGeom = Capsule[
     radius=_R,
     half_length=0.145,
     pos_x=0.1,
-    pos_z= -0.13,
+    pos_z=-0.13,
     # MuJoCo quat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
-    quat_y= -0.946300,
-    quat_w= -0.323290,
-    color = Color(204, 153, 102, 255),
+    quat_y=-0.946300,
+    quat_w=-0.323290,
+    color=Color(204, 153, 102, 255),
     material_name="geom",
 ]
 comptime BShinGeom = Capsule[
     body_idx=3,
     radius=_R,
     half_length=0.15,
-    pos_x= -0.14,
-    pos_z= -0.07,
+    pos_x=-0.14,
+    pos_z=-0.07,
     # MuJoCo quat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
-    quat_y= -0.849481,
+    quat_y=-0.849481,
     quat_w=0.527620,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
     material_name="geom",
 ]
 comptime BFootGeom = Capsule[
@@ -498,23 +502,23 @@ comptime BFootGeom = Capsule[
     radius=_R,
     half_length=0.094,
     pos_x=0.03,
-    pos_z= -0.097,
+    pos_z=-0.097,
     # MuJoCo quat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
-    quat_y= -0.134590,
+    quat_y=-0.134590,
     quat_w=0.990901,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
     material_name="geom",
 ]
 comptime FThighGeom = Capsule[
     body_idx=5,
     radius=_R,
     half_length=0.133,
-    pos_x= -0.07,
-    pos_z= -0.12,
+    pos_x=-0.07,
+    pos_z=-0.12,
     # MuJoCo quat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
     quat_y=0.257081,
     quat_w=0.966390,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
     material_name="geom",
 ]
 comptime FShinGeom = Capsule[
@@ -522,11 +526,11 @@ comptime FShinGeom = Capsule[
     radius=_R,
     half_length=0.106,
     pos_x=0.065,
-    pos_z= -0.09,
+    pos_z=-0.09,
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
-    quat_y= -0.295520,
+    quat_y=-0.295520,
     quat_w=0.955336,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
     material_name="geom",
 ]
 comptime FFootGeom = Capsule[
@@ -534,11 +538,11 @@ comptime FFootGeom = Capsule[
     radius=_R,
     half_length=0.07,
     pos_x=0.045,
-    pos_z= -0.07,
+    pos_z=-0.07,
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
-    quat_y= -0.295520,
+    quat_y=-0.295520,
     quat_w=0.955336,
-    color = Color(230, 153, 153, 255),
+    color=Color(230, 153, 153, 255),
     material_name="geom",
 ]
 
@@ -553,7 +557,7 @@ comptime HeadGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.90687, 0, 0.42141, 0) → our (0, 0.42141, 0, 0.90687)
     quat_y=0.421410,
     quat_w=0.906870,
-    color = Color(204, 153, 102, 255),
+    color=Color(204, 153, 102, 255),
     material_name="geom",
 ]
 
@@ -574,7 +578,7 @@ comptime HalfCheetahGeoms = Geoms[
 # Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 0.3"/>
 # =============================================================================
 
-comptime HalfCheetahCamera = TrackCamera[pos_y= -3.0, pos_z=0.3]
+comptime HalfCheetahCamera = TrackCamera[pos_y=-3.0, pos_z=0.3]
 
 comptime HalfCheetahCameras = Cameras[HalfCheetahCamera]
 
@@ -605,7 +609,7 @@ comptime HalfCheetahDefaults = ModelDefaults[
     joint_solimp_limit_0=0.0,
     joint_solimp_limit_1=0.8,
     joint_solimp_limit_2=0.03,
-    gravity_z= -9.81,
+    gravity_z=-9.81,
     timestep=0.01,
     settotalmass=14.0,
     inertiafromgeom=False,  # HalfCheetah uses hardcoded body mass/inertia values
@@ -624,7 +628,7 @@ comptime HalfCheetahModel = ModelDef[
     HalfCheetahCameras,
     max_equality=0,
     max_contacts=20,
-    cone_type = ConeType.PYRAMIDAL,
+    cone_type=ConeType.PYRAMIDAL,
 ]
 
 

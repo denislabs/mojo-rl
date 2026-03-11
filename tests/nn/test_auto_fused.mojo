@@ -6,14 +6,22 @@ Run: cd mojo-rl && pixi run mojo run tests/test_auto_fused.mojo
 from std.random import seed, random_float64
 from std.math import abs as math_abs
 
-from nn.constants import dtype
-from nn.autodiff import (
-    MatMul, BiasAdd, ReLUOp, TanhOp, SigmoidOp, MishOp,
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
+    MatMul,
+    BiasAdd,
+    ReLUOp,
+    TanhOp,
+    SigmoidOp,
+    MishOp,
     AutoDiffChain,
-    FusedMatMulBias, FusedMatMulBiasReLU, FusedMatMulBiasTanh,
-    FusedMatMulBiasSigmoid, FusedMatMulBiasMish,
+    FusedMatMulBias,
+    FusedMatMulBiasReLU,
+    FusedMatMulBiasTanh,
+    FusedMatMulBiasSigmoid,
+    FusedMatMulBiasMish,
 )
-from nn.autodiff.auto_fused import AutoFused
+from mojo_rl.nn.autodiff.auto_fused import AutoFused
 from layout import Layout, LayoutTensor
 
 
@@ -58,12 +66,15 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Test 1: Compile-time dimensions
 # =============================================================================
 
+
 fn test_dimensions() -> Int:
     print_header("Compile-time dimensions")
     var fails = 0
 
     # 5-op chain: M+B+R + M+B
-    comptime AF = AutoFused[MatMul[2,4], BiasAdd[4], ReLUOp[4], MatMul[4,1], BiasAdd[1]]
+    comptime AF = AutoFused[
+        MatMul[2, 4], BiasAdd[4], ReLUOp[4], MatMul[4, 1], BiasAdd[1]
+    ]
     check(AF.IN_DIM == 2, "IN_DIM = 2", fails)
     check(AF.OUT_DIM == 1, "OUT_DIM = 1", fails)
     check(AF.PARAM_SIZE == 17, "PARAM_SIZE = 17 (12 + 5)", fails)
@@ -72,19 +83,26 @@ fn test_dimensions() -> Int:
 
     # 8-op chain: M+B+R + M+B+T + M+B
     comptime AF2 = AutoFused[
-        MatMul[2,8], BiasAdd[8], ReLUOp[8],
-        MatMul[8,4], BiasAdd[4], TanhOp[4],
-        MatMul[4,1], BiasAdd[1],
+        MatMul[2, 8],
+        BiasAdd[8],
+        ReLUOp[8],
+        MatMul[8, 4],
+        BiasAdd[4],
+        TanhOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]
     check(AF2.IN_DIM == 2, "8-op IN_DIM = 2", fails)
     check(AF2.OUT_DIM == 1, "8-op OUT_DIM = 1", fails)
     # FusedMBR[2,8]: ps=24, cs=10; FusedMBT[8,4]: ps=36, cs=12; FusedMB[4,1]: ps=5, cs=4
     check(AF2.PARAM_SIZE == 65, "8-op PARAM_SIZE = 65", fails)
     check(AF2.CACHE_SIZE == 26, "8-op CACHE_SIZE = 26 (10+12+4)", fails)
-    check(AF2.WORKSPACE_SIZE_PER_SAMPLE == 12, "8-op WORKSPACE = 12 (8+4)", fails)
+    check(
+        AF2.WORKSPACE_SIZE_PER_SAMPLE == 12, "8-op WORKSPACE = 12 (8+4)", fails
+    )
 
     # Single op (no fusion)
-    comptime AF3 = AutoFused[MatMul[3,5]]
+    comptime AF3 = AutoFused[MatMul[3, 5]]
     check(AF3.IN_DIM == 3, "single op IN_DIM = 3", fails)
     check(AF3.OUT_DIM == 5, "single op OUT_DIM = 5", fails)
     check(AF3.PARAM_SIZE == 15, "single op PARAM_SIZE = 15", fails)
@@ -96,6 +114,7 @@ fn test_dimensions() -> Int:
 # Test 2: Forward numerical match — AutoFused vs AutoDiffChain[FusedOps]
 # =============================================================================
 
+
 fn test_forward_5op() -> Int:
     print_header("Forward: 5-op AutoFused vs AutoDiffChain[FusedMBR, FusedMB]")
     var fails = 0
@@ -106,8 +125,16 @@ fn test_forward_5op() -> Int:
     comptime OUT_D = 1
     comptime BATCH = 4
 
-    comptime AF = AutoFused[MatMul[IN_D, HID], BiasAdd[HID], ReLUOp[HID], MatMul[HID, OUT_D], BiasAdd[OUT_D]]
-    comptime Ref = AutoDiffChain[FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]]
+    comptime AF = AutoFused[
+        MatMul[IN_D, HID],
+        BiasAdd[HID],
+        ReLUOp[HID],
+        MatMul[HID, OUT_D],
+        BiasAdd[OUT_D],
+    ]
+    comptime Ref = AutoDiffChain[
+        FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]
+    ]
 
     # Verify dimensions match
     check(AF.PARAM_SIZE == Ref.PARAM_SIZE, "PARAM_SIZE match", fails)
@@ -119,19 +146,35 @@ fn test_forward_5op() -> Int:
     # AutoFused forward
     var af_out = make_list(BATCH * OUT_D)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var af_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](af_out.unsafe_ptr())
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     # Reference forward
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var ref_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](ref_out.unsafe_ptr())
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * OUT_D)
@@ -145,6 +188,7 @@ fn test_forward_5op() -> Int:
 # Test 3: Backward numerical match
 # =============================================================================
 
+
 fn test_backward_5op() -> Int:
     print_header("Backward: 5-op AutoFused vs AutoDiffChain[FusedMBR, FusedMB]")
     var fails = 0
@@ -155,8 +199,16 @@ fn test_backward_5op() -> Int:
     comptime OUT_D = 1
     comptime BATCH = 4
 
-    comptime AF = AutoFused[MatMul[IN_D, HID], BiasAdd[HID], ReLUOp[HID], MatMul[HID, OUT_D], BiasAdd[OUT_D]]
-    comptime Ref = AutoDiffChain[FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]]
+    comptime AF = AutoFused[
+        MatMul[IN_D, HID],
+        BiasAdd[HID],
+        ReLUOp[HID],
+        MatMul[HID, OUT_D],
+        BiasAdd[OUT_D],
+    ]
+    comptime Ref = AutoDiffChain[
+        FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]
+    ]
 
     var params = make_rand_list(AF.PARAM_SIZE)
     var input_data = make_rand_list(BATCH * IN_D)
@@ -164,18 +216,34 @@ fn test_backward_5op() -> Int:
     # Forward pass (both need cache for backward)
     var af_out = make_list(BATCH * OUT_D)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var af_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](af_out.unsafe_ptr())
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var ref_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](ref_out.unsafe_ptr())
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     # Backward pass
@@ -183,16 +251,28 @@ fn test_backward_5op() -> Int:
 
     var af_gi = make_list(BATCH * IN_D)
     var af_grads = make_list(AF.PARAM_SIZE)
-    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](af_gi.unsafe_ptr())
-    var af_g = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](af_grads.unsafe_ptr())
+    var af_go = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](grad_out_data.unsafe_ptr())
+    var af_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](af_gi.unsafe_ptr())
+    var af_g = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](af_grads.unsafe_ptr())
     AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
 
     var ref_gi = make_list(BATCH * IN_D)
     var ref_grads = make_list(Ref.PARAM_SIZE)
-    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var ref_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](ref_gi.unsafe_ptr())
-    var ref_g = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](ref_grads.unsafe_ptr())
+    var ref_go = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](grad_out_data.unsafe_ptr())
+    var ref_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](ref_gi.unsafe_ptr())
+    var ref_g = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](ref_grads.unsafe_ptr())
     Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * IN_D)
@@ -209,6 +289,7 @@ fn test_backward_5op() -> Int:
 # Test 4: 8-op chain (mixed activations)
 # =============================================================================
 
+
 fn test_forward_8op() -> Int:
     print_header("Forward: 8-op M+B+R + M+B+T + M+B")
     var fails = 0
@@ -221,9 +302,14 @@ fn test_forward_8op() -> Int:
     comptime BATCH = 2
 
     comptime AF = AutoFused[
-        MatMul[IN_D, H1], BiasAdd[H1], ReLUOp[H1],
-        MatMul[H1, H2], BiasAdd[H2], TanhOp[H2],
-        MatMul[H2, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, H1],
+        BiasAdd[H1],
+        ReLUOp[H1],
+        MatMul[H1, H2],
+        BiasAdd[H2],
+        TanhOp[H2],
+        MatMul[H2, OUT_D],
+        BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
         FusedMatMulBiasReLU[IN_D, H1],
@@ -239,18 +325,34 @@ fn test_forward_8op() -> Int:
 
     var af_out = make_list(BATCH * OUT_D)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var af_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](af_out.unsafe_ptr())
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var ref_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](ref_out.unsafe_ptr())
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * OUT_D)
@@ -264,6 +366,7 @@ fn test_forward_8op() -> Int:
 # Test 5: 8-op backward
 # =============================================================================
 
+
 fn test_backward_8op() -> Int:
     print_header("Backward: 8-op M+B+R + M+B+T + M+B")
     var fails = 0
@@ -276,9 +379,14 @@ fn test_backward_8op() -> Int:
     comptime BATCH = 2
 
     comptime AF = AutoFused[
-        MatMul[IN_D, H1], BiasAdd[H1], ReLUOp[H1],
-        MatMul[H1, H2], BiasAdd[H2], TanhOp[H2],
-        MatMul[H2, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, H1],
+        BiasAdd[H1],
+        ReLUOp[H1],
+        MatMul[H1, H2],
+        BiasAdd[H2],
+        TanhOp[H2],
+        MatMul[H2, OUT_D],
+        BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
         FusedMatMulBiasReLU[IN_D, H1],
@@ -292,18 +400,34 @@ fn test_backward_8op() -> Int:
     # Forward
     var af_out = make_list(BATCH * OUT_D)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var af_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](af_out.unsafe_ptr())
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](input_data.unsafe_ptr())
+    var ref_o = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](ref_out.unsafe_ptr())
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     # Backward
@@ -311,16 +435,28 @@ fn test_backward_8op() -> Int:
 
     var af_gi = make_list(BATCH * IN_D)
     var af_grads = make_list(AF.PARAM_SIZE)
-    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](af_gi.unsafe_ptr())
-    var af_g = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](af_grads.unsafe_ptr())
+    var af_go = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](grad_out_data.unsafe_ptr())
+    var af_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](af_gi.unsafe_ptr())
+    var af_g = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](af_grads.unsafe_ptr())
     AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
 
     var ref_gi = make_list(BATCH * IN_D)
     var ref_grads = make_list(Ref.PARAM_SIZE)
-    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var ref_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](ref_gi.unsafe_ptr())
-    var ref_g = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](ref_grads.unsafe_ptr())
+    var ref_go = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](grad_out_data.unsafe_ptr())
+    var ref_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](ref_gi.unsafe_ptr())
+    var ref_g = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](ref_grads.unsafe_ptr())
     Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * IN_D)
@@ -337,6 +473,7 @@ fn test_backward_8op() -> Int:
 # Test 6: XOR training convergence
 # =============================================================================
 
+
 fn test_xor_training() -> Int:
     print_header("XOR training with AutoFused MLP")
     var fails = 0
@@ -348,17 +485,24 @@ fn test_xor_training() -> Int:
     comptime BATCH = 4
 
     comptime M = AutoFused[
-        MatMul[IN_D, HID], BiasAdd[HID], ReLUOp[HID],
-        MatMul[HID, OUT_D], BiasAdd[OUT_D],
+        MatMul[IN_D, HID],
+        BiasAdd[HID],
+        ReLUOp[HID],
+        MatMul[HID, OUT_D],
+        BiasAdd[OUT_D],
     ]
 
     # XOR data
     var input_data = List[Scalar[dtype]](capacity=BATCH * IN_D)
     # [0,0], [0,1], [1,0], [1,1]
-    input_data.append(0); input_data.append(0)
-    input_data.append(0); input_data.append(1)
-    input_data.append(1); input_data.append(0)
-    input_data.append(1); input_data.append(1)
+    input_data.append(0)
+    input_data.append(0)
+    input_data.append(0)
+    input_data.append(1)
+    input_data.append(1)
+    input_data.append(0)
+    input_data.append(1)
+    input_data.append(1)
 
     var target_data = List[Scalar[dtype]](capacity=BATCH * OUT_D)
     target_data.append(0)  # 0 XOR 0
@@ -379,10 +523,18 @@ fn test_xor_training() -> Int:
         var cache = make_list(BATCH * M.CACHE_SIZE)
         var output = make_list(BATCH * OUT_D)
 
-        var inp = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](input_data.unsafe_ptr())
-        var out = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](output.unsafe_ptr())
-        var par = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var cch = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache.unsafe_ptr())
+        var inp = LayoutTensor[
+            dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+        ](input_data.unsafe_ptr())
+        var out = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+        ](output.unsafe_ptr())
+        var par = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var cch = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
         M.forward[BATCH](inp, out, par, cch)
 
         # MSE loss + grad
@@ -397,9 +549,15 @@ fn test_xor_training() -> Int:
         # Backward
         var grad_input = make_list(BATCH * IN_D)
         var grads = make_list(M.PARAM_SIZE)
-        var go = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](grad_out_data.unsafe_ptr())
-        var gi = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](grad_input.unsafe_ptr())
-        var g = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](grads.unsafe_ptr())
+        var go = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+        ](grad_out_data.unsafe_ptr())
+        var gi = LayoutTensor[
+            dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+        ](grad_input.unsafe_ptr())
+        var g = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](grads.unsafe_ptr())
         M.backward[BATCH](go, gi, par, cch, g)
 
         # SGD update
@@ -417,6 +575,7 @@ fn test_xor_training() -> Int:
 # =============================================================================
 # Test 7: Single op (no fusion) — passthrough
 # =============================================================================
+
 
 fn test_single_op() -> Int:
     print_header("Single op: AutoFused[MatMul[3,5]] passthrough")
@@ -437,18 +596,34 @@ fn test_single_op() -> Int:
 
     var af_out = make_list(BATCH * 5)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 5), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 5), MutAnyOrigin](
+        af_out.unsafe_ptr()
+    )
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * 5)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 5), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 5), MutAnyOrigin](
+        ref_out.unsafe_ptr()
+    )
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 5)
@@ -461,6 +636,7 @@ fn test_single_op() -> Int:
 # =============================================================================
 # Test 8: M+B+S (sigmoid fusion)
 # =============================================================================
+
 
 fn test_sigmoid_fusion() -> Int:
     print_header("Sigmoid: AutoFused[M,B,S] vs FusedMatMulBiasSigmoid")
@@ -478,18 +654,34 @@ fn test_sigmoid_fusion() -> Int:
 
     var af_out = make_list(BATCH * 2)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        af_out.unsafe_ptr()
+    )
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        ref_out.unsafe_ptr()
+    )
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 2)
@@ -521,18 +713,34 @@ fn test_mish_fusion() -> Int:
     # Forward
     var af_out = make_list(BATCH * 2)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        af_out.unsafe_ptr()
+    )
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        ref_out.unsafe_ptr()
+    )
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 2)
@@ -546,14 +754,26 @@ fn test_mish_fusion() -> Int:
     var ref_gi = make_list(BATCH * 4)
     var grad_out_data = make_rand_list(BATCH * 2)
 
-    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](af_gi.unsafe_ptr())
-    var af_g = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](af_grads.unsafe_ptr())
+    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        grad_out_data.unsafe_ptr()
+    )
+    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](
+        af_gi.unsafe_ptr()
+    )
+    var af_g = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](af_grads.unsafe_ptr())
     AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
 
-    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var ref_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](ref_gi.unsafe_ptr())
-    var ref_g = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](ref_grads.unsafe_ptr())
+    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        grad_out_data.unsafe_ptr()
+    )
+    var ref_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, 4), MutAnyOrigin
+    ](ref_gi.unsafe_ptr())
+    var ref_g = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](ref_grads.unsafe_ptr())
     Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * 4)
@@ -570,6 +790,7 @@ fn test_mish_fusion() -> Int:
 # Test 10: 11-op deep chain
 # =============================================================================
 
+
 fn test_deep_chain() -> Int:
     print_header("Deep: 11-op M+B+R x3 + M+B → 4 fused groups")
     var fails = 0
@@ -577,10 +798,17 @@ fn test_deep_chain() -> Int:
 
     comptime BATCH = 2
     comptime AF = AutoFused[
-        MatMul[3, 16], BiasAdd[16], ReLUOp[16],
-        MatMul[16, 8], BiasAdd[8], ReLUOp[8],
-        MatMul[8, 4], BiasAdd[4], ReLUOp[4],
-        MatMul[4, 2], BiasAdd[2],
+        MatMul[3, 16],
+        BiasAdd[16],
+        ReLUOp[16],
+        MatMul[16, 8],
+        BiasAdd[8],
+        ReLUOp[8],
+        MatMul[8, 4],
+        BiasAdd[4],
+        ReLUOp[4],
+        MatMul[4, 2],
+        BiasAdd[2],
     ]
     comptime Ref = AutoDiffChain[
         FusedMatMulBiasReLU[3, 16],
@@ -598,18 +826,34 @@ fn test_deep_chain() -> Int:
     # Forward
     var af_out = make_list(BATCH * 2)
     var af_cache = make_list(BATCH * AF.CACHE_SIZE)
-    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](input_data.unsafe_ptr())
-    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](af_out.unsafe_ptr())
-    var af_p = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var af_c = LayoutTensor[dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin](af_cache.unsafe_ptr())
+    var af_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var af_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        af_out.unsafe_ptr()
+    )
+    var af_p = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var af_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
+    ](af_cache.unsafe_ptr())
     AF.forward[BATCH](af_inp, af_o, af_p, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
-    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](input_data.unsafe_ptr())
-    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](ref_out.unsafe_ptr())
-    var ref_p = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var ref_c = LayoutTensor[dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin](ref_cache.unsafe_ptr())
+    var ref_inp = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        input_data.unsafe_ptr()
+    )
+    var ref_o = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        ref_out.unsafe_ptr()
+    )
+    var ref_p = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var ref_c = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
+    ](ref_cache.unsafe_ptr())
     Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
 
     var fwd_md = max_diff(af_out, ref_out, BATCH * 2)
@@ -620,16 +864,28 @@ fn test_deep_chain() -> Int:
     var grad_out_data = make_rand_list(BATCH * 2)
     var af_gi = make_list(BATCH * 3)
     var af_grads = make_list(AF.PARAM_SIZE)
-    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](af_gi.unsafe_ptr())
-    var af_g = LayoutTensor[dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin](af_grads.unsafe_ptr())
+    var af_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        grad_out_data.unsafe_ptr()
+    )
+    var af_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        af_gi.unsafe_ptr()
+    )
+    var af_g = LayoutTensor[
+        dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
+    ](af_grads.unsafe_ptr())
     AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
 
     var ref_gi = make_list(BATCH * 3)
     var ref_grads = make_list(Ref.PARAM_SIZE)
-    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](grad_out_data.unsafe_ptr())
-    var ref_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](ref_gi.unsafe_ptr())
-    var ref_g = LayoutTensor[dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin](ref_grads.unsafe_ptr())
+    var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        grad_out_data.unsafe_ptr()
+    )
+    var ref_gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, 3), MutAnyOrigin
+    ](ref_gi.unsafe_ptr())
+    var ref_g = LayoutTensor[
+        dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
+    ](ref_grads.unsafe_ptr())
     Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * 3)
@@ -645,6 +901,7 @@ fn test_deep_chain() -> Int:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print()

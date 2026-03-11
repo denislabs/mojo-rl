@@ -12,11 +12,11 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import NewtonSolver
-from envs.hopper.hopper_xml import HopperModel
-from envs.hopper.hopper_config import HopperConfig
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from mojo_rl.envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================

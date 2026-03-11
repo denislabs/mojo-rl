@@ -12,7 +12,7 @@ no hardcoded assumptions about which qpos indices matter.
 from std.collections import InlineArray
 
 from std.memory import alloc
-from core import (
+from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
@@ -21,8 +21,8 @@ from core import (
     ObsState,
     ContAction,
 )
-from render import Renderer2D
-from nn import dtype as gpu_dtype
+from mojo_rl.render import Renderer2D
+from mojo_rl.nn import dtype as gpu_dtype
 
 # GPU imports
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -30,13 +30,13 @@ from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import physics engine
-from physics3d.types import Model, Data
-from physics3d.solver import NewtonSolver
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     TPB,
     state_size,
     qpos_offset,
@@ -54,13 +54,13 @@ from physics3d.gpu.constants import (
     cfrc_ext_offset,
     cvel_offset,
 )
-from physics3d.gpu import compute_cfrc_ext_gpu, compute_cvel_gpu
+from mojo_rl.physics3d.gpu import compute_cfrc_ext_gpu, compute_cvel_gpu
 
-from physics3d.model.model_renderer import ModelRenderer
+from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 
 from .phyics3d_env_config import Phyics3dEnvConfig
 
-from physics3d.model.model_def import ModelDefLike
+from mojo_rl.physics3d.model.model_def import ModelDefLike
 
 # =============================================================================
 # Generic Phyics3d Environment
@@ -264,13 +264,15 @@ struct Phyics3dEnv[
     fn action_high(self) -> Scalar[Self.dtype]:
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
-        var actions = List[Scalar[Self.dtype]]()
+    fn step_continuous[
+        DTYPE2: DType
+    ](mut self, action: Scalar[DTYPE2]) -> Tuple[
+        List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
+    ]:
+        var actions = List[Scalar[DTYPE2]]()
         for _ in range(Self.MODEL_DEF.ACTION_DIM):
-            actions.append(action)
-        return self.step_continuous_vec(actions)
+            actions.append(Scalar[DTYPE2](action))
+        return self.step_continuous_vec[DTYPE2](actions)
 
     fn step_continuous_vec[
         DTYPE2: DType

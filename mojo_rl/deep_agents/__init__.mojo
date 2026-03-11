@@ -1,6 +1,6 @@
 """Deep RL agents using the new trait-based architecture.
 
-All agents use the Network wrapper from nn.training with seq() composition
+All agents use the Network wrapper from mojo_rl.nn.training with seq() composition
 for building neural networks.
 
 Available agents:

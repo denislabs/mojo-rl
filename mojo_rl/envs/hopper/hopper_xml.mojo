@@ -1,4 +1,4 @@
-from physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime hopper_xml = """
 <mujoco model="hopper">
@@ -55,18 +55,18 @@ comptime pm = parse_xml(hopper_xml)
 
 comptime HopperModel = ModelDefFromXML[
     xml=hopper_xml,
-    nbody = pm.NBODY,
-    njoint = pm.NJOINT,
-    nq = pm.NQ,
-    nv = pm.NV,
-    ngeom = pm.NGEOM,
-    nact = pm.NACT,
-    ntex = pm.NTEX,
-    nmat = pm.NMAT,
-    nlight = pm.NLIGHT,
-    ncam = pm.NCAM,
-    nsite = pm.NSITE,
+    nbody=pm.NBODY,
+    njoint=pm.NJOINT,
+    nq=pm.NQ,
+    nv=pm.NV,
+    ngeom=pm.NGEOM,
+    nact=pm.NACT,
+    ntex=pm.NTEX,
+    nmat=pm.NMAT,
+    nlight=pm.NLIGHT,
+    ncam=pm.NCAM,
+    nsite=pm.NSITE,
     obs_qpos_skip=1,
     max_contacts=20,
-    timestep = pm.TIMESTEP,
+    timestep=pm.TIMESTEP,
 ]

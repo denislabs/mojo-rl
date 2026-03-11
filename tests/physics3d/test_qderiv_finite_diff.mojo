@@ -11,17 +11,19 @@ from std.testing import assert_true, TestSuite
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from physics3d.dynamics.jacobian import compute_cdof
-from physics3d.dynamics.bias_forces import compute_bias_forces_rne
-from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
-from physics3d.joint_types import JNT_FREE, JNT_BALL
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.dynamics.jacobian import compute_cdof
+from mojo_rl.physics3d.dynamics.bias_forces import compute_bias_forces_rne
+from mojo_rl.physics3d.dynamics.velocity_derivatives import (
+    compute_rne_vel_derivative,
+)
+from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 comptime DTYPE = DType.float64

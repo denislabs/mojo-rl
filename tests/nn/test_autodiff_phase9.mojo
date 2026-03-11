@@ -16,8 +16,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs, sqrt, exp
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     AutoFused,
     Dense,
@@ -40,7 +40,7 @@ from nn.autodiff import (
     Parallel,
     Repeat,
 )
-from nn.model.sequential import Sequential
+from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
@@ -132,8 +132,11 @@ fn test_resnet_dims() -> Int:
     comptime d_params = 8 * 1 + 1
     check(
         ResNet_2_8_1_2.PARAM_SIZE == dr_params + rb_params + d_params,
-        "ResNet PARAM_SIZE = " + String(ResNet_2_8_1_2.PARAM_SIZE)
-        + " (expected " + String(dr_params + rb_params + d_params) + ")",
+        "ResNet PARAM_SIZE = "
+        + String(ResNet_2_8_1_2.PARAM_SIZE)
+        + " (expected "
+        + String(dr_params + rb_params + d_params)
+        + ")",
         fails,
     )
 
@@ -156,10 +159,18 @@ fn test_resnet_forward_backward() -> Int:
     var out_data = make_list(BATCH * M.OUT_DIM)
     var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -175,9 +186,15 @@ fn test_resnet_forward_backward() -> Int:
     var gi_data = make_list(BATCH * M.IN_DIM)
     var gp_data = make_list(M.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -206,10 +223,14 @@ fn test_resnet_xor_training() -> Int:
     comptime BATCH = 4
 
     var inp_data = List[Scalar[dtype]](capacity=8)
-    inp_data.append(0); inp_data.append(0)
-    inp_data.append(0); inp_data.append(1)
-    inp_data.append(1); inp_data.append(0)
-    inp_data.append(1); inp_data.append(1)
+    inp_data.append(0)
+    inp_data.append(0)
+    inp_data.append(0)
+    inp_data.append(1)
+    inp_data.append(1)
+    inp_data.append(0)
+    inp_data.append(1)
+    inp_data.append(1)
 
     var target_data = List[Scalar[dtype]](capacity=4)
     target_data.append(0)
@@ -236,10 +257,18 @@ fn test_resnet_xor_training() -> Int:
         var out_data = make_list(BATCH * M.OUT_DIM)
         var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-        var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp_data.unsafe_ptr())
-        var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-        var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+        var inp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](inp_data.unsafe_ptr())
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](out_data.unsafe_ptr())
+        var p_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var c_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+        ](cache_data.unsafe_ptr())
 
         M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -252,9 +281,15 @@ fn test_resnet_xor_training() -> Int:
         loss /= Float64(BATCH)
 
         var gi_data = make_list(BATCH * M.IN_DIM)
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-        var g_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](grads.unsafe_ptr())
+        var go_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](go_data.unsafe_ptr())
+        var gi_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](gi_data.unsafe_ptr())
+        var g_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](grads.unsafe_ptr())
 
         M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
 
@@ -291,10 +326,18 @@ fn test_resnet_gradient_flow() -> Int:
     var out_data = make_list(BATCH * DeepResNet.OUT_DIM)
     var cache_data = make_list(BATCH * DeepResNet.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DeepResNet.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DeepResNet.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(DeepResNet.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DeepResNet.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DeepResNet.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DeepResNet.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(DeepResNet.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DeepResNet.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     DeepResNet.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -302,9 +345,15 @@ fn test_resnet_gradient_flow() -> Int:
     var gi_data = make_list(BATCH * DeepResNet.IN_DIM)
     var gp_data = make_list(DeepResNet.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DeepResNet.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DeepResNet.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(DeepResNet.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DeepResNet.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DeepResNet.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(DeepResNet.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     DeepResNet.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -326,7 +375,9 @@ fn test_resnet_gradient_flow() -> Int:
     print("  ratio (gi/go) = " + String(ratio))
     check(
         ratio > 1e-4,
-        "Gradient ratio > 1e-4 (no vanishing gradients, ratio=" + String(ratio) + ")",
+        "Gradient ratio > 1e-4 (no vanishing gradients, ratio="
+        + String(ratio)
+        + ")",
         fails,
     )
 
@@ -356,7 +407,9 @@ fn test_multihead_dims() -> Int:
     check(MultiHead_2.OUT_DIM == 5, "MultiHead OUT_DIM = 3+2 = 5", fails)
 
     check(MultiHeadClassifier_2_1.IN_DIM == 2, "Classifier IN_DIM == 2", fails)
-    check(MultiHeadClassifier_2_1.OUT_DIM == 1, "Classifier OUT_DIM == 1", fails)
+    check(
+        MultiHeadClassifier_2_1.OUT_DIM == 1, "Classifier OUT_DIM == 1", fails
+    )
 
     return fails
 
@@ -377,10 +430,18 @@ fn test_multihead_forward_backward() -> Int:
     var out_data = make_list(BATCH * M.OUT_DIM)
     var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -396,9 +457,15 @@ fn test_multihead_forward_backward() -> Int:
     var gi_data = make_list(BATCH * M.IN_DIM)
     var gp_data = make_list(M.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -429,10 +496,14 @@ fn test_multihead_xor_training() -> Int:
     comptime BATCH = 4
 
     var inp_data = List[Scalar[dtype]](capacity=8)
-    inp_data.append(0); inp_data.append(0)
-    inp_data.append(0); inp_data.append(1)
-    inp_data.append(1); inp_data.append(0)
-    inp_data.append(1); inp_data.append(1)
+    inp_data.append(0)
+    inp_data.append(0)
+    inp_data.append(0)
+    inp_data.append(1)
+    inp_data.append(1)
+    inp_data.append(0)
+    inp_data.append(1)
+    inp_data.append(1)
 
     var target_data = List[Scalar[dtype]](capacity=4)
     target_data.append(0)
@@ -459,10 +530,18 @@ fn test_multihead_xor_training() -> Int:
         var out_data = make_list(BATCH * M.OUT_DIM)
         var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-        var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp_data.unsafe_ptr())
-        var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-        var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+        var inp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](inp_data.unsafe_ptr())
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](out_data.unsafe_ptr())
+        var p_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var c_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+        ](cache_data.unsafe_ptr())
 
         M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -475,9 +554,15 @@ fn test_multihead_xor_training() -> Int:
         loss /= Float64(BATCH)
 
         var gi_data = make_list(BATCH * M.IN_DIM)
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-        var g_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](grads.unsafe_ptr())
+        var go_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](go_data.unsafe_ptr())
+        var gi_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](gi_data.unsafe_ptr())
+        var g_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](grads.unsafe_ptr())
 
         M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
 
@@ -494,7 +579,9 @@ fn test_multihead_xor_training() -> Int:
 
 # 3-branch multi-head variant
 fn test_multihead_3branch() -> Int:
-    print_header("9.2d 3-branch MultiHead[Dense[4,3], DenseReLU[4,2], DenseTanh[4,1]]")
+    print_header(
+        "9.2d 3-branch MultiHead[Dense[4,3], DenseReLU[4,2], DenseTanh[4,1]]"
+    )
     var fails = 0
     seed(42)
 
@@ -514,10 +601,18 @@ fn test_multihead_3branch() -> Int:
     var out_data = make_list(BATCH * M.OUT_DIM)
     var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -532,9 +627,15 @@ fn test_multihead_3branch() -> Int:
     var go_data = make_rand_list(BATCH * M.OUT_DIM)
     var gi_data = make_list(BATCH * M.IN_DIM)
     var gp_data = make_list(M.PARAM_SIZE)
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
     M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
     var has_gi = False
@@ -616,10 +717,18 @@ fn test_cnn_forward_backward() -> Int:
     var out_data = make_list(BATCH * M.OUT_DIM)
     var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -635,9 +744,15 @@ fn test_cnn_forward_backward() -> Int:
     var gi_data = make_list(BATCH * M.IN_DIM)
     var gp_data = make_list(M.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -674,10 +789,18 @@ fn test_lenet_forward_backward() -> Int:
     var out_data = make_list(BATCH * M.OUT_DIM)
     var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -693,9 +816,15 @@ fn test_lenet_forward_backward() -> Int:
     var gi_data = make_list(BATCH * M.IN_DIM)
     var gp_data = make_list(M.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -762,10 +891,18 @@ fn test_cnn_synthetic_training() -> Int:
         var out_data = make_list(BATCH * M.OUT_DIM)
         var cache_data = make_list(BATCH * M.CACHE_SIZE)
 
-        var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](inp_data.unsafe_ptr())
-        var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-        var p_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-        var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+        var inp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](inp_data.unsafe_ptr())
+        var out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](out_data.unsafe_ptr())
+        var p_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
+        var c_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+        ](cache_data.unsafe_ptr())
 
         M.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -777,13 +914,21 @@ fn test_cnn_synthetic_training() -> Int:
                 var idx = b_idx * M.OUT_DIM + o_idx
                 var diff = Float64(out_data[idx]) - Float64(target_data[idx])
                 loss += diff * diff
-                go_data[idx] = Scalar[dtype](2.0 * diff / Float64(BATCH * M.OUT_DIM))
+                go_data[idx] = Scalar[dtype](
+                    2.0 * diff / Float64(BATCH * M.OUT_DIM)
+                )
         loss /= Float64(BATCH * M.OUT_DIM)
 
         var gi_data = make_list(BATCH * M.IN_DIM)
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-        var g_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](grads.unsafe_ptr())
+        var go_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
+        ](go_data.unsafe_ptr())
+        var gi_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
+        ](gi_data.unsafe_ptr())
+        var g_t = LayoutTensor[
+            dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+        ](grads.unsafe_ptr())
 
         M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
 
@@ -803,6 +948,7 @@ fn test_cnn_synthetic_training() -> Int:
 # 9.4 Transformer Architectures
 # =============================================================================
 
+
 fn test_transformer_composite_dims() -> Int:
     print_header("9.4a Transformer composite dimension checks")
     var fails = 0
@@ -820,7 +966,8 @@ fn test_transformer_composite_dims() -> Int:
 
     # TransformerLayer = Sequential[ResAttn, ResFFN]
     comptime AttnInner = AutoDiffChain[
-        MatMul[SD, SD * 3], BiasAdd[SD * 3],
+        MatMul[SD, SD * 3],
+        BiasAdd[SD * 3],
         ScaledDotProductAttention[DIM, HEADS, SEQ],
     ]
     comptime ResAttn = Residual[AttnInner]
@@ -828,7 +975,9 @@ fn test_transformer_composite_dims() -> Int:
     comptime TLayer = Sequential[ResAttn, ResFFN]
 
     check(TLayer.IN_DIM == SD, "TransformerLayer IN_DIM = " + String(SD), fails)
-    check(TLayer.OUT_DIM == SD, "TransformerLayer OUT_DIM = " + String(SD), fails)
+    check(
+        TLayer.OUT_DIM == SD, "TransformerLayer OUT_DIM = " + String(SD), fails
+    )
 
     # TransformerEncoder = Repeat[2, TransformerLayer]
     comptime Encoder = Repeat[2, TLayer]
@@ -836,7 +985,8 @@ fn test_transformer_composite_dims() -> Int:
     check(Encoder.OUT_DIM == SD, "Encoder OUT_DIM = " + String(SD), fails)
     check(
         Encoder.PARAM_SIZE == TLayer.PARAM_SIZE,
-        "Encoder PARAM_SIZE = TLayer PARAM_SIZE (shared) = " + String(Encoder.PARAM_SIZE),
+        "Encoder PARAM_SIZE = TLayer PARAM_SIZE (shared) = "
+        + String(Encoder.PARAM_SIZE),
         fails,
     )
     check(
@@ -862,7 +1012,8 @@ fn test_tiny_gpt() -> Int:
     comptime SD = SEQ * DIM
 
     comptime AttnInner = AutoDiffChain[
-        MatMul[SD, SD * 3], BiasAdd[SD * 3],
+        MatMul[SD, SD * 3],
+        BiasAdd[SD * 3],
         ScaledDotProductAttention[DIM, HEADS, SEQ],
     ]
     comptime ResAttn = Residual[AttnInner]
@@ -897,10 +1048,18 @@ fn test_tiny_gpt() -> Int:
     var out_data = make_list(BATCH * GPT.OUT_DIM)
     var cache_data = make_list(BATCH * GPT.CACHE_SIZE)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, GPT.IN_DIM), MutAnyOrigin](inp.unsafe_ptr())
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, GPT.OUT_DIM), MutAnyOrigin](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(GPT.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, GPT.CACHE_SIZE), MutAnyOrigin](cache_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT.IN_DIM), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT.OUT_DIM), MutAnyOrigin
+    ](out_data.unsafe_ptr())
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(GPT.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT.CACHE_SIZE), MutAnyOrigin
+    ](cache_data.unsafe_ptr())
 
     GPT.forward[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -916,9 +1075,15 @@ fn test_tiny_gpt() -> Int:
     var gi_data = make_list(BATCH * GPT.IN_DIM)
     var gp_data = make_list(GPT.PARAM_SIZE)
 
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, GPT.OUT_DIM), MutAnyOrigin](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, GPT.IN_DIM), MutAnyOrigin](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(GPT.PARAM_SIZE), MutAnyOrigin](gp_data.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT.OUT_DIM), MutAnyOrigin
+    ](go_data.unsafe_ptr())
+    var gi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT.IN_DIM), MutAnyOrigin
+    ](gi_data.unsafe_ptr())
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(GPT.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     GPT.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -935,6 +1100,7 @@ fn test_tiny_gpt() -> Int:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

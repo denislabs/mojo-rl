@@ -15,8 +15,8 @@ from std.math import exp, sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.lunar_lander import LunarLander
-from physics2d import dtype, TPB
+from mojo_rl.envs.lunar_lander import LunarLander
+from mojo_rl.physics2d import dtype, TPB
 
 
 # Training hyperparameters
@@ -111,7 +111,12 @@ fn main() raises:
 
                 # Step all environments
                 LunarLander.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                    ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                    ctx,
+                    states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
                 )
 
                 # Selective reset for done environments
@@ -206,7 +211,12 @@ fn main() raises:
                     actions_host[i] = Scalar[dtype](action)
 
             LunarLander.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
             )
 
             LunarLander.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](

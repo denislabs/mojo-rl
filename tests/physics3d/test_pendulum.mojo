@@ -10,9 +10,9 @@ Run with:
 """
 
 from std.math import sqrt, pi, sin, cos, abs
-from physics3d.types import Model, Data
-from physics3d.integrator import DefaultIntegrator
-from physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.integrator import DefaultIntegrator
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from std.testing import assert_true, TestSuite
 
 

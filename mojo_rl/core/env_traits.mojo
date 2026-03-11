@@ -39,7 +39,7 @@ Algorithms specify requirements:
 
 from .env import Env
 from layout import LayoutTensor, Layout
-from nn import dtype
+from mojo_rl.nn import dtype
 from std.gpu import DeviceContext, DeviceBuffer
 from std.memory import UnsafePointer
 
@@ -306,9 +306,11 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     Examples: Pendulum (3D obs, 1D action), BipedalWalker (24D obs, 4D action).
     """
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take 1D continuous action and return (continuous_obs, reward, done).
 
         Convenience method for environments with single-dimensional actions.

@@ -9,7 +9,7 @@ Camera modes:
   - CAM_FIXED (1): Camera stays at a fixed position in world space.
 
 Usage:
-    from physics3d.model.camera_spec import CameraSpec, TrackCamera
+    from mojo_rl.physics3d.model.camera_spec import CameraSpec, TrackCamera
 
     # HalfCheetah camera: MuJoCo pos="0 -3 0.3"
     comptime HalfCheetahCamera = TrackCamera[pos_y=-3.0, pos_z=0.3]
@@ -19,8 +19,8 @@ Usage:
 """
 
 
-from render import Camera3D
-from math3d import Vec3 as Vec3Generic
+from mojo_rl.render import Camera3D
+from mojo_rl.math3d import Vec3 as Vec3Generic
 
 comptime Vec3 = Vec3Generic[DType.float64]
 

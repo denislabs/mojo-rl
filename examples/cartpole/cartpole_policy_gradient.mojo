@@ -18,9 +18,9 @@ Advantages over value-based methods:
 Usage:
     pixi run mojo run examples/cartpole_policy_gradient.mojo
 """
-from envs import CartPoleEnv
-from agents.reinforce import REINFORCEAgent
-from agents.actor_critic import (
+from mojo_rl.envs import CartPoleEnv
+from mojo_rl.agents.reinforce import REINFORCEAgent
+from mojo_rl.agents.actor_critic import (
     ActorCriticAgent,
     ActorCriticLambdaAgent,
     A2CAgent,

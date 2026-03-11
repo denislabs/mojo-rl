@@ -1,6 +1,11 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core import (
+    TabularAgent,
+    DiscreteEnv,
+    RenderableEnv,
+    TrainingMetrics,
+)
 
 
 struct SARSALambdaAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
@@ -100,7 +105,7 @@ struct SARSALambdaAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var rand = random_float64()
         if rand < self.epsilon:
             # random_si64 is inclusive on both ends, so use num_actions - 1
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.q_table.get_best_action(state_idx)
 

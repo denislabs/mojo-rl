@@ -8,7 +8,7 @@ from layout import (
     LayoutTensor,
 )
 
-from nn.constants import dtype
+from mojo_rl.nn.constants import dtype
 
 
 fn fill_inline[

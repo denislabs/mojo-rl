@@ -1,9 +1,9 @@
 """Smoke test for AtariEnv — BoxDiscreteActionEnv conformance."""
 
-from envs.atari.atari_env import AtariEnv, AtariEnvState, AtariAction
-from envs.atari.environment import load_rom
-from envs.atari.games.pong import PongDef
-from envs.atari.flags import RAM_SIZE, OBS_WIDTH, OBS_HEIGHT
+from mojo_rl.envs.atari.atari_env import AtariEnv, AtariEnvState, AtariAction
+from mojo_rl.envs.atari.environment import load_rom
+from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.flags import RAM_SIZE, OBS_WIDTH, OBS_HEIGHT
 
 
 fn test_ram_mode() raises:
@@ -33,7 +33,9 @@ fn test_ram_mode() raises:
 
     # Step with NOOP and check obs changes are valid
     var result = env.step_obs(0)  # NOOP
-    assert_equal(len(result[0].copy()), RAM_SIZE, "step_obs should return 128 floats")
+    assert_equal(
+        len(result[0].copy()), RAM_SIZE, "step_obs should return 128 floats"
+    )
 
     # Step several times
     for i in range(10):
@@ -44,7 +46,9 @@ fn test_ram_mode() raises:
 
     # Test action_from_index
     var action = env.action_from_index(3)
-    assert_equal(action.action_idx, 3, "action_from_index should preserve index")
+    assert_equal(
+        action.action_idx, 3, "action_from_index should preserve index"
+    )
 
     env.close()
     print("  PASSED")
@@ -66,7 +70,9 @@ fn test_pixel_mode() raises:
 
     # Reset and check obs
     var obs = env.reset_obs_list()
-    assert_equal(len(obs), EXPECTED_DIM, "reset_obs_list should return 28224 floats")
+    assert_equal(
+        len(obs), EXPECTED_DIM, "reset_obs_list should return 28224 floats"
+    )
 
     # After reset, all 4 frames should be identical (same initial frame)
     # Check first frame equals second frame
@@ -87,7 +93,11 @@ fn test_pixel_mode() raises:
 
     # Step and verify
     var result = env.step_obs(0)
-    assert_equal(len(result[0]), EXPECTED_DIM, "step_obs pixel should return 28224 floats")
+    assert_equal(
+        len(result[0]),
+        EXPECTED_DIM,
+        "step_obs pixel should return 28224 floats",
+    )
 
     # Step a few more times
     for i in range(5):
@@ -108,11 +118,11 @@ fn test_trait_conformance() raises:
 
     # These are the BoxDiscreteActionEnv methods
     _ = env.reset_obs_list()  # ContinuousStateEnv
-    _ = env.get_obs_list()    # ContinuousStateEnv
-    _ = env.obs_dim()         # ContinuousStateEnv
-    _ = env.num_actions()     # DiscreteActionEnv
-    _ = env.action_from_index(0) # DiscreteActionEnv
-    _ = env.step_obs(0)       # BoxDiscreteActionEnv
+    _ = env.get_obs_list()  # ContinuousStateEnv
+    _ = env.obs_dim()  # ContinuousStateEnv
+    _ = env.num_actions()  # DiscreteActionEnv
+    _ = env.action_from_index(0)  # DiscreteActionEnv
+    _ = env.step_obs(0)  # BoxDiscreteActionEnv
 
     # Env base trait methods
     _ = env.reset()
@@ -127,9 +137,19 @@ fn test_trait_conformance() raises:
 # Helpers
 # ========================================================================
 
+
 fn assert_equal(a: Int, b: Int, msg: String) raises:
     if a != b:
-        raise Error("ASSERTION FAILED: " + msg + " (got " + String(a) + " != " + String(b) + ")")
+        raise Error(
+            "ASSERTION FAILED: "
+            + msg
+            + " (got "
+            + String(a)
+            + " != "
+            + String(b)
+            + ")"
+        )
+
 
 fn assert_true(val: Bool, msg: String) raises:
     if not val:

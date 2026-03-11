@@ -68,8 +68,12 @@ fn qcqp3[
     The cone constraint is: sum_i (f_i / (mu_i * fn))^2 <= 1
 
     Args:
-        f1-f3: Friction forces (modified in-place).
-        mu1-mu3: Per-dimension friction coefficients.
+        f1: Friction force 1 (modified in-place).
+        f2: Friction force 2 (modified in-place).
+        f3: Friction force 3 (modified in-place).
+        mu1: Friction coefficient 1.
+        mu2: Friction coefficient 2.
+        mu3: Friction coefficient 3.
         fn_val: Normal force magnitude.
     """
     if fn_val <= Scalar[DTYPE](0):
@@ -164,8 +168,16 @@ fn qcqp5[
     The cone constraint is: sum_i (f_i / (mu_i * fn))^2 <= 1
 
     Args:
-        f1-f5: Friction forces (modified in-place).
-        mu1-mu5: Per-dimension friction coefficients.
+        f1: Friction force 1 (modified in-place).
+        f2: Friction force 2 (modified in-place).
+        f3: Friction force 3 (modified in-place).
+        f4: Friction force 4 (modified in-place).
+        f5: Friction force 5 (modified in-place).
+        mu1: Friction coefficient 1.
+        mu2: Friction coefficient 2.
+        mu3: Friction coefficient 3.
+        mu4: Friction coefficient 4.
+        mu5: Friction coefficient 5.
         fn_val: Normal force magnitude.
     """
     if fn_val <= Scalar[DTYPE](0):

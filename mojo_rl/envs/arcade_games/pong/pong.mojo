@@ -23,15 +23,15 @@ Actions: 0=NOOP, 1=UP, 2=DOWN
 
 from std.random import random_float64
 from std.memory import alloc
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     BoxDiscreteActionEnv,
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from render import Renderer2D, SDL_Color, Vec2, Camera, black, white
-from nn.gpu import random_range, xorshift32
+from mojo_rl.render import Renderer2D, SDL_Color, Vec2, Camera, black, white
+from mojo_rl.nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer

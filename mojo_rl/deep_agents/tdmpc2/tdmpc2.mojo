@@ -33,23 +33,32 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TPB
-from nn.optimizer import Adam
-from nn.loss.two_hot import (
+from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.loss.two_hot import (
     compute_bins,
     two_hot_encode_batch,
     decode_value_batch,
 )
-from deep_agents.core.replay.sequence_replay_buffer import SequenceReplayBuffer
-from deep_agents.core.kernels import (
+from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
+    SequenceReplayBuffer,
+)
+from mojo_rl.deep_agents.core.kernels import (
     copy_buffer_kernel,
 )
-from core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
-from deep_agents.ppo.kernels import (
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxContinuousActionEnv,
+    GPUContinuousEnv,
+)
+from mojo_rl.deep_agents.ppo.kernels import (
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
 )
-from deep_agents.core.utils import print_progress_bar, clear_progress_bar
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 
 from .state import TDMPC2GPUState, TDMPC2CPUState, MPPIGPUBuffers
 from .world_model import WorldModel, decode_value_batch_scalar
@@ -145,9 +154,9 @@ struct TDMPC2Agent[
         Self.simplex_dim,
         Self.v_min,
         Self.v_max,
-        buffer_capacity = Self.buffer_capacity,
-        batch_size = Self.batch_size,
-        horizon = Self.horizon,
+        buffer_capacity=Self.buffer_capacity,
+        batch_size=Self.batch_size,
+        horizon=Self.horizon,
     ]
     # WM alias now derives from CPUStateType so GPU code's type references still work
     comptime WM = Self.CPUStateType.WM
@@ -207,9 +216,9 @@ struct TDMPC2Agent[
     # GPU state type alias (parameterized without n_envs/env_state_size;
     # those are filled in by train_gpu[] which knows ENV).
     # Use make_gpu_state[n_envs, env_state_size](ctx) to construct.
-    comptime EncOpt = Adam[LR = Self.WM.ENC_LR]
-    comptime WMOpt = Adam[LR = Self.WM.WM_LR]
-    comptime PIOpt = Adam[LR = Self.WM.PI_LR]
+    comptime EncOpt = Adam[LR=Self.WM.ENC_LR]
+    comptime WMOpt = Adam[LR=Self.WM.WM_LR]
+    comptime PIOpt = Adam[LR=Self.WM.PI_LR]
 
     var state: Self.CPUStateType
 
@@ -2374,7 +2383,9 @@ struct TDMPC2Agent[
                 )
 
                 # Stochastic: tanh(mean + std*eps) → actions + build za_next
-                var td_reparam_seed = Scalar[DType.uint32](td_reparam_rng_counter)
+                var td_reparam_seed = Scalar[DType.uint32](
+                    td_reparam_rng_counter
+                )
                 td_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
                 ctx.enqueue_function[
                     tdmpc2_apply_tanh_build_za_kernel[
@@ -2573,7 +2584,7 @@ struct TDMPC2Agent[
                 block_dim=(TPB,),
             )
             gpu_wm_step += 1
-            Adam[LR = Self.WM.ENC_LR].step_gpu[Self.ENC_P](
+            Adam[LR=Self.WM.ENC_LR].step_gpu[Self.ENC_P](
                 ctx,
                 enc_params_tensor,
                 enc_grads_tensor,
@@ -2609,7 +2620,7 @@ struct TDMPC2Agent[
                 grid_dim=(Self.DYN_GRAD_BLOCKS,),
                 block_dim=(TPB,),
             )
-            Adam[LR = Self.WM.WM_LR].step_gpu[Self.DYN_P](
+            Adam[LR=Self.WM.WM_LR].step_gpu[Self.DYN_P](
                 ctx,
                 dyn_params_tensor,
                 dyn_grads_tensor,
@@ -2645,7 +2656,7 @@ struct TDMPC2Agent[
                 grid_dim=(Self.REW_GRAD_BLOCKS,),
                 block_dim=(TPB,),
             )
-            Adam[LR = Self.WM.WM_LR].step_gpu[Self.REW_P](
+            Adam[LR=Self.WM.WM_LR].step_gpu[Self.REW_P](
                 ctx,
                 rew_params_tensor,
                 rew_grads_tensor,
@@ -2681,7 +2692,7 @@ struct TDMPC2Agent[
                 grid_dim=(Self.TERM_GRAD_BLOCKS,),
                 block_dim=(TPB,),
             )
-            Adam[LR = Self.WM.WM_LR].step_gpu[Self.TERM_P](
+            Adam[LR=Self.WM.WM_LR].step_gpu[Self.TERM_P](
                 ctx,
                 term_params_tensor,
                 term_grads_tensor,
@@ -2876,7 +2887,9 @@ struct TDMPC2Agent[
                 )
 
                 # Stochastic policy: a = tanh(mean + std*eps) via reparameterization
-                var pi_reparam_seed = Scalar[DType.uint32](pi_reparam_rng_counter)
+                var pi_reparam_seed = Scalar[DType.uint32](
+                    pi_reparam_rng_counter
+                )
                 pi_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
                 ctx.enqueue_function[
                     tdmpc2_apply_tanh_build_za_kernel[
@@ -2908,9 +2921,10 @@ struct TDMPC2Agent[
                 for qi_iter in range(2):
                     var qi = qi_a if qi_iter == 0 else qi_b
                     # Entropy weighted by rho^t (temporal decay), applied once
-                    var ent = entropy_coef_scalar * pol_rho_t if qi_iter == 0 else Scalar[
-                        dtype
-                    ](0.0)
+                    var ent = (
+                        entropy_coef_scalar * pol_rho_t if qi_iter
+                        == 0 else Scalar[dtype](0.0)
+                    )
 
                     var qi_p = LayoutTensor[
                         dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
@@ -3041,7 +3055,7 @@ struct TDMPC2Agent[
                 block_dim=(TPB,),
             )
             gpu_pi_step += 1
-            Adam[LR = Self.WM.PI_LR].step_gpu[Self.POL_P](
+            Adam[LR=Self.WM.PI_LR].step_gpu[Self.POL_P](
                 ctx,
                 pol_params_tensor,
                 pol_grads_tensor,

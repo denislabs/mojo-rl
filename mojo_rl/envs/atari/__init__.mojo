@@ -4,8 +4,8 @@ GPU-capable Atari environment for reinforcement learning.
 Emulates the MOS 6502 CPU, TIA graphics chip, and RIOT timer/IO.
 
 Usage:
-    from envs.atari import AtariEnvironment, load_rom
-    from envs.atari.games import PongDef
+    from mojo_rl.envs.atari import AtariEnvironment, load_rom
+    from mojo_rl.envs.atari.games import PongDef
 
     var rom = load_rom("pong.bin")
     var env = AtariEnvironment(rom.data, rom.size)
@@ -15,12 +15,22 @@ Usage:
 
 from .atari_state import AtariState
 from .environment import AtariEnvironment, RomData, load_rom
-from .frame_render import render_frame_bgra, render_frame_rgb, render_frame_grayscale
+from .frame_render import (
+    render_frame_bgra,
+    render_frame_rgb,
+    render_frame_grayscale,
+)
 from .atari_env import AtariEnv, AtariEnvState, AtariAction
 from .flags import (
-    ACTION_NOOP, ACTION_FIRE, ACTION_UP, ACTION_RIGHT,
-    ACTION_LEFT, ACTION_DOWN,
-    FRAME_WIDTH, FRAME_HEIGHT,
-    OBS_WIDTH, OBS_HEIGHT,
+    ACTION_NOOP,
+    ACTION_FIRE,
+    ACTION_UP,
+    ACTION_RIGHT,
+    ACTION_LEFT,
+    ACTION_DOWN,
+    FRAME_WIDTH,
+    FRAME_HEIGHT,
+    OBS_WIDTH,
+    OBS_HEIGHT,
     NUM_TOTAL_ACTIONS,
 )

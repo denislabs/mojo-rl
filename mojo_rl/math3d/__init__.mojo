@@ -9,7 +9,7 @@ This module provides 3D math types for physics simulation and rendering:
 
 Example:
     ```mojo
-    from math3d import Vec3, Quat, Mat3, Mat4
+    from mojo_rl.math3d import Vec3, Quat, Mat3, Mat4
 
     # Create a position
     var position = Vec3[DType.float32](1.0, 2.0, 3.0)

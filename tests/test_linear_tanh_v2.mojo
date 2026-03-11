@@ -1,6 +1,6 @@
 """Test LinearTanhV2 module compiles and runs."""
-from nn.model.linear_tanh_v2 import LinearTanhV2
-from nn.gpu.matmul_ops import TILE_APPLE
+from mojo_rl.nn.model.linear_tanh_v2 import LinearTanhV2
+from mojo_rl.nn.gpu.matmul_ops import TILE_APPLE
 
 
 def main():

@@ -18,8 +18,8 @@ Architecture:
 - Critic: obs -> hidden (ReLU) -> hidden (ReLU) -> 1 (value)
 
 Usage:
-    from deep_agents.a2c import DeepA2CAgent
-    from envs import CartPoleNative
+    from mojo_rl.deep_agents.a2c import DeepA2CAgent
+    from mojo_rl.envs import CartPoleNative
 
     var env = CartPoleNative()
     var agent = DeepA2CAgent[4, 2, 128]()
@@ -37,12 +37,12 @@ from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, ReLU, Sequential
-from nn.optimizer import Adam
-from nn.initializer import Xavier
-from nn.training import Network, NetworkState
-from nn.checkpoint import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Linear, ReLU, Sequential
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
     write_checkpoint_header,
@@ -50,24 +50,24 @@ from nn.checkpoint import (
     read_metadata_section,
     get_metadata_value,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from core.utils.gae import compute_gae_inline
-from deep_agents.core import (
+from mojo_rl.core.utils.gae import compute_gae_inline
+from mojo_rl.deep_agents.core import (
     OnPolicyAgent,
     run_onpolicy_discrete_train,
     Checkpointable,
 )
-from core.utils.softmax import (
+from mojo_rl.core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
     argmax_probs_inline,
 )
-from core.utils.normalization import normalize_inline
+from mojo_rl.core.utils.normalization import normalize_inline
 
 
 # =============================================================================
@@ -181,9 +181,9 @@ struct DeepA2CAgent[
         """
         # Initialize network states with Xavier initialization
         self.actor = NetworkState[Self.ActorModel, Adam[Self.actor_lr]]()
-        self.actor.initialize[Xavier]()
+        self.actor.initialize[Xavier[]]()
         self.critic = NetworkState[Self.CriticModel, Adam[Self.critic_lr]]()
-        self.critic.initialize[Xavier]()
+        self.critic.initialize[Xavier[]]()
 
         # Store hyperparameters
         self.gamma = gamma
@@ -298,7 +298,7 @@ struct DeepA2CAgent[
 
     fn update(
         mut self,
-        next_obs: InlineArray[Scalar[dtype], Self.OBS],
+        mut next_obs: InlineArray[Scalar[dtype], Self.OBS],
     ) -> Float64:
         """Update actor and critic using collected rollout.
 

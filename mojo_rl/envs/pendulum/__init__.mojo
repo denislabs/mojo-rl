@@ -5,7 +5,7 @@ This module provides both CPU and GPU implementations of Pendulum:
 - PendulumV2: GPU-accelerated implementation with GPUContinuousEnv trait
 
 Usage:
-    from envs.pendulum import PendulumV2, PendulumV2State, PendulumV2Action
+    from mojo_rl.envs.pendulum import PendulumV2, PendulumV2State, PendulumV2Action
 
     # Create environment
     var env = PendulumV2[DType.float32]()

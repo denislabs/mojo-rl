@@ -28,9 +28,13 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from envs import PendulumEnv
-from core import ContinuousReplayBuffer, PolynomialFeatures, TrainingMetrics
-from agents import DDPGAgent, TD3Agent
+from mojo_rl.envs import PendulumEnv
+from mojo_rl.core import (
+    ContinuousReplayBuffer,
+    PolynomialFeatures,
+    TrainingMetrics,
+)
+from mojo_rl.agents import DDPGAgent, TD3Agent
 
 
 fn main() raises:

@@ -12,12 +12,12 @@ from std.math import abs
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from physics3d.types import Model, Data, _max_one
-from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
+from mojo_rl.physics3d.types import Model, Data, _max_one
+from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from envs.hopper.hopper_xml import HopperModel
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.hopper.hopper_xml import HopperModel
 
 
 # =============================================================================

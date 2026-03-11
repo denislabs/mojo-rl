@@ -1,7 +1,7 @@
 """Debug friction: print constraint Jacobians and solver internals."""
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
-from physics3d.constraints.constraint_data import (
+from mojo_rl.envs.half_cheetah import HalfCheetah
+from mojo_rl.physics3d.constraints.constraint_data import (
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
     CNSTR_FRICTION_T2,

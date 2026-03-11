@@ -4,9 +4,9 @@ This module provides infrastructure for hyperparameter optimization
 including grid search and random search over RL agent configurations.
 
 Usage:
-    from core.hyperparam import TabularParamSpace, TabularHyperparams
-    from core.hyperparam import SearchResults, TrialResult
-    from core.hyperparam import make_qlearning_agent
+    from mojo_rl.core.hyperparam import TabularParamSpace, TabularHyperparams
+    from mojo_rl.core.hyperparam import SearchResults, TrialResult
+    from mojo_rl.core.hyperparam import make_qlearning_agent
 
     # Define search space
     var param_space = TabularParamSpace()

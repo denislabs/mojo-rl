@@ -7,9 +7,9 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 """
 
 from std.collections import InlineArray
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render import Renderer3D, Camera3D, Color
-from core import EnvRenderer3D
+from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from mojo_rl.render import Renderer3D, Camera3D, Color
+from mojo_rl.core import EnvRenderer3D
 from ..model.geom_spec import GeomSpec, GeomsLike
 from ..model.camera_spec import CamerasLike, _EmptyCameras
 from ..model.light_spec import LightsLike, _EmptyLights
@@ -236,7 +236,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if not self.initialized:
             return
 
-        # Handle camera switch request from Renderer3D (number keys 1-9)
+        # Handle camera switch request from mojo_rl.renderer3D (number keys 1-9)
         var cam_req = self.renderer.camera_switch_request
         if cam_req >= 0 and cam_req < len(self.cameras):
             self.active_camera = cam_req

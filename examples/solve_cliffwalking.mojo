@@ -27,9 +27,9 @@ Run with:
     pixi run mojo run examples/solve_cliffwalking.mojo
 """
 
-from envs import CliffWalkingEnv
-from agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
-from render import Renderer2D
+from mojo_rl.envs import CliffWalkingEnv
+from mojo_rl.agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

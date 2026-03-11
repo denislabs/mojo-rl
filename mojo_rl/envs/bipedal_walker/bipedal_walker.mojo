@@ -17,13 +17,13 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
-from core import (
+from mojo_rl.core import (
     GPUContinuousEnv,
     BoxContinuousActionEnv,
     Action,
     RenderableEnv,
 )
-from render import (
+from mojo_rl.render import (
     Renderer2D,
     SDL_Color,
     Camera,
@@ -44,13 +44,13 @@ from .state import BipedalWalkerState
 from .action import BipedalWalkerAction
 from .constants import BWConstants
 
-from physics2d.integrators.euler import SemiImplicitEuler
-from physics2d.collision.edge_terrain import EdgeTerrainCollision
-from physics2d.solvers.impulse import ImpulseSolver
-from physics2d.joints.revolute import RevoluteJointSolver
-from physics2d.lidar import Lidar
+from mojo_rl.physics2d.integrators.euler import SemiImplicitEuler
+from mojo_rl.physics2d.collision.edge_terrain import EdgeTerrainCollision
+from mojo_rl.physics2d.solvers.impulse import ImpulseSolver
+from mojo_rl.physics2d.joints.revolute import RevoluteJointSolver
+from mojo_rl.physics2d.lidar import Lidar
 
-from physics2d import (
+from mojo_rl.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,

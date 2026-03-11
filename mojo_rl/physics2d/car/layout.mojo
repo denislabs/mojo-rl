@@ -55,7 +55,7 @@ struct CarRacingLayout[
 
     Parameters:
         OBS_DIM: Observation dimension (13 for state-based CarRacing).
-            [x, y, angle, vx, vy, omega, wheel_angles[4], wheel_omegas[3]]
+            [x, y, angle, vx, vy, omega, wheel_angles[4], wheel_omegas[3]].
         METADATA_SIZE: Size of metadata (step_count, total_reward, done, truncated, tiles_visited, num_tiles).
         MAX_TILES: Maximum track tiles per environment.
         TILE_DATA_SIZE: Size of each tile (9 floats: 4 vertices × 2 coords + friction).

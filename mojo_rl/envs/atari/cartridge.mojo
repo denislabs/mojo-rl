@@ -16,7 +16,7 @@ from .flags import ROM_2K, ROM_4K, ROM_F8, ROM_F6
 @always_inline
 fn rom_read(
     state: AtariState,
-    rom: UnsafePointer[UInt8],
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ) -> UInt8:
@@ -45,7 +45,7 @@ fn rom_read(
 @always_inline
 fn rom_write(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8],
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
     value: UInt8,
@@ -110,7 +110,9 @@ fn rom_read_triggers_bankswitch(
             state.current_bank = 3
 
 
-fn detect_rom_format(rom: UnsafePointer[UInt8], rom_size: Int) -> UInt8:
+fn detect_rom_format(
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin], rom_size: Int
+) -> UInt8:
     """Auto-detect ROM format from size."""
     if rom_size <= 2048:
         return ROM_2K

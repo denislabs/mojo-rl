@@ -6,7 +6,7 @@ for the SDL3 GPU-accelerated renderer.
 
 from std.memory import UnsafePointer, memcpy
 from std.math import sqrt, tan, sin, cos
-from math3d import (
+from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
     Mat4 as Mat4Generic,
     Quat as QuatGeneric,

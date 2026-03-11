@@ -19,11 +19,11 @@ from std.collections import InlineArray
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.rk4_integrator import RK4Integrator
-from physics3d.solver import NewtonSolver
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -32,9 +32,9 @@ from physics3d.gpu.constants import (
     integrator_workspace_size,
     rk4_extra_workspace_size,
 )
-from physics3d.gpu.buffer_utils import create_state_buffer
-from envs.ant.ant_xml import AntModel
-from envs.ant.ant_config import AntConfig
+from mojo_rl.physics3d.gpu.buffer_utils import create_state_buffer
+from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.envs.ant.ant_config import AntConfig
 
 
 # =============================================================================
@@ -171,7 +171,7 @@ fn compare_step(
             MAX_CONTACTS,
             BATCH,
             NGEOM=0,
-            CONE_TYPE = AntModel.CONE_TYPE,
+            CONE_TYPE=AntModel.CONE_TYPE,
         ](ctx, state_buf, model_buf_local, workspace_buf)
         ctx.synchronize()
 

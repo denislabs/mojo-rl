@@ -13,8 +13,11 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.gymnasium.gymnasium_mujoco import GymMuJoCoEnv, make_half_cheetah
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.gymnasium.gymnasium_mujoco import (
+    GymMuJoCoEnv,
+    make_half_cheetah,
+)
 
 # =============================================================================
 # Constants (must match training configuration)

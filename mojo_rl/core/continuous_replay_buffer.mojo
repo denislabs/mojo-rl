@@ -123,8 +123,8 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
         """Initialize buffer with given capacity and feature dimension.
 
         Args:
-            capacity: Maximum number of transitions to store
-            feature_dim: Dimensionality of state feature vectors
+            capacity: Maximum number of transitions to store.
+            feature_dim: Dimensionality of state feature vectors.
         """
         self.capacity = capacity
         self.feature_dim = feature_dim
@@ -191,7 +191,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
         """Sample a random batch of transitions.
 
         Args:
-            batch_size: Number of transitions to sample
+            batch_size: Number of transitions to sample.
 
         Returns:
             List of ContinuousTransition objects.
@@ -204,7 +204,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
 
         # Sample random indices
         for _ in range(batch_size):
-            var idx = Int(random_si64(0, self.size - 1))
+            var idx = Int(random_si64(0, Int64(self.size - 1)))
 
             # Copy state features
             var state_copy = List[Scalar[Self.DTYPE]]()
@@ -234,7 +234,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
         Useful when you want to process transitions without copying.
 
         Args:
-            batch_size: Number of indices to sample
+            batch_size: Number of indices to sample.
 
         Returns:
             List of random indices into the buffer.
@@ -245,7 +245,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
             return indices^
 
         for _ in range(batch_size):
-            indices.append(Int(random_si64(0, self.size - 1)))
+            indices.append(Int(random_si64(0, Int64(self.size - 1))))
 
         return indices^
 
@@ -253,10 +253,10 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
         """Get transition at index.
 
         Args:
-            idx: Index into the buffer
+            idx: Index into the buffer.
 
         Returns:
-            ContinuousTransition at the given index
+            ContinuousTransition at the given index.
         """
         # Copy state features
         var state_copy = List[Scalar[Self.DTYPE]]()
@@ -431,7 +431,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
     var rewards: List[Scalar[Self.DTYPE]]
     var next_states: List[List[Scalar[Self.DTYPE]]]
     var dones: List[Bool]
-    var tree: SumTree
+    var tree: SumTree[Self.DTYPE]
 
     var capacity: Int
     var feature_dim: Int
@@ -468,7 +468,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         self.epsilon = epsilon
         self.max_priority = 1.0
 
-        self.tree = SumTree(capacity)
+        self.tree = SumTree[Self.DTYPE](capacity)
 
         # Pre-allocate storage
         self.states = List[List[Scalar[Self.DTYPE]]]()
@@ -563,7 +563,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         Uses stratified sampling for better coverage.
 
         Args:
-            batch_size: Number of transitions to sample
+            batch_size: Number of transitions to sample.
             beta: IS exponent. If -1, uses self.beta.
 
         Returns:
@@ -590,7 +590,9 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         for i in range(batch_size):
             var low = segment_size * Scalar[Self.DTYPE](i)
             var high = segment_size * Scalar[Self.DTYPE](i + 1)
-            var target = low + random_float64() * (high - low)
+            var target = low + Scalar[Self.DTYPE](random_float64()) * Scalar[
+                Self.DTYPE
+            ](high - low)
 
             var idx = self.tree.sample(target)
             indices.append(idx)
@@ -636,8 +638,8 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         """Anneal beta from beta_start to 1.0 based on training progress.
 
         Args:
-            progress: Training progress from 0.0 to 1.0
-            beta_start: Initial beta value
+            progress: Training progress from 0.0 to 1.0.
+            beta_start: Initial beta value.
         """
         self.beta = beta_start + progress * (1.0 - beta_start)
 
@@ -653,5 +655,5 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         """Clear all transitions from buffer."""
         self.size = 0
         self.position = 0
-        self.tree = SumTree(self.capacity)
+        self.tree = SumTree[Self.DTYPE](self.capacity)
         self.max_priority = 1.0

@@ -27,10 +27,10 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.rk4_integrator import RK4Integrator
-from physics3d.solver import NewtonSolver
-from envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
 
 # =============================================================================

@@ -16,8 +16,11 @@ Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_island_detection.mojo
 """
 
-from physics3d.constraints.constraint_data import ConstraintData, ConstraintRow
-from physics3d.solver.island_detection import (
+from mojo_rl.physics3d.constraints.constraint_data import (
+    ConstraintData,
+    ConstraintRow,
+)
+from mojo_rl.physics3d.solver.island_detection import (
     detect_islands,
     IslandData,
     MAX_ISLANDS,

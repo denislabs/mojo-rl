@@ -25,35 +25,43 @@ from std.math import abs, sqrt
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
-from physics3d.dynamics.bias_forces import compute_bias_forces_rne
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_cdof,
+    compute_composite_inertia,
+)
+from mojo_rl.physics3d.dynamics.bias_forces import compute_bias_forces_rne
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
 )
-from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import (
+from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.constraints.constraint_builder import (
     build_constraints,
     writeback_forces,
 )
-from physics3d.constraints.constraint_data import (
+from mojo_rl.physics3d.constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
     CNSTR_FRICTION_T2,
     CNSTR_LIMIT,
 )
-from physics3d.solver import PGSSolver
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.solver import PGSSolver
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -369,7 +377,7 @@ fn compare_solver_forces(
     # 10. Build constraints
     # PGS is dual — it does NOT use M_hat or qfrc_smooth
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, cdof, M_inv, dt, constraints
     )
 
@@ -392,7 +400,7 @@ fn compare_solver_forces(
     )
 
     # 11. Solve constraints with PGSSolver (modifies qacc in-place)
-    PGSSolver.solve[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+    PGSSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 

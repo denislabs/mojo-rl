@@ -13,13 +13,13 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import (
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahModel,
     HalfCheetahConfig,
 )
-from envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 
 # =============================================================================
 # Constants (must match training configuration)

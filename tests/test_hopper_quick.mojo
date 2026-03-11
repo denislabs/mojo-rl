@@ -1,6 +1,6 @@
 """Quick Hopper test: verify friction geom changes compile and run."""
 from std.random import seed
-from envs.hopper import Hopper
+from mojo_rl.envs.hopper import Hopper
 
 
 fn main():

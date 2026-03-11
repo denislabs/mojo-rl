@@ -19,12 +19,12 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from std.gpu import block_idx
 
-from physics3d.types import Model, Data
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -32,8 +32,8 @@ from physics3d.gpu.constants import (
     xquat_offset,
     xipos_offset,
 )
-from physics3d.gpu.buffer_utils import create_state_buffer
-from envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.physics3d.gpu.buffer_utils import create_state_buffer
+from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
 
 # =============================================================================

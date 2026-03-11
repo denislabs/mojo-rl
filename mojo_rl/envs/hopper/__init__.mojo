@@ -7,12 +7,12 @@ consisting of a torso with three body segments (thigh, leg, foot).
 
 Components:
 - Hopper: Main environment struct implementing BoxContinuousActionEnv
-- ObsState[11]: 11D observation state (5 qpos + 6 qvel) -- from core
-- ContAction[3]: 3D continuous action (joint torques) -- from core
+- ObsState[11]: 11D observation state (5 qpos + 6 qvel) -- from mojo_rl.core
+- ContAction[3]: 3D continuous action (joint torques) -- from mojo_rl.core
 
 Example usage:
-    from envs.hopper import Hopper
-    from core import ContAction
+    from mojo_rl.envs.hopper import Hopper
+    from mojo_rl.core import ContAction
 
     var env = Hopper()
     var state = env.reset()

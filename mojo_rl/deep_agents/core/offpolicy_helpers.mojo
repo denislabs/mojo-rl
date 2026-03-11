@@ -24,13 +24,13 @@ Usage in DDPG/TD3 (inside the struct methods):
 from std.random import random_float64
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import Network, NetworkState
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import Network, NetworkState
 from .utils import obs_to_inline
-from deep_agents.core.replay import HeapReplayBuffer
-from nn.gpu.random import gaussian_noise
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer
+from mojo_rl.nn.gpu.random import gaussian_noise
 
 
 fn deterministic_select_action[

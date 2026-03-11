@@ -4,18 +4,35 @@ Tests that the 6502 CPU, memory map, and game definitions compile
 and produce sensible output.
 """
 
-from envs.atari.atari_state import AtariState
-from envs.atari.flags import RAM_SIZE, ACTION_NOOP, FLAG_C, FLAG_Z, FLAG_N
-from envs.atari.ram import read_ram, write_ram
-from envs.atari.cpu6502 import mem_read, mem_write, execute_one, cpu_reset, set_flag, get_flag, update_nz
-from envs.atari.opcodes import OPCODE_TABLE, OP_LDA, OP_NOP
-from envs.atari.riot import set_action, riot_update_timer
-from envs.atari.cartridge import detect_rom_format, init_bank
+from mojo_rl.envs.atari.atari_state import AtariState
+from mojo_rl.envs.atari.flags import (
+    RAM_SIZE,
+    ACTION_NOOP,
+    FLAG_C,
+    FLAG_Z,
+    FLAG_N,
+)
+from mojo_rl.envs.atari.ram import read_ram, write_ram
+from mojo_rl.envs.atari.cpu6502 import (
+    mem_read,
+    mem_write,
+    execute_one,
+    cpu_reset,
+    set_flag,
+    get_flag,
+    update_nz,
+)
+from mojo_rl.envs.atari.opcodes import OPCODE_TABLE, OP_LDA, OP_NOP
+from mojo_rl.envs.atari.riot import set_action, riot_update_timer
+from mojo_rl.envs.atari.cartridge import detect_rom_format, init_bank
 from std.memory import alloc
-from envs.atari.frame_render import render_frame_bgra, FRAME_BUF_SIZE
-from envs.atari.games.pong import PongDef
-from envs.atari.games.breakout import BreakoutDef
-from envs.atari.games.helpers import get_decimal_score, get_decimal_score_2
+from mojo_rl.envs.atari.frame_render import render_frame_bgra, FRAME_BUF_SIZE
+from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.games.breakout import BreakoutDef
+from mojo_rl.envs.atari.games.helpers import (
+    get_decimal_score,
+    get_decimal_score_2,
+)
 
 
 fn test_state_init():
@@ -144,7 +161,13 @@ fn test_action_mapping():
 
 fn test_palette():
     print("Test: Palette...")
-    from envs.atari.palette import palette_r, palette_g, palette_b, palette_grayscale
+    from mojo_rl.envs.atari.palette import (
+        palette_r,
+        palette_g,
+        palette_b,
+        palette_grayscale,
+    )
+
     # Color index 0 = black (0x000000)
     assert_true(palette_r(0) == 0)
     assert_true(palette_g(0) == 0)
@@ -172,7 +195,8 @@ fn test_frame_render():
 
     # Check first pixel is the background color in BGRA format
     # Color 0x1E = palette index 30 = 0xECECEC (gray)
-    from envs.atari.palette import palette_r, palette_g, palette_b
+    from mojo_rl.envs.atari.palette import palette_r, palette_g, palette_b
+
     var expected_r = palette_r(0x1E)
     var expected_g = palette_g(0x1E)
     var expected_b = palette_b(0x1E)
@@ -181,7 +205,7 @@ fn test_frame_render():
     assert_true(buf[0] == expected_b)  # B
     assert_true(buf[1] == expected_g)  # G
     assert_true(buf[2] == expected_r)  # R
-    assert_true(buf[3] == 0xFF)        # A
+    assert_true(buf[3] == 0xFF)  # A
 
     # Check a pixel in the middle of the frame
     var mid = (105 * 160 + 80) * 4  # y=105, x=80
@@ -199,18 +223,19 @@ fn test_frame_render_player():
     var state = AtariState()
 
     # Set colors
-    state.colubk = 0x00   # Black background
-    state.colup0 = 0x42   # Player 0 = red-ish (Pink group)
+    state.colubk = 0x00  # Black background
+    state.colup0 = 0x42  # Player 0 = red-ish (Pink group)
 
     # Enable player 0: full 8-pixel bar at position 80
-    state.grp0 = 0xFF    # All 8 bits set
-    state.pos_p0 = 80    # Position at center
+    state.grp0 = 0xFF  # All 8 bits set
+    state.pos_p0 = 80  # Position at center
 
     var buf = alloc[UInt8](FRAME_BUF_SIZE)
     render_frame_bgra(state, buf)
 
     # Pixel at x=80 (player position) should have player color
-    from envs.atari.palette import palette_r, palette_g, palette_b
+    from mojo_rl.envs.atari.palette import palette_r, palette_g, palette_b
+
     var p0_r = palette_r(0x42)
     var p0_g = palette_g(0x42)
     var p0_b = palette_b(0x42)

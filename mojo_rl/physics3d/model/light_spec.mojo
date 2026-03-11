@@ -10,7 +10,7 @@ Light modes:
   - LIGHT_POINT (1): Emits from a position (not yet used by renderer).
 
 Usage:
-    from physics3d.model.light_spec import LightSpec, DirectionalLight
+    from mojo_rl.physics3d.model.light_spec import LightSpec, DirectionalLight
 
     # Default light (matches current Renderer3D hardcoded values)
     comptime MyLight = DirectionalLight[]
@@ -24,7 +24,7 @@ Usage:
 """
 
 
-from render import Light
+from mojo_rl.render import Light
 
 # Light mode constants
 comptime LIGHT_DIRECTIONAL: Int = 0

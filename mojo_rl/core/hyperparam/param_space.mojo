@@ -1396,17 +1396,17 @@ struct ContinuousHyperparams(Copyable, Movable):
 
     fn __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr^
-        self.discount_factor = take.discount_factor^
-        self.tau = take.tau^
-        self.noise_std = take.noise_std^
-        self.buffer_size = take.buffer_size^
-        self.batch_size = take.batch_size^
-        self.policy_delay = take.policy_delay^
-        self.target_noise_std = take.target_noise_std^
-        self.target_noise_clip = take.target_noise_clip^
-        self.alpha = take.alpha^
-        self.auto_alpha = take.auto_alpha^
+        self.critic_lr = take.critic_lr
+        self.discount_factor = take.discount_factor
+        self.tau = take.tau
+        self.noise_std = take.noise_std
+        self.buffer_size = take.buffer_size
+        self.batch_size = take.batch_size
+        self.policy_delay = take.policy_delay
+        self.target_noise_std = take.target_noise_std
+        self.target_noise_clip = take.target_noise_clip
+        self.alpha = take.alpha
+        self.auto_alpha = take.auto_alpha
 
     fn to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,tau,noise_std,buffer_size,batch_size,policy_delay,target_noise_std,target_noise_clip,alpha,auto_alpha"

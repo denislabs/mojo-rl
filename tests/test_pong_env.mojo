@@ -1,6 +1,6 @@
 """Test native Pong environment — CPU path."""
 
-from envs.arcade_games.pong import PongEnv
+from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
 fn main() raises:
@@ -52,9 +52,7 @@ fn main() raises:
                 total_reward += ep_reward
                 break
 
-    print(
-        "\nTotal steps:", steps, ", Total reward:", total_reward
-    )
+    print("\nTotal steps:", steps, ", Total reward:", total_reward)
     print("Obs dim:", env.obs_dim())
     print("Num actions:", env.num_actions())
     print("=== DONE ===")

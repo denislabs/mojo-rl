@@ -18,8 +18,8 @@ Termination: rootz ∉ (-0.45, 0.75) or |rooty| >= 1.0.
     (Equivalent to Gymnasium's world_z ∈ [0.8, 2.0] with zero-init qpos.)
 
 Example usage:
-    from envs.walker2d import Walker2d
-    from core import ContAction
+    from mojo_rl.envs.walker2d import Walker2d
+    from mojo_rl.core import ContAction
 
     var env = Walker2d()
     var state = env.reset()

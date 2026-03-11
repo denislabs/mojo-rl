@@ -2,9 +2,9 @@
 
 from std.random import seed
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper import Hopper, HopperConfig
-from nn import dtype as agent_dtype
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.hopper import Hopper, HopperConfig
+from mojo_rl.nn import dtype as agent_dtype
 
 
 # Constants (must match training)

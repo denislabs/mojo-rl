@@ -17,10 +17,10 @@ from std.collections import InlineArray
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import NewtonSolver
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -28,12 +28,12 @@ from physics3d.gpu.constants import (
     qfrc_offset,
     integrator_workspace_size,
 )
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.gpu.buffer_utils import (
     create_state_buffer,
     copy_data_to_buffer,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -176,7 +176,7 @@ fn compare_step(
             MAX_CONTACTS,
             BATCH,
             NGEOM=0,
-            CONE_TYPE = HalfCheetahModel.CONE_TYPE,
+            CONE_TYPE=HalfCheetahModel.CONE_TYPE,
         ](
             ctx,
             state_buf,

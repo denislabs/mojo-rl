@@ -8,7 +8,7 @@ For neural network layers with backpropagation support, use
 `nn.model.Softmax[dim]` instead.
 
 Example usage:
-    from core.utils.softmax import softmax, softmax_inline
+    from mojo_rl.core.utils.softmax import softmax, softmax_inline
 
     # For List-based code (tile-coded agents)
     var logits = List[Float64]()
@@ -42,7 +42,7 @@ fn softmax(logits: List[Float64]) -> List[Float64]:
         logits.append(2.0)
         logits.append(3.0)
         var probs = softmax(logits)
-        # probs ≈ [0.09, 0.24, 0.67]
+        # probs ≈ [0.09, 0.24, 0.67].
     """
     var n = len(logits)
     if n == 0:
@@ -91,7 +91,7 @@ fn softmax_inline[
         var logits = InlineArray[Scalar[DType.float32], 4](fill=0)
         logits[0] = 1.0
         logits[1] = 2.0
-        var probs = softmax_inline(logits)
+        var probs = softmax_inline(logits).
     """
     var probs = InlineArray[Scalar[dtype], N](uninitialized=True)
 
@@ -135,7 +135,7 @@ fn log_softmax(logits: List[Float64]) -> List[Float64]:
         logits.append(1.0)
         logits.append(2.0)
         var log_probs = log_softmax(logits)
-        # To get probability of action 0: exp(log_probs[0])
+        # To get probability of action 0: exp(log_probs[0]).
     """
     var n = len(logits)
     if n == 0:
@@ -179,7 +179,7 @@ fn sample_from_probs(probs: List[Float64]) -> Int:
 
     Example:
         var probs = softmax(logits)
-        var action = sample_from_probs(probs)
+        var action = sample_from_probs(probs).
     """
     from std.random import random_float64
 

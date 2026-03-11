@@ -13,7 +13,7 @@ This demo runs the CPU single-environment mode for visualization.
 For batch GPU training, see bipedal_walker_v2_gpu_demo.mojo.
 """
 
-from envs.bipedal_walker import (
+from mojo_rl.envs.bipedal_walker import (
     BipedalWalker,
     BipedalWalkerState,
     BipedalWalkerAction,

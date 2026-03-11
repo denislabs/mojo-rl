@@ -20,8 +20,8 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.sac import DeepSACAgent
-from envs.half_cheetah import (
+from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
 )
@@ -148,14 +148,10 @@ fn main() raises:
     elif final_avg > 500.0:
         print("SUCCESS: Agent learned to run! (avg reward > 500)")
     elif final_avg > 100.0:
-        print(
-            "GOOD PROGRESS: Agent is learning locomotion"
-            " (avg reward > 100)"
-        )
+        print("GOOD PROGRESS: Agent is learning locomotion (avg reward > 100)")
     elif final_avg > 0.0:
         print(
-            "LEARNING: Agent improving but needs more training"
-            " (avg reward > 0)"
+            "LEARNING: Agent improving but needs more training (avg reward > 0)"
         )
     else:
         print("EARLY STAGE: Agent still exploring (avg reward < 0)")

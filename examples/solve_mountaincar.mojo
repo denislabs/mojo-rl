@@ -29,8 +29,11 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from envs import MountainCarEnv
-from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
+from mojo_rl.envs import MountainCarEnv
+from mojo_rl.agents.tiled_qlearning import (
+    TiledQLearningAgent,
+    TiledSARSALambdaAgent,
+)
 
 
 fn main() raises:
@@ -159,7 +162,9 @@ fn main() raises:
     print("-" * 60)
 
     var eval_q = agent_q.evaluate(env_q, tc, num_episodes=20, render=False)
-    var eval_sl = agent_sl.evaluate(env_sl, tc_sl, num_episodes=20, render=False)
+    var eval_sl = agent_sl.evaluate(
+        env_sl, tc_sl, num_episodes=20, render=False
+    )
 
     print("Tiled Q-Learning avg steps:", Int(-eval_q))
     print("Tiled SARSA(lambda) avg steps:", Int(-eval_sl))

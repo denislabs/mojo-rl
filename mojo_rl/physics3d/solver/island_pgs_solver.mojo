@@ -7,8 +7,8 @@ frozen independently, reducing total PGS iterations significantly.
 
 Usage
 -----
-    from physics3d.solver import IslandPGSSolver
-    from physics3d.integrator import EulerIntegrator
+    from mojo_rl.physics3d.solver import IslandPGSSolver
+    from mojo_rl.physics3d.integrator import EulerIntegrator
 
     # Instead of EulerIntegrator[PGSSolver]:
     alias MyIntegrator = EulerIntegrator[IslandPGSSolver]

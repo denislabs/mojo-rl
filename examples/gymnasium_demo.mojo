@@ -12,10 +12,10 @@ Run with: pixi run mojo run examples/gymnasium_demo.mojo
 """
 
 from std.python import Python
-from core.tile_coding import TileCoding
-from agents.tiled_qlearning import TiledQLearningAgent
-from agents.qlearning import QLearningAgent
-from envs.gymnasium import (
+from mojo_rl.core.tile_coding import TileCoding
+from mojo_rl.agents.tiled_qlearning import TiledQLearningAgent
+from mojo_rl.agents.qlearning import QLearningAgent
+from mojo_rl.envs.gymnasium import (
     GymMountainCarEnv,
     GymPendulumEnv,
     GymAcrobotEnv,

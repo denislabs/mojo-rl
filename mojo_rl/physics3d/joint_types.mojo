@@ -143,6 +143,11 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit: Maximum torque magnitude.
             range_min: Minimum angle in radians (default: unlimited).
             range_max: Maximum angle in radians (default: unlimited).
+            armature: Armature (default: 0.0).
+            damping: Damping (default: 0.0).
+            stiffness: Stiffness (default: 0.0).
+            springref: Spring reference (default: 0.0).
+            frictionloss: Friction loss (default: 0.0).
 
         Returns:
             JointDef configured as a hinge joint.
@@ -205,6 +210,11 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             force_limit: Maximum force magnitude.
             range_min: Minimum position in meters (default: unlimited).
             range_max: Maximum position in meters (default: unlimited).
+            armature: Armature (default: 0.0).
+            damping: Damping (default: 0.0).
+            stiffness: Stiffness (default: 0.0).
+            springref: Spring reference (default: 0.0).
+            frictionloss: Friction loss (default: 0.0).
 
         Returns:
             JointDef configured as a slide joint.

@@ -12,9 +12,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from std.random import seed as set_seed
 
-from envs.lunar_lander import LunarLander
-from envs.lunar_lander.constants import LLConstants
-from physics2d import (
+from mojo_rl.envs.lunar_lander import LunarLander
+from mojo_rl.envs.lunar_lander.constants import LLConstants
+from mojo_rl.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -1969,7 +1969,14 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     # GPU step
     LunarLander[dtype].step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM](
-        ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_terminated, gpu_obs, UInt64(0)
+        ctx,
+        gpu_states,
+        gpu_actions,
+        gpu_rewards,
+        gpu_dones,
+        gpu_terminated,
+        gpu_obs,
+        UInt64(0),
     )
     ctx.synchronize()
 

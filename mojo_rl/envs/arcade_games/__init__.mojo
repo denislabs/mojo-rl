@@ -4,7 +4,7 @@ Each game is a self-contained struct implementing BoxDiscreteActionEnv + GPUDisc
 + RenderableEnv, following the same pattern as CartPole/Pendulum.
 
 Usage:
-    from envs.arcade_games.pong import PongEnv
+    from mojo_rl.envs.arcade_games.pong import PongEnv
 
     # CPU path
     var env = PongEnv[DType.float64]()

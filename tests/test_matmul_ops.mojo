@@ -1,5 +1,5 @@
 """Test that matmul_ops module compiles and runs correctly."""
-from nn.gpu import (
+from mojo_rl.nn.gpu import (
     TILE_APPLE,
     matmul_bias_kernel,
     matmul_bias_tanh_kernel,

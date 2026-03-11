@@ -4,7 +4,7 @@ This module provides structs for storing individual trial results and
 aggregating them for analysis and export.
 """
 
-from core.metrics import TrainingMetrics, compute_convergence_episode
+from mojo_rl.core.metrics import TrainingMetrics, compute_convergence_episode
 
 
 struct TrialResult(Copyable, ImplicitlyCopyable, Movable):

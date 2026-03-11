@@ -10,7 +10,7 @@ All implement appropriate environment traits for generic training.
 """
 
 from std.python import Python, PythonObject
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     BoxDiscreteActionEnv,

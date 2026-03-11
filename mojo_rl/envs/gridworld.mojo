@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv, RenderableEnv
+from mojo_rl.core import State, Action, Env, DiscreteEnv, RenderableEnv
 
 
 @fieldwise_init

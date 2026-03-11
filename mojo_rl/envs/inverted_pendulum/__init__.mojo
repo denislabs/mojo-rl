@@ -17,8 +17,8 @@ Reward: +1 for every step the pole remains balanced.
 Termination: |cart_pos| >= 1.0 or |pole_angle| >= 0.2 radians.
 
 Example usage:
-    from envs.inverted_pendulum import InvertedPendulum
-    from core import ContAction
+    from mojo_rl.envs.inverted_pendulum import InvertedPendulum
+    from mojo_rl.core import ContAction
 
     var env = InvertedPendulum()
     var state = env.reset()

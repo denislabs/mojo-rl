@@ -16,7 +16,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 
-from core import (
+from mojo_rl.core import (
     GPUDiscreteEnv,
     BoxDiscreteActionEnv,
     Action,
@@ -35,12 +35,12 @@ from .helpers import (
     normalize_velocity,
     normalize_angular_velocity,
 )
-from physics2d.integrators.euler import SemiImplicitEuler
-from physics2d.collision.edge_terrain import EdgeTerrainCollision
-from physics2d.solvers.impulse import ImpulseSolver
-from physics2d.joints.revolute import RevoluteJointSolver
+from mojo_rl.physics2d.integrators.euler import SemiImplicitEuler
+from mojo_rl.physics2d.collision.edge_terrain import EdgeTerrainCollision
+from mojo_rl.physics2d.solvers.impulse import ImpulseSolver
+from mojo_rl.physics2d.joints.revolute import RevoluteJointSolver
 
-from physics2d import (
+from mojo_rl.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -85,16 +85,16 @@ from physics2d import (
     PhysicsKernel,
     PhysicsConfig,
 )
-from physics2d.integrators.euler import SemiImplicitEuler
-from physics2d.collision.edge_terrain import (
+from mojo_rl.physics2d.integrators.euler import SemiImplicitEuler
+from mojo_rl.physics2d.collision.edge_terrain import (
     EdgeTerrainCollision,
     MAX_TERRAIN_EDGES,
 )
-from physics2d.solvers.impulse import ImpulseSolver
-from physics2d.joints.revolute import RevoluteJointSolver
+from mojo_rl.physics2d.solvers.impulse import ImpulseSolver
+from mojo_rl.physics2d.joints.revolute import RevoluteJointSolver
 
 # Rendering imports
-from render import (
+from mojo_rl.render import (
     Renderer2D,
     SDL_Color,
     Camera,
@@ -2916,7 +2916,14 @@ struct LunarLander[
 
             # Finalize (writes obs to states at OBS_OFFSET)
             Self.SelfType._finalize_single_env[BATCH_SIZE](
-                env, states, actions, contacts, contact_counts, rewards, dones, terminated_out
+                env,
+                states,
+                actions,
+                contacts,
+                contact_counts,
+                rewards,
+                dones,
+                terminated_out,
             )
 
             # Extract observations to separate obs buffer (OBS_OFFSET = 0)
@@ -3398,7 +3405,16 @@ struct LunarLander[
             # Finalize with continuous action fuel costs
             Self.SelfType._finalize_single_env_continuous[
                 BATCH_SIZE, ACTION_DIM
-            ](env, states, actions, contacts, contact_counts, rewards, dones, terminated_out)
+            ](
+                env,
+                states,
+                actions,
+                contacts,
+                contact_counts,
+                rewards,
+                dones,
+                terminated_out,
+            )
 
             # Extract observations to separate obs buffer
             for d in range(OBS_DIM):

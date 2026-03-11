@@ -4,7 +4,7 @@ Provides view and projection matrices for rendering 3D scenes.
 """
 
 from std.math import sqrt, sin, cos, tan
-from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic
+from mojo_rl.math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic
 
 # Type alias for Vec3 with float64 precision (used throughout render)
 comptime Vec3 = Vec3Generic[DType.float64]

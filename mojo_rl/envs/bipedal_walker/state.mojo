@@ -1,4 +1,4 @@
-from core import State
+from mojo_rl.core import State
 from .constants import BWConstants
 
 

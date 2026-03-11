@@ -54,21 +54,24 @@ Usage:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     GPUDiscreteEnv,
     GPUContinuousEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
-from nn.constants import dtype
-from deep_agents.core.kernels import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from deep_agents.core.utils import print_progress_bar, clear_progress_bar
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 
 
 # =============================================================================
@@ -417,6 +420,8 @@ fn run_onpolicy_discrete_train_gpu[
         ctx: GPU device context.
         num_updates: Number of rollout + update cycles.
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
+        checkpoint_every: Save checkpoint every N updates (default: 0 = never).
+        checkpoint_path: Path to save checkpoints (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.

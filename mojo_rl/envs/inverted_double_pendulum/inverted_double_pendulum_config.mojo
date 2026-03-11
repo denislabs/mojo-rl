@@ -4,10 +4,10 @@ from std.math import sin, cos
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data
-from physics3d.integrator import RK4Integrator
-from physics3d.solver import NewtonSolver
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
     qvel_offset,

@@ -106,7 +106,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         self.m32 = m32
         self.m33 = m33
 
-    fn __init__(out self, rotation: Mat3[Self.DTYPE], translation: Vec3[Self.DTYPE]):
+    fn __init__(
+        out self, rotation: Mat3[Self.DTYPE], translation: Vec3[Self.DTYPE]
+    ):
         """Initialize from rotation matrix and translation."""
         self.m00 = rotation.m00
         self.m01 = rotation.m01
@@ -238,7 +240,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(Mat3.from_quat(q), translation)
 
     @staticmethod
-    fn compose(translation: Vec3[Self.DTYPE], rotation: Quat[Self.DTYPE], scale: Vec3[Self.DTYPE]) -> Self:
+    fn compose(
+        translation: Vec3[Self.DTYPE],
+        rotation: Quat[Self.DTYPE],
+        scale: Vec3[Self.DTYPE],
+    ) -> Self:
         """Compose a transformation from TRS components.
 
         Order: scale, then rotate, then translate.
@@ -269,7 +275,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn rotation_x(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_x(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around X axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -293,7 +301,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn rotation_y(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_y(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Y axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -317,7 +327,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn rotation_z(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_z(
+        angle: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Z axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -341,7 +353,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn rotation_axis(axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn rotation_axis(
+        axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around arbitrary axis."""
         return Self.from_rotation(Mat3.rotation_axis(axis, angle))
 
@@ -350,7 +364,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn look_at(eye: Vec3[Self.DTYPE], target: Vec3[Self.DTYPE], up: Vec3[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn look_at(
+        eye: Vec3[Self.DTYPE], target: Vec3[Self.DTYPE], up: Vec3[Self.DTYPE]
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create a view matrix looking from eye toward target.
 
         Args:
@@ -385,7 +401,12 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn perspective(fov_y: Scalar[Self.DTYPE], aspect: Scalar[Self.DTYPE], near: Scalar[Self.DTYPE], far: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
+    fn perspective(
+        fov_y: Scalar[Self.DTYPE],
+        aspect: Scalar[Self.DTYPE],
+        near: Scalar[Self.DTYPE],
+        far: Scalar[Self.DTYPE],
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create a perspective projection matrix.
 
         Args:
@@ -444,7 +465,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         """
         var rl = 1.0 / (right - left)
         var tb = 1.0 / (top - bottom)
-        var fn = 1.0 / (far - near)
+        var f_n = 1.0 / (far - near)
 
         return Self(
             2.0 * rl,
@@ -457,8 +478,8 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             -(top + bottom) * tb,
             0.0,
             0.0,
-            -2.0 * fn,
-            -(far + near) * fn,
+            -2.0 * f_n,
+            -(far + near) * f_n,
             0.0,
             0.0,
             0.0,
@@ -659,7 +680,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m20 * v.x + self.m21 * v.y + self.m22 * v.z,
         )
 
-    fn transform_normal(self, n: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    fn transform_normal(
+        self, n: Vec3[Self.DTYPE]
+    ) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Transform a normal vector.
 
         Normals transform by the inverse transpose of the upper 3x3.
@@ -745,9 +768,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         Returns identity if matrix is singular.
         """
         # Compute cofactors
-        var c00 = self.m11 * (self.m22 * self.m33 - self.m23 * self.m32) - self.m12 * (
-            self.m21 * self.m33 - self.m23 * self.m31
-        ) + self.m13 * (self.m21 * self.m32 - self.m22 * self.m31)
+        var c00 = (
+            self.m11 * (self.m22 * self.m33 - self.m23 * self.m32)
+            - self.m12 * (self.m21 * self.m33 - self.m23 * self.m31)
+            + self.m13 * (self.m21 * self.m32 - self.m22 * self.m31)
+        )
 
         var c01 = -(
             self.m10 * (self.m22 * self.m33 - self.m23 * self.m32)
@@ -755,9 +780,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m13 * (self.m20 * self.m32 - self.m22 * self.m30)
         )
 
-        var c02 = self.m10 * (self.m21 * self.m33 - self.m23 * self.m31) - self.m11 * (
-            self.m20 * self.m33 - self.m23 * self.m30
-        ) + self.m13 * (self.m20 * self.m31 - self.m21 * self.m30)
+        var c02 = (
+            self.m10 * (self.m21 * self.m33 - self.m23 * self.m31)
+            - self.m11 * (self.m20 * self.m33 - self.m23 * self.m30)
+            + self.m13 * (self.m20 * self.m31 - self.m21 * self.m30)
+        )
 
         var c03 = -(
             self.m10 * (self.m21 * self.m32 - self.m22 * self.m31)
@@ -765,7 +792,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m12 * (self.m20 * self.m31 - self.m21 * self.m30)
         )
 
-        var det = self.m00 * c00 + self.m01 * c01 + self.m02 * c02 + self.m03 * c03
+        var det = (
+            self.m00 * c00 + self.m01 * c01 + self.m02 * c02 + self.m03 * c03
+        )
         if abs(det) < 1e-10:
             return Self.identity()
 
@@ -778,9 +807,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m03 * (self.m21 * self.m32 - self.m22 * self.m31)
         )
 
-        var c11 = self.m00 * (self.m22 * self.m33 - self.m23 * self.m32) - self.m02 * (
-            self.m20 * self.m33 - self.m23 * self.m30
-        ) + self.m03 * (self.m20 * self.m32 - self.m22 * self.m30)
+        var c11 = (
+            self.m00 * (self.m22 * self.m33 - self.m23 * self.m32)
+            - self.m02 * (self.m20 * self.m33 - self.m23 * self.m30)
+            + self.m03 * (self.m20 * self.m32 - self.m22 * self.m30)
+        )
 
         var c12 = -(
             self.m00 * (self.m21 * self.m33 - self.m23 * self.m31)
@@ -788,13 +819,17 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m03 * (self.m20 * self.m31 - self.m21 * self.m30)
         )
 
-        var c13 = self.m00 * (self.m21 * self.m32 - self.m22 * self.m31) - self.m01 * (
-            self.m20 * self.m32 - self.m22 * self.m30
-        ) + self.m02 * (self.m20 * self.m31 - self.m21 * self.m30)
+        var c13 = (
+            self.m00 * (self.m21 * self.m32 - self.m22 * self.m31)
+            - self.m01 * (self.m20 * self.m32 - self.m22 * self.m30)
+            + self.m02 * (self.m20 * self.m31 - self.m21 * self.m30)
+        )
 
-        var c20 = self.m01 * (self.m12 * self.m33 - self.m13 * self.m32) - self.m02 * (
-            self.m11 * self.m33 - self.m13 * self.m31
-        ) + self.m03 * (self.m11 * self.m32 - self.m12 * self.m31)
+        var c20 = (
+            self.m01 * (self.m12 * self.m33 - self.m13 * self.m32)
+            - self.m02 * (self.m11 * self.m33 - self.m13 * self.m31)
+            + self.m03 * (self.m11 * self.m32 - self.m12 * self.m31)
+        )
 
         var c21 = -(
             self.m00 * (self.m12 * self.m33 - self.m13 * self.m32)
@@ -802,9 +837,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m03 * (self.m10 * self.m32 - self.m12 * self.m30)
         )
 
-        var c22 = self.m00 * (self.m11 * self.m33 - self.m13 * self.m31) - self.m01 * (
-            self.m10 * self.m33 - self.m13 * self.m30
-        ) + self.m03 * (self.m10 * self.m31 - self.m11 * self.m30)
+        var c22 = (
+            self.m00 * (self.m11 * self.m33 - self.m13 * self.m31)
+            - self.m01 * (self.m10 * self.m33 - self.m13 * self.m30)
+            + self.m03 * (self.m10 * self.m31 - self.m11 * self.m30)
+        )
 
         var c23 = -(
             self.m00 * (self.m11 * self.m32 - self.m12 * self.m31)
@@ -818,9 +855,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m03 * (self.m11 * self.m22 - self.m12 * self.m21)
         )
 
-        var c31 = self.m00 * (self.m12 * self.m23 - self.m13 * self.m22) - self.m02 * (
-            self.m10 * self.m23 - self.m13 * self.m20
-        ) + self.m03 * (self.m10 * self.m22 - self.m12 * self.m20)
+        var c31 = (
+            self.m00 * (self.m12 * self.m23 - self.m13 * self.m22)
+            - self.m02 * (self.m10 * self.m23 - self.m13 * self.m20)
+            + self.m03 * (self.m10 * self.m22 - self.m12 * self.m20)
+        )
 
         var c32 = -(
             self.m00 * (self.m11 * self.m23 - self.m13 * self.m21)
@@ -828,9 +867,11 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m03 * (self.m10 * self.m21 - self.m11 * self.m20)
         )
 
-        var c33 = self.m00 * (self.m11 * self.m22 - self.m12 * self.m21) - self.m01 * (
-            self.m10 * self.m22 - self.m12 * self.m20
-        ) + self.m02 * (self.m10 * self.m21 - self.m11 * self.m20)
+        var c33 = (
+            self.m00 * (self.m11 * self.m22 - self.m12 * self.m21)
+            - self.m01 * (self.m10 * self.m22 - self.m12 * self.m20)
+            + self.m02 * (self.m10 * self.m21 - self.m11 * self.m20)
+        )
 
         # Return adjugate transposed * (1/det)
         return Self(
@@ -881,7 +922,9 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10) -> Bool:
+    fn approx_eq(
+        self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10
+    ) -> Bool:
         """Approximate equality with tolerance."""
         return (
             abs(self.m00 - other.m00) < tolerance
@@ -960,11 +1003,22 @@ fn mat4_translation[DTYPE: DType](t: Vec3[DTYPE]) -> Mat4[DTYPE]:
     return Mat4[DTYPE].from_translation(t)
 
 
-fn mat4_look_at[DTYPE: DType](eye: Vec3[DTYPE], target: Vec3[DTYPE], up: Vec3[DTYPE]) -> Mat4[DTYPE] where DTYPE.is_floating_point():
+fn mat4_look_at[
+    DTYPE: DType
+](eye: Vec3[DTYPE], target: Vec3[DTYPE], up: Vec3[DTYPE]) -> Mat4[
+    DTYPE
+] where DTYPE.is_floating_point():
     """Create view matrix."""
     return Mat4.look_at(eye, target, up)
 
 
-fn mat4_perspective[DTYPE: DType](fov_y: Scalar[DTYPE], aspect: Scalar[DTYPE], near: Scalar[DTYPE], far: Scalar[DTYPE]) -> Mat4[DTYPE] where DTYPE.is_floating_point():
+fn mat4_perspective[
+    DTYPE: DType
+](
+    fov_y: Scalar[DTYPE],
+    aspect: Scalar[DTYPE],
+    near: Scalar[DTYPE],
+    far: Scalar[DTYPE],
+) -> Mat4[DTYPE] where DTYPE.is_floating_point():
     """Create perspective projection matrix."""
     return Mat4[DTYPE].perspective(fov_y, aspect, near, far)

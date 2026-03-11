@@ -207,6 +207,7 @@ fn create_state_buffer[
         NV: Total qvel dimension.
         NBODY: Number of bodies.
         MAX_CONTACTS: Maximum contacts.
+        NSITE: Number of sites.
         BATCH: Number of environments.
 
     Args:
@@ -739,7 +740,7 @@ fn copy_buffer_to_data[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    buffer: UnsafePointer[Scalar[DTYPE]],
+    buffer: UnsafePointer[Scalar[DTYPE], MutAnyOrigin],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     env_idx: Int,
 ):

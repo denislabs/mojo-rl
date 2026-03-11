@@ -15,8 +15,8 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.dqn import DQNAgent
-from envs import CartPoleEnv
+from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.envs import CartPoleEnv
 
 
 # =============================================================================

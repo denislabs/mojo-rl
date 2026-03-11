@@ -1,6 +1,6 @@
 """Test native Space Invaders — CPU + GPU."""
 
-from envs.arcade_games.space_invaders import SpaceInvadersEnv
+from mojo_rl.envs.arcade_games.space_invaders import SpaceInvadersEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32
@@ -32,7 +32,14 @@ fn main() raises:
             ep_reward += Float64(result[1])
             ep_steps += 1
             if result[2] or ep_steps >= 12000:
-                print("Episode", episode, ": steps=", ep_steps, ", reward=", ep_reward)
+                print(
+                    "Episode",
+                    episode,
+                    ": steps=",
+                    ep_steps,
+                    ", reward=",
+                    ep_reward,
+                )
                 break
 
     # --- GPU Test ---
@@ -63,7 +70,13 @@ fn main() raises:
         SpaceInvadersEnv[DType.float64].step_kernel_gpu[
             BATCH_SIZE, STATE_SIZE, OBS_DIM
         ](
-            ctx, states, actions, rewards, dones, terminated, obs_buf,
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs_buf,
             rng_seed=UInt64(step),
         )
         if step % 1000 == 999:

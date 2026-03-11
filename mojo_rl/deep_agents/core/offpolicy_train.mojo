@@ -34,7 +34,11 @@ Usage — OffPolicyContinuousAgent style (DDPG / TD3 / SAC):
 
 from std.math import exp
 from std.random import random_float64, seed
-from core import TrainingMetrics, BoxDiscreteActionEnv, BoxContinuousActionEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+)
 from .checkpoint_trait import Checkpointable
 
 
@@ -508,6 +512,8 @@ fn run_offpolicy_discrete_train[
         max_steps_per_episode: Maximum steps per episode (default: 500).
         warmup_steps: Random exploration steps before training (default: 1000).
         train_every: Call do_train_step every N steps (default: 4).
+        checkpoint_every: Save checkpoint every N episodes (default: 0).
+        checkpoint_path: Path to save checkpoint (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -636,6 +642,8 @@ fn run_offpolicy_discrete_train[
         max_steps_per_episode: Maximum steps per episode (default: 500).
         warmup_steps: Random exploration steps before training (default: 1000).
         train_every: Call do_cpu_train_step every N steps (default: 4).
+        checkpoint_every: Save checkpoint every N episodes (default: 0).
+        checkpoint_path: Path to save checkpoint (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -761,6 +769,8 @@ fn run_offpolicy_continuous_train[
         max_steps_per_episode: Maximum steps per episode (default: 1000).
         warmup_steps: Random exploration steps before training (default: 1000).
         train_every: Call do_train_step every N steps (default: 1).
+        checkpoint_every: Save checkpoint every N episodes (default: 0).
+        checkpoint_path: Path to save checkpoint (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
@@ -895,6 +905,8 @@ fn run_offpolicy_continuous_train[
         max_steps_per_episode: Maximum steps per episode (default: 1000).
         warmup_steps: Random exploration steps before training (default: 1000).
         train_every: Call do_cpu_train_step every N steps (default: 1).
+        checkpoint_every: Save checkpoint every N episodes (default: 0).
+        checkpoint_path: Path to save checkpoint (default: "").
         verbose: Print progress (default: False).
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.

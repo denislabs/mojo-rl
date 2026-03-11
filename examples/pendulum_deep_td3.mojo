@@ -17,8 +17,8 @@ Run with:
     pixi run mojo run examples/pendulum_deep_td3.mojo
 """
 
-from deep_agents.td3 import DeepTD3Agent
-from envs.pendulum import PendulumEnv
+from mojo_rl.deep_agents.td3 import DeepTD3Agent
+from mojo_rl.envs.pendulum import PendulumEnv
 
 
 fn main() raises:

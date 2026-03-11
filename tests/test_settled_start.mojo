@@ -1,6 +1,6 @@
 """Test: settle robot first, then apply actions."""
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah import HalfCheetah
 
 
 fn main():

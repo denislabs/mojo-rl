@@ -10,11 +10,13 @@ Usage:
     # training loop uses gpu_state.enc.params_buf, gpu_state.z_buf, etc.
 """
 
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.constants import dtype, TPB
-from deep_agents.core.replay.sequence_replay_buffer import SequenceReplayBuffer
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
+    SequenceReplayBuffer,
+)
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
@@ -217,7 +219,18 @@ struct TDMPC2GPUState[
     Created once at the start of GPU training.
 
     Parameters:
-        EncModel..QOpt: Network model and optimizer types for each sub-network.
+        EncModel: Encoder network model type.
+        EncOpt: Encoder optimizer type.
+        DynModel: Dynamics network model type.
+        DynOpt: Dynamics optimizer type.
+        RewModel: Reward network model type.
+        RewOpt: Reward optimizer type.
+        TermModel: Terminal network model type.
+        TermOpt: Terminal optimizer type.
+        PolModel: Policy network model type.
+        PolOpt: Policy optimizer type.
+        QModel: Q network model type.
+        QOpt: Q optimizer type.
         obs_dim: Observation space dimension.
         action_dim: Action space dimension.
         latent_dim: Latent state dimension.

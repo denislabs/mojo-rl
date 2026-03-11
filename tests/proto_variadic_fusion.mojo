@@ -5,7 +5,7 @@ Testing various approaches to compile-time type list rewriting.
 Run: cd mojo-rl && pixi run mojo run tests/proto_variadic_fusion.mojo
 """
 
-from nn.autodiff import (
+from mojo_rl.nn.autodiff import (
     DiffOp,
     OpID,
     AutoDiffChain,
@@ -18,7 +18,7 @@ from nn.autodiff import (
     FusedMatMulBiasReLU,
     FusedMatMulBiasTanh,
 )
-from nn.constants import dtype
+from mojo_rl.nn.constants import dtype
 from std.builtin.variadics import Variadic
 from layout import Layout, LayoutTensor
 
@@ -26,6 +26,7 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 # Test 1: Basic Variadic.types + indexing
 # =============================================================================
+
 
 fn test_1_basic():
     print("=" * 60)
@@ -46,6 +47,7 @@ fn test_1_basic():
 # Test 2: comptime if fusion — reads dims, builds fused chain
 # =============================================================================
 
+
 fn test_2_comptime_if_fusion[*OPS: DiffOp]():
     comptime ops = Variadic.types[T=DiffOp, *OPS]
     comptime N = Variadic.size(ops)
@@ -53,25 +55,37 @@ fn test_2_comptime_if_fusion[*OPS: DiffOp]():
     print("  Input:", N, "ops")
 
     comptime if N == 5:
-        comptime if (ops[0].OP_ID == OpID.MATMUL._value
-                and ops[1].OP_ID == OpID.BIAS_ADD._value
-                and ops[2].OP_ID == OpID.RELU._value
-                and ops[3].OP_ID == OpID.MATMUL._value
-                and ops[4].OP_ID == OpID.BIAS_ADD._value):
+        comptime if (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+            and ops[2].OP_ID == OpID.RELU._value
+            and ops[3].OP_ID == OpID.MATMUL._value
+            and ops[4].OP_ID == OpID.BIAS_ADD._value
+        ):
             comptime Fused = AutoDiffChain[
                 FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM],
                 FusedMatMulBias[ops[3].IN_DIM, ops[3].OUT_DIM],
             ]
-            print("  Fused [MBR, MB]: IN=", Fused.IN_DIM, "OUT=", Fused.OUT_DIM,
-                  "PARAMS=", Fused.PARAM_SIZE)
+            print(
+                "  Fused [MBR, MB]: IN=",
+                Fused.IN_DIM,
+                "OUT=",
+                Fused.OUT_DIM,
+                "PARAMS=",
+                Fused.PARAM_SIZE,
+            )
+
 
 fn test_2_wrapper():
     print("=" * 60)
     print("Test 2: comptime if fusion selection")
     print("=" * 60)
     test_2_comptime_if_fusion[
-        MatMul[2, 4], BiasAdd[4], ReLUOp[4],
-        MatMul[4, 1], BiasAdd[1],
+        MatMul[2, 4],
+        BiasAdd[4],
+        ReLUOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]()
     print("  PASS")
     print()
@@ -81,6 +95,7 @@ fn test_2_wrapper():
 # Test 3: Greedy fusion reading dims from variadic ops
 # =============================================================================
 
+
 fn test_3_greedy():
     print("=" * 60)
     print("Test 3: Greedy auto-fuse (8 ops -> 3 fused)")
@@ -88,9 +103,14 @@ fn test_3_greedy():
 
     comptime ops = Variadic.types[
         T=DiffOp,
-        MatMul[2, 8], BiasAdd[8], ReLUOp[8],
-        MatMul[8, 4], BiasAdd[4], TanhOp[4],
-        MatMul[4, 1], BiasAdd[1],
+        MatMul[2, 8],
+        BiasAdd[8],
+        ReLUOp[8],
+        MatMul[8, 4],
+        BiasAdd[4],
+        TanhOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]
     comptime N = Variadic.size(ops)
 
@@ -101,9 +121,14 @@ fn test_3_greedy():
     ]
 
     comptime Unfused = AutoDiffChain[
-        MatMul[2, 8], BiasAdd[8], ReLUOp[8],
-        MatMul[8, 4], BiasAdd[4], TanhOp[4],
-        MatMul[4, 1], BiasAdd[1],
+        MatMul[2, 8],
+        BiasAdd[8],
+        ReLUOp[8],
+        MatMul[8, 4],
+        BiasAdd[4],
+        TanhOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]
 
     print("  Original:", N, "ops")
@@ -119,6 +144,7 @@ fn test_3_greedy():
 # Test 4: Numerical verification — use concrete dims to avoid unfolded expr
 # =============================================================================
 
+
 fn test_4_numerical():
     print("=" * 60)
     print("Test 4: Numerical fused == unfused")
@@ -127,8 +153,11 @@ fn test_4_numerical():
     comptime BATCH = 2
 
     comptime Unfused = AutoDiffChain[
-        MatMul[2, 4], BiasAdd[4], ReLUOp[4],
-        MatMul[4, 1], BiasAdd[1],
+        MatMul[2, 4],
+        BiasAdd[4],
+        ReLUOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]
 
     # Use concrete dims (not ops[i].IN_DIM) to avoid unfolded expression
@@ -157,13 +186,17 @@ fn test_4_numerical():
         cache_u.append(0.0)
 
     var inp = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
-        input_list.unsafe_ptr())
+        input_list.unsafe_ptr()
+    )
     var ou = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
-        out_u.unsafe_ptr())
-    var p = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](
-        params_list.unsafe_ptr())
-    var cu = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](
-        cache_u.unsafe_ptr())
+        out_u.unsafe_ptr()
+    )
+    var p = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params_list.unsafe_ptr())
+    var cu = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](cache_u.unsafe_ptr())
 
     Unfused.forward[BATCH](inp, ou, p, cu)
 
@@ -176,11 +209,14 @@ fn test_4_numerical():
         cache_f.append(0.0)
 
     var of_ = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
-        out_f.unsafe_ptr())
-    var pf = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](
-        params_list.unsafe_ptr())
-    var cf = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](
-        cache_f.unsafe_ptr())
+        out_f.unsafe_ptr()
+    )
+    var pf = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params_list.unsafe_ptr())
+    var cf = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](cache_f.unsafe_ptr())
 
     Fused.forward[BATCH](inp, of_, pf, cf)
 
@@ -206,6 +242,7 @@ fn test_4_numerical():
 # Test 5: Generic auto_fuse for common MLP sizes (2, 3, 5, 8 ops)
 # =============================================================================
 
+
 fn auto_fuse_and_run[*OPS: DiffOp]():
     comptime ops = Variadic.types[T=DiffOp, *OPS]
     comptime N = Variadic.size(ops)
@@ -213,30 +250,46 @@ fn auto_fuse_and_run[*OPS: DiffOp]():
     print("  Input:", N, "ops")
 
     comptime if N == 2:
-        comptime if ops[0].OP_ID == OpID.MATMUL._value and ops[1].OP_ID == OpID.BIAS_ADD._value:
+        comptime if ops[0].OP_ID == OpID.MATMUL._value and ops[
+            1
+        ].OP_ID == OpID.BIAS_ADD._value:
             comptime Result = AutoDiffChain[
                 FusedMatMulBias[ops[0].IN_DIM, ops[0].OUT_DIM],
             ]
             print("    -> [FusedMB] IN=", Result.IN_DIM, "OUT=", Result.OUT_DIM)
 
     elif N == 3:
-        comptime if ops[0].OP_ID == OpID.MATMUL._value and ops[1].OP_ID == OpID.BIAS_ADD._value:
+        comptime if ops[0].OP_ID == OpID.MATMUL._value and ops[
+            1
+        ].OP_ID == OpID.BIAS_ADD._value:
             comptime if ops[2].OP_ID == OpID.RELU._value:
                 comptime Result = AutoDiffChain[
                     FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM],
                 ]
-                print("    -> [FusedMBR] IN=", Result.IN_DIM, "OUT=", Result.OUT_DIM)
+                print(
+                    "    -> [FusedMBR] IN=",
+                    Result.IN_DIM,
+                    "OUT=",
+                    Result.OUT_DIM,
+                )
             elif ops[2].OP_ID == OpID.TANH._value:
                 comptime Result = AutoDiffChain[
                     FusedMatMulBiasTanh[ops[0].IN_DIM, ops[0].OUT_DIM],
                 ]
-                print("    -> [FusedMBT] IN=", Result.IN_DIM, "OUT=", Result.OUT_DIM)
+                print(
+                    "    -> [FusedMBT] IN=",
+                    Result.IN_DIM,
+                    "OUT=",
+                    Result.OUT_DIM,
+                )
 
     elif N == 5:
-        comptime if (ops[0].OP_ID == OpID.MATMUL._value
-                and ops[1].OP_ID == OpID.BIAS_ADD._value
-                and ops[3].OP_ID == OpID.MATMUL._value
-                and ops[4].OP_ID == OpID.BIAS_ADD._value):
+        comptime if (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+            and ops[3].OP_ID == OpID.MATMUL._value
+            and ops[4].OP_ID == OpID.BIAS_ADD._value
+        ):
             comptime if ops[2].OP_ID == OpID.RELU._value:
                 comptime Result = AutoDiffChain[
                     FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM],
@@ -251,12 +304,14 @@ fn auto_fuse_and_run[*OPS: DiffOp]():
                 print("    -> [FusedMBT, FusedMB] PARAMS=", Result.PARAM_SIZE)
 
     elif N == 8:
-        comptime if (ops[0].OP_ID == OpID.MATMUL._value
-                and ops[1].OP_ID == OpID.BIAS_ADD._value
-                and ops[3].OP_ID == OpID.MATMUL._value
-                and ops[4].OP_ID == OpID.BIAS_ADD._value
-                and ops[6].OP_ID == OpID.MATMUL._value
-                and ops[7].OP_ID == OpID.BIAS_ADD._value):
+        comptime if (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+            and ops[3].OP_ID == OpID.MATMUL._value
+            and ops[4].OP_ID == OpID.BIAS_ADD._value
+            and ops[6].OP_ID == OpID.MATMUL._value
+            and ops[7].OP_ID == OpID.BIAS_ADD._value
+        ):
             comptime act1 = ops[2].OP_ID
             comptime act2 = ops[5].OP_ID
             comptime if act1 == OpID.RELU._value and act2 == OpID.RELU._value:
@@ -265,16 +320,23 @@ fn auto_fuse_and_run[*OPS: DiffOp]():
                     FusedMatMulBiasReLU[ops[3].IN_DIM, ops[3].OUT_DIM],
                     FusedMatMulBias[ops[6].IN_DIM, ops[6].OUT_DIM],
                 ]
-                print("    -> [FusedMBR, FusedMBR, FusedMB] PARAMS=", Result.PARAM_SIZE)
+                print(
+                    "    -> [FusedMBR, FusedMBR, FusedMB] PARAMS=",
+                    Result.PARAM_SIZE,
+                )
             elif act1 == OpID.RELU._value and act2 == OpID.TANH._value:
                 comptime Result = AutoDiffChain[
                     FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM],
                     FusedMatMulBiasTanh[ops[3].IN_DIM, ops[3].OUT_DIM],
                     FusedMatMulBias[ops[6].IN_DIM, ops[6].OUT_DIM],
                 ]
-                print("    -> [FusedMBR, FusedMBT, FusedMB] PARAMS=", Result.PARAM_SIZE)
+                print(
+                    "    -> [FusedMBR, FusedMBT, FusedMB] PARAMS=",
+                    Result.PARAM_SIZE,
+                )
     else:
         print("    -> no auto-fuse rule for", N, "ops")
+
 
 fn test_5_auto_fuse():
     print("=" * 60)
@@ -284,18 +346,31 @@ fn test_5_auto_fuse():
     auto_fuse_and_run[MatMul[3, 5], BiasAdd[5]]()
     auto_fuse_and_run[MatMul[3, 5], BiasAdd[5], ReLUOp[5]]()
     auto_fuse_and_run[
-        MatMul[3, 8], BiasAdd[8], ReLUOp[8],
-        MatMul[8, 2], BiasAdd[2],
+        MatMul[3, 8],
+        BiasAdd[8],
+        ReLUOp[8],
+        MatMul[8, 2],
+        BiasAdd[2],
     ]()
     auto_fuse_and_run[
-        MatMul[3, 64], BiasAdd[64], ReLUOp[64],
-        MatMul[64, 32], BiasAdd[32], ReLUOp[32],
-        MatMul[32, 2], BiasAdd[2],
+        MatMul[3, 64],
+        BiasAdd[64],
+        ReLUOp[64],
+        MatMul[64, 32],
+        BiasAdd[32],
+        ReLUOp[32],
+        MatMul[32, 2],
+        BiasAdd[2],
     ]()
     auto_fuse_and_run[
-        MatMul[3, 64], BiasAdd[64], ReLUOp[64],
-        MatMul[64, 32], BiasAdd[32], TanhOp[32],
-        MatMul[32, 2], BiasAdd[2],
+        MatMul[3, 64],
+        BiasAdd[64],
+        ReLUOp[64],
+        MatMul[64, 32],
+        BiasAdd[32],
+        TanhOp[32],
+        MatMul[32, 2],
+        BiasAdd[2],
     ]()
     print("  PASS")
     print()
@@ -316,6 +391,7 @@ fn test_5_auto_fuse():
 # checker can't prove end <= size(ops) when size is symbolic.
 # =============================================================================
 
+
 fn test_6_slice():
     print("=" * 60)
     print("Test 6: Variadic.slice_types (concrete variadics)")
@@ -323,16 +399,23 @@ fn test_6_slice():
 
     comptime ops = Variadic.types[
         T=DiffOp,
-        MatMul[2, 4], BiasAdd[4], ReLUOp[4],
-        MatMul[4, 1], BiasAdd[1],
+        MatMul[2, 4],
+        BiasAdd[4],
+        ReLUOp[4],
+        MatMul[4, 1],
+        BiasAdd[1],
     ]
 
     # Slice tail [3:5]
     comptime tail = Variadic.slice_types[element_types=ops, start=3, end=5]
     comptime tail_n = Variadic.size(tail)
     print("  tail N =", tail_n, "(expect 2)")
-    print("  tail[0].OP_ID =", tail[0].OP_ID, "(expect", OpID.MATMUL._value, ")")
-    print("  tail[1].OP_ID =", tail[1].OP_ID, "(expect", OpID.BIAS_ADD._value, ")")
+    print(
+        "  tail[0].OP_ID =", tail[0].OP_ID, "(expect", OpID.MATMUL._value, ")"
+    )
+    print(
+        "  tail[1].OP_ID =", tail[1].OP_ID, "(expect", OpID.BIAS_ADD._value, ")"
+    )
 
     # Slice head [0:3]
     comptime head = Variadic.slice_types[element_types=ops, start=0, end=3]
@@ -342,12 +425,21 @@ fn test_6_slice():
     # Unpack slice result into AutoDiffChain
     comptime fused_ops = Variadic.types[
         T=DiffOp,
-        FusedMatMulBiasReLU[2, 4], FusedMatMulBias[4, 1],
+        FusedMatMulBiasReLU[2, 4],
+        FusedMatMulBias[4, 1],
     ]
-    comptime sliced = Variadic.slice_types[element_types=fused_ops, start=0, end=2]
+    comptime sliced = Variadic.slice_types[
+        element_types=fused_ops, start=0, end=2
+    ]
     comptime Fused = AutoDiffChain[*sliced]
-    print("  AutoDiffChain[*sliced] IN=", Fused.IN_DIM, "OUT=", Fused.OUT_DIM,
-          "PARAMS=", Fused.PARAM_SIZE)
+    print(
+        "  AutoDiffChain[*sliced] IN=",
+        Fused.IN_DIM,
+        "OUT=",
+        Fused.OUT_DIM,
+        "PARAMS=",
+        Fused.PARAM_SIZE,
+    )
 
     print("  PASS")
     print()
@@ -403,6 +495,7 @@ fn test_6_slice():
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print()

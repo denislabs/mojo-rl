@@ -17,8 +17,8 @@ Example (InvertedDoublePendulum tip):
 
 from std.builtin.variadics import Variadic
 from std.gpu.host import HostBuffer
-from render import Color, Renderer3D
-from math3d import Vec3 as _Vec3G, Quat as _QuatG
+from mojo_rl.render import Color, Renderer3D
+from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 comptime _RVec3 = _Vec3G[DType.float64]
 comptime _RQuat = _QuatG[DType.float64]

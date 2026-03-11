@@ -25,8 +25,8 @@ Reward: 10 - 0.01*x_tip^2 - (z_tip-2)^2 - 1e-3*v1^2 - 5e-3*v2^2
 Termination: z_tip (tip height) <= 1.0 m.
 
 Example usage:
-    from envs.inverted_double_pendulum import InvertedDoublePendulum
-    from core import ContAction
+    from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
+    from mojo_rl.core import ContAction
 
     var env = InvertedDoublePendulum()
     var state = env.reset()

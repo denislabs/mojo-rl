@@ -17,16 +17,16 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from std.gpu import block_idx
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.collision.contact_detection import (
+from mojo_rl.physics3d.collision.contact_detection import (
     detect_contacts,
     detect_contacts_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -46,12 +46,12 @@ from physics3d.gpu.constants import (
     CONTACT_IDX_FRICTION,
     CONTACT_IDX_CONDIM,
 )
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.gpu.buffer_utils import (
     create_state_buffer,
     copy_data_to_buffer,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

@@ -8,10 +8,10 @@ This test identifies differences between CPU and GPU physics by:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-from nn import dtype as gpu_dtype
+from mojo_rl.nn import dtype as gpu_dtype
 
-from envs.hopper import Hopper
-from physics3d.gpu.constants import (
+from mojo_rl.envs.hopper import Hopper
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     qpos_offset,
     qvel_offset,

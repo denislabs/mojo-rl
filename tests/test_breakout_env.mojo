@@ -1,6 +1,6 @@
 """Test native Breakout environment — CPU + GPU."""
 
-from envs.arcade_games.breakout import BreakoutEnv
+from mojo_rl.envs.arcade_games.breakout import BreakoutEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32
@@ -34,7 +34,14 @@ fn main() raises:
             ep_reward += Float64(result[1])
             ep_steps += 1
             if result[2] or ep_steps >= 12000:
-                print("Episode", episode, ": steps=", ep_steps, ", reward=", ep_reward)
+                print(
+                    "Episode",
+                    episode,
+                    ": steps=",
+                    ep_steps,
+                    ", reward=",
+                    ep_reward,
+                )
                 total_reward += ep_reward
                 break
     print("CPU Total reward:", total_reward)
@@ -50,7 +57,9 @@ fn main() raises:
     var terminated = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OBS_DIM)
 
-    BreakoutEnv[DType.float64].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states)
+    BreakoutEnv[DType.float64].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        ctx, states
+    )
     ctx.synchronize()
     print("GPU reset complete.")
 
@@ -62,8 +71,16 @@ fn main() raises:
         host_actions[j] = 1.0  # FIRE
     ctx.enqueue_copy(actions, host_actions)
     for step in range(5):
-        BreakoutEnv[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            ctx, states, actions, rewards, dones, terminated, obs_buf,
+        BreakoutEnv[DType.float64].step_kernel_gpu[
+            BATCH_SIZE, STATE_SIZE, OBS_DIM
+        ](
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs_buf,
             rng_seed=UInt64(step),
         )
 
@@ -74,8 +91,16 @@ fn main() raises:
 
     var total_gpu_dones = 0
     for step in range(5000):
-        BreakoutEnv[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            ctx, states, actions, rewards, dones, terminated, obs_buf,
+        BreakoutEnv[DType.float64].step_kernel_gpu[
+            BATCH_SIZE, STATE_SIZE, OBS_DIM
+        ](
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs_buf,
             rng_seed=UInt64(step + 10),
         )
         if step % 1000 == 999:

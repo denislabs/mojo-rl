@@ -1,6 +1,6 @@
 """Detailed settling diagnostic: print every 5 env steps during settling."""
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah import HalfCheetah
 
 
 fn main():

@@ -5,7 +5,7 @@ specular (intensity), reflectance, and emission. Each material can optionally
 reference a TextureSpec by name.
 
 Usage:
-    from physics3d.model.material_spec import MaterialSpec, Material, DefaultMaterial
+    from mojo_rl.physics3d.model.material_spec import MaterialSpec, Material, DefaultMaterial
 
     comptime MyMat = Material[
         name="shiny",

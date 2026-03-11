@@ -26,13 +26,13 @@ fn abs_scalar(x: Scalar[DType.float32]) -> Scalar[DType.float32]:
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from envs.lunar_lander import LunarLanderEnv
-from envs.lunar_lander_gpu import LunarLanderGPU, gpu_dtype
-from envs.lunar_lander_gpu_v2 import (
+from mojo_rl.envs.lunar_lander import LunarLanderEnv
+from mojo_rl.envs.lunar_lander_gpu import LunarLanderGPU, gpu_dtype
+from mojo_rl.envs.lunar_lander_gpu_v2 import (
     LunarLanderGPUv2,
     FULL_STATE_SIZE as V2_STATE_SIZE,
 )
-from envs.lunar_lander_gpu_v3 import LunarLanderGPUv3
+from mojo_rl.envs.lunar_lander_gpu_v3 import LunarLanderGPUv3
 
 # Test parameters
 comptime NUM_STEPS: Int = 20
@@ -171,7 +171,13 @@ fn run_gpu_v1_step(
     ctx.synchronize()
 
     LunarLanderGPU.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, UInt64(step_seed)
+        ctx,
+        states_buf,
+        actions_buf,
+        rewards_buf,
+        dones_buf,
+        terminated_buf,
+        UInt64(step_seed),
     )
     ctx.synchronize()
 
@@ -214,7 +220,13 @@ fn run_gpu_v2_step(
     ctx.synchronize()
 
     LunarLanderGPUv2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, UInt64(step_seed)
+        ctx,
+        states_buf,
+        actions_buf,
+        rewards_buf,
+        dones_buf,
+        terminated_buf,
+        UInt64(step_seed),
     )
     ctx.synchronize()
 

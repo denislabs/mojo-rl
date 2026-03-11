@@ -25,8 +25,8 @@ Requirements:
     - SDL2 for rendering (optional): brew install sdl2 sdl2_ttf
 """
 
-from envs import PendulumEnv
-from deep_agents.sac import DeepSACAgent
+from mojo_rl.envs import PendulumEnv
+from mojo_rl.deep_agents.sac import DeepSACAgent
 
 
 fn main() raises:
@@ -46,9 +46,13 @@ fn main() raises:
     # Create Deep SAC agent
     # obs_dim=3, action_dim=1, hidden_dim=64, buffer_capacity=50000, batch_size=64
     var agent = DeepSACAgent[
-        obs_dim=3, action_dim=1, hidden_dim=64,
-        buffer_capacity=50000, batch_size=64,
-        actor_lr=0.0003, critic_lr=0.0003,
+        obs_dim=3,
+        action_dim=1,
+        hidden_dim=64,
+        buffer_capacity=50000,
+        batch_size=64,
+        actor_lr=0.0003,
+        critic_lr=0.0003,
     ](
         gamma=0.99,
         tau=0.005,

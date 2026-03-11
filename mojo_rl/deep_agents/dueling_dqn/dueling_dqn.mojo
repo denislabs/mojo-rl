@@ -4,7 +4,7 @@ This Dueling DQN implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state
 - Network (all-static) for stateless forward/backward ops via LayoutTensor
 - Parallel combinator for Value/Advantage stream split
-- ReplayBuffer from nn.replay for experience replay
+- ReplayBuffer from mojo_rl.nn.replay for experience replay
 - compile-time lr (Adam LR baked in at compile time)
 
 Dueling Architecture (unified model with Parallel):
@@ -22,8 +22,8 @@ Features:
 - Double DQN support (online selects, target evaluates)
 
 Usage:
-    from deep_agents.dueling_dqn import DuelingDQNAgent
-    from envs import LunarLanderEnv
+    from mojo_rl.deep_agents.dueling_dqn import DuelingDQNAgent
+    from mojo_rl.envs import LunarLanderEnv
 
     var env = LunarLanderEnv()
     var agent = DuelingDQNAgent[8, 4, 128, 64, 100000, 64]()
@@ -38,13 +38,13 @@ from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, LinearReLU, Sequential, Parallel, Model
-from nn.optimizer import Adam, Optimizer
-from nn.initializer import Kaiming
-from nn.training import Network, NetworkState
-from deep_agents.core.replay import HeapReplayBuffer
-from deep_agents.core import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Linear, LinearReLU, Sequential, Parallel, Model
+from mojo_rl.nn.optimizer import Adam, Optimizer
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer
+from mojo_rl.deep_agents.core import (
     fill_inline,
     obs_to_inline,
     OffPolicyDiscreteState,
@@ -53,7 +53,7 @@ from deep_agents.core import (
     run_offpolicy_discrete_eval,
     Checkpointable,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
 # =============================================================================
@@ -627,7 +627,7 @@ struct DuelingDQNAgent[
     # =========================================================================
 
     fn save_checkpoint(self, filepath: String) raises:
-        from nn.checkpoint import (
+        from mojo_rl.nn.checkpoint import (
             write_checkpoint_header,
             write_metadata_section,
             save_checkpoint_file,
@@ -646,7 +646,7 @@ struct DuelingDQNAgent[
         save_checkpoint_file(filepath, content)
 
     fn load_checkpoint(mut self, filepath: String) raises:
-        from nn.checkpoint import (
+        from mojo_rl.nn.checkpoint import (
             read_checkpoint_file,
             read_metadata_section,
             get_metadata_value,

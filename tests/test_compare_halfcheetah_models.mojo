@@ -12,7 +12,7 @@ Run with:
 from std.collections import InlineArray
 from std.gpu.host import DeviceContext
 
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
     model_body_offset,
     model_joint_offset,
@@ -103,8 +103,8 @@ from physics3d.gpu.constants import (
 )
 
 # Import the two model defs directly
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_def import (
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel as HalfCheetahModelDef,
 )
 

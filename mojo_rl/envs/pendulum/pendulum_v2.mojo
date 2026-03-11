@@ -23,7 +23,7 @@ from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from std.memory import alloc
 
-from core import (
+from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     BoxDiscreteActionEnv,
@@ -32,7 +32,7 @@ from core import (
     PolynomialFeatures,
     RenderableEnv,
 )
-from render import (
+from mojo_rl.render import (
     Renderer2D,
     Camera,
     SDL_Color,
@@ -48,7 +48,7 @@ from .action import PendulumV2Action
 from .constants import PConstants, PendulumLayout
 
 # Import global GPU constants
-from physics2d import dtype, TPB
+from mojo_rl.physics2d import dtype, TPB
 
 
 # =============================================================================

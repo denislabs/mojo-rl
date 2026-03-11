@@ -1,7 +1,7 @@
 """Test DQN Agent on CartPole.
 
 This tests the new DQN implementation using:
-- Network wrapper from nn.training
+- Network wrapper from mojo_rl.nn.training
 - CartPoleEnv environment
 - Double DQN with experience replay
 - train() and evaluate() methods
@@ -13,8 +13,8 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.dqn import DQNAgent
-from envs import CartPoleEnv
+from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.envs import CartPoleEnv
 
 
 # =============================================================================

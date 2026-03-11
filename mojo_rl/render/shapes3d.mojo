@@ -4,7 +4,7 @@ Generates vertices and edges for wireframe rendering of common 3D shapes.
 """
 
 from std.math import sin, cos
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]

@@ -13,12 +13,20 @@ Run with:
 from std.random import seed, random_float64
 from std.math import exp, sqrt
 
-from nn.constants import dtype
-from nn.model import Linear, ReLU, Sigmoid, Softmax, LayerNorm, Dropout, seq
-from nn.loss import MSELoss
-from nn.optimizer import Adam
-from nn.training import Trainer
-from nn.initializer import Xavier, Kaiming
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import (
+    Linear,
+    ReLU,
+    Sigmoid,
+    Softmax,
+    LayerNorm,
+    Dropout,
+    seq,
+)
+from mojo_rl.nn.loss import MSELoss
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.training import Trainer
+from mojo_rl.nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================

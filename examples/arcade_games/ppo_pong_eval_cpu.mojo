@@ -10,8 +10,8 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.ppo import DeepPPOAgent
-from envs.arcade_games.pong import PongEnv
+from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
 # =============================================================================

@@ -11,8 +11,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     DropoutOp,
     Flatten,
@@ -65,6 +65,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Test 1: DropoutOp — basic properties
 # =============================================================================
 
+
 fn test_dropout_basic() -> Int:
     print_header("DropoutOp basic properties + rate 0 = identity")
     var fails = 0
@@ -85,18 +86,18 @@ fn test_dropout_basic() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op0.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op0.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op0.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -114,6 +115,7 @@ fn test_dropout_basic() -> Int:
 # Test 2: DropoutOp — mask and backward consistency
 # =============================================================================
 
+
 fn test_dropout_mask() -> Int:
     print_header("DropoutOp mask consistency + backward")
     var fails = 0
@@ -128,18 +130,18 @@ fn test_dropout_mask() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -160,8 +162,16 @@ fn test_dropout_mask() -> Int:
             var expected = Float64(inp[i]) * scale
             if math_abs(out_val - expected) > 1e-4:
                 scale_ok = False
-    check(n_zero > 0, "Some elements dropped (n_zero=" + String(n_zero) + ")", fails)
-    check(n_nonzero > 0, "Some elements kept (n_nonzero=" + String(n_nonzero) + ")", fails)
+    check(
+        n_zero > 0,
+        "Some elements dropped (n_zero=" + String(n_zero) + ")",
+        fails,
+    )
+    check(
+        n_nonzero > 0,
+        "Some elements kept (n_nonzero=" + String(n_nonzero) + ")",
+        fails,
+    )
     check(scale_ok, "Kept elements scaled by 1/(1-rate)=2.0", fails)
 
     # Backward: grad_input = grad_output * mask (same mask from cache)
@@ -169,15 +179,15 @@ fn test_dropout_mask() -> Int:
     var gi_data = make_list(BATCH * DIM)
     var gp_data = make_list(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        gp_data.unsafe_ptr()
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go_data.unsafe_ptr()
     )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi_data.unsafe_ptr()
+    )
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Op.vjp[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -196,6 +206,7 @@ fn test_dropout_mask() -> Int:
 # Test 3: DropoutOp — rate 1 = zero output
 # =============================================================================
 
+
 fn test_dropout_rate_one() -> Int:
     print_header("DropoutOp rate=1 -> zero output")
     var fails = 0
@@ -211,18 +222,18 @@ fn test_dropout_rate_one() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -238,6 +249,7 @@ fn test_dropout_rate_one() -> Int:
 # =============================================================================
 # Test 4: Flatten — identity forward/backward
 # =============================================================================
+
 
 fn test_flatten() -> Int:
     print_header("Flatten forward/backward identity")
@@ -258,15 +270,15 @@ fn test_flatten() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Op.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
@@ -284,15 +296,15 @@ fn test_flatten() -> Int:
     var gi_data = make_list(BATCH * DIM)
     var gp_data = make_list(0)
 
-    var go_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](go_data.unsafe_ptr())
-    var gi_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        gp_data.unsafe_ptr()
+    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        go_data.unsafe_ptr()
     )
+    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        gi_data.unsafe_ptr()
+    )
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Op.vjp[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -309,6 +321,7 @@ fn test_flatten() -> Int:
 # Test 5: Flatten composition with AutoDiffChain
 # =============================================================================
 
+
 fn test_flatten_composition() -> Int:
     print_header("Flatten in AutoDiffChain composition")
     var fails = 0
@@ -318,13 +331,17 @@ fn test_flatten_composition() -> Int:
     comptime BATCH = 2
 
     # Chain: MatMul[4,4] -> Flatten[4] -> MatMul[4,3] -> BiasAdd[3]
-    comptime Chain = AutoDiffChain[MatMul[DIM, DIM], Flatten[DIM], MatMul[DIM, OUT], BiasAdd[OUT]]
+    comptime Chain = AutoDiffChain[
+        MatMul[DIM, DIM], Flatten[DIM], MatMul[DIM, OUT], BiasAdd[OUT]
+    ]
 
     check(Chain.IN_DIM == DIM, "Chain IN_DIM == 4", fails)
     check(Chain.OUT_DIM == OUT, "Chain OUT_DIM == 3", fails)
 
     # Also check that Flatten doesn't add params/cache
-    comptime ChainNoFlatten = AutoDiffChain[MatMul[DIM, DIM], MatMul[DIM, OUT], BiasAdd[OUT]]
+    comptime ChainNoFlatten = AutoDiffChain[
+        MatMul[DIM, DIM], MatMul[DIM, OUT], BiasAdd[OUT]
+    ]
     check(
         Chain.PARAM_SIZE == ChainNoFlatten.PARAM_SIZE,
         "Flatten adds 0 params",
@@ -342,6 +359,7 @@ fn test_flatten_composition() -> Int:
 # =============================================================================
 # Test 6: Embedding — forward correctness
 # =============================================================================
+
 
 fn test_embedding_forward() -> Int:
     print_header("Embedding forward correctness")
@@ -376,12 +394,12 @@ fn test_embedding_forward() -> Int:
     var out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, EMBED), MutAnyOrigin
     ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin](
+        cache_data.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -405,6 +423,7 @@ fn test_embedding_forward() -> Int:
 # =============================================================================
 # Test 7: Embedding — backward gradient scatter
 # =============================================================================
+
 
 fn test_embedding_backward() -> Int:
     print_header("Embedding backward gradient scatter")
@@ -432,12 +451,12 @@ fn test_embedding_backward() -> Int:
     var out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, EMBED), MutAnyOrigin
     ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin](
+        cache_data.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -452,9 +471,9 @@ fn test_embedding_backward() -> Int:
     var gi_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin
     ](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        gp_data.unsafe_ptr()
-    )
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Op.vjp[BATCH](go_t, gi_t, p_t, c_t, gp_t)
 
@@ -500,6 +519,7 @@ fn test_embedding_backward() -> Int:
 # Test 8: Embedding finite-difference gradient check
 # =============================================================================
 
+
 fn test_embedding_fd() -> Int:
     print_header("Embedding finite-difference gradient check")
     var fails = 0
@@ -535,21 +555,21 @@ fn test_embedding_fd() -> Int:
     var out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, EMBED), MutAnyOrigin
     ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin](
+        cache_data.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
     var go_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, EMBED), MutAnyOrigin
     ](go_data.unsafe_ptr())
     var gi_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, VOCAB), MutAnyOrigin
     ](gi_data.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        gp_data.unsafe_ptr()
-    )
+    var gp_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](gp_data.unsafe_ptr())
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
     Op.vjp[BATCH](go_t, gi_t, p_t, c_t, gp_t)
@@ -592,9 +612,11 @@ fn test_embedding_fd() -> Int:
 
         var num_grad: Float64 = 0.0
         for j in range(BATCH * EMBED):
-            num_grad += Float64(go_data[j]) * (
-                Float64(out_plus[j]) - Float64(out_minus[j])
-            ) / (2.0 * eps)
+            num_grad += (
+                Float64(go_data[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2.0 * eps)
+            )
 
         var analytic = Float64(gp_data[idx])
         var err = math_abs(analytic - num_grad)
@@ -611,8 +633,11 @@ fn test_embedding_fd() -> Int:
 # Test 9: DropoutOp in AutoDiffChain
 # =============================================================================
 
+
 fn test_dropout_chain() -> Int:
-    print_header("DropoutOp in AutoDiffChain[MatMul, BiasAdd, DropoutOp, ReLUOp]")
+    print_header(
+        "DropoutOp in AutoDiffChain[MatMul, BiasAdd, DropoutOp, ReLUOp]"
+    )
     var fails = 0
 
     comptime IN = 3
@@ -627,7 +652,9 @@ fn test_dropout_chain() -> Int:
     check(Chain.OUT_DIM == OUT, "Chain OUT_DIM == 4", fails)
 
     # Rate 0 dropout: should behave identically to chain without dropout
-    comptime ChainNoDrop = AutoDiffChain[MatMul[IN, OUT], BiasAdd[OUT], ReLUOp[OUT]]
+    comptime ChainNoDrop = AutoDiffChain[
+        MatMul[IN, OUT], BiasAdd[OUT], ReLUOp[OUT]
+    ]
 
     seed(48)
     var params = make_rand_list(Chain.PARAM_SIZE)
@@ -636,15 +663,15 @@ fn test_dropout_chain() -> Int:
     # Forward with dropout (rate 0)
     var out1 = make_list(BATCH * OUT)
     var cache1 = make_list(BATCH * Chain.CACHE_SIZE)
-    var inp_t1 = LayoutTensor[
-        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-    ](inp.unsafe_ptr())
+    var inp_t1 = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
     var out_t1 = LayoutTensor[
         dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
     ](out1.unsafe_ptr())
-    var p_t1 = LayoutTensor[dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
-    )
+    var p_t1 = LayoutTensor[
+        dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
     var c_t1 = LayoutTensor[
         dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
     ](cache1.unsafe_ptr())
@@ -653,9 +680,9 @@ fn test_dropout_chain() -> Int:
     # Forward without dropout
     var out2 = make_list(BATCH * OUT)
     var cache2 = make_list(BATCH * ChainNoDrop.CACHE_SIZE)
-    var inp_t2 = LayoutTensor[
-        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-    ](inp.unsafe_ptr())
+    var inp_t2 = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
     var out_t2 = LayoutTensor[
         dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
     ](out2.unsafe_ptr())
@@ -677,6 +704,7 @@ fn test_dropout_chain() -> Int:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

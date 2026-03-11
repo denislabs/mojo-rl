@@ -16,21 +16,21 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from std.gpu import block_idx
 
-from physics3d.types import Model, Data, _max_one
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
     forward_kinematics_gpu,
 )
-from physics3d.dynamics.jacobian import (
+from mojo_rl.physics3d.dynamics.jacobian import (
     compute_cdof,
     compute_cdof_gpu,
 )
-from physics3d.dynamics.bias_forces import (
+from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne,
     compute_bias_forces_rne_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -38,12 +38,12 @@ from physics3d.gpu.constants import (
     integrator_workspace_size,
     ws_bias_offset,
 )
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.gpu.buffer_utils import (
     create_state_buffer,
     copy_data_to_buffer,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

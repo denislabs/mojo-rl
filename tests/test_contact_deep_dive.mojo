@@ -15,8 +15,8 @@ from std.random import seed, random_float64
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from envs.lunar_lander import LunarLanderEnv
-from envs.lunar_lander_gpu import (
+from mojo_rl.envs.lunar_lander import LunarLanderEnv
+from mojo_rl.envs.lunar_lander_gpu import (
     LunarLanderGPU,
     gpu_dtype,
     HELIPAD_Y as GPU_HELIPAD_Y,

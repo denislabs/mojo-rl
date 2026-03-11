@@ -6,8 +6,8 @@ The Ant is a 3D quadruped (free joint root) with 4 legs, each having
 a hip hinge and ankle hinge joint. 13 bodies, 9 joints, 8 actuators.
 
 Example usage:
-    from envs.ant import Ant
-    from core import ContAction
+    from mojo_rl.envs.ant import Ant
+    from mojo_rl.core import ContAction
 
     var env = Ant()
     var state = env.reset()

@@ -40,8 +40,13 @@ fn rotate_vector_by_quat[
     Optimized form avoiding full quaternion multiplication.
 
     Args:
-        vx, vy, vz: Vector to rotate.
-        qx, qy, qz, qw: Unit quaternion [x, y, z, w].
+        vx: Vector to rotate x.
+        vy: Vector to rotate y.
+        vz: Vector to rotate z.
+        qx: Unit quaternion x.
+        qy: Unit quaternion y.
+        qz: Unit quaternion z.
+        qw: Unit quaternion w.
 
     Returns:
         Rotated vector (rx, ry, rz).
@@ -77,8 +82,13 @@ fn rotate_vector_by_quat_inverse[
     This transforms from world frame to local frame.
 
     Args:
-        vx, vy, vz: Vector to rotate.
-        qx, qy, qz, qw: Unit quaternion [x, y, z, w].
+        vx: Vector to rotate x.
+        vy: Vector to rotate y.
+        vz: Vector to rotate z.
+        qx: Unit quaternion x.
+        qy: Unit quaternion y.
+        qz: Unit quaternion z.
+        qw: Unit quaternion w.
 
     Returns:
         Rotated vector (rx, ry, rz) in local frame.
@@ -108,7 +118,9 @@ fn compute_tangent_basis[
     cross again to get t2.
 
     Args:
-        nx, ny, nz: Contact normal (should be unit vector).
+        nx: Contact normal x.
+        ny: Contact normal y.
+        nz: Contact normal z.
 
     Returns:
         Tuple of (t1x, t1y, t1z, t2x, t2y, t2z) - two orthonormal tangent vectors.
@@ -185,9 +197,13 @@ fn sphere_sphere[
     """Sphere-sphere collision detection (MuJoCo-style).
 
     Args:
-        pos1_x, pos1_y, pos1_z: Center of sphere 1.
+        pos1_x: Sphere 1 center x.
+        pos1_y: Sphere 1 center y.
+        pos1_z: Sphere 1 center z.
         radius1: Radius of sphere 1.
-        pos2_x, pos2_y, pos2_z: Center of sphere 2.
+        pos2_x: Sphere 2 center x.
+        pos2_y: Sphere 2 center y.
+        pos2_z: Sphere 2 center z.
         radius2: Radius of sphere 2.
 
     Returns:
@@ -247,7 +263,9 @@ fn sphere_plane[
     """Sphere-plane collision detection (ground plane with normal = +Z).
 
     Args:
-        sphere_x, sphere_y, sphere_z: Center of the sphere.
+        sphere_x: Sphere center x.
+        sphere_y: Sphere center y.
+        sphere_z: Sphere center z.
         radius: Radius of the sphere.
         ground_z: Z-height of the ground plane.
 
@@ -299,8 +317,13 @@ fn capsule_plane[
     3. Compute distance from lowest point's sphere surface to plane
 
     Args:
-        cap_x, cap_y, cap_z: Center of the capsule.
-        cap_qx, cap_qy, cap_qz, cap_qw: Quaternion orientation [x, y, z, w].
+        cap_x: Capsule center x.
+        cap_y: Capsule center y.
+        cap_z: Capsule center z.
+        cap_qx: Capsule orientation x.
+        cap_qy: Capsule orientation y.
+        cap_qz: Capsule orientation z.
+        cap_qw: Capsule orientation w.
         half_length: Half-length of the cylindrical part.
         radius: Radius of the capsule.
         ground_z: Z-height of the ground plane.
@@ -396,11 +419,18 @@ fn capsule_sphere[
        (with cap_radius) and the sphere.
 
     Args:
-        cap_x, cap_y, cap_z: Center of the capsule.
-        cap_qx, cap_qy, cap_qz, cap_qw: Quaternion orientation [x, y, z, w].
+        cap_x: Capsule center x.
+        cap_y: Capsule center y.
+        cap_z: Capsule center z.
+        cap_qx: Capsule orientation x.
+        cap_qy: Capsule orientation y.
+        cap_qz: Capsule orientation z.
+        cap_qw: Capsule orientation w.
         cap_half_len: Half-length of the cylindrical part.
         cap_radius: Radius of the capsule.
-        sph_x, sph_y, sph_z: Center of the sphere.
+        sph_x: Sphere center x.
+        sph_y: Sphere center y.
+        sph_z: Sphere center z.
         sph_radius: Radius of the sphere.
 
     Returns:
@@ -618,12 +648,22 @@ fn capsule_capsule[
     3. Treat as sphere-sphere collision between the closest points
 
     Args:
-        a_x, a_y, a_z: Center of capsule A.
-        a_qx, a_qy, a_qz, a_qw: Quaternion orientation of capsule A.
+        a_x: Capsule A center x.
+        a_y: Capsule A center y.
+        a_z: Capsule A center z.
+        a_qx: Capsule A orientation x.
+        a_qy: Capsule A orientation y.
+        a_qz: Capsule A orientation z.
+        a_qw: Capsule A orientation w.
         a_half_len: Half-length of capsule A.
         a_radius: Radius of capsule A.
-        b_x, b_y, b_z: Center of capsule B.
-        b_qx, b_qy, b_qz, b_qw: Quaternion orientation of capsule B.
+        b_x: Capsule B center x.
+        b_y: Capsule B center y.
+        b_z: Capsule B center z.
+        b_qx: Capsule B orientation x.
+        b_qy: Capsule B orientation y.
+        b_qz: Capsule B orientation z.
+        b_qw: Capsule B orientation w.
         b_half_len: Half-length of capsule B.
         b_radius: Radius of capsule B.
 
@@ -841,8 +881,19 @@ fn cylinder_sphere[
     3. CORNER: Sphere is near the rim edge → sphere-point distance
 
     Args:
-        cyl_*: Cylinder center, orientation, half-length, radius.
-        sph_*: Sphere center and radius.
+        cyl_x: Cylinder center x.
+        cyl_y: Cylinder center y.
+        cyl_z: Cylinder center z.
+        cyl_qx: Cylinder orientation x.
+        cyl_qy: Cylinder orientation y.
+        cyl_qz: Cylinder orientation z.
+        cyl_qw: Cylinder orientation w.
+        cyl_half_len: Cylinder half-length.
+        cyl_radius: Cylinder radius.
+        sph_x: Sphere center x.
+        sph_y: Sphere center y.
+        sph_z: Sphere center z.
+        sph_radius: Sphere radius.
 
     Returns:
         Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z).

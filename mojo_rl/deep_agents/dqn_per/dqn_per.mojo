@@ -3,7 +3,7 @@
 This DQN+PER implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state
 - Network (all-static) for stateless forward/backward ops via LayoutTensor
-- PrioritizedReplayBuffer from nn.replay for priority-weighted sampling
+- PrioritizedReplayBuffer from mojo_rl.nn.replay for priority-weighted sampling
 - compile-time lr (Adam LR baked in at compile time)
 
 Key differences from standard DQN:
@@ -22,8 +22,8 @@ No GPU path: PrioritizedReplayBuffer uses a sum-tree that requires
 serial CPU access for priority updates, making GPU training impractical.
 
 Usage:
-    from deep_agents.dqn_per import DQNPERAgent
-    from envs import LunarLanderEnv
+    from mojo_rl.deep_agents.dqn_per import DQNPERAgent
+    from mojo_rl.envs import LunarLanderEnv
 
     var env = LunarLanderEnv()
     var agent = DQNPERAgent[8, 4, 128, 100000, 64]()
@@ -38,15 +38,15 @@ from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, LinearReLU, Sequential
-from nn.optimizer import Adam
-from nn.initializer import Kaiming
-from nn.training import Network, NetworkState
-from nn.replay import PrioritizedReplayBuffer
-from nn.model import Model
-from nn.optimizer import Optimizer
-from deep_agents.core import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Linear, LinearReLU, Sequential
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.training import Network, NetworkState
+from ..core.replay import PrioritizedReplayBuffer
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.deep_agents.core import (
     fill_inline,
     obs_to_inline,
     OffPolicyDiscreteState,
@@ -55,7 +55,7 @@ from deep_agents.core import (
     run_offpolicy_discrete_eval,
     Checkpointable,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
 
 
 # =============================================================================
@@ -636,7 +636,7 @@ struct DQNPERAgent[
         Args:
             filepath: Destination path for the checkpoint file.
         """
-        from nn.checkpoint import (
+        from mojo_rl.nn.checkpoint import (
             write_checkpoint_header,
             write_metadata_section,
             save_checkpoint_file,
@@ -663,7 +663,7 @@ struct DQNPERAgent[
         Args:
             filepath: Path to the checkpoint file.
         """
-        from nn.checkpoint import (
+        from mojo_rl.nn.checkpoint import (
             read_checkpoint_file,
             read_metadata_section,
             get_metadata_value,

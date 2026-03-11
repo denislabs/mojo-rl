@@ -5,7 +5,7 @@ zero mean and unit variance, which is commonly used in policy gradient
 methods like PPO to stabilize training.
 
 Example usage:
-    from core.utils.normalization import normalize, normalize_inline
+    from mojo_rl.core.utils.normalization import normalize, normalize_inline
 
     # For List-based code
     var advantages = List[Float64]()

@@ -5,9 +5,12 @@ values in the search space. This is effective for smaller spaces but
 grows exponentially with the number of parameters.
 """
 
-from core import DiscreteEnv, TrainingMetrics
-from core.hyperparam.param_space import TabularHyperparams, TabularParamSpace
-from core.hyperparam.search_result import TrialResult, SearchResults
+from mojo_rl.core import DiscreteEnv, TrainingMetrics
+from mojo_rl.core.hyperparam.param_space import (
+    TabularHyperparams,
+    TabularParamSpace,
+)
+from mojo_rl.core.hyperparam.search_result import TrialResult, SearchResults
 
 
 fn grid_search_tabular(
@@ -54,7 +57,13 @@ fn grid_search_tabular(
     var grid_size = param_space.get_grid_size()
     if verbose:
         print("Grid search:", grid_size, "configurations")
-        print("Parameters per trial:", num_episodes, "episodes x", max_steps, "max steps")
+        print(
+            "Parameters per trial:",
+            num_episodes,
+            "episodes x",
+            max_steps,
+            "max steps",
+        )
 
     # Note: Actual training loop must be implemented in the calling code
     # since Mojo doesn't support passing agent constructors as parameters

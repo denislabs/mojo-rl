@@ -23,14 +23,17 @@ Linear function approximation:
 where φ(s) is the feature vector extracted from state s.
 """
 
-from core.linear_fa import (
+from mojo_rl.core.linear_fa import (
     PolynomialFeatures,
     RBFFeatures,
     make_grid_rbf_centers,
     make_mountain_car_poly_features,
 )
-from agents.linear_qlearning import LinearQLearningAgent, LinearSARSALambdaAgent
-from envs.mountain_car_native import MountainCarNative
+from mojo_rl.agents.linear_qlearning import (
+    LinearQLearningAgent,
+    LinearSARSALambdaAgent,
+)
+from mojo_rl.envs.mountain_car_native import MountainCarNative
 
 
 fn train_mountain_car_poly(

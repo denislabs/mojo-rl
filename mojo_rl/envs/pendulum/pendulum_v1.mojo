@@ -14,7 +14,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 from std.math import cos, sin, pi
 from std.random import random_float64
 from std.memory import alloc
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     DiscreteEnv,
@@ -24,7 +24,7 @@ from core import (
     PolynomialFeatures,
     RenderableEnv,
 )
-from render import (
+from mojo_rl.render import (
     Renderer2D,
     SDL_Color,
     Vec2,

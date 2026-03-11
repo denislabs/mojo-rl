@@ -9,9 +9,9 @@ Run with:
 """
 
 from std.math import sin, cos, pi
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
-from render import (
+from mojo_rl.render import (
     Renderer3D,
     Camera3D,
     Color,

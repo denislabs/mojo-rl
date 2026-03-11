@@ -4,8 +4,8 @@ Trains a Q-Learning agent on the native Mojo CartPole using the
 training function, then visualizes the trained agent.
 """
 
-from envs import CartPoleEnv, CartPoleAction
-from agents.qlearning import QLearningAgent
+from mojo_rl.envs import CartPoleEnv, CartPoleAction
+from mojo_rl.agents.qlearning import QLearningAgent
 from std.random import seed
 
 

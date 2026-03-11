@@ -27,16 +27,16 @@ Usage:
 """
 
 from layout import Layout, LayoutTensor
-from nn.constants import dtype, TPB
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import NetworkState, Network, GPUNetworkState
-from nn.initializer import Xavier, Kaiming
-from deep_agents.core.onpolicy_train import (
+from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import NetworkState, Network, GPUNetworkState
+from mojo_rl.nn.initializer import Xavier, Kaiming
+from mojo_rl.deep_agents.core.onpolicy_train import (
     OnPolicyDiscreteState,
     OnPolicyContinuousState,
 )
-from deep_agents.core.gpu_onpolicy_train import GPUOnPolicyState
+from mojo_rl.deep_agents.core.gpu_onpolicy_train import GPUOnPolicyState
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 
@@ -612,7 +612,7 @@ struct PPODiscreteGPUState[
     ) raises -> None:
         """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
         """
-        from deep_agents.ppo.kernels import _store_pre_step_kernel
+        from mojo_rl.deep_agents.ppo.kernels import _store_pre_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
         var r_obs = LayoutTensor[
@@ -666,7 +666,7 @@ struct PPODiscreteGPUState[
     ) raises -> None:
         """Store post-step data (rewards, dones) into rollout buffers, advance pointer.
         """
-        from deep_agents.ppo.kernels import _store_post_step_kernel
+        from mojo_rl.deep_agents.ppo.kernels import _store_post_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
         var r_rewards = LayoutTensor[
@@ -962,7 +962,9 @@ struct PPOContinuousGPUState[
     ) raises -> None:
         """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
         """
-        from deep_agents.ppo.kernels import _store_continuous_pre_step_kernel
+        from mojo_rl.deep_agents.ppo.kernels import (
+            _store_continuous_pre_step_kernel,
+        )
 
         var t_offset = self.rollout_step * N_ENVS
         var r_obs = LayoutTensor[
@@ -1018,7 +1020,7 @@ struct PPOContinuousGPUState[
     ) raises -> None:
         """Store post-step data (rewards, dones) into rollout buffers, advance pointer.
         """
-        from deep_agents.ppo.kernels import _store_post_step_kernel
+        from mojo_rl.deep_agents.ppo.kernels import _store_post_step_kernel
 
         var t_offset = self.rollout_step * N_ENVS
         var r_rewards = LayoutTensor[

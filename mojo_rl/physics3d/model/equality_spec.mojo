@@ -5,7 +5,7 @@ Supports two equality constraint types:
   - WeldConstraint: Rigid attachment (6 DOF, position + orientation)
 
 Usage:
-    from physics3d.model.equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
+    from mojo_rl.physics3d.model.equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
 
     # Ball joint connecting body 0 and body 1 at their origins
     comptime MyConnect = ConnectConstraint[body_a=0, body_b=1]

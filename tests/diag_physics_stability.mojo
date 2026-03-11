@@ -5,8 +5,8 @@ to distinguish between a physics bug and a policy mismatch issue.
 """
 
 from std.random import seed
-from envs.half_cheetah import HalfCheetah
-from envs.half_cheetah.half_cheetah_def import (
+from mojo_rl.envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
     JOINT_ROOTX,
     JOINT_ROOTZ,

@@ -12,8 +12,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     Dense,
     DenseReLU,
@@ -26,7 +26,7 @@ from nn.autodiff import (
     Parallel,
     Repeat,
 )
-from nn.model.sequential import Sequential
+from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
@@ -71,24 +71,21 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Generic finite-difference gradient check for Model trait
 # =============================================================================
 
+
 fn fd_grad_check_model[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    fwd_fn: fn (
+    fwd_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         mut LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    bwd_fn: fn (
+    bwd_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -169,9 +166,11 @@ fn fd_grad_check_model[
 
         var num_grad: Float64 = 0.0
         for j in range(BATCH * OUT_DIM):
-            num_grad += Float64(go_data[j]) * (
-                Float64(out_plus[j]) - Float64(out_minus[j])
-            ) / (2.0 * eps)
+            num_grad += (
+                Float64(go_data[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2.0 * eps)
+            )
 
         var analytic = Float64(gi_data[idx])
         var err = math_abs(analytic - num_grad)
@@ -185,21 +184,17 @@ fn fd_grad_check_model[
 fn fd_param_grad_check[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    fwd_fn: fn (
+    fwd_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         mut LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    bwd_fn: fn (
+    bwd_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -279,9 +274,11 @@ fn fd_param_grad_check[
 
         var num_grad: Float64 = 0.0
         for j in range(BATCH * OUT_DIM):
-            num_grad += Float64(go_data[j]) * (
-                Float64(out_plus[j]) - Float64(out_minus[j])
-            ) / (2.0 * eps)
+            num_grad += (
+                Float64(go_data[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2.0 * eps)
+            )
 
         var analytic = Float64(gp_data[idx])
         var err = math_abs(analytic - num_grad)
@@ -294,6 +291,7 @@ fn fd_param_grad_check[
 # =============================================================================
 # Test 1: Residual dimension checks and forward
 # =============================================================================
+
 
 fn test_residual_dims_and_forward() -> Int:
     print_header("Residual[Dense[4,4]] — dimensions + forward")
@@ -326,9 +324,9 @@ fn test_residual_dims_and_forward() -> Int:
     var dense_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, R.OUT_DIM), MutAnyOrigin
     ](dense_out.unsafe_ptr())
-    var p_t = LayoutTensor[
-        dtype, Layout.row_major(R.PARAM_SIZE), MutAnyOrigin
-    ](params.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(R.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
     var dc_t = LayoutTensor[
         dtype,
         Layout.row_major(BATCH, Dense[4, 4].CACHE_SIZE),
@@ -363,6 +361,7 @@ fn test_residual_dims_and_forward() -> Int:
 # Test 2: Residual gradient check
 # =============================================================================
 
+
 fn test_residual_grad() -> Int:
     print_header("Residual[Dense[4,4]] — gradient check")
     var fails = 0
@@ -395,6 +394,7 @@ fn test_residual_grad() -> Int:
 # =============================================================================
 # Test 3: Parallel dimension checks and forward
 # =============================================================================
+
 
 fn test_parallel_dims_and_forward() -> Int:
     print_header("Parallel[Dense[2,3], Dense[2,2]] — dimensions + forward")
@@ -445,9 +445,7 @@ fn test_parallel_dims_and_forward() -> Int:
 
     # Rebind inp for B since P.IN_DIM and B.IN_DIM are same value but different types
     var inp_b = rebind[
-        LayoutTensor[
-            dtype, Layout.row_major(BATCH, B.IN_DIM), MutAnyOrigin
-        ]
+        LayoutTensor[dtype, Layout.row_major(BATCH, B.IN_DIM), MutAnyOrigin]
     ](inp_t)
     A.forward[BATCH](inp_t, out_a_t, pa_t, ca_t)
     B.forward[BATCH](inp_b, out_b_t, pb_t, cb_t)
@@ -468,9 +466,9 @@ fn test_parallel_dims_and_forward() -> Int:
     var par_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, P.OUT_DIM), MutAnyOrigin
     ](par_out.unsafe_ptr())
-    var p_t = LayoutTensor[
-        dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin
-    ](params.unsafe_ptr())
+    var p_t = LayoutTensor[dtype, Layout.row_major(P.PARAM_SIZE), MutAnyOrigin](
+        params.unsafe_ptr()
+    )
     var pc_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, P.CACHE_SIZE), MutAnyOrigin
     ](par_cache.unsafe_ptr())
@@ -486,6 +484,7 @@ fn test_parallel_dims_and_forward() -> Int:
 # =============================================================================
 # Test 4: Parallel gradient check
 # =============================================================================
+
 
 fn test_parallel_grad() -> Int:
     print_header("Parallel[Dense[2,3], Dense[2,2]] — gradient check")
@@ -517,6 +516,7 @@ fn test_parallel_grad() -> Int:
 # =============================================================================
 # Test 5: Repeat dimension checks and forward
 # =============================================================================
+
 
 fn test_repeat_dims_and_forward() -> Int:
     print_header("Repeat[3, Dense[4,4]] — dimensions + forward")
@@ -600,6 +600,7 @@ fn test_repeat_dims_and_forward() -> Int:
 # Test 6: Repeat gradient check (shared weight accumulation)
 # =============================================================================
 
+
 fn test_repeat_grad() -> Int:
     print_header("Repeat[3, Dense[4,4]] — gradient check (shared weights)")
     var fails = 0
@@ -636,14 +637,13 @@ fn test_repeat_grad() -> Int:
 # Test 7: Composition — Sequential[DenseReLU, Residual[Dense], Dense]
 # =============================================================================
 
+
 fn test_composition_training() -> Int:
     print_header("Composition: Sequential + Residual — XOR convergence")
     var fails = 0
 
     # Model: DenseReLU[2,8] -> Residual[Dense[8,8]] -> Dense[8,1]
-    comptime M = Sequential[
-        DenseReLU[2, 8], Residual[Dense[8, 8]], Dense[8, 1]
-    ]
+    comptime M = Sequential[DenseReLU[2, 8], Residual[Dense[8, 8]], Dense[8, 1]]
 
     check(M.IN_DIM == 2, "Composed IN_DIM == 2", fails)
     check(M.OUT_DIM == 1, "Composed OUT_DIM == 1", fails)
@@ -713,13 +713,9 @@ fn test_composition_training() -> Int:
         var loss: Float64 = 0.0
         var go_data = make_list(BATCH * M.OUT_DIM)
         for b_idx in range(BATCH):
-            var diff = Float64(out_data[b_idx]) - Float64(
-                target_data[b_idx]
-            )
+            var diff = Float64(out_data[b_idx]) - Float64(target_data[b_idx])
             loss += diff * diff
-            go_data[b_idx] = Scalar[dtype](
-                2.0 * diff / Float64(BATCH)
-            )
+            go_data[b_idx] = Scalar[dtype](2.0 * diff / Float64(BATCH))
         loss /= Float64(BATCH)
 
         var gi_data = make_list(BATCH * M.IN_DIM)
@@ -750,6 +746,7 @@ fn test_composition_training() -> Int:
 # =============================================================================
 # Test 8: Nesting — Residual[Sequential[DenseReLU, Dense]]
 # =============================================================================
+
 
 fn test_nested_residual() -> Int:
     print_header(
@@ -786,6 +783,7 @@ fn test_nested_residual() -> Int:
 # =============================================================================
 # Test 9: Repeat[1, ...] is identity to inner
 # =============================================================================
+
 
 fn test_repeat_one() -> Int:
     print_header("Repeat[1, Dense[4,4]] — matches Dense directly")
@@ -840,6 +838,7 @@ fn test_repeat_one() -> Int:
 # =============================================================================
 # Test 10: 3-branch Parallel dimension checks and forward
 # =============================================================================
+
 
 fn test_parallel_3branch_dims_and_forward() -> Int:
     print_header(
@@ -906,14 +905,10 @@ fn test_parallel_3branch_dims_and_forward() -> Int:
     ](cache_c.unsafe_ptr())
 
     var inp_b = rebind[
-        LayoutTensor[
-            dtype, Layout.row_major(BATCH, B.IN_DIM), MutAnyOrigin
-        ]
+        LayoutTensor[dtype, Layout.row_major(BATCH, B.IN_DIM), MutAnyOrigin]
     ](inp_t)
     var inp_c = rebind[
-        LayoutTensor[
-            dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin
-        ]
+        LayoutTensor[dtype, Layout.row_major(BATCH, C.IN_DIM), MutAnyOrigin]
     ](inp_t)
 
     A.forward[BATCH](inp_t, out_a_t, pa_t, ca_t)
@@ -930,9 +925,9 @@ fn test_parallel_3branch_dims_and_forward() -> Int:
                 b_idx * B.OUT_DIM + i
             ]
         for i in range(C.OUT_DIM):
-            expected[
-                b_idx * P3.OUT_DIM + A.OUT_DIM + B.OUT_DIM + i
-            ] = out_c[b_idx * C.OUT_DIM + i]
+            expected[b_idx * P3.OUT_DIM + A.OUT_DIM + B.OUT_DIM + i] = out_c[
+                b_idx * C.OUT_DIM + i
+            ]
 
     # Parallel forward
     var par_out = make_list(BATCH * P3.OUT_DIM)
@@ -958,6 +953,7 @@ fn test_parallel_3branch_dims_and_forward() -> Int:
 # =============================================================================
 # Test 11: 3-branch Parallel gradient check
 # =============================================================================
+
 
 fn test_parallel_3branch_grad() -> Int:
     print_header(
@@ -991,6 +987,7 @@ fn test_parallel_3branch_grad() -> Int:
 # =============================================================================
 # main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

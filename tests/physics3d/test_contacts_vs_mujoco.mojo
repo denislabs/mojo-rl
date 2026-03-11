@@ -22,11 +22,11 @@ from std.math import abs, sqrt
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.collision.contact_detection import detect_contacts
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

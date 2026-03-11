@@ -262,11 +262,11 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
         """Initialize polynomial feature extractor.
 
         Args:
-            state_dim: Dimensionality of the state space
-            degree: Maximum polynomial degree (default 2)
-            include_bias: Whether to include a bias term (constant 1)
-            state_low: Lower bounds for state normalization (optional)
-            state_high: Upper bounds for state normalization (optional)
+            state_dim: Dimensionality of the state space.
+            degree: Maximum polynomial degree (default 2).
+            include_bias: Whether to include a bias term (constant 1).
+            state_low: Lower bounds for state normalization (optional).
+            state_high: Upper bounds for state normalization (optional).
         """
         self.state_dim = state_dim
         self.degree = degree
@@ -447,7 +447,9 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
         return result
 
 
-struct RBFFeatures[dtype: DType](FeatureExtractor):
+struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
+    FeatureExtractor
+):
     """Radial Basis Function (RBF) feature extractor.
 
     Creates features based on distance to fixed centers:
@@ -472,8 +474,8 @@ struct RBFFeatures[dtype: DType](FeatureExtractor):
         """Initialize RBF feature extractor.
 
         Args:
-            centers: List of center positions, each of dimension state_dim
-            sigma: RBF width parameter (standard deviation)
+            centers: List of center positions, each of dimension state_dim.
+            sigma: RBF width parameter (standard deviation).
         """
         self.num_features = len(centers)
         self.sigma = sigma
@@ -489,10 +491,10 @@ struct RBFFeatures[dtype: DType](FeatureExtractor):
         """Extract RBF features from state.
 
         Args:
-            state: Raw state vector
+            state: Raw state vector.
 
         Returns:
-            RBF feature vector with one feature per center
+            RBF feature vector with one feature per center.
         """
         var features = List[Scalar[Self.DTYPE]]()
         var two_sigma_sq = 2.0 * self.sigma * self.sigma
@@ -555,12 +557,12 @@ fn make_grid_rbf_centers[
     """Create a grid of RBF centers covering the state space.
 
     Args:
-        state_low: Lower bounds for each state dimension
-        state_high: Upper bounds for each state dimension
-        num_centers_per_dim: Number of centers along each dimension
+        state_low: Lower bounds for each state dimension.
+        state_high: Upper bounds for each state dimension.
+        num_centers_per_dim: Number of centers along each dimension.
 
     Returns:
-        List of center positions
+        List of center positions.
     """
     var state_dim = len(state_low)
     var centers = List[List[Scalar[DTYPE]]]()
@@ -671,7 +673,7 @@ fn make_grid_rbf_centers[
 
 
 fn make_mountain_car_poly_features[
-    DTYPE: DType
+    DTYPE: DType where DTYPE.is_floating_point()
 ](degree: Int = 3) -> PolynomialFeatures[DTYPE]:
     """Create polynomial features for MountainCar (2D state) with normalization.
 

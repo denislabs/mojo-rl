@@ -12,10 +12,13 @@ Run with:
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.types import Model, Data, _max_one
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_cdof,
+    compute_composite_inertia,
+)
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
     ldl_factor,
     ldl_solve,
@@ -27,8 +30,8 @@ from physics3d.dynamics.mass_matrix import (
     ldl_solve_sparse,
     sparse_to_dense,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 from std.testing import assert_true, TestSuite
 
 

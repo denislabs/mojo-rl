@@ -5,7 +5,7 @@ This DDPG (Deep Deterministic Policy Gradient) implementation uses:
 - Network (all-static) for stateless forward/backward ops via LayoutTensor
 - Sequential composition for actor and critic networks
 - Tanh output activation for bounded actions
-- ReplayBuffer from nn.replay for experience replay
+- ReplayBuffer from mojo_rl.nn.replay for experience replay
 - OffPolicyContinuousAgent trait for shared CPU training loop
 - GPUOffPolicyAgent trait for shared GPU training loop
 
@@ -19,8 +19,8 @@ Features:
 - Unified CPU+GPU agent — same struct for both training modes
 
 Usage:
-    from deep_agents.ddpg import DeepDDPGAgent
-    from envs import PendulumEnv
+    from mojo_rl.deep_agents.ddpg import DeepDDPGAgent
+    from mojo_rl.envs import PendulumEnv
 
     var env = PendulumEnv()
     var agent = DeepDDPGAgent[3, 1, 256, 100000, 64]()
@@ -40,18 +40,18 @@ from std.random import random_float64, seed
 
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
-from nn.optimizer import Optimizer, Adam
-from nn.initializer import Kaiming, Xavier
-from nn.training import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
+from mojo_rl.nn.optimizer import Optimizer, Adam
+from mojo_rl.nn.initializer import Kaiming, Xavier
+from mojo_rl.nn.training import (
     Network,
     NetworkState,
     GPUNetworkState,
     NetworkPair,
     GPUNetworkPair,
 )
-from deep_agents.core import (
+from mojo_rl.deep_agents.core import (
     deterministic_select_action,
     greedy_continuous_action,
     store_continuous_transition,
@@ -68,8 +68,8 @@ from deep_agents.core import (
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from deep_agents.core.kernels import (
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     ddpg_exploration_kernel,
     td_mse_grad_kernel,
@@ -77,7 +77,7 @@ from deep_agents.core.kernels import (
     td_target_continuous_kernel,
 )
 from std.gpu.host import DeviceContext, DeviceBuffer
-from nn.checkpoint import (
+from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
     parse_checkpoint_header,
@@ -86,7 +86,7 @@ from nn.checkpoint import (
     get_metadata_value,
     save_checkpoint_file,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     RenderableEnv,
@@ -943,7 +943,7 @@ struct DeepDDPGAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the DDPG agent on a continuous action environment (CPU).
 
         Args:

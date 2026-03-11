@@ -36,9 +36,9 @@ Run with:
     pixi run mojo run examples/solve_taxi.mojo
 """
 
-from envs import TaxiEnv
-from agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
-from render import Renderer2D
+from mojo_rl.envs import TaxiEnv
+from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

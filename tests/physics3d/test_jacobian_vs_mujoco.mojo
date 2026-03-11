@@ -22,24 +22,32 @@ from std.math import abs, sqrt
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_cdof,
+    compute_composite_inertia,
+)
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
 )
-from physics3d.collision.contact_detection import detect_contacts
-from physics3d.constraints.constraint_builder import build_constraints
-from physics3d.constraints.constraint_data import ConstraintData
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.constraints.constraint_builder import build_constraints
+from mojo_rl.physics3d.constraints.constraint_data import ConstraintData
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

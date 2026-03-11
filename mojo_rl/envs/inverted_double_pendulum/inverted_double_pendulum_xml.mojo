@@ -1,6 +1,6 @@
 """InvertedDoublePendulum model definition from embedded MJCF XML."""
 
-from physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime inverted_double_pendulum_xml = """
 <mujoco model="cartpole">
@@ -57,6 +57,6 @@ comptime InvertedDoublePendulumModel = ModelDefFromXML[
     nsite=pm.NSITE,
     obs_qpos_skip=0,
     obs_dim_override=9,  # custom obs: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2), qvel*3, 0]
-    max_contacts=5,      # contype=0 on geoms → minimal contacts
+    max_contacts=5,  # contype=0 on geoms → minimal contacts
     timestep=pm.TIMESTEP,
 ]

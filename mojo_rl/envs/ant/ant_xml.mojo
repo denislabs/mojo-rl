@@ -8,7 +8,7 @@ Dimensions: NQ=15, NV=14, OBS_DIM=27 (qpos[2:15] + qvel[0:14]), ACTION_DIM=8.
 obs_qpos_skip=2 skips the free-joint x and y translations from the observation.
 """
 
-from physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime ant_xml = """
 <mujoco model="ant">

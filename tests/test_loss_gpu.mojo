@@ -14,12 +14,12 @@ from std.random import seed, random_float64
 
 from std.gpu.host import DeviceContext
 
-from nn.constants import dtype
-from nn.model import Linear, ReLU, Tanh, Softmax, seq
-from nn.loss import MSELoss, HuberLoss, CrossEntropyLoss
-from nn.optimizer import Adam
-from nn.training import Trainer
-from nn.initializer import Xavier, Kaiming
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import Linear, ReLU, Tanh, Softmax, seq
+from mojo_rl.nn.loss import MSELoss, HuberLoss, CrossEntropyLoss
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.training import Trainer
+from mojo_rl.nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================

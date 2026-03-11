@@ -6,16 +6,16 @@ constructors as parameters, these factories are used in the search
 examples to create agents from hyperparameter structs.
 """
 
-from agents.qlearning import QLearningAgent
-from agents.sarsa import SARSAAgent
-from agents.expected_sarsa import ExpectedSARSAAgent
-from agents.double_qlearning import DoubleQLearningAgent
-from agents.monte_carlo import MonteCarloAgent
-from agents.nstep_sarsa import NStepSARSAAgent
-from agents.sarsa_lambda import SARSALambdaAgent
-from agents.dyna_q import DynaQAgent
+from mojo_rl.agents.qlearning import QLearningAgent
+from mojo_rl.agents.sarsa import SARSAAgent
+from mojo_rl.agents.expected_sarsa import ExpectedSARSAAgent
+from mojo_rl.agents.double_qlearning import DoubleQLearningAgent
+from mojo_rl.agents.monte_carlo import MonteCarloAgent
+from mojo_rl.agents.nstep_sarsa import NStepSARSAAgent
+from mojo_rl.agents.sarsa_lambda import SARSALambdaAgent
+from mojo_rl.agents.dyna_q import DynaQAgent
 
-from core.hyperparam.param_space import (
+from mojo_rl.core.hyperparam.param_space import (
     TabularHyperparams,
     NStepHyperparams,
     LambdaHyperparams,

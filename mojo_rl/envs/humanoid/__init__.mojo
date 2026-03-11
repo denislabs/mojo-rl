@@ -23,8 +23,8 @@ Init: torso starts at z=1.4 (standing), init_qpos_gpu adds z=1.4 and quat_w=1.0
 on top of reset noise.
 
 Example usage:
-    from envs.humanoid import Humanoid
-    from core import ContAction
+    from mojo_rl.envs.humanoid import Humanoid
+    from mojo_rl.core import ContAction
 
     var env = Humanoid()
     var state = env.reset()

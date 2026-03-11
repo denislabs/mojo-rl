@@ -17,8 +17,8 @@ Run with:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
-from nn import dtype as gpu_dtype
-from envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.nn import dtype as gpu_dtype
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # Small batch for readable output

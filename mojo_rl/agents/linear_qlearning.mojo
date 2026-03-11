@@ -13,8 +13,8 @@ Key differences from TiledQLearningAgent:
 - More general but potentially less sample-efficient than tile coding
 
 Example usage:
-    from core.linear_fa import PolynomialFeatures, LinearWeights
-    from agents.linear_qlearning import LinearQLearningAgent
+    from mojo_rl.core.linear_fa import PolynomialFeatures, LinearWeights
+    from mojo_rl.agents.linear_qlearning import LinearQLearningAgent
 
     # Create polynomial feature extractor for CartPole
     var features = PolynomialFeatures(state_dim=4, degree=2)
@@ -39,8 +39,8 @@ References:
 """
 
 from std.random import random_float64, random_si64
-from core.linear_fa import LinearWeights
-from core import (
+from mojo_rl.core.linear_fa import LinearWeights
+from mojo_rl.core import (
     BoxDiscreteActionEnv,
     RenderableEnv,
     TrainingMetrics,
@@ -81,14 +81,14 @@ struct LinearQLearningAgent:
         """Initialize linear Q-learning agent.
 
         Args:
-            num_features: Dimensionality of feature vectors
-            num_actions: Number of discrete actions
-            learning_rate: Learning rate α (typically smaller than tabular, e.g., 0.01)
-            discount_factor: Discount factor γ
-            epsilon: Initial exploration rate
-            epsilon_decay: Epsilon decay per episode
-            epsilon_min: Minimum epsilon
-            init_std: Standard deviation for weight initialization
+            num_features: Dimensionality of feature vectors.
+            num_actions: Number of discrete actions.
+            learning_rate: Learning rate α (typically smaller than tabular, e.g., 0.01).
+            discount_factor: Discount factor γ.
+            epsilon: Initial exploration rate.
+            epsilon_decay: Epsilon decay per episode.
+            epsilon_min: Minimum epsilon.
+            init_std: Standard deviation for weight initialization.
         """
         self.num_features = num_features
         self.num_actions = num_actions
@@ -107,14 +107,14 @@ struct LinearQLearningAgent:
         """Select action using epsilon-greedy policy.
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            Selected action index
+            Selected action index.
         """
         if random_float64() < self.epsilon:
             # Explore: random action
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             # Exploit: best action
             return self.weights.get_best_action(features)
@@ -123,10 +123,10 @@ struct LinearQLearningAgent:
         """Get greedy action (no exploration).
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            Action with highest Q-value
+            Action with highest Q-value.
         """
         return self.weights.get_best_action(features)
 
@@ -134,11 +134,11 @@ struct LinearQLearningAgent:
         """Get Q-value for state-action pair.
 
         Args:
-            features: Feature vector φ(s)
-            action: Action index
+            features: Feature vector φ(s).
+            action: Action index.
 
         Returns:
-            Q(s, a)
+            Q(s, a).
         """
         return self.weights.get_value(features, action)
 
@@ -146,10 +146,10 @@ struct LinearQLearningAgent:
         """Get maximum Q-value over all actions.
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            max_a Q(s, a)
+            Max_a Q(s, a).
         """
         return self.weights.get_max_value(features)
 
@@ -169,11 +169,11 @@ struct LinearQLearningAgent:
         Update: w[a] += α * (target - Q(s,a)) * φ(s)
 
         Args:
-            features: Feature vector for current state
-            action: Action taken
-            reward: Reward received
-            next_features: Feature vector for next state
-            done: Whether episode terminated
+            features: Feature vector for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_features: Feature vector for next state.
+            done: Whether episode terminated.
         """
         var target: Float64
         if done:
@@ -311,7 +311,7 @@ struct LinearQLearningAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _linear_obs_to_f64(result[0])^
+                obs_f64 = _linear_obs_to_f64(result[0])
                 if done:
                     break
 
@@ -367,7 +367,7 @@ struct LinearSARSAAgent:
     fn select_action(self, features: List[Float64]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(features)
 
@@ -391,12 +391,12 @@ struct LinearSARSAAgent:
         """Update weights using semi-gradient SARSA.
 
         Args:
-            features: Feature vector for current state
-            action: Action taken
-            reward: Reward received
-            next_features: Feature vector for next state
-            next_action: Actual action selected for next state
-            done: Whether episode terminated
+            features: Feature vector for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_features: Feature vector for next state.
+            next_action: Actual action selected for next state.
+            done: Whether episode terminated.
         """
         var target: Float64
         if done:
@@ -539,7 +539,7 @@ struct LinearSARSAAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _linear_obs_to_f64(result[0])^
+                obs_f64 = _linear_obs_to_f64(result[0])
                 if done:
                     break
 
@@ -589,15 +589,15 @@ struct LinearSARSALambdaAgent:
         """Initialize linear SARSA(λ) agent.
 
         Args:
-            num_features: Dimensionality of feature vectors
-            num_actions: Number of actions
-            learning_rate: Learning rate α
-            discount_factor: Discount γ
-            lambda_: Eligibility trace decay (0 = SARSA, 1 = Monte Carlo)
-            epsilon: Initial exploration rate
-            epsilon_decay: Epsilon decay per episode
-            epsilon_min: Minimum epsilon
-            init_std: Weight initialization std
+            num_features: Dimensionality of feature vectors.
+            num_actions: Number of actions.
+            learning_rate: Learning rate α.
+            discount_factor: Discount γ.
+            lambda_: Eligibility trace decay (0 = SARSA, 1 = Monte Carlo).
+            epsilon: Initial exploration rate.
+            epsilon_decay: Epsilon decay per episode.
+            epsilon_min: Minimum epsilon.
+            init_std: Weight initialization std.
         """
         self.num_features = num_features
         self.num_actions = num_actions
@@ -624,7 +624,7 @@ struct LinearSARSALambdaAgent:
     fn select_action(self, features: List[Float64]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(features)
 
@@ -813,7 +813,7 @@ struct LinearSARSALambdaAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _linear_obs_to_f64(result[0])^
+                obs_f64 = _linear_obs_to_f64(result[0])
                 if done:
                     break
 

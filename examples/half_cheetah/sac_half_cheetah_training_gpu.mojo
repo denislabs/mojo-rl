@@ -24,8 +24,8 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.sac import DeepSACAgent
-from envs.half_cheetah import (
+from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
 )

@@ -1,6 +1,11 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, TrainingMetrics, RenderableEnv
+from mojo_rl.core import (
+    TabularAgent,
+    DiscreteEnv,
+    TrainingMetrics,
+    RenderableEnv,
+)
 
 
 struct DoubleQLearningAgent(
@@ -21,7 +26,7 @@ struct DoubleQLearningAgent(
     var num_actions: Int
 
     fn __init__(out self, *, copy: Self):
-        self.q_table1 = existing.q_table1
+        self.q_table1 = copy.q_table1
         self.q_table2 = copy.q_table2
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -62,7 +67,7 @@ struct DoubleQLearningAgent(
     fn select_action(self, state_idx: Int) -> Int:
         var rand = random_float64()
         if rand < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             var best_action = 0
             var best_value = self.q_table1.get(

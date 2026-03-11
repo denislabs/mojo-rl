@@ -16,7 +16,7 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype
+from mojo_rl.nn.constants import dtype
 
 
 # =============================================================================
@@ -58,14 +58,14 @@ fn matmul_kernel_tile8[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: Scalar[dtype] = 0.0
@@ -120,14 +120,14 @@ fn matmul_kernel_tile16[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: Scalar[dtype] = 0.0
@@ -178,14 +178,14 @@ fn matmul_kernel_tile32[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: Scalar[dtype] = 0.0

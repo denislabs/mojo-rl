@@ -1,4 +1,4 @@
-from core import State, Action, Env, DiscreteEnv, RenderableEnv
+from mojo_rl.core import State, Action, Env, DiscreteEnv, RenderableEnv
 
 
 @fieldwise_init
@@ -9,7 +9,7 @@ struct CliffState(Copyable, ImplicitlyCopyable, Movable, State):
     var y: Int
 
     fn __init__(out self, *, copy: Self):
-        self.x = existing.x
+        self.x = copy.x
         self.y = copy.y
 
     fn __init__(out self, *, deinit take: Self):

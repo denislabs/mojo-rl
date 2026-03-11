@@ -25,25 +25,30 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
-from render import Color, Renderer3D, Light, Camera3D
-from math3d import Vec3 as _Vec3G, Quat as _QuatG
+from mojo_rl.render import Color, Renderer3D, Light, Camera3D
+from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.joint_types import (
+    JNT_FREE,
+    JNT_BALL,
+    JNT_HINGE,
+    JNT_SLIDE,
+)
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_body_invweight0,
     ldl_factor_gpu,
     compute_mass_matrix_full_gpu,
 )
-from physics3d.dynamics.jacobian import (
+from mojo_rl.physics3d.dynamics.jacobian import (
     compute_cdof_gpu,
     compute_composite_inertia_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     TPB,
     qpos_offset,
     qvel_offset,
@@ -72,13 +77,13 @@ from physics3d.gpu.constants import (
     xpos_offset,
     xquat_offset,
 )
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
 )
-from physics3d.model.model_def import ModelDefLike
+from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full
 from .xml_parser import (
     _xml_nth_motor_gear,
@@ -92,7 +97,7 @@ from .xml_parser import (
     ComptimeActData,
     parse_xml_model_data,
 )
-from physics3d.model.inertia_from_geom import compute_inertia_from_geoms
+from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
 # Type aliases matching model_def.mojo module scope (required for trait conformance)
 comptime _RVec3 = _Vec3G[DType.float64]

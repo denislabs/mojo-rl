@@ -12,9 +12,9 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLander, LLConstants
-from nn import dtype
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
+from mojo_rl.nn import dtype
 
 
 # =============================================================================

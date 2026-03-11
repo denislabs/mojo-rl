@@ -9,7 +9,7 @@ from std.gpu import block_dim, block_idx, thread_idx
 from layout import Layout, LayoutTensor
 from std.math import exp, log
 
-from nn.gpu.random import random_uniform
+from mojo_rl.nn.gpu.random import random_uniform
 
 
 # =============================================================================

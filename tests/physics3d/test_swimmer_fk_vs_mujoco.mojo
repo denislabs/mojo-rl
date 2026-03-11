@@ -22,10 +22,10 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from envs.swimmer.swimmer_xml import SwimmerModel
-from envs.swimmer.swimmer_config import SwimmerConfig
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
 
 
 # =============================================================================

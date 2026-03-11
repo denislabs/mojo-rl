@@ -14,7 +14,7 @@ Usage:
 """
 
 from .hopper_def import HopperParams
-from core.env_traits import CurriculumScheduler
+from mojo_rl.core.env_traits import CurriculumScheduler
 
 
 @fieldwise_init
@@ -62,14 +62,16 @@ struct HopperCurriculum(CurriculumScheduler):
         # Linear interpolation: initial + progress * (final - initial)
         params.append(
             Scalar[DTYPE](Self.initial_min_height)
-            + p * (
+            + p
+            * (
                 Scalar[DTYPE](Self.final_min_height)
                 - Scalar[DTYPE](Self.initial_min_height)
             )
         )
         params.append(
             Scalar[DTYPE](Self.initial_max_pitch)
-            + p * (
+            + p
+            * (
                 Scalar[DTYPE](Self.final_max_pitch)
                 - Scalar[DTYPE](Self.initial_max_pitch)
             )

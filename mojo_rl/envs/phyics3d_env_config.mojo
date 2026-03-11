@@ -12,7 +12,7 @@ and termination — no hardcoded assumptions about which joints matter.
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data
+from mojo_rl.physics3d.types import Model, Data
 
 
 trait Phyics3dEnvConfig:

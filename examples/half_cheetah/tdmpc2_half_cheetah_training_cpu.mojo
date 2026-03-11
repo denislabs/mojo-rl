@@ -23,8 +23,8 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.tdmpc2 import TDMPC2Agent
-from envs.half_cheetah import (
+from mojo_rl.deep_agents.tdmpc2 import TDMPC2Agent
+from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
 )

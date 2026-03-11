@@ -18,10 +18,10 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TPB
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import Network
+from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import Network
 from .world_model import WorldModel, decode_value_batch_scalar
 from .state import MPPIGPUBuffers
 from .kernels import (
@@ -79,11 +79,10 @@ fn plan[
         wm: World model for rollouts.
         gamma: Discount factor.
         temperature: MPPI softmax temperature.
+        prev_mean: Previous plan's mean [HORIZON * ACTION_DIM] for warm-start.
         action_scale: Action scaling factor (default 1.0 = [-1, 1]).
         deterministic: If True, add no exploration noise (eval mode).
         t0: If True, this is the first timestep of an episode (no warm-start).
-        prev_mean: Previous plan's mean [HORIZON * ACTION_DIM] for warm-start.
-            Updated in-place with the new plan's mean on return.
 
     Returns:
         Selected action [ACTION_DIM] in [-action_scale, action_scale].
@@ -509,10 +508,10 @@ fn plan_gpu[
         mb: MPPI GPU buffers (workspace + data).
         gamma: Discount factor.
         temperature: MPPI softmax temperature.
+        prev_mean: Previous plan mean [H * ACT] for warm-start (updated in-place).
         action_scale: Action scaling factor (default 1.0).
         deterministic: If True, no exploration noise (eval mode).
         t0: If True, first timestep of episode (no warm-start).
-        prev_mean: Previous plan mean [H * ACT] for warm-start (updated in-place).
         rng_base_seed: Base seed for RNG (should vary per call).
 
     Returns:

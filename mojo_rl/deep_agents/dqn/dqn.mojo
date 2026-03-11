@@ -16,8 +16,8 @@ Features:
 - lr is a compile-time parameter (Adam LR baked in at compile time)
 
 Usage:
-    from deep_agents.dqn import DQNAgent
-    from envs import CartPoleNative
+    from mojo_rl.deep_agents.dqn import DQNAgent
+    from mojo_rl.envs import CartPoleNative
 
     var env = CartPoleNative()
     var agent = DQNAgent[4, 2, 64, 10000, 32]()
@@ -41,14 +41,14 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, Sequential, LinearReLU
-from nn.optimizer import Adam
-from nn.initializer import Kaiming
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.model import Model
-from nn.optimizer import Optimizer
-from deep_agents.core import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Linear, Sequential, LinearReLU
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.deep_agents.core import (
     fill_inline,
     obs_to_inline,
     OffPolicyDiscreteState,
@@ -60,8 +60,8 @@ from deep_agents.core import (
     run_offpolicy_discrete_train_gpu,
     Checkpointable,
 )
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from nn.checkpoint import (
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
     parse_checkpoint_header,
@@ -70,11 +70,11 @@ from nn.checkpoint import (
     get_metadata_value,
     save_checkpoint_file,
 )
-from nn.gpu import (
+from mojo_rl.nn.gpu import (
     xorshift32,
     random_uniform,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     GPUDiscreteEnv,

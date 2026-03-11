@@ -8,10 +8,10 @@ Usage:
     pixi run mojo run examples/checkpoint_demo.mojo
 """
 
-from nn import Linear, ReLU, Adam, Kaiming
-from nn.model import Sequential
-from nn.training import NetworkState
-from deep_agents.dqn import DQNAgent
+from mojo_rl.nn import Linear, ReLU, Adam, Kaiming
+from mojo_rl.nn.model import Sequential
+from mojo_rl.nn.training import NetworkState
+from mojo_rl.deep_agents.dqn import DQNAgent
 
 
 fn demo_network_checkpoint() raises:
@@ -29,7 +29,12 @@ fn demo_network_checkpoint() raises:
 
     print("Original params (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64((state.params + i)[])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64((state.params + i)[]))
+        )
 
     # Save checkpoint
     state.save_checkpoint("network_checkpoint.ckpt")
@@ -40,13 +45,23 @@ fn demo_network_checkpoint() raises:
     loaded.initialize[Kaiming[]]()
     print("\nNew state params before load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64((loaded.params + i)[])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64((loaded.params + i)[]))
+        )
 
     # Load checkpoint
     loaded.load_checkpoint("network_checkpoint.ckpt")
     print("\nNew state params after load (first 5):")
     for i in range(5):
-        print("  params[" + String(i) + "] = " + String(Float64((loaded.params + i)[])))
+        print(
+            "  params["
+            + String(i)
+            + "] = "
+            + String(Float64((loaded.params + i)[]))
+        )
 
     # Verify
     var all_match = True
@@ -98,7 +113,9 @@ fn demo_dqn_checkpoint() raises:
     print("\nNew agent state before load:")
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
-    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[])))
+    print(
+        "  online.params[0] = " + String(Float64(loaded_agent.online.params[]))
+    )
 
     # Load checkpoint
     loaded_agent.load_checkpoint("dqn_checkpoint.ckpt")
@@ -107,8 +124,12 @@ fn demo_dqn_checkpoint() raises:
     print("  gamma = " + String(loaded_agent.gamma))
     print("  epsilon = " + String(loaded_agent.epsilon))
     print("  train_step_count = " + String(loaded_agent.train_step_count))
-    print("  online.params[0] = " + String(Float64(loaded_agent.online.params[])))
-    print("  target.params[0] = " + String(Float64(loaded_agent.target.params[])))
+    print(
+        "  online.params[0] = " + String(Float64(loaded_agent.online.params[]))
+    )
+    print(
+        "  target.params[0] = " + String(Float64(loaded_agent.target.params[]))
+    )
 
     # Verify
     alias PSIZE = DQNAgent[4, 2, 32, 1000, 32, lr=0.001].Q_Model.PARAM_SIZE

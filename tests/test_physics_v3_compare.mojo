@@ -9,8 +9,8 @@ from std.random import seed
 
 from std.gpu.host import DeviceContext
 
-from envs.lunar_lander import LunarLanderEnv
-from envs.lunar_lander_gpu_v3 import LunarLanderGPUv3, gpu_dtype
+from mojo_rl.envs.lunar_lander import LunarLanderEnv
+from mojo_rl.envs.lunar_lander_gpu_v3 import LunarLanderGPUv3, gpu_dtype
 
 
 fn abs_f32(x: Float32) -> Float32:
@@ -64,7 +64,13 @@ fn run_gpu_step(
     ctx.synchronize()
 
     LunarLanderGPUv3.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf, UInt64(step_seed)
+        ctx,
+        states_buf,
+        actions_buf,
+        rewards_buf,
+        dones_buf,
+        terminated_buf,
+        UInt64(step_seed),
     )
     ctx.synchronize()
 

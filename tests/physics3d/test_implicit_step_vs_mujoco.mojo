@@ -25,11 +25,11 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from physics3d.types import Model, Data, ConeType
-from physics3d.integrator.implicit_integrator import ImplicitIntegrator
-from physics3d.solver import NewtonSolver
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.integrator.implicit_integrator import ImplicitIntegrator
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

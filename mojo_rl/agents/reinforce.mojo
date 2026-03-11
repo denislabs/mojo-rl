@@ -23,8 +23,8 @@ References:
 - Williams (1992): "Simple Statistical Gradient-Following Algorithms"
 
 Example usage:
-    from core.tile_coding import make_cartpole_tile_coding
-    from agents.reinforce import REINFORCEAgent
+    from mojo_rl.core.tile_coding import make_cartpole_tile_coding
+    from mojo_rl.agents.reinforce import REINFORCEAgent
 
     var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
     var agent = REINFORCEAgent(
@@ -44,9 +44,9 @@ Example usage:
 
 from std.math import exp, log
 from std.random import random_float64
-from core.tile_coding import TileCoding
-from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
-from core.utils.softmax import softmax, sample_from_probs, argmax_probs
+from mojo_rl.core.tile_coding import TileCoding
+from mojo_rl.core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core.utils.softmax import softmax, sample_from_probs, argmax_probs
 
 
 struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -88,13 +88,13 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Initialize REINFORCE agent.
 
         Args:
-            tile_coding: TileCoding instance defining the feature representation
-            num_actions: Number of discrete actions
-            learning_rate: Policy learning rate α (default 0.001)
-            discount_factor: Discount factor γ (default 0.99)
-            use_baseline: Whether to use a learned value baseline (default True)
-            baseline_lr: Learning rate for baseline (default 0.01)
-            init_value: Initial parameter value (default 0.0)
+            tile_coding: TileCoding instance defining the feature representation.
+            num_actions: Number of discrete actions.
+            learning_rate: Policy learning rate α (default 0.001).
+            discount_factor: Discount factor γ (default 0.99).
+            use_baseline: Whether to use a learned value baseline (default True).
+            baseline_lr: Learning rate for baseline (default 0.01).
+            init_value: Initial parameter value (default 0.0).
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -106,7 +106,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Initialize policy parameters θ
         self.theta = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_params = List[Float64]()
             for _ in range(self.num_tiles):
                 action_params.append(init_value)
@@ -180,10 +180,10 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get action probabilities for given state.
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Probability distribution over actions
+            Probability distribution over actions.
         """
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
@@ -192,10 +192,10 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Sample action from policy π(a|s).
 
         Args:
-            tiles: Active tile indices from TileCoding.get_tiles()
+            tiles: Active tile indices from TileCoding.get_tiles().
 
         Returns:
-            Sampled action index
+            Sampled action index.
         """
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
@@ -204,10 +204,10 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get greedy action (highest probability).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Action with highest probability
+            Action with highest probability.
         """
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
@@ -216,10 +216,10 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get baseline value estimate V(s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Estimated state value
+            Estimated state value.
         """
         var value: Float64 = 0.0
         for i in range(len(tiles)):
@@ -256,9 +256,9 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         """Store transition for end-of-episode update.
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
         """
         # Copy tiles since we need to store them
         var tiles_copy = List[Int]()
@@ -350,10 +350,10 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         Higher entropy = more exploration.
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Policy entropy (in nats)
+            Policy entropy (in nats).
         """
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -411,7 +411,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
 
                 total_reward += Float64(reward)
                 steps += 1
-                obs_f64 = _reinforce_obs_to_f64(result[0])^
+                obs_f64 = _reinforce_obs_to_f64(result[0])
 
                 if done:
                     break
@@ -478,7 +478,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _reinforce_obs_to_f64(result[0])^
+                obs_f64 = _reinforce_obs_to_f64(result[0])
 
                 if done:
                     break
@@ -530,14 +530,14 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         """Initialize REINFORCE with entropy regularization.
 
         Args:
-            tile_coding: TileCoding instance
-            num_actions: Number of discrete actions
-            learning_rate: Policy learning rate
-            discount_factor: Discount factor γ
-            entropy_coef: Entropy bonus coefficient β
-            use_baseline: Whether to use learned baseline
-            baseline_lr: Baseline learning rate
-            init_value: Initial parameter value
+            tile_coding: TileCoding instance.
+            num_actions: Number of discrete actions.
+            learning_rate: Policy learning rate.
+            discount_factor: Discount factor γ.
+            entropy_coef: Entropy bonus coefficient β.
+            use_baseline: Whether to use learned baseline.
+            baseline_lr: Baseline learning rate.
+            init_value: Initial parameter value.
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -801,7 +801,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
 
                 total_reward += Float64(reward)
                 steps += 1
-                obs_f64 = _reinforce_obs_to_f64(result[0])^
+                obs_f64 = _reinforce_obs_to_f64(result[0])
 
                 if done:
                     break
@@ -868,7 +868,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _reinforce_obs_to_f64(result[0])^
+                obs_f64 = _reinforce_obs_to_f64(result[0])
 
                 if done:
                     break

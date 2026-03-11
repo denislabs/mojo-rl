@@ -8,8 +8,8 @@ Run with:
     pixi run mojo run examples/deep_sac_demo.mojo
 """
 
-from deep_agents import DeepSACAgent
-from envs import PendulumEnv
+from mojo_rl.deep_agents import DeepSACAgent
+from mojo_rl.envs import PendulumEnv
 
 
 fn main() raises:

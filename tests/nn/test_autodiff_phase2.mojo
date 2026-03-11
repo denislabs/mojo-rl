@@ -7,8 +7,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     MatMul,
     BiasAdd,
     ReLUOp,
@@ -70,6 +70,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Test 1+2: FusedMatMulBias forward + vjp
 # =============================================================================
 
+
 fn test_fused_bias() -> Int:
     print_header("FusedMatMulBias forward + vjp vs unfused MatMul->BiasAdd")
     var fails = 0
@@ -87,8 +88,12 @@ fn test_fused_bias() -> Int:
     var inp = make_rand_list(BATCH * IN_D)
     var go_data = make_rand_list(BATCH * OUT_D)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](go_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](go_data.unsafe_ptr())
 
     # --- Fused ---
     var f_out = make_list(BATCH * OUT_D)
@@ -96,11 +101,21 @@ fn test_fused_bias() -> Int:
     var f_gi = make_list(BATCH * IN_D)
     var f_gp = make_list(Fused.PARAM_SIZE)
 
-    var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-    var fp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
-    var fgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](f_gi.unsafe_ptr())
-    var fgp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_gp.unsafe_ptr())
+    var fo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](f_out.unsafe_ptr())
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var fc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](f_cache.unsafe_ptr())
+    var fgi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](f_gi.unsafe_ptr())
+    var fgp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](f_gp.unsafe_ptr())
 
     Fused.eval[BATCH](inp_t, fo_t, fp_t, fc_t)
     Fused.vjp[BATCH](go_t, fgi_t, fp_t, fc_t, fgp_t)
@@ -111,12 +126,22 @@ fn test_fused_bias() -> Int:
     var u_gi = make_list(BATCH * IN_D)
     var u_gp = make_list(Unfused.PARAM_SIZE)
 
-    var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
+    var uo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](u_out.unsafe_ptr())
     # Use Unfused.PARAM_SIZE for unfused model's LayoutTensor types
-    var up_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
-    var ugi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](u_gi.unsafe_ptr())
-    var ugp_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](u_gp.unsafe_ptr())
+    var up_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var uc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](u_cache.unsafe_ptr())
+    var ugi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](u_gi.unsafe_ptr())
+    var ugp_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](u_gp.unsafe_ptr())
 
     var um = Unfused()
     um.forward[BATCH](inp_t, uo_t, up_t, uc_t)
@@ -125,13 +150,18 @@ fn test_fused_bias() -> Int:
     var fwd_d = max_diff(f_out, u_out, BATCH * OUT_D)
     check(fwd_d < 1e-5, "forward max diff = " + String(fwd_d), fails)
     check(max_diff(f_gi, u_gi, BATCH * IN_D) < 1e-5, "grad_input match", fails)
-    check(max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5, "grad_params match", fails)
+    check(
+        max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5,
+        "grad_params match",
+        fails,
+    )
     return fails
 
 
 # =============================================================================
 # Test 3+4: FusedMatMulBiasReLU forward + vjp
 # =============================================================================
+
 
 fn test_fused_relu() -> Int:
     print_header("FusedMatMulBiasReLU forward + vjp vs unfused")
@@ -140,7 +170,9 @@ fn test_fused_relu() -> Int:
     comptime IN_D = 3
     comptime OUT_D = 4
     comptime BATCH = 2
-    comptime Unfused = AutoDiffChain[MatMul[IN_D, OUT_D], BiasAdd[OUT_D], ReLUOp[OUT_D]]
+    comptime Unfused = AutoDiffChain[
+        MatMul[IN_D, OUT_D], BiasAdd[OUT_D], ReLUOp[OUT_D]
+    ]
     comptime Fused = FusedMatMulBiasReLU[IN_D, OUT_D]
 
     check(Unfused.PARAM_SIZE == Fused.PARAM_SIZE, "PARAM_SIZE match", fails)
@@ -150,8 +182,12 @@ fn test_fused_relu() -> Int:
     var inp = make_rand_list(BATCH * IN_D)
     var go_data = make_rand_list(BATCH * OUT_D)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](go_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](go_data.unsafe_ptr())
 
     # Fused
     var f_out = make_list(BATCH * OUT_D)
@@ -159,11 +195,21 @@ fn test_fused_relu() -> Int:
     var f_gi = make_list(BATCH * IN_D)
     var f_gp = make_list(Fused.PARAM_SIZE)
 
-    var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-    var fp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
-    var fgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](f_gi.unsafe_ptr())
-    var fgp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_gp.unsafe_ptr())
+    var fo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](f_out.unsafe_ptr())
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var fc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](f_cache.unsafe_ptr())
+    var fgi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](f_gi.unsafe_ptr())
+    var fgp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](f_gp.unsafe_ptr())
 
     Fused.eval[BATCH](inp_t, fo_t, fp_t, fc_t)
     Fused.vjp[BATCH](go_t, fgi_t, fp_t, fc_t, fgp_t)
@@ -174,11 +220,21 @@ fn test_fused_relu() -> Int:
     var u_gi = make_list(BATCH * IN_D)
     var u_gp = make_list(Unfused.PARAM_SIZE)
 
-    var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
-    var up_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
-    var ugi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](u_gi.unsafe_ptr())
-    var ugp_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](u_gp.unsafe_ptr())
+    var uo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](u_out.unsafe_ptr())
+    var up_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var uc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](u_cache.unsafe_ptr())
+    var ugi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](u_gi.unsafe_ptr())
+    var ugp_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](u_gp.unsafe_ptr())
 
     var um = Unfused()
     um.forward[BATCH](inp_t, uo_t, up_t, uc_t)
@@ -187,13 +243,18 @@ fn test_fused_relu() -> Int:
     var fwd_d = max_diff(f_out, u_out, BATCH * OUT_D)
     check(fwd_d < 1e-5, "forward max diff = " + String(fwd_d), fails)
     check(max_diff(f_gi, u_gi, BATCH * IN_D) < 1e-5, "grad_input match", fails)
-    check(max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5, "grad_params match", fails)
+    check(
+        max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5,
+        "grad_params match",
+        fails,
+    )
     return fails
 
 
 # =============================================================================
 # Test 5+6: FusedMatMulBiasTanh forward + vjp
 # =============================================================================
+
 
 fn test_fused_tanh() -> Int:
     print_header("FusedMatMulBiasTanh forward + vjp vs unfused")
@@ -202,7 +263,9 @@ fn test_fused_tanh() -> Int:
     comptime IN_D = 3
     comptime OUT_D = 4
     comptime BATCH = 2
-    comptime Unfused = AutoDiffChain[MatMul[IN_D, OUT_D], BiasAdd[OUT_D], TanhOp[OUT_D]]
+    comptime Unfused = AutoDiffChain[
+        MatMul[IN_D, OUT_D], BiasAdd[OUT_D], TanhOp[OUT_D]
+    ]
     comptime Fused = FusedMatMulBiasTanh[IN_D, OUT_D]
 
     check(Unfused.PARAM_SIZE == Fused.PARAM_SIZE, "PARAM_SIZE match", fails)
@@ -212,8 +275,12 @@ fn test_fused_tanh() -> Int:
     var inp = make_rand_list(BATCH * IN_D)
     var go_data = make_rand_list(BATCH * OUT_D)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](go_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](go_data.unsafe_ptr())
 
     # Fused
     var f_out = make_list(BATCH * OUT_D)
@@ -221,11 +288,21 @@ fn test_fused_tanh() -> Int:
     var f_gi = make_list(BATCH * IN_D)
     var f_gp = make_list(Fused.PARAM_SIZE)
 
-    var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-    var fp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
-    var fgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](f_gi.unsafe_ptr())
-    var fgp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_gp.unsafe_ptr())
+    var fo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](f_out.unsafe_ptr())
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var fc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](f_cache.unsafe_ptr())
+    var fgi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](f_gi.unsafe_ptr())
+    var fgp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](f_gp.unsafe_ptr())
 
     Fused.eval[BATCH](inp_t, fo_t, fp_t, fc_t)
     Fused.vjp[BATCH](go_t, fgi_t, fp_t, fc_t, fgp_t)
@@ -236,11 +313,21 @@ fn test_fused_tanh() -> Int:
     var u_gi = make_list(BATCH * IN_D)
     var u_gp = make_list(Unfused.PARAM_SIZE)
 
-    var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
-    var up_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
-    var ugi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](u_gi.unsafe_ptr())
-    var ugp_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](u_gp.unsafe_ptr())
+    var uo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](u_out.unsafe_ptr())
+    var up_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var uc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](u_cache.unsafe_ptr())
+    var ugi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](u_gi.unsafe_ptr())
+    var ugp_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](u_gp.unsafe_ptr())
 
     var um = Unfused()
     um.forward[BATCH](inp_t, uo_t, up_t, uc_t)
@@ -249,13 +336,18 @@ fn test_fused_tanh() -> Int:
     var fwd_d = max_diff(f_out, u_out, BATCH * OUT_D)
     check(fwd_d < 1e-5, "forward max diff = " + String(fwd_d), fails)
     check(max_diff(f_gi, u_gi, BATCH * IN_D) < 1e-5, "grad_input match", fails)
-    check(max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5, "grad_params match", fails)
+    check(
+        max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5,
+        "grad_params match",
+        fails,
+    )
     return fails
 
 
 # =============================================================================
 # Test 7: Alias dimensions
 # =============================================================================
+
 
 fn test_alias_dims() -> Int:
     print_header("Fusion-aware alias dimensions")
@@ -277,25 +369,37 @@ fn test_alias_dims() -> Int:
 # Test 8: XOR training with fused MLP
 # =============================================================================
 
+
 fn test_xor_fused() -> Int:
     print_header("Fused MLP XOR training convergence")
     var fails = 0
 
-    comptime MLP = AutoDiffChain[FusedMatMulBiasReLU[2, 8], FusedMatMulBias[8, 1]]
+    comptime MLP = AutoDiffChain[
+        FusedMatMulBiasReLU[2, 8], FusedMatMulBias[8, 1]
+    ]
     comptime PS = MLP.PARAM_SIZE
     comptime CS = MLP.CACHE_SIZE
     comptime BATCH = 4
 
     var x = List[Scalar[dtype]](capacity=8)
-    x.append(0); x.append(0)
-    x.append(0); x.append(1)
-    x.append(1); x.append(0)
-    x.append(1); x.append(1)
+    x.append(0)
+    x.append(0)
+    x.append(0)
+    x.append(1)
+    x.append(1)
+    x.append(0)
+    x.append(1)
+    x.append(1)
 
     var y = List[Scalar[dtype]](capacity=4)
-    y.append(0); y.append(1); y.append(1); y.append(0)
+    y.append(0)
+    y.append(1)
+    y.append(1)
+    y.append(0)
 
-    var x_t = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](x.unsafe_ptr())
+    var x_t = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
+        x.unsafe_ptr()
+    )
 
     seed(42)
     var params = make_rand_list(PS)
@@ -318,9 +422,15 @@ fn test_xor_fused() -> Int:
         for i in range(BATCH):
             out[i] = 0
 
-        var p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params.unsafe_ptr())
-        var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache.unsafe_ptr())
-        var o_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](out.unsafe_ptr())
+        var p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](
+            params.unsafe_ptr()
+        )
+        var c_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CS), MutAnyOrigin
+        ](cache.unsafe_ptr())
+        var o_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
+            out.unsafe_ptr()
+        )
 
         model.forward[BATCH](x_t, o_t, p_t, c_t)
 
@@ -337,9 +447,15 @@ fn test_xor_fused() -> Int:
         for i in range(BATCH * 2):
             grad_in[i] = 0
 
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](grad_out.unsafe_ptr())
-        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](grad_in.unsafe_ptr())
-        var g_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads.unsafe_ptr())
+        var go_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_out.unsafe_ptr())
+        var gi_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+        ](grad_in.unsafe_ptr())
+        var g_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](
+            grads.unsafe_ptr()
+        )
 
         model.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
 
@@ -355,6 +471,7 @@ fn test_xor_fused() -> Int:
 # Test: FusedMatMulBiasActivation[..., SigmoidActivation] forward + vjp
 # =============================================================================
 
+
 fn test_fused_sigmoid() -> Int:
     print_header("FusedMatMulBiasSigmoid forward + vjp vs unfused")
     var fails = 0
@@ -362,7 +479,9 @@ fn test_fused_sigmoid() -> Int:
     comptime IN_D = 3
     comptime OUT_D = 4
     comptime BATCH = 2
-    comptime Unfused = AutoDiffChain[MatMul[IN_D, OUT_D], BiasAdd[OUT_D], SigmoidOp[OUT_D]]
+    comptime Unfused = AutoDiffChain[
+        MatMul[IN_D, OUT_D], BiasAdd[OUT_D], SigmoidOp[OUT_D]
+    ]
     comptime Fused = FusedMatMulBiasActivation[IN_D, OUT_D, SigmoidActivation]
 
     check(Unfused.PARAM_SIZE == Fused.PARAM_SIZE, "PARAM_SIZE match", fails)
@@ -372,8 +491,12 @@ fn test_fused_sigmoid() -> Int:
     var inp = make_rand_list(BATCH * IN_D)
     var go_data = make_rand_list(BATCH * OUT_D)
 
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](inp.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](go_data.unsafe_ptr())
+    var inp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](inp.unsafe_ptr())
+    var go_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](go_data.unsafe_ptr())
 
     # Fused
     var f_out = make_list(BATCH * OUT_D)
@@ -381,11 +504,21 @@ fn test_fused_sigmoid() -> Int:
     var f_gi = make_list(BATCH * IN_D)
     var f_gp = make_list(Fused.PARAM_SIZE)
 
-    var fo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](f_out.unsafe_ptr())
-    var fp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var fc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache.unsafe_ptr())
-    var fgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](f_gi.unsafe_ptr())
-    var fgp_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_gp.unsafe_ptr())
+    var fo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](f_out.unsafe_ptr())
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var fc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin
+    ](f_cache.unsafe_ptr())
+    var fgi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](f_gi.unsafe_ptr())
+    var fgp_t = LayoutTensor[
+        dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin
+    ](f_gp.unsafe_ptr())
 
     Fused.eval[BATCH](inp_t, fo_t, fp_t, fc_t)
     Fused.vjp[BATCH](go_t, fgi_t, fp_t, fc_t, fgp_t)
@@ -396,11 +529,21 @@ fn test_fused_sigmoid() -> Int:
     var u_gi = make_list(BATCH * IN_D)
     var u_gp = make_list(Unfused.PARAM_SIZE)
 
-    var uo_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin](u_out.unsafe_ptr())
-    var up_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](params.unsafe_ptr())
-    var uc_t = LayoutTensor[dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin](u_cache.unsafe_ptr())
-    var ugi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin](u_gi.unsafe_ptr())
-    var ugp_t = LayoutTensor[dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin](u_gp.unsafe_ptr())
+    var uo_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_D), MutAnyOrigin
+    ](u_out.unsafe_ptr())
+    var up_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var uc_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, Unfused.CACHE_SIZE), MutAnyOrigin
+    ](u_cache.unsafe_ptr())
+    var ugi_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_D), MutAnyOrigin
+    ](u_gi.unsafe_ptr())
+    var ugp_t = LayoutTensor[
+        dtype, Layout.row_major(Unfused.PARAM_SIZE), MutAnyOrigin
+    ](u_gp.unsafe_ptr())
 
     var um = Unfused()
     um.forward[BATCH](inp_t, uo_t, up_t, uc_t)
@@ -409,18 +552,33 @@ fn test_fused_sigmoid() -> Int:
     var fwd_d = max_diff(f_out, u_out, BATCH * OUT_D)
     check(fwd_d < 1e-5, "forward max diff = " + String(fwd_d), fails)
     check(max_diff(f_gi, u_gi, BATCH * IN_D) < 1e-5, "grad_input match", fails)
-    check(max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5, "grad_params match", fails)
+    check(
+        max_diff(f_gp, u_gp, Fused.PARAM_SIZE) < 1e-5,
+        "grad_params match",
+        fails,
+    )
 
     # Also verify the alias works
-    check(FusedMatMulBiasSigmoid[IN_D, OUT_D].PARAM_SIZE == Fused.PARAM_SIZE, "alias PARAM_SIZE", fails)
-    check(DenseSigmoid[IN_D, OUT_D].IN_DIM == IN_D, "DenseSigmoid IN_DIM", fails)
-    check(DenseSigmoid[IN_D, OUT_D].OUT_DIM == OUT_D, "DenseSigmoid OUT_DIM", fails)
+    check(
+        FusedMatMulBiasSigmoid[IN_D, OUT_D].PARAM_SIZE == Fused.PARAM_SIZE,
+        "alias PARAM_SIZE",
+        fails,
+    )
+    check(
+        DenseSigmoid[IN_D, OUT_D].IN_DIM == IN_D, "DenseSigmoid IN_DIM", fails
+    )
+    check(
+        DenseSigmoid[IN_D, OUT_D].OUT_DIM == OUT_D,
+        "DenseSigmoid OUT_DIM",
+        fails,
+    )
     return fails
 
 
 # =============================================================================
 # Main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

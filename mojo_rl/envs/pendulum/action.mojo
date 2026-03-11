@@ -3,7 +3,7 @@
 Continuous action for the GPU-enabled Pendulum environment.
 """
 
-from core import Action
+from mojo_rl.core import Action
 
 
 struct PendulumV2Action[DTYPE: DType](

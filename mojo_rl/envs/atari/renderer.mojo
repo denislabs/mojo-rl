@@ -23,7 +23,7 @@ Usage:
 from std.ffi import c_float, c_int
 from std.memory import alloc
 
-from render.sdl import (
+from mojo_rl.render.sdl import (
     init,
     quit as sdl_quit,
     InitFlags,
@@ -62,26 +62,37 @@ from render.sdl import (
     set_texture_scale_mode,
     ScaleMode,
 )
-from render.video_recorder import VideoRecorder
+from mojo_rl.render.video_recorder import VideoRecorder
 
 from .atari_state import AtariState
 from .frame_render import render_frame_bgra, FRAME_BUF_SIZE
 from .flags import (
-    FRAME_WIDTH, FRAME_HEIGHT,
-    ACTION_NOOP, ACTION_FIRE, ACTION_UP, ACTION_DOWN,
-    ACTION_LEFT, ACTION_RIGHT,
-    ACTION_UPFIRE, ACTION_DOWNFIRE,
-    ACTION_LEFTFIRE, ACTION_RIGHTFIRE,
-    ACTION_UPLEFTFIRE, ACTION_UPRIGHTFIRE,
-    ACTION_DOWNLEFTFIRE, ACTION_DOWNRIGHTFIRE,
-    ACTION_UPRIGHT, ACTION_UPLEFT,
-    ACTION_DOWNRIGHT, ACTION_DOWNLEFT,
+    FRAME_WIDTH,
+    FRAME_HEIGHT,
+    ACTION_NOOP,
+    ACTION_FIRE,
+    ACTION_UP,
+    ACTION_DOWN,
+    ACTION_LEFT,
+    ACTION_RIGHT,
+    ACTION_UPFIRE,
+    ACTION_DOWNFIRE,
+    ACTION_LEFTFIRE,
+    ACTION_RIGHTFIRE,
+    ACTION_UPLEFTFIRE,
+    ACTION_UPRIGHTFIRE,
+    ACTION_DOWNLEFTFIRE,
+    ACTION_DOWNRIGHTFIRE,
+    ACTION_UPRIGHT,
+    ACTION_UPLEFT,
+    ACTION_DOWNRIGHT,
+    ACTION_DOWNLEFT,
     ACTION_RESET,
 )
 
 # Default window size: 3x scale (480×630)
 comptime DEFAULT_SCALE: Int = 3
-comptime WINDOW_WIDTH: Int = FRAME_WIDTH * DEFAULT_SCALE    # 480
+comptime WINDOW_WIDTH: Int = FRAME_WIDTH * DEFAULT_SCALE  # 480
 comptime WINDOW_HEIGHT: Int = FRAME_HEIGHT * DEFAULT_SCALE  # 630
 # HUD bar height
 comptime HUD_HEIGHT: Int = 30
@@ -276,7 +287,11 @@ struct AtariRenderer(Movable):
                 if self.recorder.is_recording:
                     self.recorder.stop()
                 else:
-                    var fname = "atari_recording_" + String(self.recording_counter) + ".mp4"
+                    var fname = (
+                        "atari_recording_"
+                        + String(self.recording_counter)
+                        + ".mp4"
+                    )
                     self.recorder.start(fname, self.fps)
                     self.recording_counter += 1
             except:
@@ -428,16 +443,22 @@ struct AtariRenderer(Movable):
 
             # Lives
             var lives_text = "Lives: " + String(lives)
-            render_debug_text(self.sdl_renderer, c_float(160), hud_y, lives_text)
+            render_debug_text(
+                self.sdl_renderer, c_float(160), hud_y, lives_text
+            )
 
             # Frame number
             var frame_text = "Frame: " + String(frame_num)
-            render_debug_text(self.sdl_renderer, c_float(300), hud_y, frame_text)
+            render_debug_text(
+                self.sdl_renderer, c_float(300), hud_y, frame_text
+            )
 
             # Recording indicator
             if self.recorder.is_recording:
                 set_render_draw_color(self.sdl_renderer, 255, 0, 0, 255)
-                render_debug_text(self.sdl_renderer, c_float(8), c_float(4), "REC")
+                render_debug_text(
+                    self.sdl_renderer, c_float(8), c_float(4), "REC"
+                )
 
             # Paused indicator
             if self.paused:

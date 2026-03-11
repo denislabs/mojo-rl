@@ -3,7 +3,7 @@
 Defines body geometry, mass, kinematic tree, and collision properties as
 compile-time constants. Inertia is auto-computed from geometry and mass.
 
-Geometry types reuse constants from physics3d/constants.mojo:
+Geometry types reuse constants from mojo_rl.physics3d/constants.mojo:
   GEOM_CAPSULE = 2, GEOM_SPHERE = 1, GEOM_BOX = 3
 """
 
@@ -36,7 +36,7 @@ from ..gpu.constants import (
     model_body_offset,
 )
 from std.gpu.host import HostBuffer
-from render import Color
+from mojo_rl.render import Color
 
 # =============================================================================
 # BodySpec Trait

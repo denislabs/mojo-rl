@@ -15,14 +15,14 @@ Run with:
     pixi run mojo run examples/solve_gridworld.mojo
 """
 
-from envs import GridWorldEnv
-from agents import (
+from mojo_rl.envs import GridWorldEnv
+from mojo_rl.agents import (
     QLearningAgent,
     SARSAAgent,
     SARSALambdaAgent,
     DoubleQLearningAgent,
 )
-from render import Renderer2D
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

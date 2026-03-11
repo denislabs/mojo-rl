@@ -10,9 +10,12 @@ This example shows that linear function approximation works correctly
 when the environment's value function can be approximated by the features.
 """
 
-from core.linear_fa import PolynomialFeatures
-from agents.linear_qlearning import LinearQLearningAgent, LinearSARSAAgent
-from envs import CartPoleEnv
+from mojo_rl.core.linear_fa import PolynomialFeatures
+from mojo_rl.agents.linear_qlearning import (
+    LinearQLearningAgent,
+    LinearSARSAAgent,
+)
+from mojo_rl.envs import CartPoleEnv
 
 
 fn main() raises:

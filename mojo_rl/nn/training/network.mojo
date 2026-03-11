@@ -5,8 +5,8 @@ Use NetworkState to manage params/grads/optimizer state, and
 GPUNetworkState for device-side training.
 
 Usage:
-    from nn import seq, Linear, ReLU, Adam
-    from nn.training import Network, NetworkState, GPUNetworkState
+    from mojo_rl.nn import seq, Linear, ReLU, Adam
+    from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 
     alias M = typeof(seq(Linear[4, 64](), ReLU[64](), Linear[64, 2]()))
 

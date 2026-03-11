@@ -5,8 +5,8 @@ NetworkState (CPU) or GPUNetworkState (GPU) directly, so GPU-only pipelines
 never allocate a CPU state.
 
 Usage:
-    from nn import seq, Linear, ReLU, Adam, MSELoss, Kaiming
-    from nn.training import Trainer, NetworkState, GPUNetworkState
+    from mojo_rl.nn import seq, Linear, ReLU, Adam, MSELoss, Kaiming
+    from mojo_rl.nn.training import Trainer, NetworkState, GPUNetworkState
 
     alias M = typeof(seq(Linear[4, 64](), ReLU[64](), Linear[64, 2]()))
 

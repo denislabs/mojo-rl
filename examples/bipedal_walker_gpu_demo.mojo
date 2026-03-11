@@ -20,8 +20,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random import random_float64, seed
 from std.time import perf_counter
 
-from envs.bipedal_walker import BipedalWalker, BWConstants
-from physics2d import dtype
+from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
+from mojo_rl.physics2d import dtype
 
 
 fn main() raises:

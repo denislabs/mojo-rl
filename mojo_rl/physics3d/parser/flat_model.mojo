@@ -8,8 +8,13 @@ struct via setup_model().
 
 from std.collections import InlineArray
 from std.math import sqrt
-from physics3d.types import Model, ConeType
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
+from mojo_rl.physics3d.types import Model, ConeType
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
 
 
 # =============================================================================

@@ -9,9 +9,12 @@ This is much more efficient than naive discretization because:
 3. Memory usage is controlled (8 tilings * 8^4 = 32,768 tiles vs 10^4 discrete states)
 """
 
-from core.tile_coding import TileCoding
-from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
-from envs import CartPoleEnv
+from mojo_rl.core.tile_coding import TileCoding
+from mojo_rl.agents.tiled_qlearning import (
+    TiledQLearningAgent,
+    TiledSARSALambdaAgent,
+)
+from mojo_rl.envs import CartPoleEnv
 
 
 fn main() raises:

@@ -20,8 +20,8 @@ References:
 - Schulman et al. (2016): "High-Dimensional Continuous Control Using GAE"
 
 Example usage:
-    from core.tile_coding import make_cartpole_tile_coding
-    from agents.ppo import PPOAgent
+    from mojo_rl.core.tile_coding import make_cartpole_tile_coding
+    from mojo_rl.agents.ppo import PPOAgent
 
     var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
     var agent = PPOAgent(
@@ -47,12 +47,12 @@ Example usage:
 
 from std.math import exp, log
 from std.random import random_float64
-from core.tile_coding import TileCoding
-from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
-from core.utils.gae import compute_gae, compute_returns_from_advantages
-from core.utils.softmax import softmax, sample_from_probs, argmax_probs
-from core.utils.normalization import normalize
-from core.utils.shuffle import shuffle_indices
+from mojo_rl.core.tile_coding import TileCoding
+from mojo_rl.core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core.utils.gae import compute_gae, compute_returns_from_advantages
+from mojo_rl.core.utils.softmax import softmax, sample_from_probs, argmax_probs
+from mojo_rl.core.utils.normalization import normalize
+from mojo_rl.core.utils.shuffle import shuffle_indices
 
 
 struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -106,18 +106,18 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Initialize PPO agent.
 
         Args:
-            tile_coding: TileCoding instance defining feature representation
-            num_actions: Number of discrete actions
-            actor_lr: Actor (policy) learning rate (default 0.0003)
-            critic_lr: Critic (value) learning rate (default 0.001)
-            discount_factor: Discount factor γ (default 0.99)
-            gae_lambda: GAE parameter λ (default 0.95)
-            clip_epsilon: PPO clipping parameter ε (default 0.2)
-            entropy_coef: Entropy bonus coefficient (default 0.01)
-            value_loss_coef: Value loss coefficient (default 0.5)
-            num_epochs: Number of optimization epochs per update (default 4)
-            normalize_advantages: Whether to normalize advantages (default True)
-            init_value: Initial parameter value (default 0.0)
+            tile_coding: TileCoding instance defining feature representation.
+            num_actions: Number of discrete actions.
+            actor_lr: Actor (policy) learning rate (default 0.0003).
+            critic_lr: Critic (value) learning rate (default 0.001).
+            discount_factor: Discount factor γ (default 0.99).
+            gae_lambda: GAE parameter λ (default 0.95).
+            clip_epsilon: PPO clipping parameter ε (default 0.2).
+            entropy_coef: Entropy bonus coefficient (default 0.01).
+            value_loss_coef: Value loss coefficient (default 0.5).
+            num_epochs: Number of optimization epochs per update (default 4).
+            normalize_advantages: Whether to normalize advantages (default True).
+            init_value: Initial parameter value (default 0.0).
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -218,10 +218,10 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get action probabilities π(·|s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Probability distribution over actions
+            Probability distribution over actions.
         """
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
@@ -230,10 +230,10 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get state value estimate V(s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Estimated state value
+            Estimated state value.
         """
         var value: Float64 = 0.0
         for i in range(len(tiles)):
@@ -244,11 +244,11 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get log probability of action under current policy.
 
         Args:
-            tiles: Active tile indices
-            action: Action index
+            tiles: Active tile indices.
+            action: Action index.
 
         Returns:
-            log π(a|s)
+            Log π(a|s).
         """
         var probs = self.get_action_probs(tiles)
         if probs[action] > 1e-10:
@@ -259,10 +259,10 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Sample action from policy π(a|s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Sampled action index
+            Sampled action index.
         """
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
@@ -271,10 +271,10 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get greedy action (highest probability).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Action with highest probability
+            Action with highest probability.
         """
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
@@ -290,11 +290,11 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Store transition in rollout buffer.
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
-            log_prob: Log probability of action (from old policy)
-            value: Value estimate (from old critic)
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
+            log_prob: Log probability of action (from old policy).
+            value: Value estimate (from old critic).
         """
         var tiles_copy = List[Int]()
         for i in range(len(tiles)):
@@ -344,8 +344,8 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         Performs multiple epochs of optimization on collected rollout.
 
         Args:
-            next_tiles: Tiles for next state (for bootstrap)
-            done: Whether episode terminated
+            next_tiles: Tiles for next state (for bootstrap).
+            done: Whether episode terminated.
         """
         var buffer_len = len(self.buffer_tiles)
         if buffer_len == 0:
@@ -395,12 +395,12 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
 
                 # Clipped surrogate objective
                 # var surr1 = ratio * advantage
-                var clipped_ratio: Float64
-                if advantage >= 0:
-                    clipped_ratio = min(ratio, 1.0 + self.clip_epsilon)
-                else:
-                    clipped_ratio = max(ratio, 1.0 - self.clip_epsilon)
-                var surr2 = clipped_ratio * advantage
+                # var clipped_ratio: Float64
+                # if advantage >= 0:
+                #     clipped_ratio = min(ratio, 1.0 + self.clip_epsilon)
+                # else:
+                #     clipped_ratio = max(ratio, 1.0 - self.clip_epsilon)
+                # var surr2 = clipped_ratio * advantage
 
                 # Note: We don't use policy_loss directly since we compute gradients
                 # manually below. The clipping check uses surr1 vs surr2.
@@ -485,10 +485,10 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         """Compute policy entropy at given state.
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Policy entropy (in nats)
+            Policy entropy (in nats).
         """
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -622,7 +622,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _ppo_obs_to_f64(result[0])^
+                obs_f64 = _ppo_obs_to_f64(result[0])
                 if done:
                     break
 
@@ -687,19 +687,19 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         """Initialize PPO agent with minibatch updates.
 
         Args:
-            tile_coding: TileCoding instance
-            num_actions: Number of discrete actions
-            actor_lr: Actor learning rate
-            critic_lr: Critic learning rate
-            discount_factor: Discount factor γ
-            gae_lambda: GAE parameter λ
-            clip_epsilon: PPO clipping parameter ε
-            entropy_coef: Entropy bonus coefficient
-            value_loss_coef: Value loss coefficient
-            num_epochs: Number of optimization epochs
-            minibatch_size: Size of minibatches for updates
-            normalize_advantages: Whether to normalize advantages
-            init_value: Initial parameter value
+            tile_coding: TileCoding instance.
+            num_actions: Number of discrete actions.
+            actor_lr: Actor learning rate.
+            critic_lr: Critic learning rate.
+            discount_factor: Discount factor γ.
+            gae_lambda: GAE parameter λ.
+            clip_epsilon: PPO clipping parameter ε.
+            entropy_coef: Entropy bonus coefficient.
+            value_loss_coef: Value loss coefficient.
+            num_epochs: Number of optimization epochs.
+            minibatch_size: Size of minibatches for updates.
+            normalize_advantages: Whether to normalize advantages.
+            init_value: Initial parameter value.
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -880,8 +880,8 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         """Update using minibatch PPO.
 
         Args:
-            next_tiles: Tiles for next state
-            done: Whether episode terminated
+            next_tiles: Tiles for next state.
+            done: Whether episode terminated.
         """
         var buffer_len = len(self.buffer_tiles)
         if buffer_len == 0:
@@ -1136,7 +1136,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _ppo_obs_to_f64(result[0])^
+                obs_f64 = _ppo_obs_to_f64(result[0])
                 if done:
                     break
 

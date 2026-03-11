@@ -35,7 +35,7 @@ from .auto_fused import AutoFused
 from .combinators import Residual, Parallel, Repeat
 
 # Fusion-aware aliases: AutoFused automatically detects and fuses patterns.
-# Dense/DenseReLU/etc. are identical to Linear/LinearReLU from nn.model.
+# Dense/DenseReLU/etc. are identical to Linear/LinearReLU from mojo_rl.nn.model.
 comptime Dense[in_d: Int, out_d: Int] = AutoFused[
     MatMul[in_d, out_d], BiasAdd[out_d]
 ]

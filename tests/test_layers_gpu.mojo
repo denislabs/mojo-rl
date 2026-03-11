@@ -16,8 +16,8 @@ from std.random import seed, random_float64
 
 from std.gpu.host import DeviceContext
 
-from nn.constants import dtype
-from nn.model import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import (
     Linear,
     ReLU,
     Sigmoid,
@@ -26,10 +26,10 @@ from nn.model import (
     Dropout,
     seq,
 )
-from nn.loss import MSELoss
-from nn.optimizer import Adam
-from nn.training import Trainer
-from nn.initializer import Xavier, Kaiming
+from mojo_rl.nn.loss import MSELoss
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.training import Trainer
+from mojo_rl.nn.initializer import Xavier, Kaiming
 
 
 # =============================================================================

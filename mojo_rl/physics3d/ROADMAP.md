@@ -1499,7 +1499,7 @@ computation.  Islands identify independent sub-problems.
 #### Usage
 
 ```mojo
-from physics3d.solver import detect_islands, solve_with_islands
+from mojo_rl.physics3d.solver import detect_islands, solve_with_islands
 
 # Detection only (inspect island structure)
 var islands = detect_islands(constraints)
@@ -1759,7 +1759,7 @@ transparent geoms is not yet implemented (only needed when alpha < 255).
 2. Added `Cameras` variadic container to `model/model_def.mojo`
 3. Added `HalfCheetahCamera` (pos_y=-3.0, pos_z=0.3) and `HopperCamera` (pos_y=-3.0, pos_z=-0.25) to env defs
 4. Updated renderer construction in both environments to use camera spec values
-5. Exported camera specs from renderer modules and `__init__.mojo`
+5. Exported camera specs from mojo_rl.renderer modules and `__init__.mojo`
 
 ---
 

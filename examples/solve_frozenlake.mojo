@@ -25,9 +25,9 @@ Run with:
     pixi run mojo run examples/solve_frozenlake.mojo
 """
 
-from envs import FrozenLakeEnv
-from agents import QLearningAgent, DoubleQLearningAgent
-from render import Renderer2D
+from mojo_rl.envs import FrozenLakeEnv
+from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent
+from mojo_rl.render import Renderer2D
 
 
 fn train_and_evaluate(

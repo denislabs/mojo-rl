@@ -11,8 +11,8 @@ from std.random import seed, random_float64
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from nn.constants import dtype
-from nn.model import Linear
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import Linear
 
 # =============================================================================
 # Constants

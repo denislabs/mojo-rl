@@ -13,8 +13,8 @@ Expected result: PER should learn faster, especially early in training,
 because it focuses on surprising/important transitions.
 """
 
-from envs import CliffWalkingEnv
-from agents import QLearningReplayAgent, QLearningPERAgent
+from mojo_rl.envs import CliffWalkingEnv
+from mojo_rl.agents import QLearningReplayAgent, QLearningPERAgent
 
 
 fn run_comparison():
@@ -190,7 +190,7 @@ fn demonstrate_per_sampling():
     print("=" * 70)
     print()
 
-    from core.replay_buffer import PrioritizedReplayBuffer
+    from mojo_rl.core.replay_buffer import PrioritizedReplayBuffer
 
     var buffer = PrioritizedReplayBuffer(capacity=100, alpha=0.6, beta=0.4)
 
@@ -240,13 +240,25 @@ fn demonstrate_per_sampling():
     var expected_cliff_uniform = Float64(num_samples) * 2.0 / 12.0
 
     print("Uniform sampling would give approximately:")
-    print("  Normal:", Int(expected_normal_uniform), "(", 10.0 / 12.0 * 100.0, "%)")
-    print("  Cliff: ", Int(expected_cliff_uniform), "(", 2.0 / 12.0 * 100.0, "%)")
+    print(
+        "  Normal:",
+        Int(expected_normal_uniform),
+        "(",
+        10.0 / 12.0 * 100.0,
+        "%)",
+    )
+    print(
+        "  Cliff: ", Int(expected_cliff_uniform), "(", 2.0 / 12.0 * 100.0, "%)"
+    )
     print()
 
     var actual_cliff_pct = Float64(cliff_count) / Float64(num_samples) * 100.0
     print("PER gave cliff falls", actual_cliff_pct, "% of samples")
-    print("This is", actual_cliff_pct / (2.0 / 12.0 * 100.0), "x more than uniform!")
+    print(
+        "This is",
+        actual_cliff_pct / (2.0 / 12.0 * 100.0),
+        "x more than uniform!",
+    )
     print()
 
 

@@ -7,7 +7,7 @@ An equality constraint enforces: ten_length - length_ref = 0
 producing 1 bilateral constraint row with trivial Jacobian: J[dof_adr_i] = coef_i.
 
 Usage:
-    from physics3d.model.tendon_spec import TendonSpec, FixedTendon, Tendons
+    from mojo_rl.physics3d.model.tendon_spec import TendonSpec, FixedTendon, Tendons
 
     # Couple joint 3 and joint 5 with equal coefficients
     comptime MyTendon = FixedTendon[num_joints=2, joint_0=3, coef_0=1.0, joint_1=5, coef_1=-1.0]

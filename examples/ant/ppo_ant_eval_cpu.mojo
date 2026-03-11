@@ -13,13 +13,13 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.ant import (
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.ant import (
     Ant,
     AntModel,
     AntConfig,
 )
-from envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 
 # =============================================================================
 # Constants (must match training configuration)

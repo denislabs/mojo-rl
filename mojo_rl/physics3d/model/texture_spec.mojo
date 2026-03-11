@@ -6,7 +6,7 @@ Supports MuJoCo-style builtin textures:
   - GradientTexture: Vertical gradient between two colors (skybox)
 
 Usage:
-    from physics3d.model.texture_spec import TextureSpec, CheckerTexture, GradientTexture
+    from mojo_rl.physics3d.model.texture_spec import TextureSpec, CheckerTexture, GradientTexture
 
     comptime MyChecker = CheckerTexture[
         rgb1_r=0.2, rgb1_g=0.3, rgb1_b=0.4,

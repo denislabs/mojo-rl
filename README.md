@@ -199,8 +199,8 @@ mojo-rl/
 ### Tabular RL
 
 ```mojo
-from agents import QLearningAgent
-from envs import GridWorldEnv
+from mojo_rl.agents import QLearningAgent
+from mojo_rl.envs import GridWorldEnv
 
 fn main():
     var env = GridWorldEnv(width=5, height=5)
@@ -211,8 +211,8 @@ fn main():
 ### Deep RL with GPU Training
 
 ```mojo
-from deep_agents import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetahEnv
+from mojo_rl.deep_agents import DeepPPOContinuousAgent
+from mojo_rl.envs.half_cheetah import HalfCheetahEnv
 from gpu.host import DeviceContext
 
 fn main() raises:
@@ -226,7 +226,7 @@ fn main() raises:
 ### Neural Network Training
 
 ```mojo
-from nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
+from mojo_rl.nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
 
 fn main() raises:
     # Define model at compile time: 2 -> 16 (ReLU) -> 1

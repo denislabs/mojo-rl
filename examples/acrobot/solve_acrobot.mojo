@@ -23,9 +23,9 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from envs import AcrobotEnv
-from agents import QLearningAgent, SARSALambdaAgent
-from render import Renderer2D
+from mojo_rl.envs import AcrobotEnv
+from mojo_rl.agents import QLearningAgent, SARSALambdaAgent
+from mojo_rl.render import Renderer2D
 
 
 fn main() raises:

@@ -5,7 +5,7 @@ This file retains HopperParams and body/joint index constants
 needed by physics3d regression tests.
 """
 
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size,
     qpos_offset,
@@ -204,7 +204,7 @@ comptime NUM_BODIES: Int = 5
 # Physics constants for backward compatibility
 comptime DT: Float64 = 0.002
 comptime FRAME_SKIP: Int = 4
-comptime EFFECTIVE_DT: Float64 = DT * FRAME_SKIP
+comptime EFFECTIVE_DT: Float64 = DT * Float64(FRAME_SKIP)
 comptime MAX_STEPS: Int = 1000
 comptime INITIAL_Z: Float64 = 1.25
 comptime FRICTION: Float64 = 1.0

@@ -11,11 +11,11 @@ Run with:
 from std.math import sqrt, pi, abs
 from std.random import seed
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from nn.constants import dtype
-from envs.half_cheetah import HalfCheetah
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from envs.half_cheetah.half_cheetah_def import (
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.nn.constants import dtype
+from mojo_rl.envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_def import (
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,

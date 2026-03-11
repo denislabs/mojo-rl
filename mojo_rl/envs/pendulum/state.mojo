@@ -5,7 +5,7 @@ Observation state for the GPU-enabled Pendulum environment.
 
 from std.math import cos, sin
 
-from core import State
+from mojo_rl.core import State
 from layout import Layout, LayoutTensor
 
 

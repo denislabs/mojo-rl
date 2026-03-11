@@ -14,8 +14,8 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE
-from nn.gpu.matmul import gpu_matmul, tiled_matmul_kernel
+from mojo_rl.nn.constants import dtype, TILE
+from mojo_rl.nn.gpu.matmul import gpu_matmul, tiled_matmul_kernel
 from std.gpu import barrier
 from std.gpu.memory import AddressSpace
 
@@ -48,7 +48,17 @@ fn cpu_matmul[
 
 
 fn test_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
-    print("  Matrix: [" + String(M) + " x " + String(K) + "] @ [" + String(K) + " x " + String(N) + "]")
+    print(
+        "  Matrix: ["
+        + String(M)
+        + " x "
+        + String(K)
+        + "] @ ["
+        + String(K)
+        + " x "
+        + String(N)
+        + "]"
+    )
 
     # Allocate host memory
     comptime a_size = M * K
@@ -330,9 +340,9 @@ def main():
     test_matmul[512, 512, 512](ctx)
 
     print("  Real training dims (PPO HalfCheetah, minibatch=2048):")
-    test_matmul[2048, 17, 256](ctx)    # input -> hidden
-    test_matmul[2048, 256, 256](ctx)   # hidden -> hidden
-    test_matmul[2048, 256, 6](ctx)     # hidden -> output
+    test_matmul[2048, 17, 256](ctx)  # input -> hidden
+    test_matmul[2048, 256, 256](ctx)  # hidden -> hidden
+    test_matmul[2048, 256, 6](ctx)  # hidden -> output
 
     # A/B benchmark: tiled scalar vs auto-dispatch (MMA on NVIDIA)
     print("\n--- Benchmark: tiled scalar vs auto (MMA on NVIDIA) ---")
@@ -344,8 +354,8 @@ def main():
     bench_matmul[512, 512, 512](ctx)
 
     print("\n--- Benchmark: Real PPO training dims (minibatch=2048) ---")
-    bench_matmul[2048, 17, 256](ctx)    # input -> hidden
-    bench_matmul[2048, 256, 256](ctx)   # hidden -> hidden (dominant)
-    bench_matmul[2048, 256, 6](ctx)     # hidden -> output
+    bench_matmul[2048, 17, 256](ctx)  # input -> hidden
+    bench_matmul[2048, 256, 256](ctx)  # hidden -> hidden (dominant)
+    bench_matmul[2048, 256, 6](ctx)  # hidden -> output
 
     print("\nDone!")

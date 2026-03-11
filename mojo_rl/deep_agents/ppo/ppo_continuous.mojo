@@ -1,7 +1,7 @@
 """Deep PPO (Proximal Policy Optimization) Agent for Continuous Action Spaces.
 
 This PPO implementation supports continuous action spaces using a Gaussian policy:
-- Network wrapper from nn.training for stateless model + params management
+- Network wrapper from mojo_rl.nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - StochasticActor for Gaussian policy with reparameterization trick
 - Clipped surrogate objective for stable policy updates
@@ -20,8 +20,8 @@ Architecture (CleanRL-style with Tanh activations):
 - Critic: obs -> hidden (Tanh) -> hidden (Tanh) -> 1 (value)
 
 Usage:
-    from deep_agents.ppo_continuous import DeepPPOContinuousAgent
-    from envs import CarRacingEnv
+    from mojo_rl.deep_agents.ppo_continuous import DeepPPOContinuousAgent
+    from mojo_rl.envs import CarRacingEnv
 
     var env = CarRacingEnv(continuous=True)
     var agent = DeepPPOContinuousAgent[13, 3, 256]()
@@ -41,23 +41,23 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn import (
     Dense,
     DenseTanh,
     Sequential,
     StochasticActor,
 )
-from nn.optimizer import Adam
-from nn.initializer import Xavier, Kaiming
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.checkpoint import (
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Xavier, Kaiming
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
@@ -66,11 +66,11 @@ from core import (
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
-from render import Renderer2D
+from mojo_rl.render import Renderer2D
 from std.memory import UnsafePointer
-from core.utils.gae import compute_gae_inline
-from core.utils.normalization import normalize_inline, RunningMeanStd
-from core.utils.shuffle import shuffle_indices_inline
+from mojo_rl.core.utils.gae import compute_gae_inline
+from mojo_rl.core.utils.normalization import normalize_inline, RunningMeanStd
+from mojo_rl.core.utils.shuffle import shuffle_indices_inline
 from .kernels import (
     _sample_continuous_actions_kernel,
     _store_continuous_pre_step_kernel,
@@ -89,22 +89,25 @@ from .kernels import (
     clamp_log_std_params_kernel,
     add_obs_noise_kernel,
 )
-from deep_agents.ppo.state import PPOContinuousState, PPOContinuousGPUState
-from deep_agents.core.onpolicy_train import (
+from mojo_rl.deep_agents.ppo.state import (
+    PPOContinuousState,
+    PPOContinuousGPUState,
+)
+from mojo_rl.deep_agents.core.onpolicy_train import (
     OnPolicyContinuousAgent,
     OnPolicyAgent,
     run_onpolicy_continuous_train,
 )
-from deep_agents.core.onpolicy_helpers import (
+from mojo_rl.deep_agents.core.onpolicy_helpers import (
     compute_gae_list,
     normalize_advantages_list,
     fisher_yates_shuffle,
 )
-from deep_agents.core.gpu_onpolicy_train import (
+from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyContinuousAgent,
     run_onpolicy_continuous_train_gpu,
 )
-from deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 
 # =============================================================================
 # Deep PPO Continuous Agent
@@ -1384,9 +1387,9 @@ struct DeepPPOContinuousAgent[
             for i in range(ACTOR_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        (self.state.actor.optimizer_state + i)[] = Scalar[dtype](
-                            Float32(atof(lines[idx]))
-                        )
+                        (self.state.actor.optimizer_state + i)[] = Scalar[
+                            dtype
+                        ](Float32(atof(lines[idx])))
                     except:
                         pass
                     idx += 1
@@ -1412,9 +1415,9 @@ struct DeepPPOContinuousAgent[
             for i in range(CRITIC_STATE_SIZE):
                 if idx < len(lines) and not lines[idx].startswith("["):
                     try:
-                        (self.state.critic.optimizer_state + i)[] = Scalar[dtype](
-                            Float32(atof(lines[idx]))
-                        )
+                        (self.state.critic.optimizer_state + i)[] = Scalar[
+                            dtype
+                        ](Float32(atof(lines[idx])))
                     except:
                         pass
                     idx += 1

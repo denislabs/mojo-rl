@@ -20,7 +20,7 @@ Usage in PPO collect_rollout/compute_advantages/update_epochs methods:
 from std.math import sqrt
 from std.random import random_float64
 
-from nn.constants import dtype as default_dtype
+from mojo_rl.nn.constants import dtype as default_dtype
 
 
 fn compute_gae_list[
@@ -73,9 +73,7 @@ fn compute_gae_list[
             gae = Scalar[DTYPE](0.0)
 
         # TD residual: δ = r + γV(s') - V(s)
-        var delta = (
-            buffer_rewards[t] + gamma_s * next_val - buffer_values[t]
-        )
+        var delta = buffer_rewards[t] + gamma_s * next_val - buffer_values[t]
 
         # GAE accumulation: A_t = δ_t + γλ A_{t+1}
         gae = delta + gae_decay * gae

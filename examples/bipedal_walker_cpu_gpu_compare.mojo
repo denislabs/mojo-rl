@@ -12,9 +12,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from std.random import seed as set_seed
 
-from envs.bipedal_walker import BipedalWalker, BWConstants
-from envs.bipedal_walker.action import BipedalWalkerAction
-from physics2d import (
+from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
+from mojo_rl.envs.bipedal_walker.action import BipedalWalkerAction
+from mojo_rl.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,

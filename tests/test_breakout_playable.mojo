@@ -1,14 +1,17 @@
 """Playable Breakout — LEFT/RIGHT arrows to move, SPACE to fire."""
 
 from std.memory import alloc
-from envs.arcade_games.breakout import BreakoutEnv
-from render.sdl.sdl_keyboard import get_keyboard_state
-from render.sdl.sdl_scancode import Scancode
+from mojo_rl.envs.arcade_games.breakout import BreakoutEnv
+from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
+from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
 fn main() raises:
     print("=== Playable Breakout ===")
-    print("Controls: LEFT/RIGHT arrows to move, SPACE to fire, close window to quit")
+    print(
+        "Controls: LEFT/RIGHT arrows to move, SPACE to fire, close window to"
+        " quit"
+    )
 
     var env = BreakoutEnv[DType.float64]()
     _ = env.init_renderer()

@@ -1,9 +1,9 @@
 """Constants for BipedalWalker v2 GPU environment.
 
-Uses BipedalWalkerLayout from physics2d for compile-time layout computation.
+Uses BipedalWalkerLayout from mojo_rl.physics2d for compile-time layout computation.
 """
 
-from physics2d import BipedalWalkerLayout, PhysicsState
+from mojo_rl.physics2d import BipedalWalkerLayout, PhysicsState
 
 
 struct BWConstants:
@@ -55,7 +55,7 @@ struct BWConstants:
     # ==========================================================================
 
     # Hull dimensions (pentagon shape)
-    comptime HULL_POLY: InlineArray[Float64, 10] = InlineArray[Float64, 10](
+    comptime HULL_POLY: InlineArray[Float64, 10] = [
         -30.0 / Self.SCALE,
         0.0 / Self.SCALE,  # bottom left
         -6.0 / Self.SCALE,
@@ -66,7 +66,7 @@ struct BWConstants:
         0.0 / Self.SCALE,  # bottom right
         0.0 / Self.SCALE,
         -12.0 / Self.SCALE,  # bottom center
-    )
+    ]
 
     # Leg dimensions
     comptime LEG_DOWN: Float64 = -8.0 / Self.SCALE

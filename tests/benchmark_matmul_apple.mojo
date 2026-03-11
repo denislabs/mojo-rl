@@ -15,14 +15,14 @@ from layout import Layout, LayoutTensor
 from std.time import perf_counter_ns
 from std.random import random_float64
 
-from nn.gpu.matmul import tiled_matmul_kernel
-from nn.gpu.matmul_apple import (
+from mojo_rl.nn.gpu.matmul import tiled_matmul_kernel
+from mojo_rl.nn.gpu.matmul_apple import (
     matmul_apple_kernel,
     matmul_apple_reg2x2_kernel,
     matmul_fp16_apple_kernel,
     TILE_APPLE,
 )
-from nn.constants import dtype, TILE
+from mojo_rl.nn.constants import dtype, TILE
 
 
 fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:

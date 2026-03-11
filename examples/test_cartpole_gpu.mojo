@@ -3,7 +3,7 @@
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from envs.cartpole_gpu import (
+from mojo_rl.envs.cartpole_gpu import (
     NUM_ENVS,
     STATE_SIZE,
     BLOCKS_PER_GRID,

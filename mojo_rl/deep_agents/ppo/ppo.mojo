@@ -1,7 +1,7 @@
 """Deep PPO (Proximal Policy Optimization) Agent using the new trait-based architecture.
 
 This PPO implementation uses:
-- Network wrapper from nn.training for stateless model + params management
+- Network wrapper from mojo_rl.nn.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Clipped surrogate objective for stable policy updates
 - GAE (Generalized Advantage Estimation) for variance reduction
@@ -18,8 +18,8 @@ Architecture:
 - Critic: obs -> hidden (ReLU) -> hidden (ReLU) -> 1 (value)
 
 Usage:
-    from deep_agents.ppo import DeepPPOAgent
-    from envs import CartPoleNative
+    from mojo_rl.deep_agents.ppo import DeepPPOAgent
+    from mojo_rl.envs import CartPoleNative
 
     var env = CartPoleNative()
     var agent = DeepPPOAgent[4, 2, 128]()
@@ -41,23 +41,23 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from nn.constants import dtype, TILE, TPB
-from nn.model import Linear, ReLU, LinearReLU, Sequential
-from nn.optimizer import Adam
-from nn.initializer import Xavier
-from nn.training import Network, NetworkState, GPUNetworkState
-from nn.checkpoint import (
+from mojo_rl.nn.constants import dtype, TILE, TPB
+from mojo_rl.nn.model import Linear, ReLU, LinearReLU, Sequential
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.checkpoint import (
     split_lines,
     find_section_start,
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from nn.gpu import (
+from mojo_rl.nn.gpu import (
     random_range,
     xorshift32,
     random_uniform,
 )
-from deep_agents.core.kernels import (
+from mojo_rl.deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
     accumulate_rewards_kernel,
@@ -65,38 +65,41 @@ from deep_agents.core.kernels import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from core import (
+from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from core.utils.gae import compute_gae_inline
-from core.utils.softmax import (
+from mojo_rl.core.utils.gae import compute_gae_inline
+from mojo_rl.core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
     argmax_probs_inline,
 )
-from core.utils.normalization import normalize_inline
-from core.utils.shuffle import shuffle_indices_inline
-from deep_agents.ppo.state import PPODiscreteState, PPODiscreteGPUState
-from deep_agents.core.onpolicy_train import OnPolicyAgent, OnPolicyDiscreteAgent
-from deep_agents.core.onpolicy_helpers import (
+from mojo_rl.core.utils.normalization import normalize_inline
+from mojo_rl.core.utils.shuffle import shuffle_indices_inline
+from mojo_rl.deep_agents.ppo.state import PPODiscreteState, PPODiscreteGPUState
+from mojo_rl.deep_agents.core.onpolicy_train import (
+    OnPolicyAgent,
+    OnPolicyDiscreteAgent,
+)
+from mojo_rl.deep_agents.core.onpolicy_helpers import (
     compute_gae_list,
     normalize_advantages_list,
     fisher_yates_shuffle,
 )
-from deep_agents.core.gpu_onpolicy_train import (
+from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyDiscreteAgent,
     run_onpolicy_discrete_train_gpu,
 )
-from deep_agents.core.checkpoint_trait import Checkpointable
-from deep_agents.core.eval import (
+from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.deep_agents.core.eval import (
     run_onpolicy_discrete_eval,
     run_onpolicy_continuous_eval,
 )
-from deep_agents.core.onpolicy_train import run_onpolicy_discrete_train
+from mojo_rl.deep_agents.core.onpolicy_train import run_onpolicy_discrete_train
 
 from .kernels import (
     ppo_actor_grad_kernel,
@@ -1603,14 +1606,19 @@ struct DeepPPOAgent[
         Returns:
             TrainingMetrics with one entry per update (reward = policy loss).
         """
+        var checkpoint_path = self.checkpoint_path
+        var checkpoint_every = self.checkpoint_every
         return run_onpolicy_discrete_train(
             self,
+            cpu_state,
             env,
             num_episodes,
+            checkpoint_every,
+            checkpoint_path,
             verbose,
             print_every,
             environment_name,
-            "Deep PPO",
+            "PPO",
         )
 
     fn evaluate[
@@ -2375,7 +2383,8 @@ struct DeepPPOAgent[
         content += "critic_optimizer_state:\n"
         for i in range(critic_state_size):
             content += (
-                String(Float64((self.state.critic.optimizer_state + i)[])) + "\n"
+                String(Float64((self.state.critic.optimizer_state + i)[]))
+                + "\n"
             )
 
         # Metadata

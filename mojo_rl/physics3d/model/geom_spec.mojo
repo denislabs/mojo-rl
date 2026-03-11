@@ -15,7 +15,7 @@ Fields that use sentinel value -1.0 (Float64) or -1 (Int) mean "use
 ModelDefaults". Resolution happens at Geoms.setup_model time.
 
 Usage:
-    from physics3d.model.geom_spec import GeomSpec, Plane, Capsule
+    from mojo_rl.physics3d.model.geom_spec import GeomSpec, Plane, Capsule
 
     # Ground plane (friction from defaults)
     comptime MyPlane = Plane[z=0.0]
@@ -31,8 +31,8 @@ from ..constants import (
     GEOM_BOX,
     GEOM_CYLINDER,
 )
-from render import Color, Renderer3D
-from math3d import Vec3 as _Vec3G, Quat as _QuatG
+from mojo_rl.render import Color, Renderer3D
+from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 comptime _RVec3 = _Vec3G[DType.float64]
 comptime _RQuat = _QuatG[DType.float64]

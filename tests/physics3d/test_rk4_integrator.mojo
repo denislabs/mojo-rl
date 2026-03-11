@@ -10,12 +10,12 @@ Run with:
 """
 
 from std.math import sqrt, pi, cos, abs
-from physics3d.types import Model, Data
-from physics3d.integrator import EulerIntegrator
-from physics3d.integrator.rk4_integrator import RK4Integrator
-from physics3d.solver.pgs_solver import PGSSolver
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
+from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.integrator import EulerIntegrator
+from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
+from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel as HC
 from std.testing import assert_true, TestSuite
 
 

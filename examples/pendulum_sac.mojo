@@ -25,9 +25,13 @@ Requirements:
     - SDL2 for rendering (optional): brew install sdl2 sdl2_ttf
 """
 
-from envs import PendulumEnv
-from core import ContinuousReplayBuffer, PolynomialFeatures, TrainingMetrics
-from agents import SACAgent
+from mojo_rl.envs import PendulumEnv
+from mojo_rl.core import (
+    ContinuousReplayBuffer,
+    PolynomialFeatures,
+    TrainingMetrics,
+)
+from mojo_rl.agents import SACAgent
 
 
 fn main() raises:

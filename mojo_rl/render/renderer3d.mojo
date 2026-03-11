@@ -6,7 +6,7 @@ with Blinn-Phong lighting, depth buffering, and procedural checkerboard ground.
 
 from std.memory import UnsafePointer, memcpy, alloc
 from std.math import sqrt, sin, cos
-from math3d import (
+from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
     Quat as QuatGeneric,
     Mat4 as Mat4Generic,

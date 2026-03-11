@@ -1421,7 +1421,7 @@ fn build_sparse_pattern_gpu[
     body(dof_i) in the kinematic tree.
 
     Returns:
-        actual_nnz — the number of non-zero entries stored.
+        Actual_nnz — the number of non-zero entries stored.
     """
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(

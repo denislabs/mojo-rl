@@ -11,10 +11,10 @@ from std.random import seed
 from std.time import perf_counter_ns
 from std.memory import UnsafePointer
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLander, LLConstants
-from render import Renderer2D
-from nn import dtype
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
+from mojo_rl.render import Renderer2D
+from mojo_rl.nn import dtype
 
 
 # =============================================================================

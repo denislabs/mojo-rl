@@ -19,7 +19,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 from std.math import cos, sin
 from std.random import random_float64
 from std.memory import alloc
-from core import (
+from mojo_rl.core import (
     State,
     Action,
     DiscreteEnv,
@@ -29,7 +29,7 @@ from core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from render import (
+from mojo_rl.render import (
     Renderer2D,
     SDL_Color,
     Vec2,
@@ -41,7 +41,7 @@ from render import (
     black,
     white,
 )
-from nn.gpu import random_range, xorshift32
+from mojo_rl.nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -1150,6 +1150,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             states_buf: States buffer [BATCH_SIZE * STATE_SIZE] (written for done envs).
             dones_buf: Dones buffer [BATCH_SIZE] (read to check, cleared for done envs).
             rng_seed: Seed for random number generation (should vary between calls).
+            workspace_ptr: Optional workspace pointer (unused for CartPole).
         """
         # Create tensor views from buffers
         var states = LayoutTensor[

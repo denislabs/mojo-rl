@@ -8,7 +8,7 @@ Body positions (xpos, xquat) are COMPUTED from qpos via forward kinematics.
 Joints ADD DOFs. Dynamics computed in joint space (mass matrix, Coriolis, gravity).
 
 Example usage:
-    from physics3d.types import Model, Data
+    from mojo_rl.physics3d.types import Model, Data
 
     # Create a single pendulum (1 body, 1 hinge joint)
     # NQ=1 (1 angle), NV=1 (1 angular velocity)

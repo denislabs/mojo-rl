@@ -7,11 +7,11 @@ consisting of a torso with two leg chains (front and back).
 
 Components:
 - HalfCheetah: Main environment struct implementing BoxContinuousActionEnv
-- ObsState[17]: 17D observation state (8 qpos + 9 qvel) — from core
-- ContAction[6]: 6D continuous action (joint torques) — from core
+- ObsState[17]: 17D observation state (8 qpos + 9 qvel) — from mojo_rl.core
+- ContAction[6]: 6D continuous action (joint torques) — from mojo_rl.core
 Example usage:
-    from envs.half_cheetah import HalfCheetah
-    from core import ContAction
+    from mojo_rl.envs.half_cheetah import HalfCheetah
+    from mojo_rl.core import ContAction
 
     var env = HalfCheetah()
     var state = env.reset()

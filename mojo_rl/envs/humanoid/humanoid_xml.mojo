@@ -1,6 +1,6 @@
 """Humanoid model definition from embedded MJCF XML."""
 
-from physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime humanoid_xml = """
 <mujoco model="humanoid">
@@ -141,8 +141,8 @@ comptime HumanoidModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
-    obs_qpos_skip=2,    # skip free joint x/y translation from obs
-    max_contacts=50,    # feet + body contacts with ground
-    max_tendon=2,       # left_hipknee + right_hipknee
+    obs_qpos_skip=2,  # skip free joint x/y translation from obs
+    max_contacts=50,  # feet + body contacts with ground
+    max_tendon=2,  # left_hipknee + right_hipknee
     timestep=pm.TIMESTEP,
 ]

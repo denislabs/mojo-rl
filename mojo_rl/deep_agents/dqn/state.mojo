@@ -1,12 +1,12 @@
 """DQN CPU and GPU state containers."""
 
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import Network, NetworkState, GPUNetworkState
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from nn.constants import dtype
-from nn.initializer import Kaiming
-from deep_agents.core import GPUOffPolicyState, OffPolicyDiscreteState
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.deep_agents.core import GPUOffPolicyState, OffPolicyDiscreteState
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 

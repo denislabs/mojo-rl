@@ -410,8 +410,12 @@ fn compute_contact_jacobian_row[
         cdof: Spatial motion axes per DOF (from compute_cdof).
         contact_body_a: Index of body A in contact.
         contact_body_b: Index of body B (-1 for ground).
-        contact_pos_x/y/z: Contact point in world frame.
-        dir_x/y/z: Direction vector (normal or tangent).
+        contact_pos_x: Contact point x in world frame.
+        contact_pos_y: Contact point y in world frame.
+        contact_pos_z: Contact point z in world frame.
+        dir_x: Direction vector x (normal or tangent).
+        dir_y: Direction vector y (normal or tangent).
+        dir_z: Direction vector z (normal or tangent).
         J_row: Output Jacobian row (NV entries).
     """
     for i in range(V_SIZE):

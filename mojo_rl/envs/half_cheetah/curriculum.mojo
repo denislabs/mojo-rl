@@ -13,7 +13,7 @@ Usage:
     HalfCheetah.init_model_gpu_with_curriculum(ctx, model_buf, params[1])
 """
 
-from core.env_traits import CurriculumScheduler
+from mojo_rl.core.env_traits import CurriculumScheduler
 
 
 @fieldwise_init

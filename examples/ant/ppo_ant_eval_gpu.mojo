@@ -13,9 +13,9 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.ant import Ant, AntConfig
-from nn import dtype as gpu_dtype
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.ant import Ant, AntConfig
+from mojo_rl.nn import dtype as gpu_dtype
 
 
 # =============================================================================

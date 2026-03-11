@@ -11,7 +11,7 @@ Four geom shapes:
   - Box: Box geom (body_idx=0 for static, >=1 for body-attached)
 
 Usage:
-    from physics3d.model.geom_spec import GeomSpec, Plane, Capsule
+    from mojo_rl.physics3d.model.geom_spec import GeomSpec, Plane, Capsule
 
     # Ground plane
     comptime MyPlane = Plane[z=0.0, friction=0.4]
@@ -23,8 +23,13 @@ Usage:
     comptime BodyCap = Capsule[body_idx=1, radius=0.046, half_length=0.09]
 """
 
-from physics3d.constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
-from render import Color
+from mojo_rl.physics3d.constants import (
+    GEOM_PLANE,
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+)
+from mojo_rl.render import Color
 
 
 trait GeomSpec:

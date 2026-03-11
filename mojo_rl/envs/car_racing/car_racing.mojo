@@ -19,8 +19,13 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 from std.memory import alloc
-from core import BoxContinuousActionEnv, GPUContinuousEnv, Action, RenderableEnv
-from render import (
+from mojo_rl.core import (
+    BoxContinuousActionEnv,
+    GPUContinuousEnv,
+    Action,
+    RenderableEnv,
+)
+from mojo_rl.render import (
     Renderer2D,
     RotatingCamera,
     Transform2D,
@@ -38,15 +43,15 @@ from .action import CarRacingAction
 from .constants import CRConstants
 from .track import TrackTile, TrackGenerator
 
-from physics2d import dtype, TPB
-from physics2d.car import (
+from mojo_rl.physics2d import dtype, TPB
+from mojo_rl.physics2d.car import (
     CarRacingLayout,
     CarDynamics,
     CarPhysicsKernel,
     TileCollision,
     WheelFriction,
 )
-from physics2d.car.constants import (
+from mojo_rl.physics2d.car.constants import (
     HULL_X,
     HULL_Y,
     HULL_ANGLE,
@@ -73,7 +78,7 @@ from physics2d.car.constants import (
     WHEEL_POS_RR_X,
     WHEEL_POS_RR_Y,
 )
-from physics2d.car.layout import (
+from mojo_rl.physics2d.car.layout import (
     META_STEP_COUNT,
     META_TOTAL_REWARD,
     META_DONE,
@@ -1123,7 +1128,9 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             # CarRacing already stores META_TRUNCATED in state metadata
             # terminated = done AND NOT truncated
             var is_done = dones[env]
-            var is_truncated = states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED]
+            var is_truncated = states[
+                env, CRConstants.METADATA_OFFSET + META_TRUNCATED
+            ]
             terminated_out[env] = is_done * (Scalar[dtype](1.0) - is_truncated)
 
         ctx.enqueue_function[step_embedded_wrapper, step_embedded_wrapper](
@@ -1211,6 +1218,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dones: Done flags buffer [BATCH_SIZE].
             rng_seed: Random seed for initialization. Should be different each call
                      (e.g., training step counter) for varied tracks.
+            workspace_ptr: Optional workspace pointer (unused).
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin

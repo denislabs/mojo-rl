@@ -10,8 +10,8 @@ Key advantages over naive discretization:
 - Multiple tilings provide robustness
 
 Example usage:
-    from core.tile_coding import TileCoding, make_cartpole_tile_coding
-    from agents.tiled_qlearning import TiledQLearningAgent
+    from mojo_rl.core.tile_coding import TileCoding, make_cartpole_tile_coding
+    from mojo_rl.agents.tiled_qlearning import TiledQLearningAgent
 
     var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
     var agent = TiledQLearningAgent(
@@ -29,8 +29,8 @@ Example usage:
 """
 
 from std.random import random_float64, random_si64
-from core.tile_coding import TileCoding, TiledWeights
-from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core.tile_coding import TileCoding, TiledWeights
+from mojo_rl.core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
 
 
 struct TiledQLearningAgent:
@@ -101,7 +101,7 @@ struct TiledQLearningAgent:
         """
         if random_float64() < self.epsilon:
             # Explore: random action (random_si64 is inclusive on both ends)
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             # Exploit: best action
             return self.weights.get_best_action(tiles)
@@ -110,10 +110,10 @@ struct TiledQLearningAgent:
         """Get greedy action (no exploration).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Action with highest Q-value
+            Action with highest Q-value.
         """
         return self.weights.get_best_action(tiles)
 
@@ -121,11 +121,11 @@ struct TiledQLearningAgent:
         """Get Q-value for state-action pair.
 
         Args:
-            tiles: Active tile indices
-            action: Action index
+            tiles: Active tile indices.
+            action: Action index.
 
         Returns:
-            Q(s, a)
+            Q(s, a).
         """
         return self.weights.get_value(tiles, action)
 
@@ -133,10 +133,10 @@ struct TiledQLearningAgent:
         """Get maximum Q-value over all actions.
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            max_a Q(s, a)
+            Max_a Q(s, a).
         """
         var best_action = self.weights.get_best_action(tiles)
         return self.weights.get_value(tiles, best_action)
@@ -155,11 +155,11 @@ struct TiledQLearningAgent:
                    r for terminal
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
-            next_tiles: Active tiles for next state
-            done: Whether episode terminated
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_tiles: Active tiles for next state.
+            done: Whether episode terminated.
         """
         var target: Float64
         if done:
@@ -299,7 +299,7 @@ struct TiledQLearningAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _obs_to_f64(result[0])^
+                obs_f64 = _obs_to_f64(result[0])
 
                 if done:
                     break
@@ -356,7 +356,7 @@ struct TiledSARSAAgent:
     fn select_action(self, tiles: List[Int]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(tiles)
 
@@ -534,7 +534,7 @@ struct TiledSARSAAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _obs_to_f64(result[0])^
+                obs_f64 = _obs_to_f64(result[0])
 
                 if done:
                     break
@@ -581,15 +581,15 @@ struct TiledSARSALambdaAgent:
         """Initialize tiled SARSA(λ) agent.
 
         Args:
-            tile_coding: TileCoding instance
-            num_actions: Number of actions
-            learning_rate: Learning rate α
-            discount_factor: Discount γ
-            lambda_: Eligibility trace decay (0 = SARSA, 1 = Monte Carlo)
-            epsilon: Initial exploration rate
-            epsilon_decay: Epsilon decay per episode
-            epsilon_min: Minimum epsilon
-            init_value: Initial weight value
+            tile_coding: TileCoding instance.
+            num_actions: Number of actions.
+            learning_rate: Learning rate α.
+            discount_factor: Discount γ.
+            lambda_: Eligibility trace decay (0 = SARSA, 1 = Monte Carlo).
+            epsilon: Initial exploration rate.
+            epsilon_decay: Epsilon decay per episode.
+            epsilon_min: Minimum epsilon.
+            init_value: Initial weight value.
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -608,16 +608,16 @@ struct TiledSARSALambdaAgent:
 
         # Initialize eligibility traces
         self.traces = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_traces = List[Float64]()
-            for t in range(self.num_tiles):
+            for _ in range(self.num_tiles):
                 action_traces.append(0.0)
             self.traces.append(action_traces^)
 
     fn select_action(self, tiles: List[Int]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
-            return Int(random_si64(0, self.num_actions - 1))
+            return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(tiles)
 
@@ -816,7 +816,7 @@ struct TiledSARSALambdaAgent:
                         break
 
                 episode_reward += Float64(reward)
-                obs_f64 = _obs_to_f64(result[0])^
+                obs_f64 = _obs_to_f64(result[0])
 
                 if done:
                     break

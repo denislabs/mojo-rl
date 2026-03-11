@@ -34,8 +34,14 @@ fn quat_mul[
     """Multiply two quaternions: result = a * b.
 
     Args:
-        ax, ay, az, aw: First quaternion [x, y, z, w].
-        bx, by, bz, bw: Second quaternion [x, y, z, w].
+        ax: First quaternion x.
+        ay: First quaternion y.
+        az: First quaternion z.
+        aw: First quaternion w.
+        bx: Second quaternion x.
+        by: Second quaternion y.
+        bz: Second quaternion z.
+        bw: Second quaternion w.
 
     Returns:
         Product quaternion [x, y, z, w].
@@ -64,7 +70,10 @@ fn quat_conjugate[
     """Compute quaternion conjugate (inverse for unit quaternions).
 
     Args:
-        qx, qy, qz, qw: Quaternion [x, y, z, w].
+        qx: Quaternion x.
+        qy: Quaternion y.
+        qz: Quaternion z.
+        qw: Quaternion w.
 
     Returns:
         Conjugate quaternion [-x, -y, -z, w].
@@ -95,8 +104,13 @@ fn quat_rotate[
     where q = [qx, qy, qz, qw]
 
     Args:
-        qx, qy, qz, qw: Unit quaternion [x, y, z, w].
-        vx, vy, vz: Vector to rotate.
+        qx: Unit quaternion x.
+        qy: Unit quaternion y.
+        qz: Unit quaternion z.
+        qw: Unit quaternion w.
+        vx: Vector to rotate x.
+        vy: Vector to rotate y.
+        vz: Vector to rotate z.
 
     Returns:
         Rotated vector (rx, ry, rz).
@@ -130,7 +144,10 @@ fn quat_normalize[
     """Normalize a quaternion to unit length.
 
     Args:
-        qx, qy, qz, qw: Quaternion [x, y, z, w].
+        qx: Quaternion x.
+        qy: Quaternion y.
+        qz: Quaternion z.
+        qw: Quaternion w.
 
     Returns:
         Normalized unit quaternion.
@@ -190,7 +207,10 @@ fn quat_to_axis_angle[
     """Convert quaternion to axis-angle representation.
 
     Args:
-        qx, qy, qz, qw: Quaternion [x, y, z, w].
+        qx: Quaternion x.
+        qy: Quaternion y.
+        qz: Quaternion z.
+        qw: Quaternion w.
 
     Returns:
         (axis_x, axis_y, axis_z, angle) where angle is in radians.
@@ -235,8 +255,13 @@ fn quat_integrate[
     where omega is the quaternion [wx, wy, wz, 0].
 
     Args:
-        qx, qy, qz, qw: Current orientation quaternion.
-        wx, wy, wz: Angular velocity in world frame.
+        qx: Current orientation quaternion x.
+        qy: Current orientation quaternion y.
+        qz: Current orientation quaternion z.
+        qw: Current orientation quaternion w.
+        wx: Angular velocity x in world frame.
+        wy: Angular velocity y in world frame.
+        wz: Angular velocity z in world frame.
         dt: Time step.
 
     Returns:

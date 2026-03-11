@@ -25,8 +25,8 @@ References:
 - Mnih et al. (2016): "Asynchronous Methods for Deep RL" (A3C/A2C)
 
 Example usage:
-    from core.tile_coding import make_cartpole_tile_coding
-    from agents.actor_critic import ActorCriticAgent
+    from mojo_rl.core.tile_coding import make_cartpole_tile_coding
+    from mojo_rl.agents.actor_critic import ActorCriticAgent
 
     var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
     var agent = ActorCriticAgent(
@@ -46,9 +46,9 @@ Example usage:
 
 from std.math import exp, log
 from std.random import random_float64
-from core.tile_coding import TileCoding
-from core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
-from core.utils.softmax import softmax, sample_from_probs, argmax_probs
+from mojo_rl.core.tile_coding import TileCoding
+from mojo_rl.core import BoxDiscreteActionEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core.utils.softmax import softmax, sample_from_probs, argmax_probs
 
 
 struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -105,7 +105,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Initialize actor parameters (policy)
         self.theta = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_params = List[Float64]()
             for _ in range(self.num_tiles):
                 action_params.append(init_value)
@@ -485,7 +485,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         # Initialize actor parameters
         self.theta = List[List[Float64]]()
         self.actor_traces = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_params = List[Float64]()
             var action_traces = List[Float64]()
             for _ in range(self.num_tiles):
@@ -918,7 +918,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Initialize actor
         self.theta = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_params = List[Float64]()
             for _ in range(self.num_tiles):
                 action_params.append(init_value)

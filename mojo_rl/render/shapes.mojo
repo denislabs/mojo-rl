@@ -52,7 +52,7 @@ fn make_box(half_width: Float64, half_height: Float64) -> List[Vec2]:
     Returns:
         List of 4 vertices.
     """
-    return make_rect(half_width * 2.0, half_height * 2.0, centered=True)^
+    return make_rect(half_width * 2.0, half_height * 2.0, centered=True)
 
 
 fn make_triangle(
@@ -79,7 +79,7 @@ fn make_triangle(
         vertices.append(Vec2(0, 0))
         vertices.append(Vec2(base, 0))
         vertices.append(Vec2(base / 2.0, height))
-    return vertices^^
+    return vertices^
 
 
 fn make_circle(radius: Float64, segments: Int = 32) -> List[Vec2]:
@@ -129,7 +129,7 @@ fn make_hexagon(radius: Float64) -> List[Vec2]:
     Returns:
         List of 6 vertices.
     """
-    return make_regular_polygon(radius, 6)^
+    return make_regular_polygon(radius, 6)
 
 
 # =============================================================================
@@ -225,7 +225,7 @@ fn make_wheel(radius: Float64, segments: Int = 16) -> List[Vec2]:
     Returns:
         List of vertices.
     """
-    return make_circle(radius, segments)^
+    return make_circle(radius, segments)
 
 
 fn make_capsule(

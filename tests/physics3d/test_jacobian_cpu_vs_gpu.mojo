@@ -20,26 +20,31 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from std.gpu import block_idx
 
-from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from physics3d.kinematics.forward_kinematics import (
+from mojo_rl.physics3d.types import Model, Data, _max_one, ConeType
+from mojo_rl.physics3d.joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+    JNT_BALL,
+    JNT_FREE,
+)
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
     forward_kinematics_gpu,
     compute_body_velocities_gpu,
 )
-from physics3d.dynamics.jacobian import (
+from mojo_rl.physics3d.dynamics.jacobian import (
     compute_cdof,
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
     compute_contact_jacobian_row,
 )
-from physics3d.dynamics.bias_forces import (
+from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne,
     compute_bias_forces_rne_gpu,
 )
-from physics3d.dynamics.mass_matrix import (
+from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
     ldl_factor,
@@ -49,17 +54,17 @@ from physics3d.dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
 )
-from physics3d.collision.contact_detection import (
+from mojo_rl.physics3d.collision.contact_detection import (
     detect_contacts,
     detect_contacts_gpu,
 )
-from physics3d.constraints.constraint_builder import build_constraints
-from physics3d.constraints.constraint_data import ConstraintData
-from physics3d.constraints.constraint_builder_gpu import (
+from mojo_rl.physics3d.constraints.constraint_builder import build_constraints
+from mojo_rl.physics3d.constraints.constraint_data import ConstraintData
+from mojo_rl.physics3d.constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
     precompute_contact_normal_gpu,
 )
-from physics3d.gpu.constants import (
+from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     qpos_offset,
@@ -94,11 +99,11 @@ from physics3d.gpu.constants import (
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_SPRINGREF,
 )
-from physics3d.gpu.buffer_utils import (
+from mojo_rl.physics3d.gpu.buffer_utils import (
     create_state_buffer,
 )
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================
@@ -475,8 +480,8 @@ fn jacobian_kernel[
             HalfCheetahModel.MAX_EQUALITY,
             COMPUTE_RHS=False,
             RHS_IDX=0,
-            MAX_TENDON = HalfCheetahModel.MAX_TENDON,
-            NSITE = HalfCheetahModel.NSITE,
+            MAX_TENDON=HalfCheetahModel.MAX_TENDON,
+            NSITE=HalfCheetahModel.NSITE,
         ](
             env,
             c,
@@ -595,7 +600,7 @@ fn compare_jacobian(
 
     var dt_cpu = Scalar[DTYPE](0.01)
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE = HalfCheetahModel.CONE_TYPE](
+    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model_cpu, data_cpu, cdof, M_inv, dt_cpu, constraints
     )
 

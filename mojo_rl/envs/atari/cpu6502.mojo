@@ -14,29 +14,100 @@ Ported from CuLE (BSD-3): cule/atari/m6502.hpp, mmc.hpp, stack.hpp
 
 from .atari_state import AtariState
 from .flags import (
-    FLAG_C, FLAG_Z, FLAG_I, FLAG_D, FLAG_B, FLAG_V, FLAG_N,
+    FLAG_C,
+    FLAG_Z,
+    FLAG_I,
+    FLAG_D,
+    FLAG_B,
+    FLAG_V,
+    FLAG_N,
     RAM_SIZE,
 )
 from .opcodes import (
-    OPCODE_TABLE, OpcodeEntry,
-    ADDR_IMPLIED, ADDR_ACCUMULATOR, ADDR_IMMEDIATE,
-    ADDR_ZERO_PAGE, ADDR_ZERO_PAGE_X, ADDR_ZERO_PAGE_Y,
-    ADDR_ABSOLUTE, ADDR_ABSOLUTE_X, ADDR_ABSOLUTE_Y,
-    ADDR_INDIRECT, ADDR_INDIRECT_X, ADDR_INDIRECT_Y,
+    OPCODE_TABLE,
+    OpcodeEntry,
+    ADDR_IMPLIED,
+    ADDR_ACCUMULATOR,
+    ADDR_IMMEDIATE,
+    ADDR_ZERO_PAGE,
+    ADDR_ZERO_PAGE_X,
+    ADDR_ZERO_PAGE_Y,
+    ADDR_ABSOLUTE,
+    ADDR_ABSOLUTE_X,
+    ADDR_ABSOLUTE_Y,
+    ADDR_INDIRECT,
+    ADDR_INDIRECT_X,
+    ADDR_INDIRECT_Y,
     ADDR_RELATIVE,
-    OP_LDA, OP_LDX, OP_LDY, OP_STA, OP_STX, OP_STY,
-    OP_ADC, OP_SBC, OP_CMP, OP_CPX, OP_CPY,
-    OP_INC, OP_INX, OP_INY, OP_DEC, OP_DEX, OP_DEY,
-    OP_ASL, OP_LSR, OP_ROL, OP_ROR,
-    OP_AND, OP_ORA, OP_EOR, OP_BIT,
-    OP_BCC, OP_BCS, OP_BEQ, OP_BMI, OP_BNE, OP_BPL, OP_BVC, OP_BVS,
-    OP_JMP, OP_JSR, OP_RTS, OP_RTI,
-    OP_PHA, OP_PHP, OP_PLA, OP_PLP,
-    OP_CLC, OP_CLD, OP_CLI, OP_CLV, OP_SEC, OP_SED, OP_SEI,
-    OP_TAX, OP_TAY, OP_TSX, OP_TXA, OP_TXS, OP_TYA,
-    OP_NOP, OP_BRK,
-    OP_LAX, OP_SAX, OP_DCP, OP_ISB, OP_SLO, OP_RLA, OP_SRE, OP_RRA,
-    OP_ANC, OP_ALR, OP_ARR, OP_AXS, OP_KIL,
+    OP_LDA,
+    OP_LDX,
+    OP_LDY,
+    OP_STA,
+    OP_STX,
+    OP_STY,
+    OP_ADC,
+    OP_SBC,
+    OP_CMP,
+    OP_CPX,
+    OP_CPY,
+    OP_INC,
+    OP_INX,
+    OP_INY,
+    OP_DEC,
+    OP_DEX,
+    OP_DEY,
+    OP_ASL,
+    OP_LSR,
+    OP_ROL,
+    OP_ROR,
+    OP_AND,
+    OP_ORA,
+    OP_EOR,
+    OP_BIT,
+    OP_BCC,
+    OP_BCS,
+    OP_BEQ,
+    OP_BMI,
+    OP_BNE,
+    OP_BPL,
+    OP_BVC,
+    OP_BVS,
+    OP_JMP,
+    OP_JSR,
+    OP_RTS,
+    OP_RTI,
+    OP_PHA,
+    OP_PHP,
+    OP_PLA,
+    OP_PLP,
+    OP_CLC,
+    OP_CLD,
+    OP_CLI,
+    OP_CLV,
+    OP_SEC,
+    OP_SED,
+    OP_SEI,
+    OP_TAX,
+    OP_TAY,
+    OP_TSX,
+    OP_TXA,
+    OP_TXS,
+    OP_TYA,
+    OP_NOP,
+    OP_BRK,
+    OP_LAX,
+    OP_SAX,
+    OP_DCP,
+    OP_ISB,
+    OP_SLO,
+    OP_RLA,
+    OP_SRE,
+    OP_RRA,
+    OP_ANC,
+    OP_ALR,
+    OP_ARR,
+    OP_AXS,
+    OP_KIL,
 )
 from .ram import read_ram, write_ram
 from .tia import tia_read, tia_write
@@ -48,8 +119,14 @@ from .cartridge import rom_read, rom_write
 # Memory Access
 # ============================================================================
 
+
 @always_inline
-fn mem_read(state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, addr: UInt16) -> UInt8:
+fn mem_read(
+    state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    addr: UInt16,
+) -> UInt8:
     """Read a byte from the Atari 2600 memory map."""
     var a = Int(addr) & 0x1FFF  # 13-bit address space
 
@@ -65,7 +142,13 @@ fn mem_read(state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, addr: U
 
 
 @always_inline
-fn mem_write(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, addr: UInt16, value: UInt8):
+fn mem_write(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    addr: UInt16,
+    value: UInt8,
+):
     """Write a byte to the Atari 2600 memory map."""
     var a = Int(addr) & 0x1FFF
 
@@ -84,29 +167,48 @@ fn mem_write(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, ad
 # Stack Operations
 # ============================================================================
 
+
 @always_inline
-fn push_byte(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, value: UInt8):
+fn push_byte(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    value: UInt8,
+):
     """Push a byte onto the stack."""
     mem_write(state, rom, rom_size, UInt16(0x0100) + UInt16(state.sp), value)
     state.sp -= 1
 
 
 @always_inline
-fn pull_byte(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) -> UInt8:
+fn pull_byte(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+) -> UInt8:
     """Pull a byte from the stack."""
     state.sp += 1
     return mem_read(state, rom, rom_size, UInt16(0x0100) + UInt16(state.sp))
 
 
 @always_inline
-fn push_word(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, value: UInt16):
+fn push_word(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    value: UInt16,
+):
     """Push a 16-bit word onto the stack (high byte first)."""
     push_byte(state, rom, rom_size, UInt8((value >> 8) & 0xFF))
     push_byte(state, rom, rom_size, UInt8(value & 0xFF))
 
 
 @always_inline
-fn pull_word(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) -> UInt16:
+fn pull_word(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+) -> UInt16:
     """Pull a 16-bit word from the stack (low byte first)."""
     var lo = UInt16(pull_byte(state, rom, rom_size))
     var hi = UInt16(pull_byte(state, rom, rom_size))
@@ -116,6 +218,7 @@ fn pull_word(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) ->
 # ============================================================================
 # Flag Helpers
 # ============================================================================
+
 
 @always_inline
 fn set_flag(mut state: AtariState, flag: UInt8, value: Bool):
@@ -141,10 +244,14 @@ fn update_nz(mut state: AtariState, value: UInt8):
 # Addressing Mode Resolution
 # ============================================================================
 
+
 @always_inline
 fn resolve_operand_addr(
-    state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int,
-    mode: UInt8, pc_after_opcode: UInt16
+    state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    mode: UInt8,
+    pc_after_opcode: UInt16,
 ) -> UInt16:
     """Resolve the effective address for the given addressing mode.
 
@@ -207,8 +314,13 @@ fn resolve_operand_addr(
 # Instruction Execution
 # ============================================================================
 
+
 @always_inline
-fn execute_one(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) -> UInt8:
+fn execute_one(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+) -> UInt8:
     """Execute one instruction. Returns the number of CPU cycles consumed."""
     var opcode_byte = mem_read(state, rom, rom_size, state.pc)
     var table = materialize[OPCODE_TABLE]()
@@ -570,10 +682,12 @@ fn execute_one(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) 
         state.a = (state.a >> 1) | carry_in
         update_nz(state, state.a)
         set_flag(state, FLAG_C, (state.a & 0x40) != 0)
-        set_flag(state, FLAG_V, ((state.a & 0x40) ^ ((state.a & 0x20) << 1)) != 0)
+        set_flag(
+            state, FLAG_V, ((state.a & 0x40) ^ ((state.a & 0x20) << 1)) != 0
+        )
 
     elif inst == OP_AXS:
-        var val = (state.a & state.x)
+        var val = state.a & state.x
         var operand = mem_read(state, rom, rom_size, addr)
         var result = Int(val) - Int(operand)
         state.x = UInt8(result & 0xFF)
@@ -591,6 +705,7 @@ fn execute_one(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int) 
 # ALU Helpers
 # ============================================================================
 
+
 @always_inline
 fn _adc(mut state: AtariState, operand: UInt8):
     """Add with carry."""
@@ -601,9 +716,7 @@ fn _adc(mut state: AtariState, operand: UInt8):
 
     set_flag(state, FLAG_C, result > 0xFF)
     # Overflow: positive + positive = negative, or negative + negative = positive
-    set_flag(state, FLAG_V,
-        ((~(a16 ^ op16)) & (a16 ^ result) & 0x80) != 0
-    )
+    set_flag(state, FLAG_V, ((~(a16 ^ op16)) & (a16 ^ result) & 0x80) != 0)
     state.a = UInt8(result & 0xFF)
     update_nz(state, state.a)
 
@@ -624,7 +737,12 @@ fn _compare(mut state: AtariState, reg: UInt8, operand: UInt8):
 
 
 @always_inline
-fn _branch(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, addr: UInt16):
+fn _branch(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    addr: UInt16,
+):
     """Execute a branch. addr points to the relative offset byte."""
     var offset = mem_read(state, rom, rom_size, addr)
     var signed_offset: Int
@@ -639,7 +757,12 @@ fn _branch(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int, addr
 # Reset / Init
 # ============================================================================
 
-fn cpu_reset(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
+
+fn cpu_reset(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+):
     """Perform CPU reset — load PC from reset vector ($FFFC-$FFFD)."""
     state.sp = 0xFD
     state.flags = 0x20 | FLAG_I  # IRQ disabled after reset
@@ -652,9 +775,10 @@ fn cpu_reset(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
 # Run One Frame
 # ============================================================================
 
+
 fn _run_scanline(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8],
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     overflow: Int = 0,
 ) -> Int:
@@ -672,6 +796,9 @@ fn _run_scanline(
     HBLANK occupies clocks 0-67, visible area is clocks 68-227.
 
     Args:
+        state: AtariState.
+        rom: ROM data pointer.
+        rom_size: ROM size in bytes.
         overflow: CPU cycles carried over from the previous scanline's
             last instruction (0-6). The beam is already this many cycles
             into the current scanline. Matches ALE's myClocksToEndOfScanLine
@@ -716,7 +843,9 @@ fn _run_scanline(
         if state.wsync:
             state.wsync = False
             if line_cycles < CPU_CLOCKS_PER_LINE:
-                riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
+                riot_update_timer(
+                    state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles)
+                )
                 line_cycles = CPU_CLOCKS_PER_LINE
             # If line_cycles >= CPU_CLOCKS_PER_LINE, WSYNC extends into next
             # scanline — keep wsync=True so next _run_scanline handles it.
@@ -732,7 +861,11 @@ fn _run_scanline(
     return line_cycles
 
 
-fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
+fn run_frame(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+):
     """Execute one full frame (~262 scanlines × 76 CPU cycles).
 
     This is the main emulation entry point. After this call:
@@ -743,7 +876,10 @@ fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
     for _ in range(TOTAL_SCANLINES):
         # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if state.paddle_charge < 255 and (state.tia_flags & TIA_PADDLE_GROUND) == 0:
+        if (
+            state.paddle_charge < 255
+            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+        ):
             state.paddle_charge += 1
         var total = _run_scanline(state, rom, rom_size, overflow)
         overflow = total - CPU_CLOCKS_PER_LINE
@@ -754,7 +890,7 @@ fn run_frame(mut state: AtariState, rom: UnsafePointer[UInt8], rom_size: Int):
 
 fn run_frame_with_video(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8],
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
@@ -788,7 +924,10 @@ fn run_frame_with_video(
 
     for _ in range(TOTAL_SCANLINES):
         # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if state.paddle_charge < 255 and (state.tia_flags & TIA_PADDLE_GROUND) == 0:
+        if (
+            state.paddle_charge < 255
+            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+        ):
             state.paddle_charge += 1
 
         var total = _run_scanline(state, rom, rom_size, overflow)
@@ -806,9 +945,14 @@ fn run_frame_with_video(
             visible_line += 1
 
     state.scanline = UInt16(visible_line)  # Persist for next frame
-    state.cpu_cycles = UInt32(overflow)    # Persist overflow for next frame
+    state.cpu_cycles = UInt32(overflow)  # Persist overflow for next frame
     state.frame_number += 1
 
 
 # Import here to avoid circular dependency
-from .flags import TOTAL_SCANLINES, CPU_CLOCKS_PER_LINE, FRAME_WIDTH, TIA_PADDLE_GROUND
+from .flags import (
+    TOTAL_SCANLINES,
+    CPU_CLOCKS_PER_LINE,
+    FRAME_WIDTH,
+    TIA_PADDLE_GROUND,
+)

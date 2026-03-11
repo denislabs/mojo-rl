@@ -10,9 +10,9 @@ Run with:
 
 from std.math import sqrt, pi, abs
 
-from envs.half_cheetah import HalfCheetah
-from envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from envs.half_cheetah.half_cheetah_def import (
+from mojo_rl.envs.half_cheetah import HalfCheetah
+from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from mojo_rl.envs.half_cheetah.half_cheetah_def import (
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -28,10 +28,10 @@ from envs.half_cheetah.half_cheetah_def import (
 comptime NBODY = HalfCheetahModel.NBODY
 comptime CAPSULE_RADIUS: Float64 = 0.046
 
-from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver.pgs_solver import PGSSolver
-from physics3d.solver import NewtonSolver
-from physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
+from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
+from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 
 fn body_name(id: Int) -> String:

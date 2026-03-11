@@ -12,8 +12,8 @@ from std.math import sqrt
 
 from std.gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.pendulum import PendulumV2, PConstants
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.envs.pendulum import PendulumV2, PConstants
 
 
 # =============================================================================

@@ -3,7 +3,7 @@
 # =============================================================================
 
 
-from physics2d import LunarLanderLayout, PhysicsState
+from mojo_rl.physics2d import LunarLanderLayout, PhysicsState
 
 
 struct LLConstants:

@@ -8,8 +8,8 @@ directly (like CartPole), with game physics inlined in the GPU kernels.
 """
 
 from std.memory import alloc
-from core import State, Action
-from render import Renderer2D
+from mojo_rl.core import State, Action
+from mojo_rl.render import Renderer2D
 
 from .colors import SCREEN_W, SCREEN_H, PIXEL_OBS_DIM
 

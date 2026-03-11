@@ -1,6 +1,6 @@
 """Test native Pong environment — GPU path."""
 
-from envs.arcade_games.pong import PongEnv
+from mojo_rl.envs.arcade_games.pong import PongEnv
 from std.gpu.host import DeviceContext
 
 comptime dtype = DType.float32
@@ -30,9 +30,7 @@ fn main() raises:
 
     # Reset all environments
     print("\n--- Reset ---")
-    PongEnv[DType.float64].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-        ctx, states
-    )
+    PongEnv[DType.float64].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states)
     ctx.synchronize()
     print("Reset complete.")
 
@@ -58,7 +56,14 @@ fn main() raises:
     print("\n--- Step 100 times (NOOP) ---")
     for step in range(100):
         PongEnv[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            ctx, states, actions, rewards, dones, terminated, obs, rng_seed=UInt64(step)
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs,
+            rng_seed=UInt64(step),
         )
     ctx.synchronize()
 
@@ -100,7 +105,13 @@ fn main() raises:
     var total_dones = 0
     for step in range(5000):
         PongEnv[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            ctx, states, actions, rewards, dones, terminated, obs,
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs,
             rng_seed=UInt64(step + 100),
         )
 

@@ -11,7 +11,7 @@ Reference: Schaul et al., "Prioritized Experience Replay" (2015)
 """
 
 
-struct SumTree(Movable):
+struct SumTree[DTYPE: DType](Movable):
     """Binary sum-tree for efficient priority-based sampling.
 
     The tree is stored in a flat array where:
@@ -30,7 +30,7 @@ struct SumTree(Movable):
         var idx = tree.sample(target=0.5)  # Sample proportionally
     """
 
-    var tree: List[Float64]  # Internal tree nodes + leaves
+    var tree: List[Scalar[Self.DTYPE]]  # Internal tree nodes + leaves
     var capacity: Int  # Number of leaf nodes
     var write_ptr: Int  # Next write position in leaves
     var size: Int  # Current number of valid entries
@@ -47,7 +47,7 @@ struct SumTree(Movable):
 
         # Total tree size: 2 * capacity - 1 (complete binary tree)
         var tree_size = 2 * capacity - 1
-        self.tree = List[Float64]()
+        self.tree = List[Scalar[Self.DTYPE]]()
         for _ in range(tree_size):
             self.tree.append(0.0)
 
@@ -58,7 +58,7 @@ struct SumTree(Movable):
         self.write_ptr = take.write_ptr
         self.size = take.size
 
-    fn _propagate(mut self, idx: Int, change: Float64):
+    fn _propagate(mut self, idx: Int, change: Scalar[Self.DTYPE]):
         """Propagate priority change up to root.
 
         Args:
@@ -93,12 +93,12 @@ struct SumTree(Movable):
         """
         return tree_idx - self.capacity + 1
 
-    fn update(mut self, leaf_idx: Int, priority: Float64):
+    fn update(mut self, leaf_idx: Int, priority: Scalar[Self.DTYPE]):
         """Update priority at leaf index.
 
         Args:
-            leaf_idx: Leaf index (0 to capacity-1)
-            priority: New priority value (must be positive)
+            leaf_idx: Leaf index (0 to capacity-1).
+            priority: New priority value (must be positive).
         """
         var tree_idx = self._leaf_to_tree_idx(leaf_idx)
         var change = priority - self.tree[tree_idx]
@@ -108,16 +108,16 @@ struct SumTree(Movable):
         if tree_idx > 0:
             self._propagate(tree_idx, change)
 
-    fn add(mut self, priority: Float64) -> Int:
+    fn add(mut self, priority: Scalar[Self.DTYPE]) -> Int:
         """Add a new priority and return its leaf index.
 
         Uses circular buffer - overwrites oldest entry when full.
 
         Args:
-            priority: Priority value for new entry
+            priority: Priority value for new entry.
 
         Returns:
-            Leaf index where priority was stored
+            Leaf index where priority was stored.
         """
         var leaf_idx = self.write_ptr
         self.update(leaf_idx, priority)
@@ -128,29 +128,29 @@ struct SumTree(Movable):
 
         return leaf_idx
 
-    fn get(self, leaf_idx: Int) -> Float64:
+    fn get(self, leaf_idx: Int) -> Scalar[Self.DTYPE]:
         """Get priority at leaf index.
 
         Args:
-            leaf_idx: Leaf index (0 to capacity-1)
+            leaf_idx: Leaf index (0 to capacity-1).
 
         Returns:
-            Priority value at that index
+            Priority value at that index.
         """
         var tree_idx = self._leaf_to_tree_idx(leaf_idx)
         return self.tree[tree_idx]
 
-    fn sample(self, target: Float64) -> Int:
+    fn sample(self, target: Scalar[Self.DTYPE]) -> Int:
         """Sample a leaf index proportional to priorities.
 
         Traverses tree from root, going left if target <= left child sum,
         otherwise going right (subtracting left sum from target).
 
         Args:
-            target: Random value in [0, total_sum)
+            target: Random value in [0, total_sum).
 
         Returns:
-            Leaf index selected proportionally to priorities
+            Leaf index selected proportionally to priorities.
         """
         var idx = 0  # Start at root
         var remaining = target
@@ -172,34 +172,34 @@ struct SumTree(Movable):
 
         return self._tree_to_leaf_idx(idx)
 
-    fn total_sum(self) -> Float64:
+    fn total_sum(self) -> Scalar[Self.DTYPE]:
         """Get total sum of all priorities (root value).
 
         Returns:
-            Sum of all priorities in the tree
+            Sum of all priorities in the tree.
         """
         return self.tree[0]
 
-    fn max_priority(self) -> Float64:
+    fn max_priority(self) -> Scalar[Self.DTYPE]:
         """Get maximum priority among all leaves.
 
         Returns:
-            Maximum priority value
+            Maximum priority value.
         """
-        var max_p: Float64 = 0.0
+        var max_p: Scalar[Self.DTYPE] = 0.0
         for i in range(self.size):
             var tree_idx = self._leaf_to_tree_idx(i)
             if self.tree[tree_idx] > max_p:
                 max_p = self.tree[tree_idx]
         return max_p
 
-    fn min_priority(self) -> Float64:
+    fn min_priority(self) -> Scalar[Self.DTYPE]:
         """Get minimum non-zero priority among all leaves.
 
         Returns:
-            Minimum priority value (or large value if empty)
+            Minimum priority value (or large value if empty).
         """
-        var min_p: Float64 = 1e10
+        var min_p: Scalar[Self.DTYPE] = 1e10
         for i in range(self.size):
             var tree_idx = self._leaf_to_tree_idx(i)
             var p = self.tree[tree_idx]

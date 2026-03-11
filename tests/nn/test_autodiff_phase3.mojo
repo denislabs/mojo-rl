@@ -12,8 +12,8 @@ Run with:
 from std.random import seed, random_float64
 from std.math import abs as math_abs, exp, log, tanh, sqrt
 
-from nn.constants import dtype
-from nn.autodiff import (
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.autodiff import (
     AutoDiffChain,
     MishOp,
     Scale,
@@ -71,6 +71,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # Finite-difference gradient check helper
 # =============================================================================
 
+
 fn finite_diff_check[
     Op: MishOp
 ](
@@ -92,21 +93,17 @@ fn finite_diff_check[
 fn fd_grad_check_generic[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    eval_fn: fn (
+    eval_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         mut LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    vjp_fn: fn (
+    vjp_fn: fn(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-        mut LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
-        ],
+        mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -193,9 +190,11 @@ fn fd_grad_check_generic[
         # numerical grad = sum_j(go[j] * (f_plus[j] - f_minus[j]) / (2*eps))
         var num_grad: Float64 = 0.0
         for j in range(BATCH * OUT_DIM):
-            num_grad += Float64(go_data[j]) * (
-                Float64(out_plus[j]) - Float64(out_minus[j])
-            ) / (2.0 * eps)
+            num_grad += (
+                Float64(go_data[j])
+                * (Float64(out_plus[j]) - Float64(out_minus[j]))
+                / (2.0 * eps)
+            )
 
         var analytic = Float64(gi_data[idx])
         var err = math_abs(analytic - num_grad)
@@ -208,6 +207,7 @@ fn fd_grad_check_generic[
 # =============================================================================
 # Test 1: MishOp
 # =============================================================================
+
 
 fn test_mish() -> Int:
     print_header("MishOp forward + gradient check")
@@ -229,18 +229,18 @@ fn test_mish() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -273,6 +273,7 @@ fn test_mish() -> Int:
 # Test 2: Scale
 # =============================================================================
 
+
 fn test_scale() -> Int:
     print_header("Scale forward + gradient check")
     var fails = 0
@@ -292,15 +293,15 @@ fn test_scale() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Op.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
@@ -336,6 +337,7 @@ fn test_scale() -> Int:
 # Test 3: ElemMul
 # =============================================================================
 
+
 fn test_elem_mul() -> Int:
     print_header("ElemMul forward + gradient check")
     var fails = 0
@@ -355,18 +357,18 @@ fn test_elem_mul() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
     var p_t = LayoutTensor[dtype, Layout.row_major(DIM), MutAnyOrigin](
         params.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -397,6 +399,7 @@ fn test_elem_mul() -> Int:
 # Test 4: ReduceSum
 # =============================================================================
 
+
 fn test_reduce_sum() -> Int:
     print_header("ReduceSum forward + gradient check")
     var fails = 0
@@ -417,15 +420,15 @@ fn test_reduce_sum() -> Int:
     var out_data = make_list(BATCH * 1)
     var cache_data = make_list(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Op.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
@@ -461,6 +464,7 @@ fn test_reduce_sum() -> Int:
 # Test 5: ReduceMean
 # =============================================================================
 
+
 fn test_reduce_mean() -> Int:
     print_header("ReduceMean forward + gradient check")
     var fails = 0
@@ -477,15 +481,15 @@ fn test_reduce_mean() -> Int:
     var out_data = make_list(BATCH * 1)
     var cache_data = make_list(0)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Op.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
@@ -521,6 +525,7 @@ fn test_reduce_mean() -> Int:
 # Test 6: SoftmaxOp
 # =============================================================================
 
+
 fn test_softmax() -> Int:
     print_header("SoftmaxOp forward + gradient check")
     var fails = 0
@@ -540,18 +545,18 @@ fn test_softmax() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * DIM)
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
-    var p_t = LayoutTensor[dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin](
-        params.unsafe_ptr()
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
     )
-    var c_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](cache_data.unsafe_ptr())
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
+    var p_t = LayoutTensor[
+        dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        cache_data.unsafe_ptr()
+    )
 
     Op.eval[BATCH](inp_t, out_t, p_t, c_t)
 
@@ -586,6 +591,7 @@ fn test_softmax() -> Int:
 # Test 7: LayerNormOp
 # =============================================================================
 
+
 fn test_layer_norm() -> Int:
     print_header("LayerNormOp forward + gradient check")
     var fails = 0
@@ -609,12 +615,12 @@ fn test_layer_norm() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * (DIM + 1))
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
     var p_t = LayoutTensor[
         dtype, Layout.row_major(Op.PARAM_SIZE), MutAnyOrigin
     ](params.unsafe_ptr())
@@ -662,6 +668,7 @@ fn test_layer_norm() -> Int:
 # Test 8: RMSNormOp
 # =============================================================================
 
+
 fn test_rms_norm() -> Int:
     print_header("RMSNormOp forward + gradient check")
     var fails = 0
@@ -684,12 +691,12 @@ fn test_rms_norm() -> Int:
     var out_data = make_list(BATCH * DIM)
     var cache_data = make_list(BATCH * (DIM + 1))
 
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](inp.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](out_data.unsafe_ptr())
+    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        inp.unsafe_ptr()
+    )
+    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        out_data.unsafe_ptr()
+    )
     var p_t = LayoutTensor[dtype, Layout.row_major(DIM), MutAnyOrigin](
         params.unsafe_ptr()
     )
@@ -714,9 +721,7 @@ fn test_rms_norm() -> Int:
     # Gradient check
     seed(51)
     var params2 = make_rand_list(DIM)
-    var max_err = fd_grad_check_generic[
-        BATCH, DIM, DIM, DIM, Op.CACHE_SIZE
-    ](
+    var max_err = fd_grad_check_generic[BATCH, DIM, DIM, DIM, Op.CACHE_SIZE](
         Op.eval[BATCH],
         Op.vjp[BATCH],
         inp,
@@ -733,6 +738,7 @@ fn test_rms_norm() -> Int:
 # Test 9: AutoDiffChain composition test
 # =============================================================================
 
+
 fn test_chain_composition() -> Int:
     print_header("AutoDiffChain composition with new ops")
     var fails = 0
@@ -747,9 +753,7 @@ fn test_chain_composition() -> Int:
     check(Chain2.IN_DIM == 3, "MatMul->LayerNorm IN_DIM == 3", fails)
     check(Chain2.OUT_DIM == 4, "MatMul->LayerNorm OUT_DIM == 4", fails)
     # PARAM_SIZE = MatMul(3*4=12) + LayerNorm(2*4=8) = 20
-    check(
-        Chain2.PARAM_SIZE == 20, "MatMul->LayerNorm PARAM_SIZE == 20", fails
-    )
+    check(Chain2.PARAM_SIZE == 20, "MatMul->LayerNorm PARAM_SIZE == 20", fails)
 
     # Chain: MatMul[3,4] -> RMSNormOp[4] -> MishOp[4]
     comptime Chain3 = AutoDiffChain[MatMul[3, 4], RMSNormOp[4], MishOp[4]]
@@ -773,6 +777,7 @@ fn test_chain_composition() -> Int:
 # =============================================================================
 # main
 # =============================================================================
+
 
 fn main():
     print("=" * 70)

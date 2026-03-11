@@ -4,8 +4,8 @@ This module defines the state representation for the GPU-enabled CarRacing envir
 """
 
 from std.math import sqrt, pi
-
-from core import State
+from layout import Layout, LayoutTensor
+from mojo_rl.core import State
 
 
 @fieldwise_init
@@ -143,17 +143,31 @@ struct CarRacingState[DTYPE: DType](
         from layout import Layout, LayoutTensor
 
         var result = CarRacingState[Self.DTYPE]()
-        result.x = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 0])
-        result.y = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 1])
-        result.angle = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 2])
-        result.vx = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 3])
-        result.vy = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 4])
-        result.angular_velocity = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 5])
-        result.wheel_angle_fl = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 6])
-        result.wheel_angle_fr = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 7])
-        result.wheel_omega_fl = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 8])
-        result.wheel_omega_fr = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 9])
-        result.wheel_omega_rl = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 10])
-        result.wheel_omega_rr = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 11])
-        result.speed = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 12])
+        result.x = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 0])
+        result.y = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 1])
+        result.angle = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 2])
+        result.vx = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 3])
+        result.vy = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 4])
+        result.angular_velocity = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 5]
+        )
+        result.wheel_angle_fl = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 6]
+        )
+        result.wheel_angle_fr = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 7]
+        )
+        result.wheel_omega_fl = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 8]
+        )
+        result.wheel_omega_fr = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 9]
+        )
+        result.wheel_omega_rl = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 10]
+        )
+        result.wheel_omega_rr = rebind[Scalar[Self.DTYPE]](
+            state[env, OBS_OFFSET + 11]
+        )
+        result.speed = rebind[Scalar[Self.DTYPE]](state[env, OBS_OFFSET + 12])
         return result^

@@ -14,9 +14,9 @@ Expected results:
 - PER samples landing/crash transitions more frequently
 """
 
-from envs import LunarLanderEnv
-from deep_agents.dqn import DQNAgent
-from deep_agents.dqn_per import DQNPERAgent
+from mojo_rl.envs import LunarLanderEnv
+from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.dqn_per import DQNPERAgent
 
 
 fn main() raises:

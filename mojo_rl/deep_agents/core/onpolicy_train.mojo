@@ -35,7 +35,11 @@ Usage — original OnPolicyAgent style (A2C):
     var metrics = run_onpolicy_continuous_train(agent, env, num_updates=1000)
 """
 
-from core import TrainingMetrics, BoxDiscreteActionEnv, BoxContinuousActionEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+)
 from .checkpoint_trait import Checkpointable
 
 
@@ -370,16 +374,13 @@ trait OnPolicyDiscreteAgent:
         """Collect exactly rollout_len steps into cpu_state rollout buffers."""
         ...
 
-    fn compute_advantages(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> None:
+    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         """Compute GAE advantages and returns from the collected rollout."""
         ...
 
-    fn update_epochs(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> Float64:
-        """Update actor/critic over multiple epochs. Returns mean policy loss."""
+    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+        """Update actor/critic over multiple epochs. Returns mean policy loss.
+        """
         ...
 
     fn select_greedy_action(
@@ -416,16 +417,13 @@ trait OnPolicyContinuousAgent:
         """Collect exactly rollout_len steps into cpu_state rollout buffers."""
         ...
 
-    fn compute_advantages(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> None:
+    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         """Compute GAE advantages and returns from the collected rollout."""
         ...
 
-    fn update_epochs(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> Float64:
-        """Update actor/critic over multiple epochs. Returns mean policy loss."""
+    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+        """Update actor/critic over multiple epochs. Returns mean policy loss.
+        """
         ...
 
     fn select_greedy_action(

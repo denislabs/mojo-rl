@@ -12,7 +12,11 @@ Run with:
 from std.gpu.host import DeviceContext
 from std.math import sqrt
 
-from envs.lunar_lander_v2_gpu import LunarLander, STATE_SIZE_VAL, OBS_OFFSET
+from mojo_rl.envs.lunar_lander_v2_gpu import (
+    LunarLander,
+    STATE_SIZE_VAL,
+    OBS_OFFSET,
+)
 
 # Constants
 comptime SCALE: Float64 = 30.0
@@ -116,7 +120,12 @@ fn test_free_fall_comparison() raises:
             ctx.synchronize()
 
             LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
             )
             ctx.synchronize()
 
@@ -207,7 +216,12 @@ fn test_main_engine_comparison() raises:
             ctx.synchronize()
 
             LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
             )
             ctx.synchronize()
 
@@ -292,7 +306,12 @@ fn test_side_engine_comparison() raises:
             ctx.synchronize()
 
             LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
             )
             ctx.synchronize()
 

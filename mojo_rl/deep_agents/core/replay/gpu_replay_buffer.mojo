@@ -26,7 +26,7 @@ Usage:
                           sampled_dones_buf, indices_buf)
 """
 
-from nn.constants import dtype, TPB
+from mojo_rl.nn.constants import dtype, TPB
 from .replay_buffer import HeapReplayBuffer
 from ..kernels import (
     store_transitions_kernel,
@@ -516,9 +516,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
                     ],
                 ):
-                    gather_scalars_kernel[
-                        dtype, BATCH, Self.CAPACITY
-                    ](ba, br, bd, rba, rbr, rbd, idx)
+                    gather_scalars_kernel[dtype, BATCH, Self.CAPACITY](
+                        ba, br, bd, rba, rbr, rbd, idx
+                    )
 
                 ctx.enqueue_function[gather_sc_wrapper, gather_sc_wrapper](
                     sampled_actions_t,

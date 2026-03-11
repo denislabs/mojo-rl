@@ -1,4 +1,9 @@
-from core import TabularAgent, DiscreteEnv, RenderableEnv, TrainingMetrics
+from mojo_rl.core import (
+    TabularAgent,
+    DiscreteEnv,
+    RenderableEnv,
+    TrainingMetrics,
+)
 from std.random import random_si64, random_float64
 
 

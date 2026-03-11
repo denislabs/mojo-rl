@@ -1,16 +1,16 @@
-from nn.model import Model
-from nn.optimizer import Optimizer
-from nn.training import (
+from mojo_rl.nn.model import Model
+from mojo_rl.nn.optimizer import Optimizer
+from mojo_rl.nn.training import (
     Network,
     NetworkState,
     NetworkPair,
     GPUNetworkState,
     GPUNetworkPair,
 )
-from deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from nn.constants import dtype
-from nn.initializer import Kaiming
-from deep_agents.core import OffPolicyState, GPUOffPolicyState
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.deep_agents.core import OffPolicyState, GPUOffPolicyState
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 # =============================================================================
@@ -359,7 +359,9 @@ struct SACGPUState[
     var new_ci: DeviceBuffer[dtype]  # [batch_size * CRITIC_IN]
     var new_q: DeviceBuffer[dtype]  # [batch_size * 1]
     var new_q_cache: DeviceBuffer[dtype]  # [batch_size * CRITIC_CS]
-    var dq: DeviceBuffer[dtype]  # [batch_size * 1] min-Q masked gradient (Q1 path)
+    var dq: DeviceBuffer[
+        dtype
+    ]  # [batch_size * 1] min-Q masked gradient (Q1 path)
     var d_new_ci: DeviceBuffer[dtype]  # [batch_size * CRITIC_IN]
     var grad_act: DeviceBuffer[dtype]  # [batch_size * action_dim]
     var actor_grad: DeviceBuffer[dtype]  # [batch_size * ACTOR_OUT]
