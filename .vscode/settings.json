@@ -1,5 +1,8 @@
 {
     "terminal.integrated.env.osx": {
         "PATH": "/Users/denislaboureyras/Documents/mojo-rl/mojo-rl/.pixi/envs/default/bin:${env:PATH}"
-    }
+    },
+    "mojo.lsp.includeDirs": [
+        "."
+    ]
 }

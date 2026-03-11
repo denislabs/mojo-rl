@@ -282,7 +282,7 @@ fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
         print("FP16 results match (within tolerance)!")
 
 
-def main():
+def main() raises:
     print("=" * 70)
     print("          MATMUL BENCHMARK ON APPLE SILICON")
     print("=" * 70)
