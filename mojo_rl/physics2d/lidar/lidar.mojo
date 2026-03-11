@@ -35,10 +35,14 @@ struct Lidar:
         """Compute ray-edge intersection using parametric line intersection.
 
         Args:
-            ray_ox, ray_oy: Ray origin.
-            ray_dx, ray_dy: Ray direction (not normalized).
-            edge_x0, edge_y0: Edge start point.
-            edge_x1, edge_y1: Edge end point.
+            ray_ox: Ray origin x-coordinate.
+            ray_oy: Ray origin y-coordinate.
+            ray_dx: Ray direction x-component (not normalized).
+            ray_dy: Ray direction y-component (not normalized).
+            edge_x0: Edge start point x-coordinate.
+            edge_y0: Edge start point y-coordinate.
+            edge_x1: Edge end point x-coordinate.
+            edge_y1: Edge end point y-coordinate.
 
         Returns:
             Intersection parameter t in [0, 1] if hit, -1 otherwise.
@@ -102,7 +106,8 @@ struct Lidar:
         Args:
             state: Environment state containing terrain edges.
             obs: Output buffer for lidar observations [NUM_LIDAR].
-            hull_x, hull_y: Hull center position.
+            hull_x: Hull center position x-coordinate.
+            hull_y: Hull center position y-coordinate.
             hull_angle: Hull rotation angle.
             lidar_range: Maximum lidar range in world units.
         """
@@ -131,10 +136,10 @@ struct Lidar:
                     break
 
                 var edge_off = EDGES_OFFSET + edge * 6
-                var edge_x0 = state[0, edge_off + 0]
-                var edge_y0 = state[0, edge_off + 1]
-                var edge_x1 = state[0, edge_off + 2]
-                var edge_y1 = state[0, edge_off + 3]
+                var edge_x0 = rebind[Scalar[dtype]](state[0, edge_off + 0])
+                var edge_y0 = rebind[Scalar[dtype]](state[0, edge_off + 1])
+                var edge_x1 = rebind[Scalar[dtype]](state[0, edge_off + 2])
+                var edge_y1 = rebind[Scalar[dtype]](state[0, edge_off + 3])
 
                 var t = Lidar._ray_edge_intersection(
                     hull_x,
@@ -189,7 +194,8 @@ struct Lidar:
             env: Environment index in the batch.
             state: Batched environment states.
             obs: Output observation buffer.
-            hull_x, hull_y: Hull center position.
+            hull_x: Hull center position x-coordinate.
+            hull_y: Hull center position y-coordinate.
             hull_angle: Hull rotation angle.
             lidar_range: Maximum lidar range.
         """
@@ -216,10 +222,10 @@ struct Lidar:
                     break
 
                 var edge_off = EDGES_OFFSET + edge * 6
-                var edge_x0 = state[env, edge_off + 0]
-                var edge_y0 = state[env, edge_off + 1]
-                var edge_x1 = state[env, edge_off + 2]
-                var edge_y1 = state[env, edge_off + 3]
+                var edge_x0 = rebind[Scalar[dtype]](state[env, edge_off + 0])
+                var edge_y0 = rebind[Scalar[dtype]](state[env, edge_off + 1])
+                var edge_x1 = rebind[Scalar[dtype]](state[env, edge_off + 2])
+                var edge_y1 = rebind[Scalar[dtype]](state[env, edge_off + 3])
 
                 var t = Lidar._ray_edge_intersection(
                     hull_x,
@@ -269,9 +275,9 @@ struct Lidar:
 
         # Get hull position and angle (body 0 = hull)
         var hull_off = BODIES_OFFSET  # Hull is body 0
-        var hull_x = state[env, hull_off + 0]  # IDX_X
-        var hull_y = state[env, hull_off + 1]  # IDX_Y
-        var hull_angle = state[env, hull_off + 2]  # IDX_ANGLE
+        var hull_x = rebind[Scalar[dtype]](state[env, hull_off + 0])  # IDX_X
+        var hull_y = rebind[Scalar[dtype]](state[env, hull_off + 1])  # IDX_Y
+        var hull_angle = rebind[Scalar[dtype]](state[env, hull_off + 2])  # IDX_ANGLE
 
         Lidar.raycast_env_gpu[
             BATCH,

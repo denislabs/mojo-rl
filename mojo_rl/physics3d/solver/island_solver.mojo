@@ -130,7 +130,6 @@ fn solve_with_islands[
         return
 
     # ---- Multi-island path: per-island early termination ----
-    var num_rows = constraints.num_rows
     var num_normals = constraints.num_normals
     var num_friction = constraints.num_friction
     var num_limits = constraints.num_limits

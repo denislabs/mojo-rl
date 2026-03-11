@@ -1274,12 +1274,18 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous(
-        mut self, torque: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take 1D continuous action and return (obs_list, reward, done)."""
-        var result = self.step(GymPendulumAction(torque=torque))
-        return (self.get_obs_list(), result[1], result[2])
+        var result = self.step(GymPendulumAction(torque=Float64(action)))
+        var obs = List[Scalar[DTYPE]]()
+        obs.append(Scalar[DTYPE](self.current_obs[0]))
+        obs.append(Scalar[DTYPE](self.current_obs[1]))
+        obs.append(Scalar[DTYPE](self.current_obs[2]))
+        return (obs^, Scalar[DTYPE](result[1]), result[2])
 
     fn step_continuous_vec[
         DTYPE: DType

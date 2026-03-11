@@ -19,22 +19,6 @@ MODULAR DESIGN: This kernel reuses the single-environment methods from:
 - ImpulseSolver.solve_velocity_single_env / solve_position_single_env
 - RevoluteJointSolver.solve_velocity_single_env / solve_position_single_env
 
-Example usage:
-    ```mojo
-    # Instead of multiple kernel launches:
-    SemiImplicitEuler.integrate_velocities_gpu[...]()
-    EdgeTerrainCollision.detect_gpu[...]()
-    for _ in range(6):
-        ImpulseSolver.solve_velocity_gpu[...]()
-        RevoluteJointSolver.solve_velocity_gpu[...]()
-    SemiImplicitEuler.integrate_positions_gpu[...]()
-    for _ in range(2):
-        ImpulseSolver.solve_position_gpu[...]()
-        RevoluteJointSolver.solve_position_gpu[...]()
-
-    # Use:
-    PhysicsStepKernel.step_gpu[..., VEL_ITERATIONS=6, POS_ITERATIONS=2](...)
-    ```
 """
 
 from layout import LayoutTensor, Layout
@@ -530,10 +514,13 @@ struct PhysicsStepKernelParallel:
             joint_counts_buf: Joint counts [BATCH].
             contacts_buf: Sparse contact buffer from parallel collision.
             contact_flags_buf: Contact validity flags from parallel collision.
-            gravity_x, gravity_y: Gravity components.
+            gravity_x: Gravity x-component.
+            gravity_y: Gravity y-component.
             dt: Time step.
-            friction, restitution: Contact parameters.
-            baumgarte, slop: Position correction parameters.
+            friction: Coulomb friction coefficient.
+            restitution: Bounce coefficient.
+            baumgarte: Position correction factor.
+            slop: Penetration allowance.
         """
         comptime TOTAL_CONTACT_SLOTS = NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
 

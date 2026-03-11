@@ -103,8 +103,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
 
         Args:
             ctx: GPU device context.
-            bodies_buf: Body state buffer on GPU.
-            forces_buf: Forces buffer on GPU.
+            state_buf: Body state buffer on GPU.
             gravity_x: Gravity x component.
             gravity_y: Gravity y component.
             dt: Time step.
@@ -126,7 +125,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
 
         Args:
             ctx: GPU device context.
-            bodies_buf: Body state buffer on GPU.
+            state_buf: Body state buffer on GPU.
             dt: Time step.
         """
         ...

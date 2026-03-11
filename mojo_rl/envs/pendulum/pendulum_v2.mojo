@@ -398,6 +398,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             dones: Done flags buffer [BATCH_SIZE].
             rng_seed: Random seed for initialization. Should be different each call
                      (e.g., training step counter) for varied initial states.
+            workspace_ptr: Optional workspace pointer (unused for Pendulum).
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -732,12 +733,18 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.theta_dot)
         return obs^
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE_SC: DType
+    ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
         """Take 1D continuous action (torque) and return (obs, reward, done)."""
-        var result = self._step_with_torque(action)
-        return (self.get_obs_list(), result[1], result[2])
+        var result = self._step_with_torque(Scalar[Self.dtype](action))
+        var obs_self = self.get_obs_list()
+        var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_self))
+        for i in range(len(obs_self)):
+            obs.append(Scalar[DTYPE_SC](obs_self[i]))
+        return (obs^, Scalar[DTYPE_SC](result[1]), result[2])
 
     fn step_continuous_vec[
         DTYPE_VEC: DType

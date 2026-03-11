@@ -98,10 +98,12 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         var theta_dot = state[env, 1]  # THETA_DOT offset
 
         # Compute observation
+        var theta_s = rebind[Scalar[DType.float32]](theta)
+        var theta_dot_s = rebind[Scalar[DType.float32]](theta_dot)
         return PendulumV2State[Self.DTYPE](
-            cos_theta=Scalar[Self.DTYPE](cos(Float64(theta))),
-            sin_theta=Scalar[Self.DTYPE](sin(Float64(theta))),
-            theta_dot=Scalar[Self.DTYPE](theta_dot),
+            cos_theta=Scalar[Self.DTYPE](cos(Float64(theta_s))),
+            sin_theta=Scalar[Self.DTYPE](sin(Float64(theta_s))),
+            theta_dot=Scalar[Self.DTYPE](theta_dot_s),
         )
 
     @staticmethod
@@ -124,7 +126,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
             PendulumV2State with observation values.
         """
         return PendulumV2State[Self.DTYPE](
-            cos_theta=Scalar[Self.DTYPE](obs[env, 0]),
-            sin_theta=Scalar[Self.DTYPE](obs[env, 1]),
-            theta_dot=Scalar[Self.DTYPE](obs[env, 2]),
+            cos_theta=rebind[Scalar[Self.DTYPE]](obs[env, 0]),
+            sin_theta=rebind[Scalar[Self.DTYPE]](obs[env, 1]),
+            theta_dot=rebind[Scalar[Self.DTYPE]](obs[env, 2]),
         )

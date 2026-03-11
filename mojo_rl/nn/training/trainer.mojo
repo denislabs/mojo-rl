@@ -75,7 +75,7 @@ struct Trainer[
 
     @staticmethod
     fn init_state[
-        INITIALIZER: Initializer = Xavier
+        INITIALIZER: Initializer = Xavier[]
     ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER]:
         """Create and initialize a CPU NetworkState.
 
@@ -91,7 +91,7 @@ struct Trainer[
 
     @staticmethod
     fn init_state_gpu[
-        INITIALIZER: Initializer = Xavier
+        INITIALIZER: Initializer = Xavier[]
     ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER]:
         """Create a GPUNetworkState with initialized weights, no persistent CPU state.
 

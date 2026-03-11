@@ -218,7 +218,7 @@ struct DeepA2CAgent[
 
     fn select_action(
         self,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
+        mut obs: InlineArray[Scalar[dtype], Self.OBS],
         training: Bool = True,
     ) -> Tuple[Int, Scalar[dtype], Scalar[dtype]]:
         """Select action from policy and compute log probability and value.
@@ -540,8 +540,13 @@ struct DeepA2CAgent[
         self.buffer_idx = 0
 
         for _ in range(Self.ROLLOUT):
+            var current_obs_copy = InlineArray[Scalar[dtype], Self.OBS](
+                uninitialized=True
+            )
+            for i in range(Self.OBS):
+                current_obs_copy[i] = self._current_obs[i]
             var action_result = self.select_action(
-                self._current_obs, training=True
+                current_obs_copy, training=True
             )
             var action = action_result[0]
             var log_prob = action_result[1]

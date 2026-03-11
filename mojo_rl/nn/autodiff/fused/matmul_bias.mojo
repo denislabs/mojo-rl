@@ -1,9 +1,16 @@
 from ...constants import (
-    dtype, TILE, TPB,
-    MMA_M, MMA_N, MMA_K,
-    MMA_BLOCK_M, MMA_BLOCK_N,
-    MMA_WARPS_M, MMA_WARPS_N,
-    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+    dtype,
+    TILE,
+    TPB,
+    MMA_M,
+    MMA_N,
+    MMA_K,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_WARPS_M,
+    MMA_WARPS_N,
+    MMA_NUM_WARPS,
+    MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, FusedOp, OpID
 from layout import Layout, LayoutTensor
@@ -161,13 +168,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         # Init accumulator with bias
@@ -244,13 +251,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var shared_B = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         if block_y < dx_grid_y:
@@ -334,9 +341,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 if local_row == 0:
                     var total: Scalar[dtype] = 0
                     for r in range(TILE):
-                        total += rebind[Scalar[dtype]](
-                            shared_A[r, local_col]
-                        )
+                        total += rebind[Scalar[dtype]](shared_A[r, local_col])
                     db[global_col] = total
 
     # =========================================================================
@@ -390,13 +395,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 dtype,
                 Layout.row_major(MMA_BLOCK_M, MMA_K),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
                 dtype,
                 Layout.row_major(MMA_K, MMA_BLOCK_N),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -431,16 +436,30 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
 
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -453,13 +472,21 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var c1 = c0 + 1
 
             if r0 < BATCH and c0 < Self.out_dim:
-                output[r0, c0] = rebind[Scalar[dtype]](acc[0]) + rebind[Scalar[dtype]](b[c0])
+                output[r0, c0] = rebind[Scalar[dtype]](acc[0]) + rebind[
+                    Scalar[dtype]
+                ](b[c0])
             if r0 < BATCH and c1 < Self.out_dim:
-                output[r0, c1] = rebind[Scalar[dtype]](acc[1]) + rebind[Scalar[dtype]](b[c1])
+                output[r0, c1] = rebind[Scalar[dtype]](acc[1]) + rebind[
+                    Scalar[dtype]
+                ](b[c1])
             if r1 < BATCH and c0 < Self.out_dim:
-                output[r1, c0] = rebind[Scalar[dtype]](acc[2]) + rebind[Scalar[dtype]](b[c0])
+                output[r1, c0] = rebind[Scalar[dtype]](acc[2]) + rebind[
+                    Scalar[dtype]
+                ](b[c0])
             if r1 < BATCH and c1 < Self.out_dim:
-                output[r1, c1] = rebind[Scalar[dtype]](acc[3]) + rebind[Scalar[dtype]](b[c1])
+                output[r1, c1] = rebind[Scalar[dtype]](acc[3]) + rebind[
+                    Scalar[dtype]
+                ](b[c1])
 
     @always_inline
     @staticmethod
@@ -505,12 +532,16 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                             cache[gr, col] = input[gr, col]
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -602,12 +633,16 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var block_col = Int(block_idx.x) * MMA_BLOCK_N
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -640,15 +675,29 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -694,12 +743,16 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         var block_col = Int(block_idx.x) * BT
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -790,12 +843,16 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var block_col = Int(block_idx.x) * MMA_BLOCK_N  # out_dim
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -826,15 +883,29 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -880,12 +951,16 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         var block_col = Int(block_idx.x) * BT
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -960,7 +1035,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
         ],
     ):
-        """db = sum(grad_output, axis=0). Simple elementwise kernel.
+        """Formula: db = sum(grad_output, axis=0). Simple elementwise kernel.
 
         Grid: ((out_dim + TPB - 1) // TPB,)
         Block: (TPB,)
@@ -1033,7 +1108,11 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 Self.eval_kernel_2x2[BATCH](output, input, W, b, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
-            output, input_immut, W, b, cache,
+            output,
+            input_immut,
+            W,
+            b,
+            cache,
             grid_dim=(grid_x, grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
         )
@@ -1099,7 +1178,9 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 Self.backward_dx_kernel_2x2[BATCH](grad_input, grad_output, W)
 
         ctx.enqueue_function[dx_wrapper, dx_wrapper](
-            grad_input, grad_output_immut, W,
+            grad_input,
+            grad_output_immut,
+            W,
             grid_dim=(dx_grid_x, dx_grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
         )
@@ -1126,7 +1207,9 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
-            dW, cache_immut, grad_output_immut,
+            dW,
+            cache_immut,
+            grad_output_immut,
             grid_dim=(dW_grid_x, dW_grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
         )
@@ -1146,7 +1229,8 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             Self.backward_db_kernel[BATCH](db, grad_output)
 
         ctx.enqueue_function[db_wrapper, db_wrapper](
-            db, grad_output_immut,
+            db,
+            grad_output_immut,
             grid_dim=(db_grid_x,),
             block_dim=(TPB,),
         )

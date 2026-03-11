@@ -368,13 +368,15 @@ struct LunarLander[
         self.terrain_heights = List[Scalar[Self.dtype]](copy.terrain_heights)
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = copy.cached_state
+
+        # Do not copy renderer — reset to null
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
+
         # Initialize physics shapes (critical for physics to work!)
         self._init_physics_shapes()
         # Reset to initialize physics state properly
         self._reset_cpu()
-        # Do not copy renderer — reset to null
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
-        self._renderer_initialized = False
 
     fn __init__(out self, *, deinit take: Self):
         """Move constructor."""
@@ -414,13 +416,15 @@ struct LunarLander[
         self.terrain_heights = take.terrain_heights^
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = take.cached_state
+
+        # Transfer renderer ownership
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
+
         # Initialize physics shapes (critical for physics to work!)
         self._init_physics_shapes()
         # Reset to initialize physics state properly
         self._reset_cpu()
-        # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
 
     # =========================================================================
     # CPU Single-Environment Methods
@@ -943,7 +947,7 @@ struct LunarLander[
         return self.get_state()
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var result = self._step_cpu(action.action_idx)
@@ -1227,11 +1231,9 @@ struct LunarLander[
         var left_contact = obs[6]
         var right_contact = obs[7]
 
-        var y = Float64(self.physics.get_body_y(0, Self.BODY_LANDER))
         var vx = Float64(self.physics.get_body_vx(0, Self.BODY_LANDER))
         var vy = Float64(self.physics.get_body_vy(0, Self.BODY_LANDER))
         var omega = Float64(self.physics.get_body_omega(0, Self.BODY_LANDER))
-        var angle = Float64(self.physics.get_body_angle(0, Self.BODY_LANDER))
 
         var new_shaping = self._compute_shaping()
         var reward = new_shaping - self.prev_shaping
@@ -1336,9 +1338,11 @@ struct LunarLander[
         """Return upper bound for action values (1.0)."""
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE_SC: DType
+    ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
         """Take 1D continuous action (main engine only) and return (obs, reward, done).
 
         For single-dimensional control, interprets action as main engine throttle.
@@ -1351,7 +1355,11 @@ struct LunarLander[
         if m_power > 1.0:
             m_power = 1.0
         var result = self._step_cpu_continuous(m_power, 0.0, 0.0)
-        return (self.get_obs_list(), result[0], result[1])
+        var obs_self = self.get_obs_list()
+        var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_self))
+        for i in range(len(obs_self)):
+            obs.append(Scalar[DTYPE_SC](obs_self[i]))
+        return (obs^, Scalar[DTYPE_SC](result[0]), result[1])
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
@@ -1754,6 +1762,7 @@ struct LunarLander[
             rng_seed: Random seed for terrain generation. Should be different
                      each call (e.g., current training step) to get varied
                      terrains on reset.
+            workspace_ptr: Optional workspace pointer (unused for LunarLander).
         """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin

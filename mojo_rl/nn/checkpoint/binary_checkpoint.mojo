@@ -266,7 +266,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         Raises:
             If data is too short or magic bytes don't match.
         """
-        var pos: Int = 0
+        var pos: Int
 
         # Verify magic
         if len(data) < 4:

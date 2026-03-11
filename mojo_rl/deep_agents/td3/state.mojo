@@ -96,7 +96,7 @@ struct TD3CPUState[
     fn __init__(out self):
         """Allocate networks, replay buffer, and all scratch buffers."""
         self.actor = NetworkPair[Self.ActorModel, Self.ActorOpt]()
-        self.actor.initialize[Xavier]()
+        self.actor.initialize[Xavier[]]()
         self.critic1 = NetworkPair[Self.CriticModel, Self.CriticOpt]()
         self.critic1.initialize[Kaiming[]]()
         self.critic2 = NetworkPair[Self.CriticModel, Self.CriticOpt]()

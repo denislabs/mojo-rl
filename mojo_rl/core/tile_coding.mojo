@@ -220,9 +220,9 @@ struct TiledWeights[DTYPE: DType]:
         self.num_actions = num_actions
         self.weights = List[List[Scalar[Self.DTYPE]]]()
 
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_weights = List[Scalar[Self.DTYPE]]()
-            for t in range(num_tiles):
+            for _ in range(num_tiles):
                 action_weights.append(init_value)
             self.weights.append(action_weights^)
 

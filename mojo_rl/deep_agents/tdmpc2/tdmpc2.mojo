@@ -3260,6 +3260,8 @@ struct TDMPC2Agent[
             env: Environment implementing BoxContinuousActionEnv.
             num_episodes: Number of training episodes.
             updates_per_step: Gradient updates per environment step.
+            verbose: Print progress (default: True).
+            print_every: Print every N episodes if verbose (default: 10).
 
         Returns:
             TrainingMetrics with episode rewards and losses.
@@ -3280,7 +3282,6 @@ struct TDMPC2Agent[
         if progress_interval < 1:
             progress_interval = 1
         var next_progress = progress_interval
-        var next_print_ep = print_every
 
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()

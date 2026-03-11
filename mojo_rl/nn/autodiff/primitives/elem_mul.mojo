@@ -80,7 +80,9 @@ struct ElemMul[dim: Int](DiffOp):
                 # dx = grad * gamma
                 grad_input[b, i] = grad_output[b, i] * params[i]
                 # dgamma += grad * x (accumulate over batch)
-                grad_params[i] = grad_params[i] + grad_output[b, i] * cache[b, i]
+                grad_params[i] = (
+                    grad_params[i] + grad_output[b, i] * cache[b, i]
+                )
 
     # =========================================================================
     # GPU kernels
@@ -129,7 +131,9 @@ struct ElemMul[dim: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col]) * rebind[Scalar[dtype]](gamma[col])
+        grad_input[row, col] = rebind[Scalar[dtype]](
+            grad_output[row, col]
+        ) * rebind[Scalar[dtype]](gamma[col])
 
     @always_inline
     @staticmethod
@@ -144,7 +148,7 @@ struct ElemMul[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """dgamma[col] = sum_b(grad_output[b, col] * x[b, col]).
+        """Dgamma[col] = sum_b(grad_output[b, col] * x[b, col]).
 
         Grid: (dim,)  Block: (TPB,)
         """
@@ -157,7 +161,9 @@ struct ElemMul[dim: Int](DiffOp):
         var my_sum: dgamma.element_type = 0
         var batch_idx = local_i
         while batch_idx < BATCH:
-            my_sum += rebind[Scalar[dtype]](grad_output[batch_idx, col]) * rebind[Scalar[dtype]](cache[batch_idx, col])
+            my_sum += rebind[Scalar[dtype]](
+                grad_output[batch_idx, col]
+            ) * rebind[Scalar[dtype]](cache[batch_idx, col])
             batch_idx += TPB
 
         var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)

@@ -946,7 +946,7 @@ struct BipedalWalker[
         return self.get_state()
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var result = self._step_cpu_continuous(action)
@@ -1159,15 +1159,20 @@ struct BipedalWalker[
         """Return maximum action value."""
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE_SC: DType
+    ](
+        mut self, action: Scalar[DTYPE_SC]
+    ) -> Tuple[List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool]:
         """Step with single scalar action (applied to all joints)."""
-        var act = BipedalWalkerAction[Self.dtype](
-            action, action, action, action
-        )
+        var a = Scalar[Self.dtype](action)
+        var act = BipedalWalkerAction[Self.dtype](a, a, a, a)
         var result = self._step_cpu_continuous(act)
-        return (self.get_obs_list(), result[0], result[1])
+        var obs_self = self.get_obs_list()
+        var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_self))
+        for i in range(len(obs_self)):
+            obs.append(Scalar[DTYPE_SC](obs_self[i]))
+        return (obs^, Scalar[DTYPE_SC](result[0]), result[1])
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
@@ -1729,9 +1734,9 @@ struct BipedalWalker[
 
         # Initialize walker
         var rand_vals = rng.step_uniform()
-        var init_x = Scalar[dtype](
-            BWConstants.TERRAIN_STARTPAD * BWConstants.TERRAIN_STEP
-        )
+        var init_x = Scalar[dtype](BWConstants.TERRAIN_STARTPAD) * Scalar[
+            dtype
+        ](BWConstants.TERRAIN_STEP)
         var init_y = Scalar[dtype](
             BWConstants.TERRAIN_HEIGHT + 2.0 * BWConstants.LEG_H
         )

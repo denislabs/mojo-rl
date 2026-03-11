@@ -208,7 +208,8 @@ struct CarDynamics:
         Args:
             env: Environment index.
             state: State tensor.
-            fx, fy: Total force on hull (world frame).
+            fx: Total force on hull x-coordinate (world frame).
+            fy: Total force on hull y-coordinate (world frame).
             torque: Total torque on hull.
             dt: Time step.
         """
@@ -645,7 +646,8 @@ struct CarDynamics:
         Args:
             env: Environment index.
             state: State tensor with embedded track.
-            hull_x, hull_y: Hull center position.
+            hull_x: Hull center position x-coordinate.
+            hull_y: Hull center position y-coordinate.
             hull_angle: Hull orientation.
             num_active_tiles: Number of valid tiles.
 

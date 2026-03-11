@@ -11,11 +11,17 @@ Cache layout: [im2col (col_size * spatial_out) | act_cache (OUT_DIM)]
 """
 
 from ...constants import (
-    dtype, TPB,
-    MMA_M, MMA_N, MMA_K,
-    MMA_BLOCK_M, MMA_BLOCK_N,
-    MMA_WARPS_M, MMA_WARPS_N,
-    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+    dtype,
+    TPB,
+    MMA_M,
+    MMA_N,
+    MMA_K,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_WARPS_M,
+    MMA_WARPS_N,
+    MMA_NUM_WARPS,
+    MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, FusedOp, OpID
 from .activation import Activation
@@ -44,8 +50,12 @@ struct FusedConv2DActivation[
     Cache: im2col buffer + activation cache (pre-act or output per ACT.cache)
     """
 
-    comptime out_h: Int = (Self.in_h + 2 * Self.padding - Self.kernel_size) // Self.stride + 1
-    comptime out_w: Int = (Self.in_w + 2 * Self.padding - Self.kernel_size) // Self.stride + 1
+    comptime out_h: Int = (
+        Self.in_h + 2 * Self.padding - Self.kernel_size
+    ) // Self.stride + 1
+    comptime out_w: Int = (
+        Self.in_w + 2 * Self.padding - Self.kernel_size
+    ) // Self.stride + 1
     comptime col_size: Int = Self.in_channels * Self.kernel_size * Self.kernel_size
     comptime spatial_out: Int = Self.out_h * Self.out_w
 
@@ -98,10 +108,23 @@ struct FusedConv2DActivation[
                             for kw in range(Self.kernel_size):
                                 var ih = oh * Self.stride - Self.padding + kh
                                 var iw = ow * Self.stride - Self.padding + kw
-                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
                                 var col_idx = c_k * Self.spatial_out + s
-                                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                                    var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
+                                if (
+                                    ih >= 0
+                                    and ih < Self.in_h
+                                    and iw >= 0
+                                    and iw < Self.in_w
+                                ):
+                                    var in_idx = (
+                                        c * Self.in_h * Self.in_w
+                                        + ih * Self.in_w
+                                        + iw
+                                    )
                                     cache[b, col_idx] = input[b, in_idx]
                                 else:
                                     cache[b, col_idx] = 0
@@ -111,18 +134,26 @@ struct FusedConv2DActivation[
                 for s in range(Self.spatial_out):
                     var acc: Scalar[dtype] = 0
                     for k in range(Self.col_size):
-                        var w_val = rebind[Scalar[dtype]](params[oc * Self.col_size + k])
-                        var c_val = rebind[Scalar[dtype]](cache[b, k * Self.spatial_out + s])
+                        var w_val = rebind[Scalar[dtype]](
+                            params[oc * Self.col_size + k]
+                        )
+                        var c_val = rebind[Scalar[dtype]](
+                            cache[b, k * Self.spatial_out + s]
+                        )
                         acc += w_val * c_val
                     # Add bias
-                    acc += rebind[Scalar[dtype]](params[Self.out_channels * Self.col_size + oc])
+                    acc += rebind[Scalar[dtype]](
+                        params[Self.out_channels * Self.col_size + oc]
+                    )
                     # Fused activation
                     var pre_act = acc
                     var act_out = Self.ACT.forward(pre_act)
                     var out_idx = oc * Self.spatial_out + s
                     output[b, out_idx] = act_out
                     # Cache activation state for backward
-                    cache[b, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+                    cache[b, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                        pre_act, act_out
+                    )
 
     # =========================================================================
     # CPU vjp
@@ -157,12 +188,20 @@ struct FusedConv2DActivation[
                     var acc: Scalar[dtype] = 0
                     for s in range(Self.spatial_out):
                         var out_idx = oc * Self.spatial_out + s
-                        var cache_val = rebind[Scalar[dtype]](cache[b, Self.CONV_CACHE + out_idx])
-                        var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
+                        var cache_val = rebind[Scalar[dtype]](
+                            cache[b, Self.CONV_CACHE + out_idx]
+                        )
+                        var go_val = rebind[Scalar[dtype]](
+                            grad_output[b, out_idx]
+                        )
                         var masked_go = Self.ACT.backward(cache_val, go_val)
-                        var col_val = rebind[Scalar[dtype]](cache[b, k * Self.spatial_out + s])
+                        var col_val = rebind[Scalar[dtype]](
+                            cache[b, k * Self.spatial_out + s]
+                        )
                         acc += masked_go * col_val
-                    var cur = rebind[Scalar[dtype]](grad_params[oc * Self.col_size + k])
+                    var cur = rebind[Scalar[dtype]](
+                        grad_params[oc * Self.col_size + k]
+                    )
                     grad_params[oc * Self.col_size + k] = cur + acc
 
             # 2. db += sum(masked_grad, over spatial)
@@ -170,7 +209,9 @@ struct FusedConv2DActivation[
                 var acc: Scalar[dtype] = 0
                 for s in range(Self.spatial_out):
                     var out_idx = oc * Self.spatial_out + s
-                    var cache_val = rebind[Scalar[dtype]](cache[b, Self.CONV_CACHE + out_idx])
+                    var cache_val = rebind[Scalar[dtype]](
+                        cache[b, Self.CONV_CACHE + out_idx]
+                    )
                     var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
                     acc += Self.ACT.backward(cache_val, go_val)
                 var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
@@ -188,18 +229,41 @@ struct FusedConv2DActivation[
                             for kw in range(Self.kernel_size):
                                 var ih = oh * Self.stride - Self.padding + kh
                                 var iw = ow * Self.stride - Self.padding + kw
-                                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                                    var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                                    var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                if (
+                                    ih >= 0
+                                    and ih < Self.in_h
+                                    and iw >= 0
+                                    and iw < Self.in_w
+                                ):
+                                    var in_idx = (
+                                        c * Self.in_h * Self.in_w
+                                        + ih * Self.in_w
+                                        + iw
+                                    )
+                                    var c_k = (
+                                        c * Self.kernel_size * Self.kernel_size
+                                        + kh * Self.kernel_size
+                                        + kw
+                                    )
                                     var dcol_val: Scalar[dtype] = 0
                                     for oc in range(Self.out_channels):
                                         var out_idx = oc * Self.spatial_out + s
-                                        var cache_val = rebind[Scalar[dtype]](cache[b, Self.CONV_CACHE + out_idx])
-                                        var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
-                                        var masked_go = Self.ACT.backward(cache_val, go_val)
-                                        var w_val = rebind[Scalar[dtype]](params[oc * Self.col_size + c_k])
+                                        var cache_val = rebind[Scalar[dtype]](
+                                            cache[b, Self.CONV_CACHE + out_idx]
+                                        )
+                                        var go_val = rebind[Scalar[dtype]](
+                                            grad_output[b, out_idx]
+                                        )
+                                        var masked_go = Self.ACT.backward(
+                                            cache_val, go_val
+                                        )
+                                        var w_val = rebind[Scalar[dtype]](
+                                            params[oc * Self.col_size + c_k]
+                                        )
                                         dcol_val += w_val * masked_go
-                                    var cur = rebind[Scalar[dtype]](grad_input[b, in_idx])
+                                    var cur = rebind[Scalar[dtype]](
+                                        grad_input[b, in_idx]
+                                    )
                                     grad_input[b, in_idx] = cur + dcol_val
 
     # =========================================================================
@@ -243,18 +307,36 @@ struct FusedConv2DActivation[
             for kw in range(Self.kernel_size):
                 var oh_num = ih + Self.padding - kh
                 var ow_num = iw + Self.padding - kw
-                if oh_num >= 0 and oh_num % Self.stride == 0 and ow_num >= 0 and ow_num % Self.stride == 0:
+                if (
+                    oh_num >= 0
+                    and oh_num % Self.stride == 0
+                    and ow_num >= 0
+                    and ow_num % Self.stride == 0
+                ):
                     var oh = oh_num // Self.stride
                     var ow = ow_num // Self.stride
                     if oh < Self.out_h and ow < Self.out_w:
                         var s = oh * Self.out_w + ow
-                        var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                        var c_k = (
+                            c * Self.kernel_size * Self.kernel_size
+                            + kh * Self.kernel_size
+                            + kw
+                        )
                         for oc in range(Self.out_channels):
                             var out_idx = oc * Self.spatial_out + s
-                            var cache_val = rebind[Scalar[dtype]](cache[b, Self.CONV_CACHE + out_idx])
-                            var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
+                            var cache_val = rebind[Scalar[dtype]](
+                                cache[b, Self.CONV_CACHE + out_idx]
+                            )
+                            var go_val = rebind[Scalar[dtype]](
+                                grad_output[b, out_idx]
+                            )
                             var masked_go = Self.ACT.backward(cache_val, go_val)
-                            acc += rebind[Scalar[dtype]](params[oc * Self.col_size + c_k]) * masked_go
+                            acc += (
+                                rebind[Scalar[dtype]](
+                                    params[oc * Self.col_size + c_k]
+                                )
+                                * masked_go
+                            )
 
         grad_input[b, in_pos] = acc
 
@@ -298,12 +380,16 @@ struct FusedConv2DActivation[
         var batch = Int(block_idx.z)
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -355,10 +441,24 @@ struct FusedConv2DActivation[
                 var ow0 = s_idx0 % Self.out_w
                 var ih0 = oh0 * Self.stride - Self.padding + kh0
                 var iw0 = ow0 * Self.stride - Self.padding + kw0
-                if ih0 >= 0 and ih0 < Self.in_h and iw0 >= 0 and iw0 < Self.in_w:
-                    val0 = rebind[Scalar[dtype]](input[batch, ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0])
+                if (
+                    ih0 >= 0
+                    and ih0 < Self.in_h
+                    and iw0 >= 0
+                    and iw0 < Self.in_w
+                ):
+                    val0 = rebind[Scalar[dtype]](
+                        input[
+                            batch,
+                            ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0,
+                        ]
+                    )
             b_smem[b_r0, b_c0] = val0
-            if Int(block_idx.y) == 0 and k_idx0 < Self.col_size and s_idx0 < Self.spatial_out:
+            if (
+                Int(block_idx.y) == 0
+                and k_idx0 < Self.col_size
+                and s_idx0 < Self.spatial_out
+            ):
                 cache[batch, k_idx0 * Self.spatial_out + s_idx0] = val0
 
             # Element 1
@@ -374,10 +474,24 @@ struct FusedConv2DActivation[
                 var ow1 = s_idx1 % Self.out_w
                 var ih1 = oh1 * Self.stride - Self.padding + kh1
                 var iw1 = ow1 * Self.stride - Self.padding + kw1
-                if ih1 >= 0 and ih1 < Self.in_h and iw1 >= 0 and iw1 < Self.in_w:
-                    val1 = rebind[Scalar[dtype]](input[batch, ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1])
+                if (
+                    ih1 >= 0
+                    and ih1 < Self.in_h
+                    and iw1 >= 0
+                    and iw1 < Self.in_w
+                ):
+                    val1 = rebind[Scalar[dtype]](
+                        input[
+                            batch,
+                            ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1,
+                        ]
+                    )
             b_smem[b_r1, b_c1] = val1
-            if Int(block_idx.y) == 0 and k_idx1 < Self.col_size and s_idx1 < Self.spatial_out:
+            if (
+                Int(block_idx.y) == 0
+                and k_idx1 < Self.col_size
+                and s_idx1 < Self.spatial_out
+            ):
                 cache[batch, k_idx1 * Self.spatial_out + s_idx1] = val1
 
             barrier()
@@ -404,25 +518,37 @@ struct FusedConv2DActivation[
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = oc0 * Self.spatial_out + s0
             output[batch, out_idx] = act_out
-            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                pre_act, act_out
+            )
         if oc0 < Self.out_channels and s0 + 1 < Self.spatial_out:
             var pre_act = acc01 + rebind[Scalar[dtype]](params[W_SIZE + oc0])
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = oc0 * Self.spatial_out + s0 + 1
             output[batch, out_idx] = act_out
-            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                pre_act, act_out
+            )
         if oc0 + 1 < Self.out_channels and s0 < Self.spatial_out:
-            var pre_act = acc10 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+            var pre_act = acc10 + rebind[Scalar[dtype]](
+                params[W_SIZE + oc0 + 1]
+            )
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = (oc0 + 1) * Self.spatial_out + s0
             output[batch, out_idx] = act_out
-            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                pre_act, act_out
+            )
         if oc0 + 1 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            var pre_act = acc11 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+            var pre_act = acc11 + rebind[Scalar[dtype]](
+                params[W_SIZE + oc0 + 1]
+            )
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = (oc0 + 1) * Self.spatial_out + s0 + 1
             output[batch, out_idx] = act_out
-            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+            cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                pre_act, act_out
+            )
 
     @always_inline
     @staticmethod
@@ -461,12 +587,16 @@ struct FusedConv2DActivation[
             var batch = Int(block_idx.z)
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -504,25 +634,55 @@ struct FusedConv2DActivation[
                     var ow = s_idx % Self.out_w
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                        val = rebind[Scalar[dtype]](input[batch, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw])
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
+                        val = rebind[Scalar[dtype]](
+                            input[
+                                batch,
+                                ch * Self.in_h * Self.in_w
+                                + ih * Self.in_w
+                                + iw,
+                            ]
+                        )
                 b_smem[br, bc] = val
-                if Int(block_idx.y) == 0 and k_idx < Self.col_size and s_idx < Self.spatial_out:
+                if (
+                    Int(block_idx.y) == 0
+                    and k_idx < Self.col_size
+                    and s_idx < Self.spatial_out
+                ):
                     cache[batch, k_idx * Self.spatial_out + s_idx] = val
 
                 barrier()
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -535,29 +695,45 @@ struct FusedConv2DActivation[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[0]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
+                var pre_act = rebind[Scalar[dtype]](acc[0]) + rebind[
+                    Scalar[dtype]
+                ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
                 var out_idx = r0 * Self.spatial_out + c0
                 output[batch, out_idx] = act_out
-                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                    pre_act, act_out
+                )
             if r0 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[1]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
+                var pre_act = rebind[Scalar[dtype]](acc[1]) + rebind[
+                    Scalar[dtype]
+                ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
                 var out_idx = r0 * Self.spatial_out + c1
                 output[batch, out_idx] = act_out
-                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                    pre_act, act_out
+                )
             if r1 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[2]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
+                var pre_act = rebind[Scalar[dtype]](acc[2]) + rebind[
+                    Scalar[dtype]
+                ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
                 var out_idx = r1 * Self.spatial_out + c0
                 output[batch, out_idx] = act_out
-                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                    pre_act, act_out
+                )
             if r1 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[3]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
+                var pre_act = rebind[Scalar[dtype]](acc[3]) + rebind[
+                    Scalar[dtype]
+                ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
                 var out_idx = r1 * Self.spatial_out + c1
                 output[batch, out_idx] = act_out
-                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(pre_act, act_out)
+                cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
+                    pre_act, act_out
+                )
 
     # =========================================================================
     # GPU kernels — tiled backward dW and db (with fused activation gradient)
@@ -569,7 +745,9 @@ struct FusedConv2DActivation[
         BATCH: Int
     ](
         dW: LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
@@ -595,12 +773,16 @@ struct FusedConv2DActivation[
         var block_k = Int(block_idx.x) * BT
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -626,7 +808,9 @@ struct FusedConv2DActivation[
                 var s0 = ki0 % Self.spatial_out
                 var out_idx0 = g_oc0 * Self.spatial_out + s0
                 var go_val = rebind[Scalar[dtype]](grad_output[b0, out_idx0])
-                var cache_val = rebind[Scalar[dtype]](cache[b0, Self.CONV_CACHE + out_idx0])
+                var cache_val = rebind[Scalar[dtype]](
+                    cache[b0, Self.CONV_CACHE + out_idx0]
+                )
                 a_smem[a_r0, a_c0] = Self.ACT.backward(cache_val, go_val)
             else:
                 a_smem[a_r0, a_c0] = 0
@@ -638,7 +822,9 @@ struct FusedConv2DActivation[
                 var s1 = ki1 % Self.spatial_out
                 var out_idx1 = g_oc1 * Self.spatial_out + s1
                 var go_val = rebind[Scalar[dtype]](grad_output[b1, out_idx1])
-                var cache_val = rebind[Scalar[dtype]](cache[b1, Self.CONV_CACHE + out_idx1])
+                var cache_val = rebind[Scalar[dtype]](
+                    cache[b1, Self.CONV_CACHE + out_idx1]
+                )
                 a_smem[a_r1, a_c1] = Self.ACT.backward(cache_val, go_val)
             else:
                 a_smem[a_r1, a_c1] = 0
@@ -699,7 +885,9 @@ struct FusedConv2DActivation[
         BATCH: Int
     ](
         dW: LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
@@ -725,12 +913,16 @@ struct FusedConv2DActivation[
             var block_k = Int(block_idx.x) * MMA_BLOCK_N
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -752,8 +944,12 @@ struct FusedConv2DActivation[
                     var b_idx = ki // Self.spatial_out
                     var s_idx = ki % Self.spatial_out
                     var out_idx = g_oc * Self.spatial_out + s_idx
-                    var go_val = rebind[Scalar[dtype]](grad_output[b_idx, out_idx])
-                    var cache_val = rebind[Scalar[dtype]](cache[b_idx, Self.CONV_CACHE + out_idx])
+                    var go_val = rebind[Scalar[dtype]](
+                        grad_output[b_idx, out_idx]
+                    )
+                    var cache_val = rebind[Scalar[dtype]](
+                        cache[b_idx, Self.CONV_CACHE + out_idx]
+                    )
                     a_smem[a_r, a_c] = Self.ACT.backward(cache_val, go_val)
                 else:
                     a_smem[a_r, a_c] = 0
@@ -774,15 +970,29 @@ struct FusedConv2DActivation[
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -807,7 +1017,9 @@ struct FusedConv2DActivation[
     fn backward_db_kernel[
         BATCH: Int
     ](
-        db: LayoutTensor[dtype, Layout.row_major(Self.out_channels), MutAnyOrigin],
+        db: LayoutTensor[
+            dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+        ],
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
@@ -815,7 +1027,7 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """db = sum(masked_dy, axis=batch+spatial). One thread per oc.
+        """Formula: db = sum(masked_dy, axis=batch+spatial). One thread per oc.
 
         Grid: ((out_channels + TPB - 1) // TPB,)
         Block: (TPB,)
@@ -827,7 +1039,9 @@ struct FusedConv2DActivation[
                 for s in range(Self.spatial_out):
                     var out_idx = oc * Self.spatial_out + s
                     var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
-                    var cache_val = rebind[Scalar[dtype]](cache[b, Self.CONV_CACHE + out_idx])
+                    var cache_val = rebind[Scalar[dtype]](
+                        cache[b, Self.CONV_CACHE + out_idx]
+                    )
                     acc += Self.ACT.backward(cache_val, go_val)
             db[oc] = acc
 
@@ -942,7 +1156,9 @@ struct FusedConv2DActivation[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ],
         ):
-            Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, params, cache)
+            Self.backward_dx_kernel_impl[BATCH](
+                grad_input, grad_output, params, cache
+            )
 
         ctx.enqueue_function[dx_wrapper, dx_wrapper](
             grad_input,
@@ -955,7 +1171,9 @@ struct FusedConv2DActivation[
 
         # Kernel 2: dW (tiled matmul with fused activation gradient)
         var dW = LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ](grad_params.ptr)
 
         comptime dW_grid_x = (Self.col_size + 31) // 32
@@ -964,7 +1182,9 @@ struct FusedConv2DActivation[
         @always_inline
         fn dW_wrapper(
             dW: LayoutTensor[
-                dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
             ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin

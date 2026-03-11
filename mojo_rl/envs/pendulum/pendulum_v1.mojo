@@ -340,9 +340,11 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Continuous action API (for DDPG and other continuous control algorithms)
     # ========================================================================
 
-    fn step_continuous(
-        mut self, torque: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE_SC: DType
+    ](mut self, torque: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
         """Take 1D continuous action and return (obs_list, reward, done).
 
         Args:
@@ -351,9 +353,13 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         Returns:
             Tuple of (observation as List, reward, done).
         """
-        var result = self._step_with_torque(torque)
+        var result = self._step_with_torque(Scalar[Self.dtype](torque))
         var reward = result[1]
-        return (self.get_obs_list(), reward, self.done)
+        var obs_self = self.get_obs_list()
+        var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_self))
+        for i in range(len(obs_self)):
+            obs.append(Scalar[DTYPE_SC](obs_self[i]))
+        return (obs^, Scalar[DTYPE_SC](reward), self.done)
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
@@ -566,7 +572,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if last_torque_f64 != 0.0:
             var torque_scale = abs(last_torque_f64) * 0.3
             var torque_direction = 1.0 if last_torque_f64 > 0 else -1.0
-            var arc_offset = Vec2(torque_direction * 0.3, 0.3)
+
             var arc_end = Vec2(
                 torque_direction * 0.3,
                 0.3 + torque_scale,

@@ -31,7 +31,9 @@ struct ReLU[dim: Int](Model):
         pass
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],

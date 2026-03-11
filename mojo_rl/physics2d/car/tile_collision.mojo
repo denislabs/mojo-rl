@@ -80,8 +80,16 @@ struct TileCollision:
         Uses cross-product test: inside if same side of all 4 edges.
 
         Args:
-            px, py: Point to test.
-            v0x, v0y ... v3x, v3y: Quad vertices in CCW order.
+            px: Point x-coordinate to test.
+            py: Point y-coordinate to test.
+            v0x: Quad vertex x-coordinate 0.
+            v0y: Quad vertex y-coordinate 0.
+            v1x: Quad vertex x-coordinate 1.
+            v1y: Quad vertex y-coordinate 1.
+            v2x: Quad vertex x-coordinate 2.
+            v2y: Quad vertex y-coordinate 2.
+            v3x: Quad vertex x-coordinate 3.
+            v3y: Quad vertex y-coordinate 3.
 
         Returns:
             True if point is inside the quad.
@@ -139,7 +147,8 @@ struct TileCollision:
         on any tile.
 
         Args:
-            x, y: World position to query.
+            x: Position x-coordinate to query.
+            y: Position y-coordinate to query.
             tiles: Track tile data [MAX_TILES, TILE_DATA_SIZE].
             num_active_tiles: Number of valid tiles in the buffer.
 
@@ -183,7 +192,8 @@ struct TileCollision:
         Combines the surface friction multiplier with FRICTION_LIMIT.
 
         Args:
-            x, y: World position to query.
+            x: Position x-coordinate to query.
+            y: Position y-coordinate to query.
             tiles: Track tile data.
             num_active_tiles: Number of valid tiles.
 
@@ -220,7 +230,8 @@ struct TileCollision:
         friction for each wheel position.
 
         Args:
-            hull_x, hull_y: Hull center position.
+            hull_x: Hull center position x-coordinate.
+            hull_y: Hull center position y-coordinate.
             hull_angle: Hull orientation.
             tiles: Track tile data.
             num_active_tiles: Number of valid tiles.
@@ -266,9 +277,14 @@ struct TileCollision:
             rr_x, rr_y, tiles, num_active_tiles
         )
 
-        return InlineArray[Scalar[dtype], NUM_WHEELS](
-            fl_limit, fr_limit, rl_limit, rr_limit
+        var result = InlineArray[Scalar[dtype], NUM_WHEELS](
+            fill=Scalar[dtype](0)
         )
+        result[0] = fl_limit
+        result[1] = fr_limit
+        result[2] = rl_limit
+        result[3] = rr_limit
+        return result
 
     # =========================================================================
     # Tile Visitation Tracking
@@ -293,7 +309,8 @@ struct TileCollision:
         Used for reward calculation - visiting new tiles gives reward.
 
         Args:
-            x, y: Position to check.
+            x: Position x-coordinate to check.
+            y: Position y-coordinate to check.
             tiles: Track tile data.
             num_active_tiles: Number of valid tiles.
 
@@ -345,7 +362,8 @@ struct TileCollision:
 
         Args:
             env: Environment index.
-            x, y: World position to query.
+            x: Position x-coordinate to query.
+            y: Position y-coordinate to query.
             states: State tensor with embedded track at TRACK_OFFSET.
             num_active_tiles: Number of valid tiles.
 
@@ -395,7 +413,8 @@ struct TileCollision:
 
         Args:
             env: Environment index.
-            x, y: World position to query.
+            x: Position x-coordinate to query.
+            y: Position y-coordinate to query.
             states: State tensor with embedded track.
             num_active_tiles: Number of valid tiles.
 
@@ -429,7 +448,8 @@ struct TileCollision:
 
         Args:
             env: Environment index.
-            x, y: Position to check.
+            x: Position x-coordinate to check.
+            y: Position y-coordinate to check.
             states: State tensor with embedded track.
             num_active_tiles: Number of valid tiles.
 
@@ -479,7 +499,8 @@ struct TileCollision:
 
         Args:
             env: Environment index.
-            x, y: Position to check.
+            x: Position x-coordinate to check.
+            y: Position y-coordinate to check.
             states: State tensor with embedded track and visited flags.
             num_active_tiles: Number of valid tiles.
 

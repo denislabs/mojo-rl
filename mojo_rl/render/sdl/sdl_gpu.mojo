@@ -1542,7 +1542,7 @@ struct GPUColorComponentFlags(Intable, TrivialRegisterPassable):
 
     @always_inline
     fn __or__(lhs, rhs: Self) -> Self:
-        return Self(lhs.value | rhs.value)
+        return Self(Int(lhs.value | rhs.value))
 
     comptime GPU_COLORCOMPONENT_R = Self(1 << 0)
     """The red component."""

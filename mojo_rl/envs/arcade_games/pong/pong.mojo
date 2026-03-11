@@ -392,9 +392,13 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         """Draw a single digit 0-9 in 7-segment style using filled rects.
 
         Args:
-            x, y: top-left corner.
+            renderer: The renderer to draw on.
+            digit: The digit to draw (0-9).
+            x: x-coordinate of top-left corner.
+            y: y-coordinate of top-left corner.
             w: total digit width.
             h: total digit height.
+            color: The color to draw the digit in.
         """
         var t = max(2, h // 8)  # segment thickness
         var half_h = (h - 3 * t) // 2  # height of each vertical half

@@ -228,18 +228,20 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take 1D continuous action (trait method).
 
         Note: MuJoCo envs have multi-dimensional actions.
         This only uses the first action. Use step_continuous_vec for full control.
         """
-        var action_list = List[Float64]()
-        action_list.append(action)
+        var action_list = List[Scalar[DTYPE]]()
+        action_list.append(Scalar[DTYPE](action))
         for _ in range(1, self._action_dim):
-            action_list.append(0.0)
+            action_list.append(Scalar[DTYPE](0.0))
         return self.step_continuous_vec(action_list^)
 
     fn step_continuous_vec[

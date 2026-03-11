@@ -126,7 +126,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
 
         # Angle penalty
         var y_angle = data.qpos[2]  # rooty
-        var abs_angle = y_angle if y_angle >= Scalar[DTYPE](0.0) else -y_angle
+        # var abs_angle = y_angle if y_angle >= Scalar[DTYPE](0.0) else -y_angle
         # var angle_penalty = Scalar[DTYPE](Self.ANGLE_PENALTY_WEIGHT) * abs_angle
 
         var reward = forward_reward - ctrl_cost  # - angle_penalty

@@ -85,10 +85,10 @@ struct EdgeTerrainCollision(CollisionSystem):
         self.edges = List[Scalar[dtype]]()
         self.edge_counts = List[Int]()
         self.num_envs = copy.num_envs
-        for i in range(other.num_envs * MAX_TERRAIN_EDGES * 6):
-            self.edges.append(other.edges[i])
-        for i in range(other.num_envs):
-            self.edge_counts.append(other.edge_counts[i])
+        for i in range(copy.num_envs * MAX_TERRAIN_EDGES * 6):
+            self.edges.append(copy.edges[i])
+        for i in range(copy.num_envs):
+            self.edge_counts.append(copy.edge_counts[i])
 
     fn set_terrain_from_heights(
         mut self,

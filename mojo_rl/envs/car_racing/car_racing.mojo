@@ -740,15 +740,21 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         """Action upper bound: 1.0."""
         return 1.0
 
-    fn step_continuous(
-        mut self, action: Scalar[Self.dtype]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous[
+        DTYPE_SC: DType
+    ](
+        mut self, action: Scalar[DTYPE_SC]
+    ) -> Tuple[List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool]:
         """Step with single action (applies to steering only)."""
-        var act = CarRacingAction[Self.dtype](action, 0.0, 0.0)
+        var act = CarRacingAction[Self.dtype](Scalar[Self.dtype](action), 0.0, 0.0)
         var result = self.step(act)
+        var obs_typed = result[0].to_list_typed[Self.dtype]()
+        var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_typed))
+        for i in range(len(obs_typed)):
+            obs.append(Scalar[DTYPE_SC](obs_typed[i]))
         return (
-            result[0].to_list_typed[Self.dtype](),
-            Scalar[Self.dtype](result[1]),
+            obs^,
+            Scalar[DTYPE_SC](result[1]),
             result[2],
         )
 
@@ -785,7 +791,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dtype,
             Layout.row_major(1, Self.STATE_SIZE),
             MutAnyOrigin,
-        ](self.state_buffer.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](self.state_buffer.unsafe_ptr()))
 
     fn _get_tiles_tensor(
         self,
@@ -799,7 +805,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dtype,
             Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
-        ](self.tiles_buffer.unsafe_ptr())
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](self.tiles_buffer.unsafe_ptr()))
 
     fn _init_state_buffer(
         mut self,

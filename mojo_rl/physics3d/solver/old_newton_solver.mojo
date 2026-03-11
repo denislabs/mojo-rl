@@ -163,7 +163,7 @@ fn _build_hessian[
     var num_normals = constraints.num_normals
     var num_friction = constraints.num_friction
     var friction_start = num_normals
-    var limits_start = num_normals + num_friction
+    # var limits_start = num_normals + num_friction
 
     # Track which rows are handled as part of cone groups
     var handled = InlineArray[Bool, MR](fill=False)
@@ -357,9 +357,9 @@ struct OldNewtonSolver(ConstraintSolver):
         comptime MR = _max_one[MAX_ROWS]()
 
         var num_rows = constraints.num_rows
-        var num_normals = constraints.num_normals
-        var num_friction = constraints.num_friction
-        var friction_start = num_normals
+        # var num_normals = constraints.num_normals
+        # var num_friction = constraints.num_friction
+        # var friction_start = num_normals
 
         # Compute D values from stored diagApprox and inv_K_imp
         # D = 1/R where R = 1/inv_K_imp - K = (1-imp)/imp * diagApprox

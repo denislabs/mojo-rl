@@ -319,7 +319,7 @@ struct DeepPPOAgent[
 
     fn select_action(
         self,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
+        mut obs: InlineArray[Scalar[dtype], Self.OBS],
         training: Bool = True,
     ) -> Tuple[Int, Scalar[dtype], Scalar[dtype]]:
         """Select action from policy and compute log probability and value.
@@ -398,7 +398,7 @@ struct DeepPPOAgent[
 
     fn update(
         mut self,
-        next_obs: InlineArray[Scalar[dtype], Self.OBS],
+        mut next_obs: InlineArray[Scalar[dtype], Self.OBS],
     ) -> Float64:
         """Update actor and critic using PPO with clipped objective.
 
@@ -1538,7 +1538,7 @@ struct DeepPPOAgent[
     fn select_action_state(
         self,
         cpu_state: Self.CPUStateType,
-        obs: InlineArray[Scalar[dtype], Self.OBS],
+        mut obs: InlineArray[Scalar[dtype], Self.OBS],
         training: Bool = True,
     ) -> Tuple[Int, Scalar[dtype], Scalar[dtype]]:
         """Select action using cpu_state actor/critic networks."""
@@ -1589,7 +1589,7 @@ struct DeepPPOAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Train the PPO agent on a discrete action environment.
 
         Delegates to the shared on-policy training loop.
@@ -1610,7 +1610,6 @@ struct DeepPPOAgent[
         var checkpoint_every = self.checkpoint_every
         return run_onpolicy_discrete_train(
             self,
-            cpu_state,
             env,
             num_episodes,
             checkpoint_every,
@@ -1662,7 +1661,7 @@ struct DeepPPOAgent[
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps):
+            for _ in range(max_steps):
                 # Greedy action
                 var action_result = self.select_action(obs, training=False)
                 var action = action_result[0]

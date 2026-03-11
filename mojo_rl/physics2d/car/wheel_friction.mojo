@@ -170,9 +170,11 @@ struct WheelFriction:
             wheel_omega: Current wheel angular velocity.
             joint_angle: Steering joint angle (radians, 0 for rear wheels).
             hull_angle: Hull orientation angle (radians).
-            hull_vx, hull_vy: Hull linear velocity.
+            hull_vx: Hull linear velocity x-component.
+            hull_vy: Hull linear velocity y-component.
             hull_omega: Hull angular velocity.
-            wheel_local_x, wheel_local_y: Wheel position in hull-local coords.
+            wheel_local_x: Wheel position x-component in hull-local coords.
+            wheel_local_y: Wheel position y-component in hull-local coords.
             gas: Gas pedal input [0, 1].
             brake: Brake pedal input [0, 1].
             is_rear: True for rear wheels (have engine power).
@@ -478,12 +480,11 @@ struct WheelFriction:
         """
         for env in range(BATCH):
             # Build friction limits array for this env
-            var limits = InlineArray[Scalar[dtype], NUM_WHEELS](
-                friction_limits[env, 0],
-                friction_limits[env, 1],
-                friction_limits[env, 2],
-                friction_limits[env, 3],
-            )
+            var limits = InlineArray[Scalar[dtype], NUM_WHEELS](fill=Scalar[dtype](0))
+            limits[0] = rebind[Scalar[dtype]](friction_limits[env, 0])
+            limits[1] = rebind[Scalar[dtype]](friction_limits[env, 1])
+            limits[2] = rebind[Scalar[dtype]](friction_limits[env, 2])
+            limits[3] = rebind[Scalar[dtype]](friction_limits[env, 3])
 
             var result = WheelFriction.compute_all_wheels_forces[
                 BATCH, STATE_SIZE, HULL_OFFSET, WHEELS_OFFSET, CONTROLS_OFFSET

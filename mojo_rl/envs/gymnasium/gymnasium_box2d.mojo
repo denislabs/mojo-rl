@@ -588,16 +588,21 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take 1D continuous action (trait method).
 
         Note: BipedalWalker has 4D actions. This only controls the first joint.
         Use step_continuous_vec for full 4D control.
         """
-        var result = self.step_continuous_4d(action, 0.0, 0.0, 0.0)
-        return (self.get_obs_list(), result[1], result[2])
+        var result = self.step_continuous_4d(Float64(action), 0.0, 0.0, 0.0)
+        var obs = List[Scalar[DTYPE]]()
+        for i in range(24):
+            obs.append(Scalar[DTYPE](self.current_obs[i]))
+        return (obs^, Scalar[DTYPE](result[1]), result[2])
 
     fn step_continuous_vec[
         DTYPE: DType
@@ -907,16 +912,21 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take 1D continuous action (trait method).
 
         Note: CarRacing has 3D actions. This only controls steering.
         Use step_continuous_vec for full 3D control.
         """
-        var result = self.step_continuous_3d(action, 0.0, 0.0)
-        return (self.get_obs_list(), result[1], result[2])
+        var result = self.step_continuous_3d(Float64(action), 0.0, 0.0)
+        var obs = List[Scalar[DTYPE]]()
+        for i in range(4):
+            obs.append(Scalar[DTYPE](self.current_obs_4d[i]))
+        return (obs^, Scalar[DTYPE](result[1]), result[2])
 
     fn step_continuous_vec[
         DTYPE: DType

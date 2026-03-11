@@ -1,9 +1,16 @@
 from ...constants import (
-    dtype, TILE, TPB,
-    MMA_M, MMA_N, MMA_K,
-    MMA_BLOCK_M, MMA_BLOCK_N,
-    MMA_WARPS_M, MMA_WARPS_N,
-    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+    dtype,
+    TILE,
+    TPB,
+    MMA_M,
+    MMA_N,
+    MMA_K,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_WARPS_M,
+    MMA_WARPS_N,
+    MMA_NUM_WARPS,
+    MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
@@ -43,8 +50,12 @@ struct Conv2D[
         4. col2im: scatter dcol back to grad_input
     """
 
-    comptime out_h: Int = (Self.in_h + 2 * Self.padding - Self.kernel_size) // Self.stride + 1
-    comptime out_w: Int = (Self.in_w + 2 * Self.padding - Self.kernel_size) // Self.stride + 1
+    comptime out_h: Int = (
+        Self.in_h + 2 * Self.padding - Self.kernel_size
+    ) // Self.stride + 1
+    comptime out_w: Int = (
+        Self.in_w + 2 * Self.padding - Self.kernel_size
+    ) // Self.stride + 1
     comptime col_size: Int = Self.in_channels * Self.kernel_size * Self.kernel_size
     comptime spatial_out: Int = Self.out_h * Self.out_w
 
@@ -98,10 +109,23 @@ struct Conv2D[
                             for kw in range(Self.kernel_size):
                                 var ih = oh * Self.stride - Self.padding + kh
                                 var iw = ow * Self.stride - Self.padding + kw
-                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
                                 var col_idx = c_k * Self.spatial_out + s
-                                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                                    var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
+                                if (
+                                    ih >= 0
+                                    and ih < Self.in_h
+                                    and iw >= 0
+                                    and iw < Self.in_w
+                                ):
+                                    var in_idx = (
+                                        c * Self.in_h * Self.in_w
+                                        + ih * Self.in_w
+                                        + iw
+                                    )
                                     cache[b, col_idx] = input[b, in_idx]
                                 else:
                                     cache[b, col_idx] = 0
@@ -112,11 +136,17 @@ struct Conv2D[
                 for s in range(Self.spatial_out):
                     var acc: Scalar[dtype] = 0
                     for k in range(Self.col_size):
-                        var w_val = rebind[Scalar[dtype]](params[oc * Self.col_size + k])
-                        var c_val = rebind[Scalar[dtype]](cache[b, k * Self.spatial_out + s])
+                        var w_val = rebind[Scalar[dtype]](
+                            params[oc * Self.col_size + k]
+                        )
+                        var c_val = rebind[Scalar[dtype]](
+                            cache[b, k * Self.spatial_out + s]
+                        )
                         acc += w_val * c_val
                     # Add bias
-                    var bias_val = rebind[Scalar[dtype]](params[Self.out_channels * Self.col_size + oc])
+                    var bias_val = rebind[Scalar[dtype]](
+                        params[Self.out_channels * Self.col_size + oc]
+                    )
                     acc += bias_val
                     output[b, oc * Self.spatial_out + s] = acc
 
@@ -149,17 +179,25 @@ struct Conv2D[
                 for k in range(Self.col_size):
                     var acc: Scalar[dtype] = 0
                     for s in range(Self.spatial_out):
-                        var go_val = rebind[Scalar[dtype]](grad_output[b, oc * Self.spatial_out + s])
-                        var col_val = rebind[Scalar[dtype]](cache[b, k * Self.spatial_out + s])
+                        var go_val = rebind[Scalar[dtype]](
+                            grad_output[b, oc * Self.spatial_out + s]
+                        )
+                        var col_val = rebind[Scalar[dtype]](
+                            cache[b, k * Self.spatial_out + s]
+                        )
                         acc += go_val * col_val
-                    var cur = rebind[Scalar[dtype]](grad_params[oc * Self.col_size + k])
+                    var cur = rebind[Scalar[dtype]](
+                        grad_params[oc * Self.col_size + k]
+                    )
                     grad_params[oc * Self.col_size + k] = cur + acc
 
             # 2. db += sum(grad_output, over spatial dims)
             for oc in range(Self.out_channels):
                 var acc: Scalar[dtype] = 0
                 for s in range(Self.spatial_out):
-                    acc += rebind[Scalar[dtype]](grad_output[b, oc * Self.spatial_out + s])
+                    acc += rebind[Scalar[dtype]](
+                        grad_output[b, oc * Self.spatial_out + s]
+                    )
                 var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
                 grad_params[W_SIZE + oc] = cur + acc
 
@@ -177,16 +215,37 @@ struct Conv2D[
                             for kw in range(Self.kernel_size):
                                 var ih = oh * Self.stride - Self.padding + kh
                                 var iw = ow * Self.stride - Self.padding + kw
-                                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                                    var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                                    var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                if (
+                                    ih >= 0
+                                    and ih < Self.in_h
+                                    and iw >= 0
+                                    and iw < Self.in_w
+                                ):
+                                    var in_idx = (
+                                        c * Self.in_h * Self.in_w
+                                        + ih * Self.in_w
+                                        + iw
+                                    )
+                                    var c_k = (
+                                        c * Self.kernel_size * Self.kernel_size
+                                        + kh * Self.kernel_size
+                                        + kw
+                                    )
                                     # dcol[c_k, s] = sum_oc(W[oc, c_k] * grad_output[b, oc*spatial_out + s])
                                     var dcol_val: Scalar[dtype] = 0
                                     for oc in range(Self.out_channels):
-                                        var w_val = rebind[Scalar[dtype]](params[oc * Self.col_size + c_k])
-                                        var go_val = rebind[Scalar[dtype]](grad_output[b, oc * Self.spatial_out + s])
+                                        var w_val = rebind[Scalar[dtype]](
+                                            params[oc * Self.col_size + c_k]
+                                        )
+                                        var go_val = rebind[Scalar[dtype]](
+                                            grad_output[
+                                                b, oc * Self.spatial_out + s
+                                            ]
+                                        )
                                         dcol_val += w_val * go_val
-                                    var cur = rebind[Scalar[dtype]](grad_input[b, in_idx])
+                                    var cur = rebind[Scalar[dtype]](
+                                        grad_input[b, in_idx]
+                                    )
                                     grad_input[b, in_idx] = cur + dcol_val
 
     # =========================================================================
@@ -208,7 +267,8 @@ struct Conv2D[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
     ):
-        """GPU backward for grad_input. One thread per (batch, input_element)."""
+        """GPU backward for grad_input. One thread per (batch, input_element).
+        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         var total = BATCH * Self.IN_DIM
         if idx >= total:
@@ -227,14 +287,27 @@ struct Conv2D[
             for kw in range(Self.kernel_size):
                 var oh_num = ih + Self.padding - kh
                 var ow_num = iw + Self.padding - kw
-                if oh_num >= 0 and oh_num % Self.stride == 0 and ow_num >= 0 and ow_num % Self.stride == 0:
+                if (
+                    oh_num >= 0
+                    and oh_num % Self.stride == 0
+                    and ow_num >= 0
+                    and ow_num % Self.stride == 0
+                ):
                     var oh = oh_num // Self.stride
                     var ow = ow_num // Self.stride
                     if oh < Self.out_h and ow < Self.out_w:
                         var s = oh * Self.out_w + ow
-                        var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                        var c_k = (
+                            c * Self.kernel_size * Self.kernel_size
+                            + kh * Self.kernel_size
+                            + kw
+                        )
                         for oc in range(Self.out_channels):
-                            acc += rebind[Scalar[dtype]](params[oc * Self.col_size + c_k]) * rebind[Scalar[dtype]](grad_output[b, oc * Self.spatial_out + s])
+                            acc += rebind[Scalar[dtype]](
+                                params[oc * Self.col_size + c_k]
+                            ) * rebind[Scalar[dtype]](
+                                grad_output[b, oc * Self.spatial_out + s]
+                            )
 
         grad_input[b, in_pos] = acc
 
@@ -279,12 +352,16 @@ struct Conv2D[
         var batch = Int(block_idx.z)
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -336,10 +413,24 @@ struct Conv2D[
                 var ow0 = s_idx0 % Self.out_w
                 var ih0 = oh0 * Self.stride - Self.padding + kh0
                 var iw0 = ow0 * Self.stride - Self.padding + kw0
-                if ih0 >= 0 and ih0 < Self.in_h and iw0 >= 0 and iw0 < Self.in_w:
-                    val0 = rebind[Scalar[dtype]](input[batch, ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0])
+                if (
+                    ih0 >= 0
+                    and ih0 < Self.in_h
+                    and iw0 >= 0
+                    and iw0 < Self.in_w
+                ):
+                    val0 = rebind[Scalar[dtype]](
+                        input[
+                            batch,
+                            ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0,
+                        ]
+                    )
             b_smem[b_r0, b_c0] = val0
-            if Int(block_idx.y) == 0 and k_idx0 < Self.col_size and s_idx0 < Self.spatial_out:
+            if (
+                Int(block_idx.y) == 0
+                and k_idx0 < Self.col_size
+                and s_idx0 < Self.spatial_out
+            ):
                 cache[batch, k_idx0 * Self.spatial_out + s_idx0] = val0
 
             # Element 1
@@ -355,10 +446,24 @@ struct Conv2D[
                 var ow1 = s_idx1 % Self.out_w
                 var ih1 = oh1 * Self.stride - Self.padding + kh1
                 var iw1 = ow1 * Self.stride - Self.padding + kw1
-                if ih1 >= 0 and ih1 < Self.in_h and iw1 >= 0 and iw1 < Self.in_w:
-                    val1 = rebind[Scalar[dtype]](input[batch, ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1])
+                if (
+                    ih1 >= 0
+                    and ih1 < Self.in_h
+                    and iw1 >= 0
+                    and iw1 < Self.in_w
+                ):
+                    val1 = rebind[Scalar[dtype]](
+                        input[
+                            batch,
+                            ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1,
+                        ]
+                    )
             b_smem[b_r1, b_c1] = val1
-            if Int(block_idx.y) == 0 and k_idx1 < Self.col_size and s_idx1 < Self.spatial_out:
+            if (
+                Int(block_idx.y) == 0
+                and k_idx1 < Self.col_size
+                and s_idx1 < Self.spatial_out
+            ):
                 cache[batch, k_idx1 * Self.spatial_out + s_idx1] = val1
 
             barrier()
@@ -381,13 +486,21 @@ struct Conv2D[
         var s0 = block_s + sub_c * 2
 
         if oc0 < Self.out_channels and s0 < Self.spatial_out:
-            output[batch, oc0 * Self.spatial_out + s0] = acc00 + rebind[Scalar[dtype]](params[W_SIZE + oc0])
+            output[batch, oc0 * Self.spatial_out + s0] = acc00 + rebind[
+                Scalar[dtype]
+            ](params[W_SIZE + oc0])
         if oc0 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            output[batch, oc0 * Self.spatial_out + s0 + 1] = acc01 + rebind[Scalar[dtype]](params[W_SIZE + oc0])
+            output[batch, oc0 * Self.spatial_out + s0 + 1] = acc01 + rebind[
+                Scalar[dtype]
+            ](params[W_SIZE + oc0])
         if oc0 + 1 < Self.out_channels and s0 < Self.spatial_out:
-            output[batch, (oc0 + 1) * Self.spatial_out + s0] = acc10 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+            output[batch, (oc0 + 1) * Self.spatial_out + s0] = acc10 + rebind[
+                Scalar[dtype]
+            ](params[W_SIZE + oc0 + 1])
         if oc0 + 1 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            output[batch, (oc0 + 1) * Self.spatial_out + s0 + 1] = acc11 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+            output[
+                batch, (oc0 + 1) * Self.spatial_out + s0 + 1
+            ] = acc11 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
 
     @always_inline
     @staticmethod
@@ -426,12 +539,16 @@ struct Conv2D[
             var batch = Int(block_idx.z)
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -469,25 +586,55 @@ struct Conv2D[
                     var ow = s_idx % Self.out_w
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                        val = rebind[Scalar[dtype]](input[batch, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw])
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
+                        val = rebind[Scalar[dtype]](
+                            input[
+                                batch,
+                                ch * Self.in_h * Self.in_w
+                                + ih * Self.in_w
+                                + iw,
+                            ]
+                        )
                 b_smem[br, bc] = val
-                if Int(block_idx.y) == 0 and k_idx < Self.col_size and s_idx < Self.spatial_out:
+                if (
+                    Int(block_idx.y) == 0
+                    and k_idx < Self.col_size
+                    and s_idx < Self.spatial_out
+                ):
                     cache[batch, k_idx * Self.spatial_out + s_idx] = val
 
                 barrier()
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -500,13 +647,21 @@ struct Conv2D[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.spatial_out:
-                output[batch, r0 * Self.spatial_out + c0] = rebind[Scalar[dtype]](acc[0]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
+                output[batch, r0 * Self.spatial_out + c0] = rebind[
+                    Scalar[dtype]
+                ](acc[0]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
             if r0 < Self.out_channels and c1 < Self.spatial_out:
-                output[batch, r0 * Self.spatial_out + c1] = rebind[Scalar[dtype]](acc[1]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
+                output[batch, r0 * Self.spatial_out + c1] = rebind[
+                    Scalar[dtype]
+                ](acc[1]) + rebind[Scalar[dtype]](params[W_SIZE + r0])
             if r1 < Self.out_channels and c0 < Self.spatial_out:
-                output[batch, r1 * Self.spatial_out + c0] = rebind[Scalar[dtype]](acc[2]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
+                output[batch, r1 * Self.spatial_out + c0] = rebind[
+                    Scalar[dtype]
+                ](acc[2]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
             if r1 < Self.out_channels and c1 < Self.spatial_out:
-                output[batch, r1 * Self.spatial_out + c1] = rebind[Scalar[dtype]](acc[3]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
+                output[batch, r1 * Self.spatial_out + c1] = rebind[
+                    Scalar[dtype]
+                ](acc[3]) + rebind[Scalar[dtype]](params[W_SIZE + r1])
 
     # =========================================================================
     # GPU kernels — tiled backward dW and db
@@ -518,7 +673,9 @@ struct Conv2D[
         BATCH: Int
     ](
         dW: LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
@@ -545,12 +702,16 @@ struct Conv2D[
         var block_k = Int(block_idx.x) * BT
 
         var a_smem = LayoutTensor[
-            dtype, Layout.row_major(BT, SK), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
-            dtype, Layout.row_major(SK, BT), MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -576,7 +737,9 @@ struct Conv2D[
             if g_oc0 < Self.out_channels and ki0 < K_TOTAL:
                 var b0 = ki0 // Self.spatial_out
                 var s0 = ki0 % Self.spatial_out
-                a_smem[a_r0, a_c0] = grad_output[b0, g_oc0 * Self.spatial_out + s0]
+                a_smem[a_r0, a_c0] = grad_output[
+                    b0, g_oc0 * Self.spatial_out + s0
+                ]
             else:
                 a_smem[a_r0, a_c0] = 0
 
@@ -585,7 +748,9 @@ struct Conv2D[
             if g_oc1 < Self.out_channels and ki1 < K_TOTAL:
                 var b1 = ki1 // Self.spatial_out
                 var s1 = ki1 % Self.spatial_out
-                a_smem[a_r1, a_c1] = grad_output[b1, g_oc1 * Self.spatial_out + s1]
+                a_smem[a_r1, a_c1] = grad_output[
+                    b1, g_oc1 * Self.spatial_out + s1
+                ]
             else:
                 a_smem[a_r1, a_c1] = 0
 
@@ -646,7 +811,9 @@ struct Conv2D[
         BATCH: Int
     ](
         dW: LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
@@ -672,12 +839,16 @@ struct Conv2D[
             var block_k = Int(block_idx.x) * MMA_BLOCK_N
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -698,7 +869,9 @@ struct Conv2D[
                 if g_oc < Self.out_channels and ki < K_TOTAL:
                     var b_idx = ki // Self.spatial_out
                     var s_idx = ki % Self.spatial_out
-                    a_smem[a_r, a_c] = grad_output[b_idx, g_oc * Self.spatial_out + s_idx]
+                    a_smem[a_r, a_c] = grad_output[
+                        b_idx, g_oc * Self.spatial_out + s_idx
+                    ]
                 else:
                     a_smem[a_r, a_c] = 0
 
@@ -718,15 +891,29 @@ struct Conv2D[
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -751,12 +938,14 @@ struct Conv2D[
     fn backward_db_kernel[
         BATCH: Int
     ](
-        db: LayoutTensor[dtype, Layout.row_major(Self.out_channels), MutAnyOrigin],
+        db: LayoutTensor[
+            dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+        ],
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """db = sum(grad_output, axis=batch+spatial). One thread per oc.
+        """Formula : db = sum(grad_output, axis=batch+spatial). One thread per oc.
 
         Grid: ((out_channels + TPB - 1) // TPB,)
         Block: (TPB,)
@@ -766,7 +955,9 @@ struct Conv2D[
             var acc: Scalar[dtype] = 0
             for b in range(BATCH):
                 for s in range(Self.spatial_out):
-                    acc += rebind[Scalar[dtype]](grad_output[b, oc * Self.spatial_out + s])
+                    acc += rebind[Scalar[dtype]](
+                        grad_output[b, oc * Self.spatial_out + s]
+                    )
             db[oc] = acc
 
     # =========================================================================
@@ -889,7 +1080,9 @@ struct Conv2D[
 
         # Kernel 2: dW (tiled matmul)
         var dW = LayoutTensor[
-            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
         ](grad_params.ptr)
 
         comptime dW_grid_x = (Self.col_size + 31) // 32
@@ -898,7 +1091,9 @@ struct Conv2D[
         @always_inline
         fn dW_wrapper(
             dW: LayoutTensor[
-                dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
             ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin

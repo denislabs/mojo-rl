@@ -907,13 +907,11 @@ fn primal_linesearch_with_D[
     # Follow the derivative until sign changes (bracket found)
     var p2_alpha = Scalar[DTYPE](0)
     var p2_d1 = p0_d1
-    var p2_d2 = p0_d2
     var bracket_found = False
 
     for _ in range(PRIMAL_MAX_LINESEARCH):
         p2_alpha = p1_alpha
         p2_d1 = p1_d1
-        p2_d2 = p1_d2
 
         # Newton step from p1
         if p1_d2 > Scalar[DTYPE](PRIMAL_MINVAL):
@@ -1110,9 +1108,6 @@ fn primal_linesearch_with_D[
             d1_eval += D_values[r_m] * jar_a[r_m] * Jv[r_m]
             d2_eval += D_values[r_m] * Jv[r_m] * Jv[r_m]
 
-        if d2_eval < Scalar[DTYPE](PRIMAL_MINVAL):
-            d2_eval = Scalar[DTYPE](PRIMAL_MINVAL)
-
         var mid_d1 = d1_eval
 
         # Check convergence
@@ -1123,11 +1118,9 @@ fn primal_linesearch_with_D[
         if mid_d1 * p1_d1 > Scalar[DTYPE](0):
             p1_alpha = mid_alpha
             p1_d1 = mid_d1
-            p1_d2 = d2_eval
         else:
             p2_alpha = mid_alpha
             p2_d1 = mid_d1
-            p2_d2 = d2_eval
 
         # Check if bracket is tiny
         if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](

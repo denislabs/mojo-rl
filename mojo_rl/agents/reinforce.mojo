@@ -549,7 +549,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.baseline_lr = baseline_lr
 
         self.theta = List[List[Float64]]()
-        for a in range(num_actions):
+        for _ in range(num_actions):
             var action_params = List[Float64]()
             for _ in range(self.num_tiles):
                 action_params.append(init_value)

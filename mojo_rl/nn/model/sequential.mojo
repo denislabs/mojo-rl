@@ -115,7 +115,9 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
