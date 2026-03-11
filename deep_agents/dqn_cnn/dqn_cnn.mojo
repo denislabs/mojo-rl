@@ -26,18 +26,17 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from nn.constants import dtype, TILE, TPB
-from nn.model import Sequential, Model
+from nn.model import (
+    Sequential,
+    Model,
+    Conv2DReLU,
+    FlattenLayer,
+    LinearReLU,
+    Linear,
+)
 from nn.optimizer import Adam, Optimizer
 from nn.initializer import Kaiming
 from nn.training import Network, NetworkState, GPUNetworkState
-from nn.autodiff import (
-    AutoDiffChain,
-    MatMul,
-    BiasAdd,
-    ReLUOp,
-    Flatten,
-    Conv2D,
-)
 from deep_agents.core import (
     fill_inline,
     obs_to_inline,
@@ -136,32 +135,12 @@ struct DQNCNNAgent[
 
     # Nature DQN CNN architecture
     comptime Q_Model = Sequential[
-        # Conv block 1: 4×84×84 → 32×20×20
-        AutoDiffChain[
-            Conv2D[4, 32, 8, 4, 0, 84, 84],
-            ReLUOp[CONV1_FLAT],
-        ],
-        # Conv block 2: 32×20×20 → 64×9×9
-        AutoDiffChain[
-            Conv2D[32, 64, 4, 2, 0, CONV1_OUT_H, CONV1_OUT_W],
-            ReLUOp[CONV2_FLAT],
-        ],
-        # Conv block 3: 64×9×9 → 64×7×7
-        AutoDiffChain[
-            Conv2D[64, 64, 3, 1, 0, CONV2_OUT_H, CONV2_OUT_W],
-            ReLUOp[CONV3_FLAT],
-        ],
-        # Flatten + Dense head: 3136 → 512 → num_actions
-        AutoDiffChain[
-            Flatten[CONV3_FLAT],
-            MatMul[CONV3_FLAT, FC_HIDDEN],
-            BiasAdd[FC_HIDDEN],
-            ReLUOp[FC_HIDDEN],
-        ],
-        AutoDiffChain[
-            MatMul[FC_HIDDEN, Self.ACTIONS],
-            BiasAdd[Self.ACTIONS],
-        ],
+        Conv2DReLU[4, 32, 8, 4, 0, 84, 84],
+        Conv2DReLU[32, 64, 4, 2, 0, CONV1_OUT_H, CONV1_OUT_W],
+        Conv2DReLU[64, 64, 3, 1, 0, CONV2_OUT_H, CONV2_OUT_W],
+        FlattenLayer[CONV3_FLAT],
+        LinearReLU[CONV3_FLAT, FC_HIDDEN],
+        Linear[FC_HIDDEN, Self.ACTIONS],
     ]
     comptime Q_Network = Network[Self.Q_Model, Adam[Self.lr]]
 

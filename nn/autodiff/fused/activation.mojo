@@ -13,10 +13,11 @@ from std.math import tanh, exp, log
 
 
 trait Activation(Movable & ImplicitlyCopyable):
-    """Trait for activation functions used in fused matmul+bias+activation ops."""
+    """Trait for activation functions used in fused ops."""
 
     comptime OP_ID: Int  # Matches standalone DiffOp OP_ID (e.g. RELU=10)
-    comptime FUSED_OP_ID: Int  # OP_ID for the fused variant (e.g. 101)
+    comptime FUSED_OP_ID: Int  # OP_ID for fused matmul+bias variant (e.g. 101)
+    comptime FUSED_CONV_OP_ID: Int  # OP_ID for fused conv2d variant (e.g. 110)
 
     @staticmethod
     fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
@@ -41,6 +42,7 @@ struct ReLUActivation(Activation):
 
     comptime OP_ID: Int = 10  # OpID.RELU
     comptime FUSED_OP_ID: Int = 101  # OpID.FUSED_MATMUL_BIAS_RELU
+    comptime FUSED_CONV_OP_ID: Int = 110  # OpID.FUSED_CONV2D_RELU
 
     fn __init__(out self):
         pass
@@ -71,6 +73,7 @@ struct TanhActivation(Activation):
 
     comptime OP_ID: Int = 11  # OpID.TANH
     comptime FUSED_OP_ID: Int = 102  # OpID.FUSED_MATMUL_BIAS_TANH
+    comptime FUSED_CONV_OP_ID: Int = 111  # OpID.FUSED_CONV2D_TANH
 
     fn __init__(out self):
         pass
@@ -101,6 +104,7 @@ struct SigmoidActivation(Activation):
 
     comptime OP_ID: Int = 12  # OpID.SIGMOID
     comptime FUSED_OP_ID: Int = 103  # OpID.FUSED_MATMUL_BIAS_SIGMOID
+    comptime FUSED_CONV_OP_ID: Int = 112  # OpID.FUSED_CONV2D_SIGMOID
 
     fn __init__(out self):
         pass
@@ -131,6 +135,7 @@ struct MishActivation(Activation):
 
     comptime OP_ID: Int = 13  # OpID.MISH
     comptime FUSED_OP_ID: Int = 104  # OpID.FUSED_MATMUL_BIAS_MISH
+    comptime FUSED_CONV_OP_ID: Int = 113  # OpID.FUSED_CONV2D_MISH
 
     fn __init__(out self):
         pass

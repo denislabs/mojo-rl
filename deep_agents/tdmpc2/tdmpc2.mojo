@@ -2086,6 +2086,13 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
+            # Download CURRENT obs to CPU BEFORE step overwrites env_obs_buf.
+            # The replay buffer needs (obs_t, act_t, rew_t, done_t) where obs_t
+            # is the observation when act_t was selected. The step kernel will
+            # overwrite env_obs_buf with obs_{t+1}, so we must save it now.
+            ctx.enqueue_copy(gs.env_obs_host, gs.env_obs_buf)
+            ctx.synchronize()
+
             # Step all environments
             var env_seed = UInt64(total_steps * 1103515245 + 12345)
 
@@ -2115,8 +2122,7 @@ struct TDMPC2Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # Download obs/act/rew/done to CPU for replay buffer + episode tracking
-            ctx.enqueue_copy(gs.env_obs_host, gs.env_obs_buf)
+            # Download act/rew/done after step (obs already downloaded above)
             ctx.enqueue_copy(gs.env_act_host, gs.env_act_buf)
             ctx.enqueue_copy(gs.env_rew_host, gs.env_rew_buf)
             ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)

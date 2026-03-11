@@ -464,15 +464,11 @@ struct ModelDefFromXML[
         copy_tendons_to_buffer(model, host_buf)
         copy_invweight0_to_buffer(model, host_buf)
 
-        # Copy to GPU (invweight0 already computed on CPU above)
+        # Copy to GPU
         ctx.enqueue_copy(model_buf, host_buf)
-        ctx.synchronize()
 
-        # NOTE: _compute_invweight0_gpu disabled due to CUDA PTX address space
-        # bug in Mojo nightly (CUDA_ERROR_INVALID_ADDRESS_SPACE). CPU-computed
-        # invweight0 values from copy_invweight0_to_buffer are used instead.
-        # Re-enable when the compiler bug is fixed.
-        # Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
+        # Recompute invweight0 on GPU for accuracy
+        Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)

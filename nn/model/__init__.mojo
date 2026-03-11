@@ -17,6 +17,15 @@ from .stochastic_actor import (
 from .mish import Mish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
+from .conv2d_layer import (
+    Conv2DLayer,
+    Conv2DReLU,
+    Conv2DTanh,
+    Conv2DSigmoid,
+    Conv2DMish,
+)
+from .pool_layer import MaxPoolLayer, AvgPoolLayer
+from .flatten_layer import FlattenLayer
 
 # Combinators (canonical home: nn.autodiff.combinators, re-exported here)
 from ..autodiff.combinators import Parallel, Residual, Repeat
