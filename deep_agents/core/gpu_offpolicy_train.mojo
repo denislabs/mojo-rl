@@ -790,11 +790,27 @@ fn run_offpolicy_discrete_train_gpu[
         progress_interval = n_envs
     var next_progress = progress_interval
 
+    # Perf timing accumulators (nanoseconds)
+    from std.time import perf_counter_ns
+    var t_select_ns: Int = 0
+    var t_env_ns: Int = 0
+    var t_store_ns: Int = 0
+    var t_bookkeep_ns: Int = 0
+    var t_train_ns: Int = 0
+    var t_iters_timed: Int = 0
+
     while total_steps < num_steps:
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
+        # --- Action selection (CNN forward for n_envs observations) ---
+        ctx.synchronize()
+        var t0 = Int(perf_counter_ns())
         agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
+        ctx.synchronize()
+        var t1 = Int(perf_counter_ns())
+        t_select_ns += t1 - t0
 
+        # --- Environment step (physics + rendering + frame resize) ---
         E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
             ctx,
             states_buf,
@@ -806,11 +822,18 @@ fn run_offpolicy_discrete_train_gpu[
             rng_seed=UInt64(step_seed),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        ctx.synchronize()
+        var t2 = Int(perf_counter_ns())
+        t_env_ns += t2 - t1
 
+        # --- Replay buffer store ---
         # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
         gpu_state.gpu_store[n_envs](
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
         )
+        ctx.synchronize()
+        var t3 = Int(perf_counter_ns())
+        t_store_ns += t3 - t2
 
         # ------------------------------------------------------------------
         # Accumulate episode rewards/steps + log completed (all on GPU)
@@ -861,6 +884,9 @@ fn run_offpolicy_discrete_train_gpu[
             ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        ctx.synchronize()
+        var t4 = Int(perf_counter_ns())
+        t_bookkeep_ns += t4 - t3
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
@@ -870,6 +896,10 @@ fn run_offpolicy_discrete_train_gpu[
                 agent.do_gpu_train_step(ctx, gpu_state)
                 agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
+        ctx.synchronize()
+        var t5 = Int(perf_counter_ns())
+        t_train_ns += t5 - t4
+        t_iters_timed += 1
 
         if total_steps >= next_sync:
             agent.download_from_gpu(gpu_state, ctx)
@@ -930,6 +960,30 @@ fn run_offpolicy_discrete_train_gpu[
                 + " | Train: "
                 + String(total_train_steps)
             )
+
+            # Print perf timing breakdown
+            if t_iters_timed > 0:
+                var total_ns = t_select_ns + t_env_ns + t_store_ns + t_bookkeep_ns + t_train_ns
+                var total_ms = Float64(total_ns) / 1e6
+                var per_iter_ms = total_ms / Float64(t_iters_timed)
+                print(
+                    "  PERF (" + String(t_iters_timed) + " iters, "
+                    + String(per_iter_ms)[:6] + " ms/iter) | "
+                    + "select=" + String(Float64(t_select_ns) / 1e6 / Float64(t_iters_timed))[:5] + " "
+                    + "env=" + String(Float64(t_env_ns) / 1e6 / Float64(t_iters_timed))[:5] + " "
+                    + "store=" + String(Float64(t_store_ns) / 1e6 / Float64(t_iters_timed))[:5] + " "
+                    + "book=" + String(Float64(t_bookkeep_ns) / 1e6 / Float64(t_iters_timed))[:5] + " "
+                    + "train=" + String(Float64(t_train_ns) / 1e6 / Float64(t_iters_timed))[:5]
+                    + " ms/iter"
+                )
+                # Reset accumulators
+                t_select_ns = 0
+                t_env_ns = 0
+                t_store_ns = 0
+                t_bookkeep_ns = 0
+                t_train_ns = 0
+                t_iters_timed = 0
+
             next_print += print_every
 
     # Final sync
