@@ -111,7 +111,7 @@ fn main() raises:
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=5000,
-                gradient_steps=0,
+                gradient_steps=8,
                 sync_every=10_000,
                 verbose=True,
                 print_every=100_000,
