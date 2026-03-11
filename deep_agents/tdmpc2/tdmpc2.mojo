@@ -2185,6 +2185,27 @@ struct TDMPC2Agent[
                     )
 
                 clear_progress_bar()
+                # ── Diagnostics: action stats from already-downloaded host buffers ──
+                var diag_act_abs_sum: Float64 = 0.0
+                var diag_act_sq_sum: Float64 = 0.0
+                var diag_act_max: Float64 = 0.0
+                for ei in range(n_envs):
+                    for ai in range(Self.ACT):
+                        var a = Float64(gs.env_act_host[ei * Self.ACT + ai])
+                        var aa = abs(a)
+                        diag_act_abs_sum += aa
+                        diag_act_sq_sum += a * a
+                        if aa > diag_act_max:
+                            diag_act_max = aa
+                var diag_n = Float64(n_envs * Self.ACT)
+                var diag_mean_abs_act = diag_act_abs_sum / diag_n
+                var diag_mean_sq_act = diag_act_sq_sum / diag_n
+                # Per-step reward (from last downloaded rew_host)
+                var diag_rew_sum: Float64 = 0.0
+                for ei in range(n_envs):
+                    diag_rew_sum += Float64(gs.env_rew_host[ei])
+                var diag_mean_rew = diag_rew_sum / Float64(n_envs)
+
                 print(
                     "TD-MPC2 (GPU) | Step "
                     + String(total_steps)
@@ -2196,6 +2217,16 @@ struct TDMPC2Agent[
                     + String(last_avg_reward)[:7]
                     + " | Train: "
                     + String(self.train_step_count)
+                )
+                print(
+                    "  diag: |act|="
+                    + String(diag_mean_abs_act)[:6]
+                    + " act²="
+                    + String(diag_mean_sq_act)[:6]
+                    + " max|act|="
+                    + String(diag_act_max)[:6]
+                    + " step_rew="
+                    + String(diag_mean_rew)[:7]
                 )
                 recent_reward_sum = 0.0
                 recent_episode_count = 0
