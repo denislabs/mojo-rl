@@ -742,11 +742,13 @@ fn tdmpc2_q_decode_backward_kernel[
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         q_val = q_val + prob_k * Scalar[dtype](bins[k][0])
 
-    # With symexp decode: Q_actual = symexp(Q_symlog)
-    # d(-Q_actual)/d(logits_k) = -symexp'(Q_symlog) * softmax_k * (bin_k - Q_symlog)
-    # where symexp'(x) = exp(|x|) for all x
-    var symexp_deriv = exp(math_abs(q_val))
-    var scale = -symexp_deriv * rho_weight / Scalar[dtype](BATCH_SIZE)
+    # Optimize in symlog space: maximize symlog(Q) instead of Q directly.
+    # Since symlog is monotonically increasing, argmax_a symlog(Q(s,a)) = argmax_a Q(s,a).
+    # This avoids the symexp derivative (exp(|q_val|)) which causes gradient explosion
+    # when Q-values are large. The reference TD-MPC2 uses RunningScale to normalize
+    # Q-values before the policy loss, achieving the same bounded-gradient effect.
+    # d(-symlog(Q))/d(logits_k) = -softmax_k * (bin_k - Q_symlog) * rho / BATCH
+    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
     for k in range(BINS):
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         grad_logits[i, k] = scale * prob_k * (Scalar[dtype](bins[k][0]) - q_val)
