@@ -423,6 +423,8 @@ fn gather_batch_kernel[
     """Gather sampled transitions from replay buffer into batch tensors.
 
     Each thread gathers one transition based on its corresponding index.
+    Used for small OBS_DIM. For large OBS_DIM (pixels), use
+    gather_obs_parallel_kernel + gather_scalars_kernel instead.
 
     Args:
         batch_states: Output batch states [SAMPLE_SIZE, OBS_DIM].
@@ -449,6 +451,115 @@ fn gather_batch_kernel[
         batch_next_states[i, d] = buf_next_states[buf_idx, d]
 
     batch_actions[i] = buf_actions[buf_idx]
+    batch_rewards[i] = buf_rewards[buf_idx]
+    batch_dones[i] = buf_dones[buf_idx]
+
+
+@always_inline
+fn gather_obs_parallel_kernel[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    OBS_DIM: Int,
+    CAPACITY: Int,
+](
+    batch_states: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    batch_next_states: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_next_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+):
+    """Parallel gather for large observations (e.g. pixel frames).
+
+    Grid: (ceil(OBS_DIM / TPB), SAMPLE_SIZE) — each thread copies one element.
+    block_idx.y selects the sample, thread within block selects obs dimension.
+    Copies both obs and next_obs in one launch.
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var sample = Int(block_idx.y)
+    if d >= OBS_DIM:
+        return
+
+    var buf_idx = Int(indices[sample])
+    batch_states[sample, d] = buf_states[buf_idx, d]
+    batch_next_states[sample, d] = buf_next_states[buf_idx, d]
+
+
+@always_inline
+fn gather_scalars_kernel[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    CAPACITY: Int,
+](
+    batch_actions: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    buf_actions: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    buf_dones: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+):
+    """Gather scalar fields (actions, rewards, dones) for sampled transitions."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SAMPLE_SIZE:
+        return
+
+    var buf_idx = Int(indices[i])
+    batch_actions[i] = buf_actions[buf_idx]
+    batch_rewards[i] = buf_rewards[buf_idx]
+    batch_dones[i] = buf_dones[buf_idx]
+
+
+@always_inline
+fn gather_scalars_nd_kernel[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    ACTION_DIM: Int,
+    CAPACITY: Int,
+](
+    batch_actions: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    buf_actions: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, ACTION_DIM), MutAnyOrigin
+    ],
+    buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    buf_dones: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+):
+    """Gather scalar+action fields for multi-dimensional action transitions."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SAMPLE_SIZE:
+        return
+
+    var buf_idx = Int(indices[i])
+    for a in range(ACTION_DIM):
+        batch_actions[i, a] = buf_actions[buf_idx, a]
     batch_rewards[i] = buf_rewards[buf_idx]
     batch_dones[i] = buf_dones[buf_idx]
 
@@ -568,6 +679,8 @@ fn gather_batch_kernel_nd[
 
     Extends gather_batch_kernel to support ACTION_DIM > 1 for
     continuous control algorithms (DDPG, TD3, SAC).
+    Used for small OBS_DIM. For large OBS_DIM (pixels), use
+    gather_obs_parallel_kernel + gather_scalars_nd_kernel instead.
 
     Args:
         batch_states: Output batch states [SAMPLE_SIZE, OBS_DIM].

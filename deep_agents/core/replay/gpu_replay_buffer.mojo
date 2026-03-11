@@ -32,6 +32,9 @@ from ..kernels import (
     store_transitions_kernel,
     sample_indices_kernel,
     gather_batch_kernel,
+    gather_obs_parallel_kernel,
+    gather_scalars_kernel,
+    gather_scalars_nd_kernel,
     store_transitions_kernel_nd,
     gather_batch_kernel_nd,
 )
@@ -434,7 +437,160 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
         ](self.dones_buf.unsafe_ptr())
 
-        comptime if Self.ACTION_DIM == 1:
+        # For large OBS_DIM (pixel observations), use parallel gather:
+        # 2D grid (OBS_DIM_blocks, BATCH) — one thread per element instead of
+        # one thread per sample. ~900x more parallelism for 28224-dim obs.
+        comptime if Self.OBS_DIM > TPB:
+            comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
+
+            @always_inline
+            fn gather_obs_wrapper(
+                bs: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                bns: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                rbs: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                rbns: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                idx: LayoutTensor[
+                    DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+            ):
+                gather_obs_parallel_kernel[
+                    dtype, BATCH, Self.OBS_DIM, Self.CAPACITY
+                ](bs, bns, rbs, rbns, idx)
+
+            ctx.enqueue_function[gather_obs_wrapper, gather_obs_wrapper](
+                sampled_obs_t,
+                sampled_next_obs_t,
+                buf_states_t,
+                buf_next_states_t,
+                indices_t,
+                grid_dim=(OBS_BLOCKS, BATCH),
+                block_dim=(TPB,),
+            )
+
+            # Scalar fields (actions/rewards/dones) — tiny kernel
+            comptime if Self.ACTION_DIM == 1:
+                var sampled_actions_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ](sampled_actions.unsafe_ptr())
+                var buf_actions_t = LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ](self.actions_buf.unsafe_ptr())
+
+                @always_inline
+                fn gather_sc_wrapper(
+                    ba: LayoutTensor[
+                        dtype, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                    br: LayoutTensor[
+                        dtype, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                    bd: LayoutTensor[
+                        dtype, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                    rba: LayoutTensor[
+                        dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                    ],
+                    rbr: LayoutTensor[
+                        dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                    ],
+                    rbd: LayoutTensor[
+                        dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                    ],
+                    idx: LayoutTensor[
+                        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                ):
+                    gather_scalars_kernel[
+                        dtype, BATCH, Self.CAPACITY
+                    ](ba, br, bd, rba, rbr, rbd, idx)
+
+                ctx.enqueue_function[gather_sc_wrapper, gather_sc_wrapper](
+                    sampled_actions_t,
+                    sampled_rewards_t,
+                    sampled_dones_t,
+                    buf_actions_t,
+                    buf_rewards_t,
+                    buf_dones_t,
+                    indices_t,
+                    grid_dim=(BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+            else:
+                var sampled_actions_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.ACTION_DIM),
+                    MutAnyOrigin,
+                ](sampled_actions.unsafe_ptr())
+                var buf_actions_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.ACTION_DIM),
+                    MutAnyOrigin,
+                ](self.actions_buf.unsafe_ptr())
+
+                @always_inline
+                fn gather_sc_nd_wrapper(
+                    ba: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.ACTION_DIM),
+                        MutAnyOrigin,
+                    ],
+                    br: LayoutTensor[
+                        dtype, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                    bd: LayoutTensor[
+                        dtype, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                    rba: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.CAPACITY, Self.ACTION_DIM),
+                        MutAnyOrigin,
+                    ],
+                    rbr: LayoutTensor[
+                        dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                    ],
+                    rbd: LayoutTensor[
+                        dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                    ],
+                    idx: LayoutTensor[
+                        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                    ],
+                ):
+                    gather_scalars_nd_kernel[
+                        dtype, BATCH, Self.ACTION_DIM, Self.CAPACITY
+                    ](ba, br, bd, rba, rbr, rbd, idx)
+
+                ctx.enqueue_function[
+                    gather_sc_nd_wrapper, gather_sc_nd_wrapper
+                ](
+                    sampled_actions_t,
+                    sampled_rewards_t,
+                    sampled_dones_t,
+                    buf_actions_t,
+                    buf_rewards_t,
+                    buf_dones_t,
+                    indices_t,
+                    grid_dim=(BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+        # For small OBS_DIM, use original monolithic kernel (one thread per sample)
+        elif Self.ACTION_DIM == 1:
             var sampled_actions_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
             ](sampled_actions.unsafe_ptr())
