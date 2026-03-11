@@ -114,7 +114,7 @@ fn main() raises:
             rho=0.5,
             tau=0.01,
             consistency_coef=20.0,
-            reward_coef=0.1,
+            reward_coef=0.5,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
             entropy_coef=1e-4,

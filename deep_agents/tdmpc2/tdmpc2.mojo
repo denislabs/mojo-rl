@@ -1215,7 +1215,10 @@ struct TDMPC2Agent[
         )
 
         # ── Consistency loss gradient → grad_z_pred ──
-        var cons_rho = rho_t * Scalar[dtype](self.consistency_coef)
+        # Reference divides all losses by horizon: loss /= H
+        var cons_rho = rho_t * Scalar[dtype](
+            self.consistency_coef / Float64(Self.H)
+        )
         ctx.enqueue_function[
             tdmpc2_consistency_loss_grad_kernel[dtype, Self.BATCH, Self.LATENT],
             tdmpc2_consistency_loss_grad_kernel[dtype, Self.BATCH, Self.LATENT],
@@ -1264,7 +1267,7 @@ struct TDMPC2Agent[
             gpu_state.rew_batch_ws_buf,
         )
         ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        var rew_rho = rho_t * Scalar[dtype](self.reward_coef)
+        var rew_rho = rho_t * Scalar[dtype](self.reward_coef / Float64(Self.H))
         var tgt_t_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
         ](gpu_state.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
@@ -1290,7 +1293,9 @@ struct TDMPC2Agent[
         )
 
         # ── Q1..Q5 forward + two-hot grad + backward ──
-        var q_rho = rho_t * Scalar[dtype](self.value_coef / Float64(Self.num_q))
+        var q_rho = rho_t * Scalar[dtype](
+            self.value_coef / Float64(Self.num_q * Self.H)
+        )
         var tgt_t_tensor_q = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
         ](gpu_state.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
@@ -1940,7 +1945,7 @@ struct TDMPC2Agent[
         if progress_interval < n_envs:
             progress_interval = n_envs
         var next_progress = progress_interval
-        var grad_norm_max = Scalar[dtype](10.0)
+        var grad_norm_max = Scalar[dtype](20.0)  # Reference: grad_clip_norm=20
 
         # CPU-side per-env episode reward accumulators
         var cpu_ep_rewards = InlineArray[Float64, n_envs](fill=0.0)

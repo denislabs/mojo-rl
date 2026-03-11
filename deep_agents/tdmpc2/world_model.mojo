@@ -9,7 +9,7 @@ The world model simultaneously learns:
   - Q-ensemble:  NUM_Q × (z, a) → logits[NUM_BINS] (distributional Q-values)
 
 Architecture (all MLPs use NormedLinear blocks):
-  encoder:     [NL(OBS, MLP), NL(MLP, LATENT)]
+  encoder:     [NL(OBS, MLP), Linear(MLP, LATENT) + LayerNorm + SimNorm]
   dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + SimNorm]
   reward:      [NL(LATENT+ACT, MLP), NL(MLP, MLP), Linear(MLP, NUM_BINS)]
   termination: [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 1) + Sigmoid]
@@ -31,6 +31,7 @@ from nn.model import (
     Sigmoid,
     NormedLinear,
     SimNorm,
+    LayerNorm,
 )
 from nn.optimizer import Adam
 from nn.initializer import Kaiming
@@ -83,10 +84,14 @@ struct WorldModel[
     # Model type definitions
     # -------------------------------------------------------------------------
 
-    # Encoder: OBS_DIM → LATENT_DIM
+    # Encoder: OBS_DIM → LATENT_DIM (with SimNorm output, matching reference)
+    # Reference: mlp(obs_dim, [enc_dim], latent_dim, act=SimNorm(cfg))
+    # = NormedLinear(obs, mlp) → Linear(mlp, latent) → LayerNorm → SimNorm
     comptime EncModel = Sequential[
         NormedLinear[Self.OBS_DIM, Self.MLP_DIM],
-        NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
+        Linear[Self.MLP_DIM, Self.LATENT_DIM],
+        LayerNorm[Self.LATENT_DIM],
+        SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
