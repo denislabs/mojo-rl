@@ -773,13 +773,19 @@ fn tdmpc2_action_tanh_chain_kernel[
         dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
     ],
     entropy_coef: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
-    """Chain dQ/d(action) through tanh to get dQ/d(policy_mean).
+    """Chain dQ/d(action) through stochastic tanh(mean + std*eps) to policy params.
 
-    Given grad_za from Q backward (dL/d(za)):
-    - Extract dL/d(action) = grad_za[:, LATENT_DIM:]
-    - Chain through tanh: dL/d(mean_j) = dL/d(action_j) * tanh'(mean_j)
-    - Add entropy gradient for log_std
+    Uses the same rng_seed as the forward kernel to reconstruct eps.
+    Reparameterization trick gradients:
+      a = tanh(u), u = mean + exp(log_std) * eps
+      da/d(mean) = tanh'(u)
+      da/d(log_std) = tanh'(u) * exp(log_std) * eps
+
+    Entropy gradient (tanh-squashed Gaussian):
+      d(log_pi)/d(mean) = 2*tanh(u)  (from -log(1 - tanh(u)²) correction)
+      d(log_pi)/d(log_std) = -1  (from Gaussian entropy)
 
     ACCUMULATES into grad_pi_out.
 
@@ -787,8 +793,12 @@ fn tdmpc2_action_tanh_chain_kernel[
         grad_za: Gradient from Q backward [BATCH, ZA_DIM].
         pi_out: Policy output [BATCH, POL_OUT] (mean | log_std).
         grad_pi_out: Output gradient for policy backward [BATCH, POL_OUT].
-        entropy_coef: Entropy regularization coefficient.
+        entropy_coef: Entropy coefficient * rho^t (includes temporal decay).
+        rng_seed: Same seed used in forward kernel to reconstruct eps.
     """
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
         return
@@ -799,17 +809,47 @@ fn tdmpc2_action_tanh_chain_kernel[
         # dL/d(action_j) from Q backward
         var grad_action = Scalar[dtype](grad_za[i, LATENT_DIM + j][0])
 
-        # tanh derivative: d(tanh(u))/du = 1 - tanh(u)^2
+        # Reconstruct eps using same RNG seed as forward
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var eps = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        # Reconstruct u = mean + exp(log_std) * eps
         var mean_raw = Scalar[dtype](pi_out[i, j][0])
-        var t = Scalar[dtype](tanh(Float32(mean_raw)))
+        var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+        if log_std_raw < LOG_STD_MIN:
+            log_std_raw = LOG_STD_MIN
+        elif log_std_raw > LOG_STD_MAX:
+            log_std_raw = LOG_STD_MAX
+        var std = exp(log_std_raw)
+        var u = mean_raw + std * eps
+
+        # tanh derivative at u (not at mean!): d(tanh(u))/du = 1 - tanh(u)^2
+        var t = Scalar[dtype](tanh(Float32(u)))
         var tanh_deriv = Scalar[dtype](1.0) - t * t
 
-        # dL/d(mean_j) = dL/d(action_j) * tanh'(mean_j)
-        grad_pi_out[i, j] = grad_pi_out[i, j] + grad_action * tanh_deriv
+        # d(loss)/d(mean) = d(-Q)/d(a) * da/d(mean) + ent * d(log_pi)/d(mean)
+        #                  = grad_action * tanh'(u) + ent * 2*tanh(u) / B
+        grad_pi_out[i, j] = (
+            grad_pi_out[i, j]
+            + grad_action * tanh_deriv
+            + ent_scale * Scalar[dtype](2.0) * t
+        )
 
-        # Entropy gradient for log_std: maximize entropy → -entropy_coef/B
+        # d(loss)/d(log_std) = d(-Q)/d(a) * da/d(log_std) + ent * d(log_pi)/d(log_std)
+        #                    = grad_action * tanh'(u) * std * eps + ent * (-1/B)
         grad_pi_out[i, ACTION_DIM + j] = (
-            grad_pi_out[i, ACTION_DIM + j] - ent_scale
+            grad_pi_out[i, ACTION_DIM + j]
+            + grad_action * tanh_deriv * std * eps
+            - ent_scale
         )
 
 
@@ -1199,21 +1239,90 @@ fn tdmpc2_apply_tanh_build_za_kernel[
         Layout.row_major(BATCH_SIZE, LATENT_DIM + ACTION_DIM),
         MutAnyOrigin,
     ],
+    rng_seed: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
-    """Fused: apply tanh to policy mean AND build za = [z, tanh(mean)].
+    """Fused: sample stochastic action via reparameterization + build za.
 
-    Combines apply_tanh_kernel + build_za_kernel into one launch.
+    Uses reparameterization trick: a = tanh(mean + exp(log_std) * eps)
+    where eps ~ N(0,1). This matches the reference TD-MPC2 policy gradient.
+    The same rng_seed must be passed to the backward kernel for correct gradients.
     """
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
         return
 
-    # Apply tanh to mean → actions
+    # Sample stochastic actions via reparameterization
+    for j in range(ACTION_DIM):
+        var mean_raw = Scalar[dtype](pi_out[i, j][0])
+        var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+
+        # Clamp log_std
+        if log_std_raw < LOG_STD_MIN:
+            log_std_raw = LOG_STD_MIN
+        elif log_std_raw > LOG_STD_MAX:
+            log_std_raw = LOG_STD_MAX
+
+        var std = exp(log_std_raw)
+
+        # Box-Muller for N(0,1)
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var eps = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        # Reparameterization: u = mean + std * eps, a = tanh(u)
+        var u = mean_raw + std * eps
+        actions[i, j] = Scalar[dtype](tanh(Float32(u)))
+
+    # Build za = [z, actions]
+    for k in range(LATENT_DIM):
+        za[i, k] = z[i, k]
+    for k in range(ACTION_DIM):
+        za[i, LATENT_DIM + k] = actions[i, k]
+
+
+@always_inline
+fn tdmpc2_apply_tanh_build_za_deterministic_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    z: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, LATENT_DIM), MutAnyOrigin
+    ],
+    za: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_SIZE, LATENT_DIM + ACTION_DIM),
+        MutAnyOrigin,
+    ],
+) where dtype.is_floating_point():
+    """Deterministic: apply tanh to mean only, no noise. Used for MPPI."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
     for j in range(ACTION_DIM):
         var mean_raw = Scalar[dtype](pi_out[i, j][0])
         actions[i, j] = Scalar[dtype](tanh(Float32(mean_raw)))
 
-    # Build za = [z, actions]
     for k in range(LATENT_DIM):
         za[i, k] = z[i, k]
     for k in range(ACTION_DIM):

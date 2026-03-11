@@ -31,7 +31,7 @@ from .kernels import (
     mppi_add_terminal_value_kernel,
     mppi_copy_z_kernel,
     tdmpc2_build_za_kernel,
-    tdmpc2_apply_tanh_build_za_kernel,
+    tdmpc2_apply_tanh_build_za_deterministic_kernel,
     tdmpc2_q_decode_kernel,
     tdmpc2_decode_and_min_kernel,
     tdmpc2_zero_kernel,
@@ -631,7 +631,7 @@ fn plan_gpu[
     comptime build_za = tdmpc2_build_za_kernel[
         dtype, TOTAL_SAMPLES, LATENT_DIM, ACTION_DIM
     ]
-    comptime tanh_build_za = tdmpc2_apply_tanh_build_za_kernel[
+    comptime tanh_build_za = tdmpc2_apply_tanh_build_za_deterministic_kernel[
         dtype, TOTAL_SAMPLES, ACTION_DIM, LATENT_DIM, POL_OUT
     ]
     comptime q_decode = tdmpc2_q_decode_kernel[dtype, TOTAL_SAMPLES, NUM_BINS]

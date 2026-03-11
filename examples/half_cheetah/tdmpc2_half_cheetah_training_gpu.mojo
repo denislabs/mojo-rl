@@ -117,7 +117,7 @@ fn main() raises:
             reward_coef=0.5,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
-            entropy_coef=1e-4,
+            entropy_coef=1e-3,
             temperature=0.5,
             action_scale=1.0,
             warmup_steps=5_000,

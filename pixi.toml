@@ -1,9 +1,13 @@
 [workspace]
 authors = ["Denis Laboureyras"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
-name = "mojo-rl"
+name = "mojo_rl"
 platforms = ["linux-64", "osx-arm64"]
-version = "1.0.0"
+version = "0.1.0"
+license = "MIT"
+license-file = "LICENSE"
+homepage = "https://github.com/denislabs/mojo-rl"
+repository = "https://github.com/denislabs/mojo-rl"
 
 [feature.nvidia]
 system-requirements = { cuda = "12" }
@@ -61,10 +65,8 @@ default = { features = ["nvidia"] }
 
 [tasks]
 install-pre-commit = "pre-commit install"
-format = { cmd = "mojo format problems solutions", depends-on = [
-    "install-pre-commit",
-] }
-format-check = { cmd = "bash -c 'mojo format problems solutions && git diff --exit-code problems solutions || (echo \"Error: Code is not formatted. Run \\\"pixi run format\\\" to fix.\" && exit 1)'", description = "Check if code is formatted without modifying files" }
+build = { cmd = "mojo package mojo_rl -o mojo_rl.mojopkg" }
+format = { cmd = "mojo format -l 80 ." }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
 

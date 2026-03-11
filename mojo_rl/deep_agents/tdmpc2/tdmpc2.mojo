@@ -1818,6 +1818,8 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
         ](gs.grad_logits_buf.unsafe_ptr())
         var pi_q_rng_counter = UInt64(0)
+        var pi_reparam_rng_counter = UInt32(2_000_000)
+        var td_reparam_rng_counter = UInt32(3_000_000)
         var td_q_rng_counter = UInt64(1_000_000)
 
         # n_envs-sized tensors for data collection phase
@@ -2371,7 +2373,9 @@ struct TDMPC2Agent[
                     gs.pol_batch_ws_buf,
                 )
 
-                # Fused: tanh(mean) → actions + build za_next (2 kernels → 1)
+                # Stochastic: tanh(mean + std*eps) → actions + build za_next
+                var td_reparam_seed = Scalar[DType.uint32](td_reparam_rng_counter)
+                td_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
                 ctx.enqueue_function[
                     tdmpc2_apply_tanh_build_za_kernel[
                         dtype, Self.BATCH, Self.ACT, Self.LATENT
@@ -2384,6 +2388,7 @@ struct TDMPC2Agent[
                     pi_act_tensor,
                     z_next_tensor,
                     za_tensor,
+                    td_reparam_seed,
                     grid_dim=(Self.BATCH_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -2870,7 +2875,9 @@ struct TDMPC2Agent[
                     gs.pol_batch_ws_buf,
                 )
 
-                # Fused: tanh(mean) → actions + build za_pi (2 kernels → 1)
+                # Stochastic policy: a = tanh(mean + std*eps) via reparameterization
+                var pi_reparam_seed = Scalar[DType.uint32](pi_reparam_rng_counter)
+                pi_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
                 ctx.enqueue_function[
                     tdmpc2_apply_tanh_build_za_kernel[
                         dtype, Self.BATCH, Self.ACT, Self.LATENT
@@ -2883,6 +2890,7 @@ struct TDMPC2Agent[
                     pi_act_tensor,
                     z_tensor,
                     za_tensor,
+                    pi_reparam_seed,
                     grid_dim=(Self.BATCH_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -2899,7 +2907,8 @@ struct TDMPC2Agent[
 
                 for qi_iter in range(2):
                     var qi = qi_a if qi_iter == 0 else qi_b
-                    var ent = entropy_coef_scalar if qi_iter == 0 else Scalar[
+                    # Entropy weighted by rho^t (temporal decay), applied once
+                    var ent = entropy_coef_scalar * pol_rho_t if qi_iter == 0 else Scalar[
                         dtype
                     ](0.0)
 
@@ -2953,7 +2962,7 @@ struct TDMPC2Agent[
                         gs.q1_batch_ws_buf,
                     )
 
-                    # Chain through tanh + entropy (entropy on first Q only)
+                    # Chain through stochastic tanh + entropy (same seed as forward)
                     ctx.enqueue_function[
                         tdmpc2_action_tanh_chain_kernel[
                             dtype, Self.BATCH, Self.ACT, Self.LATENT
@@ -2966,6 +2975,7 @@ struct TDMPC2Agent[
                         pi_out_tensor,
                         grad_pi_out_tensor,
                         ent,
+                        pi_reparam_seed,
                         grid_dim=(Self.BATCH_BLOCKS,),
                         block_dim=(TPB,),
                     )

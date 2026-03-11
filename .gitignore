@@ -216,3 +216,13 @@ main
 *.ckpt
 
 roms
+
+openspec/
+references/
+INSTALL.md
+docs/
+.claude/
+.cursor/
+.vscode/
+CLAUDE.md
+*.code-workspace

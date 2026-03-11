@@ -1,9 +1,9 @@
 """Playable Pong — use UP/DOWN arrow keys to control the right paddle."""
 
 from std.memory import alloc
-from envs.arcade_games.pong import PongEnv
-from render.sdl.sdl_keyboard import get_keyboard_state
-from render.sdl.sdl_scancode import Scancode
+from mojo_rl.envs.arcade_games.pong import PongEnv
+from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
+from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
 fn main() raises:
