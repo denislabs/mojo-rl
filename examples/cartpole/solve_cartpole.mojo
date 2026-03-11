@@ -29,6 +29,7 @@ Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 
 from envs import CartPoleEnv
 from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
+from render import Renderer2D
 
 
 fn main() raises:
@@ -173,20 +174,45 @@ fn main() raises:
     print("")
 
     # ========================================================================
-    # Visual Demo
+    # Visual Demo + GIF Recording
     # ========================================================================
     print("-" * 60)
-    print("Visual Demo - Watch the trained agent!")
+    print("Visual Demo - Recording trained agent to GIF")
     print("-" * 60)
     print("Using Q-Learning agent with SDL2 rendering.")
-    print("Close the window when done watching.")
     print("")
 
-    # Run visual demo
-    _ = agent_q.evaluate(env_q, tc, num_episodes=3, render=True)
+    # Create renderer and start GIF recording
+    var renderer = Renderer2D(width=600, height=400, fps=30)
+    _ = renderer.init_display()
+    renderer.start_recording("cartpole_demo.gif", fps=30)
 
+    # Run 1 episode with recording
+    var obs_raw = env_q.reset_obs_list()
+    var obs_f64 = List[Float64](capacity=len(obs_raw))
+    for i in range(len(obs_raw)):
+        obs_f64.append(Float64(obs_raw[i]))
+
+    for step in range(500):
+        var tiles = tc.get_tiles(obs_f64)
+        var action = agent_q.get_best_action(tiles)
+        var result = env_q.step_obs(action)
+
+        env_q.render(renderer)
+
+        if result[2]:  # done
+            break
+
+        obs_f64.clear()
+        for i in range(len(result[0])):
+            obs_f64.append(Float64(result[0][i]))
+
+    # Stop recording and clean up
+    renderer.stop_recording()
+    renderer.close()
     env_q.close()
 
+    print("Saved: cartpole_demo.gif")
     print("")
     print("Demo complete!")
     print("=" * 60)

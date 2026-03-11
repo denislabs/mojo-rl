@@ -77,6 +77,10 @@ struct Renderer2D(Movable):
     # Timing
     var last_frame_time: UInt64
 
+    # Screenshot (S key)
+    var screenshot_requested: Bool
+    var screenshot_counter: Int
+
     # Video recording (V key / programmatic API)
     var recorder: VideoRecorder
     var recording_counter: Int
@@ -113,6 +117,8 @@ struct Renderer2D(Movable):
         self.initialized = False
         self.should_quit = False
         self.last_frame_time = 0
+        self.screenshot_requested = False
+        self.screenshot_counter = 0
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
@@ -130,6 +136,8 @@ struct Renderer2D(Movable):
         self.initialized = take.initialized
         self.should_quit = take.should_quit
         self.last_frame_time = take.last_frame_time
+        self.screenshot_requested = take.screenshot_requested
+        self.screenshot_counter = take.screenshot_counter
         self.recorder = take.recorder^
         self.recording_counter = take.recording_counter
 
@@ -212,6 +220,8 @@ struct Renderer2D(Movable):
                     if key_val == Int(Keycode.SDLK_ESCAPE):
                         self.should_quit = True
                         return False
+                    elif key_val == Int(Keycode.SDLK_S):
+                        self.screenshot_requested = True
                     elif key_val == Int(Keycode.SDLK_V):
                         try:
                             if self.recorder.is_recording:
@@ -638,9 +648,38 @@ struct Renderer2D(Movable):
             var line = lines[i]
             self.draw_text(line, x, y + i * line_height, color)
 
+    fn save_screenshot(mut self, filename: String) raises:
+        """Save a screenshot of the current frame to a file.
+
+        Args:
+            filename: Output path, e.g. ``screenshot_0.jpg`` or ``screenshot_0.png``.
+        """
+        var surf = render_read_pixels(
+            self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin]()
+        )
+        var pixels = surf[].pixels
+        self.recorder.save_frame_bgra(
+            Int(pixels), self.screen_width, self.screen_height, filename
+        )
+        destroy_surface(surf)
+
     fn flip(mut self):
         """Update display and cap framerate."""
         try:
+            # Screenshot capture BEFORE render_present (SDL3 requirement)
+            if self.screenshot_requested:
+                self.screenshot_requested = False
+                try:
+                    var fname = (
+                        "screenshot_"
+                        + String(self.screenshot_counter)
+                        + ".jpg"
+                    )
+                    self.save_screenshot(fname)
+                    self.screenshot_counter += 1
+                except e:
+                    print("Screenshot failed: " + String(e))
+
             # Capture frame for recording BEFORE render_present (SDL3 requirement)
             if self.recorder.is_recording:
                 try:
