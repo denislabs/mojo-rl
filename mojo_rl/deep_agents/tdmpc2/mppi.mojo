@@ -1173,21 +1173,21 @@ fn plan_gpu_batched[
     # Each needs BATCH_TOTAL scalars. We'll use the 5 q_out bufs' first
     # BATCH_TOTAL floats as decoded value storage after decode.
     # Actually, let's define separate 1D views for decoded values.
-    var qv1 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
-    ](mb.q_out_buf1.unsafe_ptr())
-    var qv2 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
-    ](mb.q_out_buf2.unsafe_ptr())
-    var qv3 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
-    ](mb.q_out_buf3.unsafe_ptr())
-    var qv4 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
-    ](mb.q_out_buf4.unsafe_ptr())
-    var qv5 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
-    ](mb.q_out_buf5.unsafe_ptr())
+    var qv1 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
+        mb.q_out_buf1.unsafe_ptr()
+    )
+    var qv2 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
+        mb.q_out_buf2.unsafe_ptr()
+    )
+    var qv3 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
+        mb.q_out_buf3.unsafe_ptr()
+    )
+    var qv4 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
+        mb.q_out_buf4.unsafe_ptr()
+    )
+    var qv5 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
+        mb.q_out_buf5.unsafe_ptr()
+    )
 
     # Reward output tensor on second workspace (for parallel rew+dyn)
     var rew_out_tensor2 = LayoutTensor[
@@ -1271,13 +1271,16 @@ fn plan_gpu_batched[
             comptime if USE_STREAMS:
                 # Stream 1: Reward forward + accumulate
                 RewModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                    ctx, s1,
+                    ctx,
+                    s1,
                     rew_out_tensor,
                     rew_in_tensor,
                     rew_params,
                     mb.rew_ws_buf,
                 )
-                var compiled_accum = ctx.compile_function[accum_reward, accum_reward]()
+                var compiled_accum = ctx.compile_function[
+                    accum_reward, accum_reward
+                ]()
                 s1.enqueue_function(
                     compiled_accum,
                     rew_logits_tensor,
@@ -1289,7 +1292,8 @@ fn plan_gpu_batched[
                 )
                 # Stream 2: Dynamics forward + copy z
                 DynModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                    ctx, s2,
+                    ctx,
+                    s2,
                     dyn_out_tensor,
                     dyn_in_tensor,
                     dyn_params,
@@ -1308,20 +1312,32 @@ fn plan_gpu_batched[
                 s2.synchronize()
             else:
                 RewModel.forward_gpu_no_cache[BATCH_TOTAL](
-                    ctx, rew_out_tensor, rew_in_tensor, rew_params,
+                    ctx,
+                    rew_out_tensor,
+                    rew_in_tensor,
+                    rew_params,
                     mb.rew_ws_buf,
                 )
                 ctx.enqueue_function[accum_reward, accum_reward](
-                    rew_logits_tensor, bins_tensor, returns_tensor, discount,
-                    grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                    rew_logits_tensor,
+                    bins_tensor,
+                    returns_tensor,
+                    discount,
+                    grid_dim=(MPPI_BLOCKS,),
+                    block_dim=(TPB,),
                 )
                 DynModel.forward_gpu_no_cache[BATCH_TOTAL](
-                    ctx, dyn_out_tensor, dyn_in_tensor, dyn_params,
+                    ctx,
+                    dyn_out_tensor,
+                    dyn_in_tensor,
+                    dyn_params,
                     mb.dyn_ws_buf,
                 )
                 ctx.enqueue_function[copy_z, copy_z](
-                    z_tensor, z_next_tensor,
-                    grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                    z_tensor,
+                    z_next_tensor,
+                    grid_dim=(MPPI_BLOCKS,),
+                    block_dim=(TPB,),
                 )
                 ctx.synchronize()
             t_rew_dyn_ns += perf_counter_ns() - t0_prof
@@ -1367,57 +1383,94 @@ fn plan_gpu_batched[
                 dtype, Layout.row_major(QModel.PARAM_SIZE), MutAnyOrigin
             ](qt_param_ptrs[4])
 
-            var compiled_q_decode = ctx.compile_function[q_decode_only, q_decode_only]()
+            var compiled_q_decode = ctx.compile_function[
+                q_decode_only, q_decode_only
+            ]()
 
             # Q1 on stream s1
             QModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                ctx, s1, q_out1, q_in_tensor,
-                qt1_p, mb.q_ws_buf1,
+                ctx,
+                s1,
+                q_out1,
+                q_in_tensor,
+                qt1_p,
+                mb.q_ws_buf1,
             )
             s1.enqueue_function(
                 compiled_q_decode,
-                q_out1, bins_tensor, qv1,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_out1,
+                bins_tensor,
+                qv1,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
             # Q2 on stream s2
             QModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                ctx, s2, q_out2, q_in_tensor,
-                qt2_p, mb.q_ws_buf2,
+                ctx,
+                s2,
+                q_out2,
+                q_in_tensor,
+                qt2_p,
+                mb.q_ws_buf2,
             )
             s2.enqueue_function(
                 compiled_q_decode,
-                q_out2, bins_tensor, qv2,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_out2,
+                bins_tensor,
+                qv2,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
             # Q3 on stream s3
             QModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                ctx, s3, q_out3, q_in_tensor,
-                qt3_p, mb.q_ws_buf3,
+                ctx,
+                s3,
+                q_out3,
+                q_in_tensor,
+                qt3_p,
+                mb.q_ws_buf3,
             )
             s3.enqueue_function(
                 compiled_q_decode,
-                q_out3, bins_tensor, qv3,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_out3,
+                bins_tensor,
+                qv3,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
             # Q4 on stream s4
             QModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                ctx, s4, q_out4, q_in_tensor,
-                qt4_p, mb.q_ws_buf4,
+                ctx,
+                s4,
+                q_out4,
+                q_in_tensor,
+                qt4_p,
+                mb.q_ws_buf4,
             )
             s4.enqueue_function(
                 compiled_q_decode,
-                q_out4, bins_tensor, qv4,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_out4,
+                bins_tensor,
+                qv4,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
             # Q5 on stream s5
             QModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                ctx, s5, q_out5, q_in_tensor,
-                qt5_p, mb.q_ws_buf5,
+                ctx,
+                s5,
+                q_out5,
+                q_in_tensor,
+                qt5_p,
+                mb.q_ws_buf5,
             )
             s5.enqueue_function(
                 compiled_q_decode,
-                q_out5, bins_tensor, qv5,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_out5,
+                bins_tensor,
+                qv5,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Sync all Q streams
@@ -1429,8 +1482,14 @@ fn plan_gpu_batched[
 
             # Min-reduce on default stream
             ctx.enqueue_function[min5_kernel, min5_kernel](
-                qv1, qv2, qv3, qv4, qv5, q_min_tensor,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                qv1,
+                qv2,
+                qv3,
+                qv4,
+                qv5,
+                q_min_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
         else:
             # Apple fallback: sequential Q evaluation
@@ -1438,22 +1497,36 @@ fn plan_gpu_batched[
                 dtype, Layout.row_major(QModel.PARAM_SIZE), MutAnyOrigin
             ](qt_param_ptrs[0])
             QModel.forward_gpu_no_cache[BATCH_TOTAL](
-                ctx, q_out_tensor, q_in_tensor, qt1_params, mb.q_ws_buf,
+                ctx,
+                q_out_tensor,
+                q_in_tensor,
+                qt1_params,
+                mb.q_ws_buf,
             )
             ctx.enqueue_function[q_decode, q_decode](
-                q_logits_tensor, bins_tensor, q_min_tensor,
-                grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                q_logits_tensor,
+                bins_tensor,
+                q_min_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
             )
             for qi in range(1, NUM_Q):
                 var qt_params = LayoutTensor[
                     dtype, Layout.row_major(QModel.PARAM_SIZE), MutAnyOrigin
                 ](qt_param_ptrs[qi])
                 QModel.forward_gpu_no_cache[BATCH_TOTAL](
-                    ctx, q_out_tensor, q_in_tensor, qt_params, mb.q_ws_buf,
+                    ctx,
+                    q_out_tensor,
+                    q_in_tensor,
+                    qt_params,
+                    mb.q_ws_buf,
                 )
                 ctx.enqueue_function[decode_min, decode_min](
-                    q_logits_tensor, bins_tensor, q_min_tensor,
-                    grid_dim=(MPPI_BLOCKS,), block_dim=(TPB,),
+                    q_logits_tensor,
+                    bins_tensor,
+                    q_min_tensor,
+                    grid_dim=(MPPI_BLOCKS,),
+                    block_dim=(TPB,),
                 )
 
         # 4b. Add terminal value to returns
@@ -1541,8 +1614,11 @@ fn plan_gpu_batched[
     )
     var total_ms = Float64(total_ns) / 1e6
     if total_ms > 0:
+        comptime streams_on = "ON" if USE_STREAMS else "OFF"
         print(
-            "  MPPI profile (ms):"
+            "  MPPI profile (ms) [streams="
+            + streams_on
+            + "]:"
             + " bcast="
             + String(Float64(t_broadcast_ns) / 1e6)[:7]
             + " pol="
