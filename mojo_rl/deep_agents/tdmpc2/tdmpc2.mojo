@@ -2267,7 +2267,6 @@ struct TDMPC2Agent[
                     Self.ACT,
                     Self.LATENT,
                     Self.mlp_dim,
-                    Self.enc_dim,
                     Self.BINS,
                     Self.num_q,
                     Self.simplex_dim,
