@@ -1113,10 +1113,18 @@ fn ppo_actor_grad_kernel[
     # Probability ratio
     var ratio = exp(new_log_prob - old_log_probs[b])
 
-    # Check if clipped
-    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
-        ratio > Scalar[dtype](1.0) + clip_epsilon
-    )
+    # Clip ratio for clipped objective
+    var clipped_ratio = ratio
+    if clipped_ratio < Scalar[dtype](1.0) - clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) - clip_epsilon
+    elif clipped_ratio > Scalar[dtype](1.0) + clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) + clip_epsilon
+
+    # PPO clipped objective: min(ratio * A, clipped_ratio * A)
+    # Gradient is 0 when we use the clipped objective
+    var unclipped_obj = ratio * advantage
+    var clipped_obj = clipped_ratio * advantage
+    var is_clipped = clipped_obj < unclipped_obj
 
     # Compute gradients
     for a in range(NUM_ACTIONS):
@@ -1203,17 +1211,28 @@ fn ppo_actor_grad_with_kl_kernel[
     var prob_for_log = Float32(probs[action]) + log_eps
     var new_log_prob = Scalar[dtype](log(prob_for_log))
 
-    # Compute approximate KL divergence: old_log_prob - new_log_prob
-    var kl = old_log_probs[b] - new_log_prob
-    kl_divergences[b] = kl
-
     # Probability ratio
     var ratio = exp(new_log_prob - old_log_probs[b])
 
-    # Check if clipped
-    var is_clipped = (ratio < Scalar[dtype](1.0) - clip_epsilon) or (
-        ratio > Scalar[dtype](1.0) + clip_epsilon
-    )
+    # Compute approximate KL divergence: (ratio - 1) - log(ratio)
+    var log_ratio = new_log_prob - old_log_probs[b]
+    var kl = (ratio - Scalar[dtype](1.0)) - log_ratio
+    if kl < Scalar[dtype](0.0):
+        kl = Scalar[dtype](0.0)
+    kl_divergences[b] = kl
+
+    # Clip ratio for clipped objective
+    var clipped_ratio = ratio
+    if clipped_ratio < Scalar[dtype](1.0) - clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) - clip_epsilon
+    elif clipped_ratio > Scalar[dtype](1.0) + clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) + clip_epsilon
+
+    # PPO clipped objective: min(ratio * A, clipped_ratio * A)
+    # Gradient is 0 when we use the clipped objective
+    var unclipped_obj = ratio * advantage
+    var clipped_obj = clipped_ratio * advantage
+    var is_clipped = clipped_obj < unclipped_obj
 
     # Compute gradients
     for a in range(NUM_ACTIONS):
