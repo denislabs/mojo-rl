@@ -20,6 +20,7 @@ Features:
 - Epsilon-greedy exploration with decay
 - Target network with soft updates
 - Double DQN support (online selects, target evaluates)
+- GPU support via GPUOffPolicyAgent trait + run_offpolicy_discrete_train_gpu
 
 Usage:
     from mojo_rl.deep_agents.dueling_dqn import DuelingDQNAgent
@@ -28,7 +29,12 @@ Usage:
     var env = LunarLanderEnv()
     var agent = DuelingDQNAgent[8, 4, 128, 64, 100000, 64]()
 
+    # CPU Training
     var metrics = agent.train(env, num_episodes=500)
+
+    # GPU Training (step-based, using shared off-policy GPU loop)
+    var ctx = DeviceContext()
+    var metrics_gpu = agent.train_gpu[LunarLanderGPUEnv](ctx, num_steps=100000)
 
 Reference: Wang et al. "Dueling Network Architectures for Deep RL" (2016)
 """
@@ -36,24 +42,46 @@ Reference: Wang et al. "Dueling Network Architectures for Deep RL" (2016)
 from std.math import exp
 from std.random import random_float64, seed
 
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TILE, TPB
 from mojo_rl.nn.model import Linear, LinearReLU, Sequential, Parallel, Model
 from mojo_rl.nn.optimizer import Adam, Optimizer
 from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.training import Network, NetworkState
-from mojo_rl.deep_agents.core.replay import HeapReplayBuffer
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core import (
     fill_inline,
     obs_to_inline,
     OffPolicyDiscreteState,
     OffPolicyDiscreteAgent,
+    GPUOffPolicyState,
+    GPUOffPolicyAgent,
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
+    run_offpolicy_discrete_train_gpu,
     Checkpointable,
 )
-from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, RenderableEnv
+from mojo_rl.nn.gpu import (
+    xorshift32,
+    random_uniform,
+)
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    RenderableEnv,
+)
+from .state import DuelingDQNGPUState
+from .kernels import (
+    dueling_combine_kernel,
+    dueling_grad_kernel,
+    dqn_td_target_kernel,
+    dqn_double_td_target_kernel,
+)
 
 
 # =============================================================================
@@ -150,9 +178,10 @@ struct DuelingDQNAgent[
     stream_hidden_dim: Int = 64,
     buffer_capacity: Int = 100000,
     batch_size: Int = 64,
+    n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
-](OffPolicyDiscreteAgent & Checkpointable):
+](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Dueling DQN Agent using NetworkState architecture.
 
     Dueling DQN separates the Q-network into two streams:
@@ -168,6 +197,7 @@ struct DuelingDQNAgent[
         stream_hidden_dim: Hidden layer size for value/advantage streams.
         buffer_capacity: Replay buffer capacity.
         batch_size: Training batch size.
+        n_envs: Number of parallel environments for GPU training (default: 1024).
         double_dqn: If True, use Double DQN target computation.
         lr: Adam learning rate — compile-time (default: 0.0005).
     """
@@ -208,6 +238,22 @@ struct DuelingDQNAgent[
         Self.buffer_capacity,
         Self.obs_dim,
         Self.batch_size,
+    ]
+
+    # GPUOffPolicyAgent required compile-time constants
+    comptime OBS_DIM: Int = Self.OBS
+    comptime ACTION_DIM: Int = 1  # discrete action stored as float scalar index
+    comptime BUFFER_CAPACITY: Int = Self.buffer_capacity
+    comptime MAX_N_ENVS: Int = Self.n_envs
+    comptime GPUStateType = DuelingDQNGPUState[
+        Self.DuelingModel,
+        Adam[Self.lr],
+        Self.buffer_capacity,
+        Self.obs_dim,
+        Self.num_actions,
+        Self.DUELING_OUT,
+        Self.batch_size,
+        Self.n_envs,
     ]
 
     # CPU state: persistent for evaluate() and checkpointing
@@ -561,6 +607,502 @@ struct DuelingDQNAgent[
         return self._select_action_inline(cpu_state, obs_inline, greedy=True)
 
     # =========================================================================
+    # GPUOffPolicyAgent trait conformance
+    # =========================================================================
+
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+        """Allocate all GPU buffers for Dueling DQN training.
+
+        Does NOT upload CPU weights — call upload_to_gpu after this.
+        """
+        return Self.GPUStateType(ctx)
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Upload CPU network weights to GPU online and target networks."""
+        gpu_state.online.upload_from(self.state.online, ctx)
+        gpu_state.target.upload_from(self.state.target, ctx)
+
+    fn download_from_gpu(
+        mut self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.online.download_to(self.state.online, ctx)
+        gpu_state.target.download_to(self.state.target, ctx)
+
+    fn select_actions_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Forward dueling Q-network on GPU for N_ENVS environments + epsilon-greedy.
+
+        Steps:
+        1. Forward through dueling model → raw output [V, A1..An]
+        2. Combine V+A into Q values via dueling_combine_kernel
+        3. Epsilon-greedy argmax selection
+
+        Args:
+            ctx: GPU device context.
+            gpu_state: GPU state with dueling network and inference scratch buffers.
+            obs_buf: Observations [N_ENVS * obs_dim].
+            actions_buf: Output actions [N_ENVS] (float scalar indices).
+        """
+        comptime ENVS_BLOCKS = (N_ENVS + TPB - 1) // TPB
+
+        # Step 1: Forward through dueling model
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var dueling_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.DUELING_OUT), MutAnyOrigin
+        ](gpu_state.env_dueling_buf.unsafe_ptr())
+        var p = gpu_state.online.params_view()
+        Self.DuelingNet.forward_gpu[N_ENVS](
+            ctx, obs_t, dueling_t, p, gpu_state.inf_ws
+        )
+
+        # Step 2: Combine V+A into Q values
+        var q_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.env_q_buf.unsafe_ptr())
+
+        @always_inline
+        fn combine_wrapper(
+            qv: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            dout: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.DUELING_OUT), MutAnyOrigin
+            ],
+        ):
+            dueling_combine_kernel[dtype, N_ENVS, Self.ACTIONS, Self.DUELING_OUT](
+                qv, dout
+            )
+
+        ctx.enqueue_function[combine_wrapper, combine_wrapper](
+            q_t,
+            dueling_t,
+            grid_dim=(ENVS_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Step 3: Epsilon-greedy argmax
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var epsilon_s = Scalar[dtype](self.epsilon)
+        var seed_s = Scalar[DType.uint32](
+            UInt32(self.get_total_steps() * 2654435761)
+        )
+
+        @always_inline
+        fn argmax_wrapper(
+            eps: Scalar[dtype],
+            q_vals: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            acts: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            base_seed: Scalar[DType.uint32],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= N_ENVS:
+                return
+
+            var rng = xorshift32(
+                Scalar[DType.uint32](b * 2654435761) + base_seed
+            )
+            var rand_result = random_uniform[dtype](rng)
+            var rand_val = rand_result[0]
+            rng = rand_result[1]
+
+            if rand_val < eps:
+                var action_result = random_uniform[dtype](rng)
+                acts[b] = Scalar[dtype](
+                    Int(action_result[0] * Scalar[dtype](Self.ACTIONS))
+                )
+                return
+
+            var best_q = q_vals[b, 0]
+            var best_action = 0
+            for a in range(1, Self.ACTIONS):
+                var qv = q_vals[b, a]
+                if qv > best_q:
+                    best_q = qv
+                    best_action = a
+
+            acts[b] = Scalar[dtype](best_action)
+
+        ctx.enqueue_function[argmax_wrapper, argmax_wrapper](
+            epsilon_s,
+            q_t,
+            actions_t,
+            seed_s,
+            grid_dim=(ENVS_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    fn do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """One Dueling DQN training step on GPU.
+
+        Phases:
+        1. Sample batch from GPU replay buffer
+        2. Online forward with cache → dueling output → combine to Q values
+        3. Target forward → dueling output → combine to next Q values
+        4. (Double DQN) Online forward on next obs → combine to online next Q
+        5. Compute TD targets (reuse DQN kernels)
+        6. Compute dQ gradient (MSE masked to taken action)
+        7. Transform dQ → dueling output gradient via dueling_grad_kernel
+        8. Backward through dueling model + optimizer step
+
+        Args:
+            ctx: GPU device context.
+            gpu_state: GPU state with replay buffer, networks, and scratch buffers.
+        """
+        comptime BATCH = Self.batch_size
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+
+        # ---- Phase 1: Sample batch ----
+        gpu_state.buffer.sample[BATCH](
+            ctx,
+            UInt32(self.train_step_count * (BATCH + 1)),
+            gpu_state.s_obs,
+            gpu_state.s_act,
+            gpu_state.s_rew,
+            gpu_state.s_nobs,
+            gpu_state.s_done,
+            gpu_state.s_idx,
+        )
+
+        # LayoutTensor views for sampled batch
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](gpu_state.s_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](gpu_state.s_nobs.unsafe_ptr())
+
+        # Dueling output tensors
+        var dueling_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+        ](gpu_state.dueling_out_buf.unsafe_ptr())
+        var dueling_next_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+        ](gpu_state.dueling_next_out.unsafe_ptr())
+
+        # Q-value tensors (post-combination)
+        var q_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.q_values.unsafe_ptr())
+        var next_q_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.next_q_values.unsafe_ptr())
+
+        var cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.DuelingModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.cache.unsafe_ptr())
+        var targets_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.targets.unsafe_ptr())
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.s_rew.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.s_done.unsafe_ptr())
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu_state.s_act.unsafe_ptr())
+
+        # ---- Phase 2: Online forward with cache → combine ----
+        var p_online = gpu_state.online.params_view()
+        var p_target = gpu_state.target.params_view()
+        Self.DuelingNet.forward_gpu_with_cache[BATCH](
+            ctx, obs_t, dueling_out_t, p_online, cache_t, gpu_state.train_ws
+        )
+
+        # Combine V+A → Q values
+        @always_inline
+        fn combine_online(
+            qv: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ],
+            dout: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+            ],
+        ):
+            dueling_combine_kernel[
+                dtype, BATCH, Self.ACTIONS, Self.DUELING_OUT
+            ](qv, dout)
+
+        ctx.enqueue_function[combine_online, combine_online](
+            q_t,
+            dueling_out_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # ---- Phase 3: Target forward → combine ----
+        Self.DuelingNet.forward_gpu[BATCH](
+            ctx, next_obs_t, dueling_next_t, p_target, gpu_state.train_ws
+        )
+
+        @always_inline
+        fn combine_target(
+            qv: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ],
+            dout: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+            ],
+        ):
+            dueling_combine_kernel[
+                dtype, BATCH, Self.ACTIONS, Self.DUELING_OUT
+            ](qv, dout)
+
+        ctx.enqueue_function[combine_target, combine_target](
+            next_q_t,
+            dueling_next_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # ---- Phase 4: Compute TD targets ----
+        var gamma_s = Scalar[dtype](self.gamma)
+
+        comptime if Self.double_dqn:
+            # Forward online on next_obs → combine to online_next_q
+            var online_dueling_next_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+            ](gpu_state.online_dueling_next_out.unsafe_ptr())
+            Self.DuelingNet.forward_gpu[BATCH](
+                ctx,
+                next_obs_t,
+                online_dueling_next_t,
+                p_online,
+                gpu_state.train_ws,
+            )
+
+            var online_next_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ](gpu_state.online_next_q.unsafe_ptr())
+
+            @always_inline
+            fn combine_online_next(
+                qv: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+                ],
+                dout: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.DUELING_OUT),
+                    MutAnyOrigin,
+                ],
+            ):
+                dueling_combine_kernel[
+                    dtype, BATCH, Self.ACTIONS, Self.DUELING_OUT
+                ](qv, dout)
+
+            ctx.enqueue_function[combine_online_next, combine_online_next](
+                online_next_t,
+                online_dueling_next_t,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            @always_inline
+            fn double_td_wrapper(
+                tgt: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                onq: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+                ],
+                tnq: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+                ],
+                rew: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                don: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                g: Scalar[dtype],
+            ):
+                dqn_double_td_target_kernel[dtype, BATCH, Self.ACTIONS](
+                    tgt, onq, tnq, rew, don, g
+                )
+
+            ctx.enqueue_function[double_td_wrapper, double_td_wrapper](
+                targets_t,
+                online_next_t,
+                next_q_t,
+                rewards_t,
+                dones_t,
+                gamma_s,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+
+            @always_inline
+            fn td_wrapper(
+                tgt: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                nq: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+                ],
+                rew: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                don: LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                g: Scalar[dtype],
+            ):
+                dqn_td_target_kernel[dtype, BATCH, Self.ACTIONS](
+                    tgt, nq, rew, don, g
+                )
+
+            ctx.enqueue_function[td_wrapper, td_wrapper](
+                targets_t,
+                next_q_t,
+                rewards_t,
+                dones_t,
+                gamma_s,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # ---- Phase 5: Gradient kernel (masked MSE grad on Q values) ----
+        # Reuse next_q_values buffer for dQ grad (no longer needed after TD targets)
+        var dq_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.next_q_values.unsafe_ptr())
+
+        @always_inline
+        fn grad_wrapper(
+            grd: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ],
+            qv: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            act: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= BATCH:
+                return
+            var action = Int(act[b])
+            var q_pred = qv[b, action]
+            var td_error = q_pred - tgt[b]
+            for a in range(Self.ACTIONS):
+                if a == action:
+                    grd[b, a] = (
+                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
+                    )
+                else:
+                    grd[b, a] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[grad_wrapper, grad_wrapper](
+            dq_t,
+            q_t,
+            targets_t,
+            actions_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # ---- Phase 6: Transform dQ → dueling output gradient ----
+        var dueling_grad_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+        ](gpu_state.grad_output.unsafe_ptr())
+
+        @always_inline
+        fn dueling_grad_wrapper(
+            dg: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.DUELING_OUT), MutAnyOrigin
+            ],
+            dq: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
+            ],
+        ):
+            dueling_grad_kernel[dtype, BATCH, Self.ACTIONS, Self.DUELING_OUT](
+                dg, dq
+            )
+
+        ctx.enqueue_function[dueling_grad_wrapper, dueling_grad_wrapper](
+            dueling_grad_t,
+            dq_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # ---- Phase 7: Backward + optimizer step ----
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](gpu_state.grad_input.unsafe_ptr())
+        var g = gpu_state.online.grads_view()
+        gpu_state.online.zero_grads(ctx)
+        Self.DuelingNet.backward_gpu[BATCH](
+            ctx,
+            dueling_grad_t,
+            grad_in_t,
+            p_online,
+            cache_t,
+            g,
+            gpu_state.train_ws,
+        )
+        gpu_state.online.optimizer_step(ctx)
+
+        self.train_step_count += 1
+
+    fn get_action_scale(self) -> Float64:
+        return 1.0  # Discrete actions don't use action_scale
+
+    fn get_total_steps(self) -> Int:
+        return self.train_step_count
+
+    fn set_total_steps(mut self, steps: Int):
+        self.train_step_count = steps
+
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        """Linear epsilon schedule matching CleanRL:
+        epsilon = max(end_e, start_e + (end_e - start_e) * t / duration).
+        Exploration fraction = 0.5 (decay over first half of training).
+        """
+        var duration = Float64(num_steps) * 0.5  # exploration_fraction = 0.5
+        var slope = (self.epsilon_min - 1.0) / duration
+        self.epsilon = max(
+            self.epsilon_min,
+            slope * Float64(total_steps) + 1.0,
+        )
+
+    fn soft_update_targets_gpu(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Soft-update target dueling network on GPU: theta_t <- tau*theta + (1-tau)*theta_t."""
+        gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+
+    # =========================================================================
     # High-level CPU Training and Evaluation
     # =========================================================================
 
@@ -621,6 +1163,68 @@ struct DuelingDQNAgent[
             frame_delay_ms=frame_delay_ms,
         )
         return metrics.mean_reward()
+
+    # =========================================================================
+    # GPU Training — delegates to shared run_offpolicy_discrete_train_gpu
+    # =========================================================================
+
+    fn train_gpu[
+        E: GPUDiscreteEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        gradient_steps: Int = 0,
+        sync_every: Int = 5000,
+        verbose: Bool = False,
+        print_every: Int = 50_000,
+        environment_name: String = "Environment",
+    ) raises -> TrainingMetrics:
+        """Train on GPU using the shared off-policy discrete GPU loop.
+
+        GPU state (networks, replay buffer, scratch buffers) is created
+        locally for the duration of training and freed when the method returns.
+        After this call self.state.online / target hold the trained GPU weights,
+        so evaluate() works immediately.
+
+        All step-based parameters are in total env transitions (n_envs per
+        loop iteration), matching on-policy convention.
+
+        Parameters:
+            E: GPU environment type implementing GPUDiscreteEnv.
+
+        Args:
+            ctx: GPU device context.
+            num_steps: Total env transitions across all parallel envs.
+            warmup_steps: Transitions before training starts (default: 1000).
+            gradient_steps: Training steps per env collection iteration.
+                0 (default) = n_envs for 1:1 replay ratio.
+            sync_every: GPU->CPU sync interval in transitions (default: 5000).
+            verbose: Print progress (default: False).
+            print_every: Print interval in transitions (default: 50000).
+            environment_name: Name for metrics labeling.
+
+        Returns:
+            TrainingMetrics with episode-level statistics.
+        """
+        var algo_name = String(
+            "Dueling DQN (GPU)"
+            if not Self.double_dqn
+            else "Double Dueling DQN (GPU)"
+        )
+        return run_offpolicy_discrete_train_gpu[E, Self](
+            self,
+            ctx,
+            num_steps,
+            warmup_steps=warmup_steps,
+            gradient_steps=gradient_steps,
+            sync_every=sync_every,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=algo_name,
+        )
 
     # =========================================================================
     # Checkpoint Save / Load
