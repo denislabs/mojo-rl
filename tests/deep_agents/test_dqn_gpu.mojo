@@ -67,7 +67,6 @@ fn main() raises:
             gamma=0.99,
             tau=0.005,
             epsilon_min=0.05,
-            target_update_freq=8,
         )
 
         print("Environment: CartPole")

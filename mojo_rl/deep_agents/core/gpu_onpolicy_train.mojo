@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.core.kernels import (
     increment_steps_kernel,
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
+    _extract_obs_kernel,
 )
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
@@ -517,6 +518,9 @@ fn run_onpolicy_discrete_train_gpu[
     comptime reset_tracking_wrapper = selective_reset_tracking_kernel[
         dtype, n_envs
     ]
+    comptime extract_obs_after_reset = _extract_obs_kernel[
+        dtype, n_envs, E.STATE_SIZE, E.OBS_DIM
+    ]
 
     from layout import Layout, LayoutTensor
 
@@ -678,6 +682,23 @@ fn run_onpolicy_discrete_train_gpu[
                 dones_buf,
                 rng_seed=UInt64(step_seed + 1),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+            # Update obs_buf for reset environments — must happen after
+            # selective_reset so that the next step sees the initial obs
+            # of the new episode, not the terminal obs of the previous one.
+            var states_t_reset = LayoutTensor[
+                dtype, Layout.row_major(n_envs, E.STATE_SIZE), MutAnyOrigin
+            ](states_buf.unsafe_ptr())
+            var obs_t_reset = LayoutTensor[
+                dtype, Layout.row_major(n_envs, E.OBS_DIM), MutAnyOrigin
+            ](obs_buf.unsafe_ptr())
+            ctx.enqueue_function[
+                extract_obs_after_reset, extract_obs_after_reset
+            ](
+                states_t_reset,
+                obs_t_reset,
+                grid_dim=(env_blocks,),
+                block_dim=(tpb,),
             )
             comptime if PROFILE >= 1:
                 timer.sync_and_accumulate(5, ctx)

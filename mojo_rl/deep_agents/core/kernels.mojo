@@ -1047,6 +1047,36 @@ fn uniform_random_discrete_actions_kernel[
 
 
 # =============================================================================
+# Extract Observations from State (after selective reset)
+# =============================================================================
+
+
+@always_inline
+fn _extract_obs_kernel[
+    dtype: DType,
+    BATCH: Int,
+    STATE_SIZE: Int,
+    OBS_DIM: Int,
+](
+    states: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
+):
+    """Copy state[:OBS_DIM] → obs for all environments.
+
+    Called after selective_reset_kernel_gpu to update obs_buf so that the
+    next iteration's prev_obs sees the initial obs of the new episode,
+    not the terminal obs of the previous one.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    for d in range(OBS_DIM):
+        obs[i, d] = states[i, d]
+
+
+# =============================================================================
 # TD Critic MSE Gradient (shared by DDPG/TD3/SAC)
 # =============================================================================
 

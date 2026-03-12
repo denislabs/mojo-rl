@@ -63,6 +63,7 @@ from mojo_rl.deep_agents.core.kernels import (
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
     uniform_random_discrete_actions_kernel,
+    _extract_obs_kernel,
 )
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
@@ -571,6 +572,12 @@ fn run_offpolicy_continuous_train_gpu[
             rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        # Update obs_buf for reset environments — must happen after selective_reset
+        # so that the next step's prev_obs copy sees the initial obs of the new
+        # episode, not the terminal obs of the previous one.
+        E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+            ctx, states_buf, obs_buf
+        )
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(5, ctx)
             timer.mark()
@@ -829,6 +836,11 @@ fn run_offpolicy_discrete_train_gpu[
         dtype, n_envs, E.NUM_ACTIONS
     ]
 
+    # Extract obs from state after selective reset (obs = state[:OBS_DIM])
+    comptime extract_obs_after_reset = _extract_obs_kernel[
+        dtype, n_envs, E.STATE_SIZE, E.OBS_DIM
+    ]
+
     # Resolve gradient_steps: 0 means n_envs (1:1 replay ratio)
     var grad_steps = gradient_steps
     if grad_steps <= 0:
@@ -960,6 +972,21 @@ fn run_offpolicy_discrete_train_gpu[
             dones_buf,
             rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
+        )
+        # Update obs_buf for reset environments — must happen after selective_reset
+        # so that the next step's prev_obs copy sees the initial obs of the new
+        # episode, not the terminal obs of the previous one.
+        var states_t_reset = LayoutTensor[
+            dtype, Layout.row_major(n_envs, E.STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var obs_t_reset = LayoutTensor[
+            dtype, Layout.row_major(n_envs, E.OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        ctx.enqueue_function[extract_obs_after_reset, extract_obs_after_reset](
+            states_t_reset,
+            obs_t_reset,
+            grid_dim=(env_blocks,),
+            block_dim=(tpb,),
         )
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(5, ctx)
