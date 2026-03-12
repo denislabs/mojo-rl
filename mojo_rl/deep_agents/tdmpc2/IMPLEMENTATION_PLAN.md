@@ -443,3 +443,30 @@ Where `symlog(x) = sign(x) * ln(1 + |x|)` and `symexp(x) = sign(x) * (exp(|x|) -
 - **World model optimizer**: encoder + dynamics + reward + termination + Q-ensemble
   with `enc_lr_scale=0.3` applied to encoder params
 - **Policy optimizer**: policy head only, full `learning_rate=3e-4`
+
+
+Analysis: Why convergence is ~10x slower than reference                                                                                                                                   
+                                                                                                                                                                                            
+  1. No true BPTT through dynamics (HIGH IMPACT)                                                                                                                                            
+                                                                                                                                                                                            
+  The reference builds a single computation graph across all H horizon steps and calls .backward() once — gradients from step t+1's consistency loss flow back through step t's dynamics.
+  Our Mojo code zeros grad_z_pred_buf at the start of each step (line 1181), so gradient only flows through ONE dynamics step at a time. This severely weakens the world model learning
+  signal.
+
+  2. No MPPI for data collection (HIGH IMPACT)
+
+  Reference uses MPPI planning (mpc=true) for data collection by default. Our code uses direct policy sampling (use_mppi=False). MPPI provides much better exploration by look-ahead
+  planning through the learned world model.
+
+  3. Entropy scaling by action dimension (MEDIUM IMPACT)
+
+  Reference computes scaled_entropy = -log_prob * (scaled_log_prob / (log_prob + 1e-8)) where scaled_log_prob = log_prob * action_dim. This effectively scales entropy by ACTION_DIM (=6 for
+   HalfCheetah). Our code uses raw entropy without this scaling — 6x weaker entropy regularization.
+
+  4. Dynamic discount (LOW IMPACT)
+
+  Reference computes discount = min(max((ep_len/5 - 1)/(ep_len/5), 0.95), 0.995). For 1000-step episodes, discount=0.995. We use gamma=0.99 — slightly lower.
+
+  5. Network capacity (LOW IMPACT)
+
+  Reference defaults: latent_dim=512, mlp_dim=512. We use 256/256 — 4x fewer parameters.

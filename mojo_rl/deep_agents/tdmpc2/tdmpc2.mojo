@@ -981,21 +981,19 @@ struct TDMPC2Agent[
         self.state.world_model.update_policy_params()
 
     # =========================================================================
-    # GPU World-Model Horizon Step (separated for compilation)
-    # Each call computes one horizon step of the world-model gradient loop.
-    # Extracted from train_gpu so the compiler handles it as its own unit,
-    # avoiding the ~150 GPU kernel specializations that would otherwise
-    # accumulate in a single giant function body.
+    # GPU World-Model BPTT (separated for compilation)
+    # Full backpropagation through time across all horizon steps.
+    # Phase 1: Forward dynamics chain, storing z at each step.
+    # Phase 2: Reverse-order backward with gradient carry through dynamics.
+    # Phase 3: Single encoder backward with total gradient on z_0.
     # =========================================================================
 
-    fn _wm_horizon_step_gpu[
+    fn _wm_bptt_gpu[
         n_envs: Int,
         env_state_size: Int,
     ](
         mut self,
         ctx: DeviceContext,
-        t: Int,
-        rho_t: Scalar[dtype],
         mut gpu_state: TDMPC2GPUState[
             Self.WM.EncModel,
             Self.EncOpt,
@@ -1018,11 +1016,16 @@ struct TDMPC2Agent[
             n_envs,
             env_state_size,
         ],
-    ) raises -> Scalar[dtype]:
-        """One horizon step of the world-model gradient computation.
+    ) raises:
+        """Full BPTT world-model gradient computation across all H horizon steps.
 
-        Computes forward+backward for encoder/dynamics/reward/termination/Q×5
-        at step t, accumulates gradients, and returns the decayed rho for t+1.
+        Unlike the old per-step approach, this method:
+        1. Forward: Runs dynamics chain, storing z at each step
+        2. Backward (reverse): Computes all losses, carries gradient through dynamics
+        3. Encoder backward: Single call with accumulated gradient on z_0
+
+        This matches the reference TD-MPC2 which builds one computation graph
+        across all horizon steps and calls .backward() once.
         """
         # ── Reconstruct LayoutTensor views from gpu_state buffers ──
         var batch_obs_flat_tensor = LayoutTensor[
@@ -1083,6 +1086,9 @@ struct TDMPC2Agent[
         var grad_z_pred_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
         ](gpu_state.grad_z_pred_buf.unsafe_ptr())
+        var grad_z_pred_flat_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+        ](gpu_state.grad_z_pred_buf.unsafe_ptr())
         var grad_za_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
         ](gpu_state.grad_za_buf.unsafe_ptr())
@@ -1095,8 +1101,12 @@ struct TDMPC2Agent[
         var grad_z_term_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
         ](gpu_state.grad_z_term_buf.unsafe_ptr())
-        var grad_enc_out_tensor = LayoutTensor[
+        # grad_enc_out_buf is reused as the BPTT gradient carry buffer
+        var grad_z_carry_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+        ](gpu_state.grad_enc_out_buf.unsafe_ptr())
+        var grad_z_carry_2d_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
         ](gpu_state.grad_enc_out_buf.unsafe_ptr())
         var grad_logits_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
@@ -1110,7 +1120,6 @@ struct TDMPC2Agent[
         ](gpu_state.bins_buf.unsafe_ptr())
         var enc_params_tensor = gpu_state.enc.params_view()
 
-        # ── Additional LayoutTensor views for Network static calls ──
         var enc_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
         ](gpu_state.enc_cache_buf.unsafe_ptr())
@@ -1155,7 +1164,6 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q5_cache_buf.unsafe_ptr())
         var q5_grads_t = gpu_state.q5.grads_view()
-        # TermNet output/grad tensors: OUT_DIM=1 → shape [BATCH, 1]
         var term_out_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
         ](gpu_state.term_prob_buf.unsafe_ptr())
@@ -1165,372 +1173,439 @@ struct TDMPC2Agent[
         var grad_z_term_2d_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
         ](gpu_state.grad_z_term_buf.unsafe_ptr())
-        # Encoder backward: grad_output [BATCH, LATENT], grad_input [BATCH, OBS]
-        var grad_enc_out_2d_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.LATENT), MutAnyOrigin
-        ](gpu_state.grad_enc_out_buf.unsafe_ptr())
-        # Dummy grad views: [BATCH, ZA] for Q/reward backward, [BATCH, OBS] for encoder
-        var dummy_grad_za_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ZA), MutAnyOrigin
-        ](gpu_state.dummy_grad_buf.unsafe_ptr())
         var dummy_grad_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](gpu_state.dummy_grad_buf.unsafe_ptr())
 
-        # ── Zero per-step intermediate gradient buffers ──
-        ctx.enqueue_memset(gpu_state.grad_z_pred_buf, 0)
-        ctx.enqueue_memset(gpu_state.grad_za_buf, 0)
-        ctx.enqueue_memset(gpu_state.grad_z_dyn_buf, 0)
-        ctx.enqueue_memset(gpu_state.grad_z_term_buf, 0)
+        # Q params/caches/grads arrays for indexed access
+        var q_param_ptrs: InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ] = InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ](uninitialized=True)
+        q_param_ptrs[0] = gpu_state.q1.params_buf.unsafe_ptr()
+        q_param_ptrs[1] = gpu_state.q2.params_buf.unsafe_ptr()
+        q_param_ptrs[2] = gpu_state.q3.params_buf.unsafe_ptr()
+        q_param_ptrs[3] = gpu_state.q4.params_buf.unsafe_ptr()
+        q_param_ptrs[4] = gpu_state.q5.params_buf.unsafe_ptr()
+
+        var q_cache_ptrs: InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ] = InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ](uninitialized=True)
+        q_cache_ptrs[0] = gpu_state.q1_cache_buf.unsafe_ptr()
+        q_cache_ptrs[1] = gpu_state.q2_cache_buf.unsafe_ptr()
+        q_cache_ptrs[2] = gpu_state.q3_cache_buf.unsafe_ptr()
+        q_cache_ptrs[3] = gpu_state.q4_cache_buf.unsafe_ptr()
+        q_cache_ptrs[4] = gpu_state.q5_cache_buf.unsafe_ptr()
+
+        var q_grads_ptrs: InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ] = InlineArray[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin], 5
+        ](uninitialized=True)
+        q_grads_ptrs[0] = gpu_state.q1.grads_buf.unsafe_ptr()
+        q_grads_ptrs[1] = gpu_state.q2.grads_buf.unsafe_ptr()
+        q_grads_ptrs[2] = gpu_state.q3.grads_buf.unsafe_ptr()
+        q_grads_ptrs[3] = gpu_state.q4.grads_buf.unsafe_ptr()
+        q_grads_ptrs[4] = gpu_state.q5.grads_buf.unsafe_ptr()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 1: FORWARD — dynamics chain, store z at each step
+        # ═══════════════════════════════════════════════════════════════════
+        for t in range(Self.H):
+            # Store z[t] in history buffer
+            var z_hist_t = LayoutTensor[
+                dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+            ](gpu_state.z_history_buf.unsafe_ptr() + t * Self.B_LATENT)
+            ctx.enqueue_function[
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+            ](
+                z_hist_t,
+                z_flat_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Extract batch data + build za = [z, a_t]
+            ctx.enqueue_function[
+                tdmpc2_extract_all_build_za_kernel[
+                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
+                ],
+                tdmpc2_extract_all_build_za_kernel[
+                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
+                ],
+            ](
+                batch_act_flat_tensor,
+                batch_obs_flat_tensor,
+                batch_rew_flat_tensor,
+                batch_done_flat_tensor,
+                t,
+                act_step_tensor,
+                obs_next_step_tensor,
+                rew_step_tensor,
+                done_step_tensor,
+                z_tensor,
+                za_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Dynamics forward (no cache needed in forward phase)
+            Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                ctx,
+                z_pred_tensor,
+                za_tensor,
+                dyn_params_t,
+                gpu_state.dyn_batch_ws_buf,
+            )
+
+            # Advance z ← z_pred for next step
+            if t < Self.H - 1:
+                ctx.enqueue_function[
+                    copy_buffer_kernel[dtype, Self.B_LATENT],
+                    copy_buffer_kernel[dtype, Self.B_LATENT],
+                ](
+                    z_flat_tensor,
+                    z_pred_flat_tensor,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 2: BACKWARD — reverse order, carry gradient through dynamics
+        # ═══════════════════════════════════════════════════════════════════
+        # grad_z_carry starts at 0 (no future beyond t=H-1)
         ctx.enqueue_memset(gpu_state.grad_enc_out_buf, 0)
 
-        # ── Fused: extract act/obs/rew/done + build za (4 kernels → 1) ──
-        ctx.enqueue_function[
-            tdmpc2_extract_all_build_za_kernel[
-                dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-            ],
-            tdmpc2_extract_all_build_za_kernel[
-                dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-            ],
-        ](
-            batch_act_flat_tensor,
-            batch_obs_flat_tensor,
-            batch_rew_flat_tensor,
-            batch_done_flat_tensor,
-            t,
-            act_step_tensor,
-            obs_next_step_tensor,
-            rew_step_tensor,
-            done_step_tensor,
-            z_tensor,
-            za_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        for t_rev in range(Self.H):
+            var t = Self.H - 1 - t_rev
+            var rho_t = Scalar[dtype](1.0)
+            for _r in range(t):
+                rho_t *= Scalar[dtype](self.rho)
 
-        # ── Dynamics forward with cache → z_pred ──
-        Self.WM.DynamicsNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            z_pred_tensor,
-            dyn_params_t,
-            dyn_cache_t,
-            gpu_state.dyn_batch_ws_buf,
-        )
+            # ── Restore z[t] from history ──
+            var z_hist_t = LayoutTensor[
+                dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+            ](gpu_state.z_history_buf.unsafe_ptr() + t * Self.B_LATENT)
+            ctx.enqueue_function[
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+            ](
+                z_flat_tensor,
+                z_hist_t,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        # ── Consistency target: encode obs_{t+1} (stop-grad) ──
-        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-            ctx,
-            z_next_tensor,
-            obs_next_step_tensor,
-            enc_params_tensor,
-            gpu_state.enc_batch_ws_buf,
-        )
+            # ── Extract batch data + rebuild za = [z[t], a_t] ──
+            ctx.enqueue_function[
+                tdmpc2_extract_all_build_za_kernel[
+                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
+                ],
+                tdmpc2_extract_all_build_za_kernel[
+                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
+                ],
+            ](
+                batch_act_flat_tensor,
+                batch_obs_flat_tensor,
+                batch_rew_flat_tensor,
+                batch_done_flat_tensor,
+                t,
+                act_step_tensor,
+                obs_next_step_tensor,
+                rew_step_tensor,
+                done_step_tensor,
+                z_tensor,
+                za_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        # ── Consistency loss gradient → grad_z_pred ──
-        # Reference divides all losses by horizon: loss /= H
-        var cons_rho = rho_t * Scalar[dtype](
-            self.consistency_coef / Float64(Self.H)
-        )
-        ctx.enqueue_function[
-            tdmpc2_consistency_loss_grad_kernel[dtype, Self.BATCH, Self.LATENT],
-            tdmpc2_consistency_loss_grad_kernel[dtype, Self.BATCH, Self.LATENT],
-        ](
-            z_pred_tensor,
-            z_next_tensor,
-            grad_z_pred_tensor,
-            cons_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
+            # ── Recompute dynamics forward WITH cache (needed for backward) ──
+            Self.WM.DynamicsNet.forward_gpu_with_cache[Self.BATCH](
+                ctx,
+                za_tensor,
+                z_pred_tensor,
+                dyn_params_t,
+                dyn_cache_t,
+                gpu_state.dyn_batch_ws_buf,
+            )
 
-        # ── Dynamics backward: grad_z_pred → grad_za ──
-        Self.WM.DynamicsNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_z_pred_tensor,
-            grad_za_tensor,
-            dyn_params_t,
-            dyn_cache_t,
-            dyn_grads_t,
-            gpu_state.dyn_batch_ws_buf,
-        )
-        ctx.enqueue_function[
-            tdmpc2_extract_z_from_za_grad_kernel[
-                dtype, Self.BATCH, Self.LATENT, Self.ACT
-            ],
-            tdmpc2_extract_z_from_za_grad_kernel[
-                dtype, Self.BATCH, Self.LATENT, Self.ACT
-            ],
-        ](
-            grad_za_tensor,
-            grad_z_dyn_2d_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
+            # ── Consistency target: encode obs_{t+1} (stop-grad) ──
+            Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                ctx,
+                z_next_tensor,
+                obs_next_step_tensor,
+                enc_params_tensor,
+                gpu_state.enc_batch_ws_buf,
+            )
 
-        # ── Reward forward + two-hot grad + backward ──
-        # NOTE: Reward network predicts IMMEDIATE rewards, not TD targets.
-        # Use rew_targets_buf (two-hot encoded r_t) instead of td_targets_buf.
-        Self.WM.RewardNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            rew_params_t,
-            rew_cache_t,
-            gpu_state.rew_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        var rew_rho = rho_t * Scalar[dtype](self.reward_coef / Float64(Self.H))
-        var tgt_t_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](gpu_state.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor,
-            grad_logits_tensor,
-            rew_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.RewardNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            rew_params_t,
-            rew_cache_t,
-            rew_grads_t,
-            gpu_state.rew_batch_ws_buf,
-        )
+            # ── Consistency loss gradient → grad_z_pred ──
+            ctx.enqueue_memset(gpu_state.grad_z_pred_buf, 0)
+            var cons_rho = rho_t * Scalar[dtype](
+                self.consistency_coef / Float64(Self.H)
+            )
+            ctx.enqueue_function[
+                tdmpc2_consistency_loss_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT
+                ],
+                tdmpc2_consistency_loss_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT
+                ],
+            ](
+                z_pred_tensor,
+                z_next_tensor,
+                grad_z_pred_tensor,
+                cons_rho,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        # ── Q1..Q5 forward + two-hot grad + backward ──
-        var q_rho = rho_t * Scalar[dtype](
-            self.value_coef / Float64(Self.num_q * Self.H)
-        )
-        var tgt_t_tensor_q = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-        ](gpu_state.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+            # ── BPTT: add gradient carry from future steps ──
+            # grad_z_pred += grad_z_carry (because z[t+1] = z_pred[t])
+            ctx.enqueue_function[
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+            ](
+                grad_z_pred_flat_tensor,
+                grad_z_carry_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            q1_params_t,
-            q1_cache_t,
-            gpu_state.q1_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor_q,
-            grad_logits_tensor,
-            q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.QNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            q1_params_t,
-            q1_cache_t,
-            q1_grads_t,
-            gpu_state.q1_batch_ws_buf,
-        )
+            # ── Dynamics backward: grad_z_pred → grad_za ──
+            Self.WM.DynamicsNet.backward_gpu[Self.BATCH](
+                ctx,
+                grad_z_pred_tensor,
+                grad_za_tensor,
+                dyn_params_t,
+                dyn_cache_t,
+                dyn_grads_t,
+                gpu_state.dyn_batch_ws_buf,
+            )
 
-        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            q2_params_t,
-            q2_cache_t,
-            gpu_state.q2_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor_q,
-            grad_logits_tensor,
-            q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.QNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            q2_params_t,
-            q2_cache_t,
-            q2_grads_t,
-            gpu_state.q2_batch_ws_buf,
-        )
+            # ── Start new carry: extract z gradient from dynamics backward ──
+            ctx.enqueue_function[
+                tdmpc2_extract_z_from_za_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT, Self.ACT
+                ],
+                tdmpc2_extract_z_from_za_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT, Self.ACT
+                ],
+            ](
+                grad_za_tensor,
+                grad_z_dyn_2d_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            # Initialize carry with dynamics z-gradient
+            ctx.enqueue_function[
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+                copy_buffer_kernel[dtype, Self.B_LATENT],
+            ](
+                grad_z_carry_tensor,
+                grad_z_dyn_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            q3_params_t,
-            q3_cache_t,
-            gpu_state.q3_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor_q,
-            grad_logits_tensor,
-            q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.QNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            q3_params_t,
-            q3_cache_t,
-            q3_grads_t,
-            gpu_state.q3_batch_ws_buf,
-        )
+            # ── Reward forward + loss + backward → collect z gradient ──
+            Self.WM.RewardNet.forward_gpu_with_cache[Self.BATCH](
+                ctx,
+                za_tensor,
+                logits_tensor,
+                rew_params_t,
+                rew_cache_t,
+                gpu_state.rew_batch_ws_buf,
+            )
+            ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
+            var rew_rho = rho_t * Scalar[dtype](
+                self.reward_coef / Float64(Self.H)
+            )
+            var tgt_t_tensor = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+            ](gpu_state.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+            ctx.enqueue_function[
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+            ](
+                logits_tensor,
+                tgt_t_tensor,
+                grad_logits_tensor,
+                rew_rho,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            Self.WM.RewardNet.backward_gpu[Self.BATCH](
+                ctx,
+                grad_logits_tensor,
+                grad_za_tensor,
+                rew_params_t,
+                rew_cache_t,
+                rew_grads_t,
+                gpu_state.rew_batch_ws_buf,
+            )
+            # Extract z component from reward backward and add to carry
+            ctx.enqueue_function[
+                tdmpc2_extract_z_from_za_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT, Self.ACT
+                ],
+                tdmpc2_extract_z_from_za_grad_kernel[
+                    dtype, Self.BATCH, Self.LATENT, Self.ACT
+                ],
+            ](
+                grad_za_tensor,
+                grad_z_dyn_2d_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+            ](
+                grad_z_carry_tensor,
+                grad_z_dyn_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            q4_params_t,
-            q4_cache_t,
-            gpu_state.q4_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor_q,
-            grad_logits_tensor,
-            q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.QNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            q4_params_t,
-            q4_cache_t,
-            q4_grads_t,
-            gpu_state.q4_batch_ws_buf,
-        )
+            # ── Q1..Q5 forward + loss + backward → collect z gradients ──
+            var q_rho = rho_t * Scalar[dtype](
+                self.value_coef / Float64(Self.num_q * Self.H)
+            )
+            var tgt_t_tensor_q = LayoutTensor[
+                dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+            ](gpu_state.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
-        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            za_tensor,
-            logits_tensor,
-            q5_params_t,
-            q5_cache_t,
-            gpu_state.q5_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
-        ctx.enqueue_function[
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-            tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-        ](
-            logits_tensor,
-            tgt_t_tensor_q,
-            grad_logits_tensor,
-            q_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.QNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_logits_tensor,
-            dummy_grad_za_t,
-            q5_params_t,
-            q5_cache_t,
-            q5_grads_t,
-            gpu_state.q5_batch_ws_buf,
-        )
+            # Use shared workspace for sequential Q processing
+            var q_shared_ws = gpu_state.qt_batch_ws_buf
 
-        # ── Termination forward + BCE grad + backward ──
-        Self.WM.TermNet.forward_gpu_with_cache[Self.BATCH](
-            ctx,
-            z_tensor,
-            term_out_t,
-            term_params_t,
-            term_cache_t,
-            gpu_state.term_batch_ws_buf,
-        )
-        ctx.enqueue_memset(gpu_state.grad_term_prob_buf, 0)
-        var term_rho = rho_t * Scalar[dtype](self.terminal_coef)
-        ctx.enqueue_function[
-            tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
-            tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
-        ](
-            term_prob_tensor,
-            done_step_tensor,
-            grad_term_prob_tensor,
-            term_rho,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        Self.WM.TermNet.backward_gpu[Self.BATCH](
-            ctx,
-            grad_term_out_t,
-            grad_z_term_2d_t,
-            term_params_t,
-            term_cache_t,
-            term_grads_t,
-            gpu_state.term_batch_ws_buf,
-        )
+            for qi in range(5):
+                var qi_p = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](q_param_ptrs[qi])
+                var qi_c = LayoutTensor[
+                    dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
+                ](q_cache_ptrs[qi])
+                var qi_g = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](q_grads_ptrs[qi])
 
-        # ── Combine encoder gradients: grad_enc_out += grad_z_dyn + grad_z_term ──
-        ctx.enqueue_function[
-            tdmpc2_add_two_into_kernel[dtype, Self.B_LATENT],
-            tdmpc2_add_two_into_kernel[dtype, Self.B_LATENT],
-        ](
-            grad_enc_out_tensor,
-            grad_z_dyn_tensor,
-            grad_z_term_tensor,
-            grid_dim=(Self.BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
+                Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
+                    ctx,
+                    za_tensor,
+                    logits_tensor,
+                    qi_p,
+                    qi_c,
+                    q_shared_ws,
+                )
+                ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
+                ctx.enqueue_function[
+                    tdmpc2_two_hot_loss_grad_kernel[
+                        dtype, Self.BATCH, Self.BINS
+                    ],
+                    tdmpc2_two_hot_loss_grad_kernel[
+                        dtype, Self.BATCH, Self.BINS
+                    ],
+                ](
+                    logits_tensor,
+                    tgt_t_tensor_q,
+                    grad_logits_tensor,
+                    q_rho,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                Self.WM.QNet.backward_gpu[Self.BATCH](
+                    ctx,
+                    grad_logits_tensor,
+                    grad_za_tensor,
+                    qi_p,
+                    qi_c,
+                    qi_g,
+                    q_shared_ws,
+                )
+                # Extract z component and add to carry
+                ctx.enqueue_function[
+                    tdmpc2_extract_z_from_za_grad_kernel[
+                        dtype, Self.BATCH, Self.LATENT, Self.ACT
+                    ],
+                    tdmpc2_extract_z_from_za_grad_kernel[
+                        dtype, Self.BATCH, Self.LATENT, Self.ACT
+                    ],
+                ](
+                    grad_za_tensor,
+                    grad_z_dyn_2d_tensor,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+                    tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+                ](
+                    grad_z_carry_tensor,
+                    grad_z_dyn_tensor,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
 
-        # ── Encoder backward ──
+            # ── Termination forward + BCE + backward → collect z gradient ──
+            Self.WM.TermNet.forward_gpu_with_cache[Self.BATCH](
+                ctx,
+                z_tensor,
+                term_out_t,
+                term_params_t,
+                term_cache_t,
+                gpu_state.term_batch_ws_buf,
+            )
+            ctx.enqueue_memset(gpu_state.grad_term_prob_buf, 0)
+            var term_rho = rho_t * Scalar[dtype](self.terminal_coef)
+            ctx.enqueue_function[
+                tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
+                tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
+            ](
+                term_prob_tensor,
+                done_step_tensor,
+                grad_term_prob_tensor,
+                term_rho,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            Self.WM.TermNet.backward_gpu[Self.BATCH](
+                ctx,
+                grad_term_out_t,
+                grad_z_term_2d_t,
+                term_params_t,
+                term_cache_t,
+                term_grads_t,
+                gpu_state.term_batch_ws_buf,
+            )
+            # Add termination z gradient to carry
+            ctx.enqueue_function[
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
+            ](
+                grad_z_carry_tensor,
+                grad_z_term_tensor,
+                grid_dim=(Self.BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 3: ENCODER BACKWARD — single call with total gradient on z_0
+        # ═══════════════════════════════════════════════════════════════════
+        # grad_z_carry now holds dL/dz_0 (accumulated through all horizon steps)
         Self.WM.EncoderNet.backward_gpu[Self.BATCH](
             ctx,
-            grad_enc_out_2d_t,
+            grad_z_carry_2d_tensor,
             dummy_grad_obs_t,
             enc_params_tensor,
             enc_cache_t,
             enc_grads_t,
             gpu_state.enc_batch_ws_buf,
         )
-
-        # ── Advance current z ← z_pred (for next horizon step) ──
-        if t < Self.H - 1:
-            ctx.enqueue_function[
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-            ](
-                z_flat_tensor,
-                z_pred_flat_tensor,
-                grid_dim=(Self.BATCH_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-        return rho_t * Scalar[dtype](self.rho)
 
     # =========================================================================
     # GPU Training Loop (Fully GPU with N_ENVS Parallel Environments)
@@ -1545,7 +1620,7 @@ struct TDMPC2Agent[
         num_episodes: Int,
         verbose: Bool = True,
         print_every: Int = 50_000,
-        use_mppi: Bool = False,
+        use_mppi: Bool = True,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
@@ -2548,12 +2623,7 @@ struct TDMPC2Agent[
                 gs.enc_batch_ws_buf,
             )
 
-            var rho_t = Scalar[dtype](1.0)
-
-            for t in range(Self.H):
-                rho_t = self._wm_horizon_step_gpu[n_envs, ENV.STATE_SIZE](
-                    ctx, t, rho_t, gs
-                )
+            self._wm_bptt_gpu[n_envs, ENV.STATE_SIZE](ctx, gs)
 
             # ── Gradient clipping + optimizer step for all world model networks ──
             ctx.synchronize()
@@ -2875,7 +2945,10 @@ struct TDMPC2Agent[
             # obs_step_buf still contains obs_0 from the world model step
 
             var pol_rho_t = Scalar[dtype](1.0)
-            var entropy_coef_scalar = Scalar[dtype](self.entropy_coef)
+            # Scale entropy by ACTION_DIM to match reference scaled_entropy
+            var entropy_coef_scalar = Scalar[dtype](
+                self.entropy_coef * Float64(Self.ACT)
+            )
             var scale_scalar = Scalar[dtype](self.running_scale)
 
             for t in range(Self.H):

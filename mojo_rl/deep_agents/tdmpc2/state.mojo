@@ -385,6 +385,7 @@ struct TDMPC2GPUState[
     var z_buf: DeviceBuffer[dtype]  # [B_LATENT] current z_t
     var z_next_buf: DeviceBuffer[dtype]  # [B_LATENT] enc(obs_{t+1}) stop-grad
     var z_pred_buf: DeviceBuffer[dtype]  # [B_LATENT] dynamics(za_t)
+    var z_history_buf: DeviceBuffer[dtype]  # [H * B_LATENT] z at each horizon step
     var za_buf: DeviceBuffer[dtype]  # [B_ZA] [z_t, a_t]
     var pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var pi_act_buf: DeviceBuffer[dtype]  # [B_ACT] tanh(mean) actions
@@ -546,6 +547,9 @@ struct TDMPC2GPUState[
         self.z_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
         self.z_next_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
         self.z_pred_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
+        self.z_history_buf = ctx.enqueue_create_buffer[dtype](
+            Self.H * Self.B_LATENT
+        )
         self.za_buf = ctx.enqueue_create_buffer[dtype](Self.B_ZA)
         self.pi_out_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.POL_OUT
