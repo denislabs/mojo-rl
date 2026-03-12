@@ -38,9 +38,10 @@ from mojo_rl.envs.half_cheetah import (
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
-# Network architecture (TD-MPC2 defaults)
-comptime LATENT_DIM = 256
-comptime MLP_DIM = 256
+# Network architecture (TD-MPC2 5M config — official default)
+comptime LATENT_DIM = 512
+comptime MLP_DIM = 512
+comptime ENC_DIM = 256
 
 # Distributional RL
 comptime NUM_BINS = 101
@@ -89,6 +90,7 @@ fn main() raises:
         action_dim=ACTION_DIM,
         latent_dim=LATENT_DIM,
         mlp_dim=MLP_DIM,
+        enc_dim=ENC_DIM,
         num_bins=NUM_BINS,
         num_q=NUM_Q,
         horizon=HORIZON,

@@ -105,8 +105,9 @@ from .kernels import (
 struct TDMPC2Agent[
     obs_dim: Int,
     action_dim: Int,
-    latent_dim: Int = 256,
-    mlp_dim: Int = 256,
+    latent_dim: Int = 512,
+    mlp_dim: Int = 512,
+    enc_dim: Int = 256,
     num_bins: Int = 101,
     num_q: Int = 5,
     simplex_dim: Int = 8,
@@ -124,8 +125,9 @@ struct TDMPC2Agent[
     Parameters:
         obs_dim: Observation space dimension.
         action_dim: Action space dimension.
-        latent_dim: Latent state dimension (default: 256).
-        mlp_dim: Hidden layer width (default: 256).
+        latent_dim: Latent state dimension (default: 512).
+        mlp_dim: Hidden layer width for dynamics/reward/policy/Q (default: 512).
+        enc_dim: Encoder hidden layer width (default: 256).
         num_bins: Distributional RL bins (default: 101).
         num_q: Q-network ensemble size (default: 5).
         simplex_dim: SimNorm group size (default: 8).
@@ -154,6 +156,7 @@ struct TDMPC2Agent[
         Self.ACT,
         Self.LATENT,
         Self.mlp_dim,
+        Self.enc_dim,
         Self.BINS,
         Self.num_q,
         Self.simplex_dim,
@@ -377,6 +380,7 @@ struct TDMPC2Agent[
             Self.ACT,
             Self.LATENT,
             Self.mlp_dim,
+            Self.enc_dim,
             Self.BINS,
             Self.num_q,
             Self.simplex_dim,
@@ -2263,6 +2267,7 @@ struct TDMPC2Agent[
                     Self.ACT,
                     Self.LATENT,
                     Self.mlp_dim,
+                    Self.enc_dim,
                     Self.BINS,
                     Self.num_q,
                     Self.simplex_dim,

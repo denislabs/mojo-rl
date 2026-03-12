@@ -9,7 +9,7 @@ The world model simultaneously learns:
   - Q-ensemble:  NUM_Q × (z, a) → logits[NUM_BINS] (distributional Q-values)
 
 Architecture (all MLPs use NormedLinear blocks):
-  encoder:     [NL(OBS, MLP), Linear(MLP, LATENT) + LayerNorm + SimNorm]
+  encoder:     [NL(OBS, ENC), Linear(ENC, LATENT) + LayerNorm + SimNorm]
   dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + SimNorm]
   reward:      [NL(LATENT+ACT, MLP), NL(MLP, MLP), Linear(MLP, NUM_BINS)]
   termination: [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 1) + Sigmoid]
@@ -46,8 +46,9 @@ from mojo_rl.nn.loss.two_hot import (
 struct WorldModel[
     OBS_DIM: Int,
     ACTION_DIM: Int,
-    LATENT_DIM: Int = 256,
-    MLP_DIM: Int = 256,
+    LATENT_DIM: Int = 512,
+    MLP_DIM: Int = 512,
+    ENC_DIM: Int = 256,
     NUM_BINS: Int = 101,
     NUM_Q: Int = 5,
     SIMPLEX_DIM: Int = 8,
@@ -63,8 +64,9 @@ struct WorldModel[
     Parameters:
         OBS_DIM: Observation dimension.
         ACTION_DIM: Action dimension.
-        LATENT_DIM: Latent state dimension (default: 256).
-        MLP_DIM: Hidden layer width (default: 256).
+        LATENT_DIM: Latent state dimension (default: 512).
+        MLP_DIM: Hidden layer width for dynamics/reward/policy/Q (default: 512).
+        ENC_DIM: Encoder hidden layer width (default: 256).
         NUM_BINS: Number of bins for distributional RL (default: 101).
         NUM_Q: Number of Q-networks in the ensemble (default: 5).
         SIMPLEX_DIM: SimNorm group size for dynamics head (default: 8).
@@ -86,10 +88,10 @@ struct WorldModel[
 
     # Encoder: OBS_DIM → LATENT_DIM (with SimNorm output, matching reference)
     # Reference: mlp(obs_dim, [enc_dim], latent_dim, act=SimNorm(cfg))
-    # = NormedLinear(obs, mlp) → Linear(mlp, latent) → LayerNorm → SimNorm
+    # = NormedLinear(obs, enc) → Linear(enc, latent) → LayerNorm → SimNorm
     comptime EncModel = Sequential[
-        NormedLinear[Self.OBS_DIM, Self.MLP_DIM],
-        Linear[Self.MLP_DIM, Self.LATENT_DIM],
+        NormedLinear[Self.OBS_DIM, Self.ENC_DIM],
+        Linear[Self.ENC_DIM, Self.LATENT_DIM],
         LayerNorm[Self.LATENT_DIM],
         SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
