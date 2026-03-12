@@ -6,12 +6,12 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
 - **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO), and model-based RL (TD-MPC2)
-- **Deep learning framework** (`nn/`): Trait-based neural networks with autodiff, 15+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
-- **Autodiff system** (`nn/autodiff/`): Composition-based automatic differentiation with DiffOp primitives, AutoDiffChain, fused kernels, and combinators (Residual, Parallel, Repeat)
-- **3D physics engine** (`physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
-- **2D physics engine** (`physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
+- **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 15+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
+- **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with DiffOp primitives, AutoDiffChain, fused kernels, and combinators (Residual, Parallel, Repeat)
+- **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
+- **2D physics engine** (`mojo_rl/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
 - **22 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing, HalfCheetah, Hopper, Ant, Walker2d, Swimmer, Humanoid, HumanoidStandup, InvertedPendulum, InvertedDoublePendulum, and more
-- **SDL3 rendering** (`render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
+- **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **GPU training**: All continuous control deep agents (DDPG, TD3, SAC, PPO) support GPU-accelerated training
 
@@ -39,14 +39,11 @@ brew install pixi
 # Install all dependencies (Mojo, Python packages, etc.)
 pixi install
 
-# Run the main example (Q-Learning on GridWorld)
-pixi run mojo run main.mojo
+# Run an example
+pixi run mojo run examples/solve_gridworld.mojo
 
-# Run benchmarks comparing algorithms
-pixi run mojo run benchmark.mojo
-
-# Build a binary
-pixi run mojo build main.mojo
+# Run benchmarks
+pixi run mojo run benchmarks/benchmark_matmul_apple.mojo
 ```
 
 ### GPU Support
@@ -65,72 +62,85 @@ pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 
 ```
 mojo-rl/
-├── main.mojo               # Entry point (Q-Learning on GridWorld)
-├── benchmark.mojo           # Algorithm comparison
-├── core/                    # Core RL abstractions (traits, replay buffers, tile coding)
-├── agents/                  # Tabular & linear RL algorithms (20+ agents)
-├── deep_agents/             # Deep RL agents with CPU/GPU training
-│   ├── core/                #   Shared training loops, GPU kernels, replay buffers
-│   ├── dqn/                 #   DQN, Double DQN
-│   ├── dqn_per/             #   DQN + Prioritized Experience Replay
-│   ├── dueling_dqn/         #   Dueling DQN (V + A streams)
-│   ├── ddpg/                #   Deep Deterministic Policy Gradient
-│   ├── td3/                 #   Twin Delayed DDPG
-│   ├── sac/                 #   Soft Actor-Critic
-│   ├── a2c/                 #   Advantage Actor-Critic
-│   ├── ppo/                 #   PPO (discrete + continuous)
-│   └── tdmpc2/              #   TD-MPC2 (model-based, world model + MPPI)
-├── nn/                      # Deep learning framework
-│   ├── model/               #   Layers: Linear, ReLU, Tanh, Sigmoid, Mish, LayerNorm, etc.
-│   ├── optimizer/           #   SGD, Adam, AdamW, RMSprop, Muon
-│   ├── loss/                #   MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
-│   ├── initializer/         #   Xavier, Kaiming, LeCun, etc.
-│   ├── training/            #   Trainer, NetworkState, GPUNetworkState, NetworkPair
-│   ├── checkpoint/          #   Model serialization (text + binary)
-│   ├── autodiff/            #   Automatic differentiation framework
-│   │   ├── primitives/      #     MatMul, BiasAdd, ReLU, Tanh, Conv2D, Attention, etc.
-│   │   ├── fused/           #     FusedMatMulBiasReLU, FusedMatMulBiasTanh, etc.
-│   │   └── combinators/     #     Residual, Parallel, Repeat
-│   ├── composites.mojo      #   Pre-built architectures (ResBlock, ResNet, LeNet)
-│   ├── gpu/                 #   GPU kernels (matmul, elementwise, random)
-│   └── replay/              #   Experience replay buffers
-├── physics3d/               # 3D MuJoCo-inspired physics engine
-│   ├── model/               #   Compile-time model specs (BodySpec, JointSpec, GeomSpec)
-│   ├── dynamics/            #   Mass matrix (CRBA), bias forces (RNE), Jacobians
-│   ├── integrator/          #   Euler, ImplicitFast, Implicit, RK4
-│   ├── solver/              #   PGS, Newton, CG, Island-based solvers
-│   ├── collision/           #   Narrow-phase + Sweep-and-Prune broadphase
-│   ├── constraints/         #   Constraint building + solving
-│   ├── kinematics/          #   Forward kinematics + quaternion math
-│   └── parser/              #   MJCF XML model loading
-├── physics2d/               # GPU-accelerated 2D physics engine
-│   ├── integrators/         #   Semi-implicit Euler
-│   ├── collision/           #   Flat/edge terrain detection
-│   ├── solvers/             #   Impulse + unified constraint solver
-│   ├── joints/              #   Revolute joint solver
-│   ├── articulated/         #   Multi-body chain support
-│   ├── car/                 #   CarRacing slip-based tire physics
-│   └── lidar/               #   Distance sensing
-├── math3d/                  # 3D math library (Vec3, Quat, Mat3, Mat4)
-├── render/                  # SDL3 rendering infrastructure
-│   ├── renderer2d.mojo      #   2D CPU rasterizer
-│   ├── renderer3d.mojo      #   GPU-accelerated 3D renderer (Metal shaders)
-│   ├── gpu_shaders.mojo     #   MSL shaders (solid, shadow, skybox, text)
-│   ├── video_recorder.mojo  #   MP4/GIF recording
-│   └── sdl/                 #   SDL3 FFI bindings (38 files)
-├── envs/                    # Environment implementations
-│   ├── gridworld.mojo       #   Tabular environments
-│   ├── cartpole.mojo        #   Classic control (GPU-capable)
-│   ├── lunar_lander/        #   Custom 2D physics (GPU batch)
-│   ├── bipedal_walker/      #   Custom 2D physics (GPU batch)
-│   ├── car_racing/          #   Tire slip physics (GPU batch)
-│   ├── half_cheetah/        #   MuJoCo-style (physics3d)
-│   ├── hopper/              #   MuJoCo-style (physics3d)
-│   ├── ant/                 #   MuJoCo-style (physics3d)
-│   ├── walker2d/            #   MuJoCo-style (physics3d)
-│   ├── humanoid/            #   MuJoCo-style (physics3d)
-│   └── gymnasium/           #   Python Gymnasium wrappers
-└── examples/                # Demo scripts and benchmarks
+├── mojo_rl/                     # Main Mojo package
+│   ├── core/                    #   Core RL abstractions (traits, replay buffers, tile coding)
+│   ├── agents/                  #   Tabular & linear RL algorithms (20+ agents)
+│   ├── deep_agents/             #   Deep RL agents with CPU/GPU training
+│   │   ├── core/                #     Shared training loops, GPU kernels, replay buffers
+│   │   ├── dqn/                 #     DQN, Double DQN
+│   │   ├── dqn_per/             #     DQN + Prioritized Experience Replay
+│   │   ├── dueling_dqn/         #     Dueling DQN (V + A streams)
+│   │   ├── ddpg/                #     Deep Deterministic Policy Gradient
+│   │   ├── td3/                 #     Twin Delayed DDPG
+│   │   ├── sac/                 #     Soft Actor-Critic
+│   │   ├── a2c/                 #     Advantage Actor-Critic
+│   │   ├── ppo/                 #     PPO (discrete + continuous)
+│   │   └── tdmpc2/              #     TD-MPC2 (model-based, world model + MPPI)
+│   ├── nn/                      #   Deep learning framework
+│   │   ├── model/               #     Layers: Linear, ReLU, Tanh, Sigmoid, Mish, LayerNorm, etc.
+│   │   ├── optimizer/           #     SGD, Adam, AdamW, RMSprop, Muon
+│   │   ├── loss/                #     MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
+│   │   ├── initializer/         #     Xavier, Kaiming, LeCun, etc.
+│   │   ├── training/            #     Trainer, NetworkState, GPUNetworkState, NetworkPair
+│   │   ├── checkpoint/          #     Model serialization (text + binary)
+│   │   ├── autodiff/            #     Automatic differentiation framework
+│   │   │   ├── primitives/      #       MatMul, BiasAdd, ReLU, Tanh, Conv2D, Attention, etc.
+│   │   │   ├── fused/           #       FusedMatMulBiasReLU, FusedMatMulBiasTanh, etc.
+│   │   │   └── combinators/     #       Residual, Parallel, Repeat
+│   │   ├── composites.mojo      #     Pre-built architectures (ResBlock, ResNet, LeNet)
+│   │   ├── gpu/                 #     GPU kernels (matmul, elementwise, random)
+│   │   └── replay/              #     Experience replay buffers
+│   ├── physics3d/               #   3D MuJoCo-inspired physics engine
+│   │   ├── model/               #     Compile-time model specs (BodySpec, JointSpec, GeomSpec)
+│   │   ├── dynamics/            #     Mass matrix (CRBA), bias forces (RNE), Jacobians
+│   │   ├── integrator/          #     Euler, ImplicitFast, Implicit, RK4
+│   │   ├── solver/              #     PGS, Newton, CG, Island-based solvers
+│   │   ├── collision/           #     Narrow-phase + Sweep-and-Prune broadphase
+│   │   ├── constraints/         #     Constraint building + solving
+│   │   ├── kinematics/          #     Forward kinematics + quaternion math
+│   │   └── parser/              #     MJCF XML model loading
+│   ├── physics2d/               #   GPU-accelerated 2D physics engine
+│   │   ├── integrators/         #     Semi-implicit Euler
+│   │   ├── collision/           #     Flat/edge terrain detection
+│   │   ├── solvers/             #     Impulse + unified constraint solver
+│   │   ├── joints/              #     Revolute joint solver
+│   │   ├── articulated/         #     Multi-body chain support
+│   │   ├── car/                 #     CarRacing slip-based tire physics
+│   │   └── lidar/               #     Distance sensing
+│   ├── math3d/                  #   3D math library (Vec3, Quat, Mat3, Mat4)
+│   ├── render/                  #   SDL3 rendering infrastructure
+│   │   ├── renderer2d.mojo      #     2D CPU rasterizer
+│   │   ├── renderer3d.mojo      #     GPU-accelerated 3D renderer (Metal shaders)
+│   │   ├── gpu_shaders.mojo     #     MSL shaders (solid, shadow, skybox, text)
+│   │   ├── video_recorder.mojo  #     MP4/GIF recording
+│   │   └── sdl/                 #     SDL3 FFI bindings (38 files)
+│   └── envs/                    #   Environment implementations
+│       ├── gridworld.mojo       #     Tabular environments
+│       ├── cartpole.mojo        #     Classic control (GPU-capable)
+│       ├── lunar_lander/        #     Custom 2D physics (GPU batch)
+│       ├── bipedal_walker/      #     Custom 2D physics (GPU batch)
+│       ├── car_racing/          #     Tire slip physics (GPU batch)
+│       ├── half_cheetah/        #     MuJoCo-style (physics3d)
+│       ├── hopper/              #     MuJoCo-style (physics3d)
+│       ├── ant/                 #     MuJoCo-style (physics3d)
+│       ├── walker2d/            #     MuJoCo-style (physics3d)
+│       ├── humanoid/            #     MuJoCo-style (physics3d)
+│       └── gymnasium/           #     Python Gymnasium wrappers
+├── tests/                       # Test suite (120+ files)
+│   ├── physics3d/               #   Physics engine validation tests
+│   ├── nn/                      #   Neural network tests
+│   ├── deep_agents/             #   Deep RL agent tests
+│   └── arcade_games/            #   Arcade/Atari environment tests
+├── examples/                    # Demo scripts organized by environment
+│   ├── cartpole/                #   CartPole demos and benchmarks
+│   ├── half_cheetah/            #   HalfCheetah training (PPO, SAC, TD3, TD-MPC2)
+│   ├── hopper/                  #   Hopper training (PPO)
+│   ├── ant/                     #   Ant training (PPO)
+│   ├── acrobot/                 #   Acrobot demos
+│   ├── arcade_games/            #   Atari/Pong demos
+│   └── *.mojo                   #   Various environment demos
+├── benchmarks/                  # Performance benchmarks
+└── pixi.toml                    # Dependency management
 ```
 
 ## Algorithms
