@@ -14,9 +14,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
-from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
-from std.time import perf_counter_ns
-
+from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream, HostBuffer
 from layout import Layout, LayoutTensor
 
@@ -1138,76 +1136,10 @@ fn plan_gpu_batched[
     ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
     ctx.enqueue_copy(mb.std_buf, mb.std_host)
 
-    # ─── Profiling accumulators (nanoseconds) ──────────────────────────────
-    var t_broadcast_ns: UInt = 0
-    var t_policy_ns: UInt = 0
-    var t_sample_build_ns: UInt = 0
-    var t_rew_dyn_ns: UInt = 0
-    var t_terminal_policy_ns: UInt = 0
-    var t_q_ensemble_ns: UInt = 0
-    var t_softmax_mean_std_ns: UInt = 0
-    var t_download_ns: UInt = 0
-    var t_cpu_select_ns: UInt = 0
-    var t0_prof: UInt
-
-    # ─── Create streams for parallel execution (NVIDIA only) ─────────────
+    # ─── Create streams for parallel rew+dyn (NVIDIA only) ─────────────
     comptime USE_STREAMS = has_nvidia_gpu_accelerator()
-    var s1 = ctx.create_stream()  # reward / Q1
-    var s2 = ctx.create_stream()  # dynamics / Q2
-    var s3 = ctx.create_stream()  # Q3
-    var s4 = ctx.create_stream()  # Q4
-    var s5 = ctx.create_stream()  # Q5
-
-    # ─── Per-Q tensor views for parallel stream execution ────────────────
-    var q_out1 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, QModel.OUT_DIM), MutAnyOrigin
-    ](mb.q_out_buf1.unsafe_ptr())
-    var q_out2 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, QModel.OUT_DIM), MutAnyOrigin
-    ](mb.q_out_buf2.unsafe_ptr())
-    var q_out3 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, QModel.OUT_DIM), MutAnyOrigin
-    ](mb.q_out_buf3.unsafe_ptr())
-    var q_out4 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, QModel.OUT_DIM), MutAnyOrigin
-    ](mb.q_out_buf4.unsafe_ptr())
-    var q_out5 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, QModel.OUT_DIM), MutAnyOrigin
-    ](mb.q_out_buf5.unsafe_ptr())
-
-    # Per-Q decoded value tensors (reuse returns_buf region — we allocate
-    # q_min_buf already, so use 5 slices of a temporary region).
-    # Each needs BATCH_TOTAL scalars. We'll use the 5 q_out bufs' first
-    # BATCH_TOTAL floats as decoded value storage after decode.
-    # Actually, let's define separate 1D views for decoded values.
-    var qv1 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
-        mb.q_out_buf1.unsafe_ptr()
-    )
-    var qv2 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
-        mb.q_out_buf2.unsafe_ptr()
-    )
-    var qv3 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
-        mb.q_out_buf3.unsafe_ptr()
-    )
-    var qv4 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
-        mb.q_out_buf4.unsafe_ptr()
-    )
-    var qv5 = LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin](
-        mb.q_out_buf5.unsafe_ptr()
-    )
-
-    # Reward output tensor on second workspace (for parallel rew+dyn)
-    var rew_out_tensor2 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, RewModel.OUT_DIM), MutAnyOrigin
-    ](mb.rew_ws_buf2.unsafe_ptr())
-    var rew_logits_tensor2 = LayoutTensor[
-        dtype, Layout.row_major(BATCH_TOTAL, NUM_BINS), MutAnyOrigin
-    ](mb.rew_ws_buf2.unsafe_ptr())
-
-    comptime q_decode_only = tdmpc2_q_decode_kernel[
-        dtype, BATCH_TOTAL, NUM_BINS
-    ]
-    comptime min5_kernel = tdmpc2_min5_q_values_kernel[dtype, BATCH_TOTAL]
+    var s1 = ctx.create_stream()  # reward
+    var s2 = ctx.create_stream()  # dynamics
 
     # ─── Main MPPI iterations ────────────────────────────────────────────
     var temp_scalar = Scalar[dtype](temperature)
@@ -1217,8 +1149,6 @@ fn plan_gpu_batched[
         )
 
         # 1. Broadcast per-env z0 to all samples + zero returns
-        ctx.synchronize()
-        t0_prof = perf_counter_ns()
         ctx.enqueue_function[broadcast_z0, broadcast_z0](
             z0_tensor,
             z_tensor,
@@ -1230,8 +1160,6 @@ fn plan_gpu_batched[
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.synchronize()
-        t_broadcast_ns += perf_counter_ns() - t0_prof
 
         # 3. Horizon rollout (H sequential steps, all envs batched)
         var discount = Scalar[dtype](1.0)
@@ -1239,7 +1167,6 @@ fn plan_gpu_batched[
             var step_seed = rng_seed + UInt32(t * BATCH_TOTAL * ACTION_DIM + 1)
 
             # 3a. Policy forward
-            t0_prof = perf_counter_ns()
             PolModel.forward_gpu_no_cache[BATCH_TOTAL](
                 ctx,
                 pol_out_tensor,
@@ -1247,11 +1174,8 @@ fn plan_gpu_batched[
                 pol_params,
                 mb.pol_ws_buf,
             )
-            ctx.synchronize()
-            t_policy_ns += perf_counter_ns() - t0_prof
 
             # 3b. Sample actions + 3c. Build za
-            t0_prof = perf_counter_ns()
             ctx.enqueue_function[sample_actions, sample_actions](
                 pi_out_tensor,
                 mean_tensor,
@@ -1270,11 +1194,8 @@ fn plan_gpu_batched[
                 grid_dim=(MPPI_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.synchronize()
-            t_sample_build_ns += perf_counter_ns() - t0_prof
 
             # 3d-g. Reward + Dynamics in PARALLEL on separate streams
-            t0_prof = perf_counter_ns()
             comptime if USE_STREAMS:
                 # Stream 1: Reward forward + accumulate
                 RewModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
@@ -1346,12 +1267,9 @@ fn plan_gpu_batched[
                     grid_dim=(MPPI_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.synchronize()
-            t_rew_dyn_ns += perf_counter_ns() - t0_prof
             discount = discount * Scalar[dtype](gamma)
 
         # 4. Terminal value: policy → tanh → build za
-        t0_prof = perf_counter_ns()
         PolModel.forward_gpu_no_cache[BATCH_TOTAL](
             ctx,
             pol_out_tensor,
@@ -1367,11 +1285,8 @@ fn plan_gpu_batched[
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.synchronize()
-        t_terminal_policy_ns += perf_counter_ns() - t0_prof
 
         # Q1..Q5: batched grouped forward + decode + min
-        t0_prof = perf_counter_ns()
 
         # ── Compile-time layer param offsets ─────────────────────────
         # Q model = Sequential[NormedLinear[ZA,MLP], NormedLinear[MLP,MLP], Linear[MLP,BINS]]
@@ -1551,11 +1466,8 @@ fn plan_gpu_batched[
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.synchronize()
-        t_q_ensemble_ns += perf_counter_ns() - t0_prof
 
         # 5. Softmax weights + 6. Weighted mean/std
-        t0_prof = perf_counter_ns()
         ctx.enqueue_function[softmax_weights, softmax_weights](
             returns_tensor,
             weights_tensor,
@@ -1572,19 +1484,15 @@ fn plan_gpu_batched[
             block_dim=(TPB,),
         )
         ctx.synchronize()
-        t_softmax_mean_std_ns += perf_counter_ns() - t0_prof
 
     # ─── Download results ─────────────────────────────────────────────────
-    t0_prof = perf_counter_ns()
     ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)
     ctx.enqueue_copy(mb.weights_host, mb.weights_buf)
     ctx.enqueue_copy(mb.mean_host, mb.mean_buf)
     ctx.enqueue_copy(mb.std_host, mb.std_buf)
     ctx.synchronize()
-    t_download_ns += perf_counter_ns() - t0_prof
 
     # ─── Store final means + action selection per env ──────────────────────
-    t0_prof = perf_counter_ns()
     for env_idx in range(N_ENVS):
         var mean_base = env_idx * HORIZON * ACTION_DIM
         var env_act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
@@ -1612,45 +1520,3 @@ fn plan_gpu_batched[
                 act += _gaussian_sample() * Float64(mb.std_host[mean_base + a])
             act = _clamp(act * action_scale, -action_scale, action_scale)
             act_host[env_idx * ACTION_DIM + a] = Scalar[dtype](act)
-    t_cpu_select_ns += perf_counter_ns() - t0_prof
-
-    # ─── Print MPPI profiling summary (once per call) ─────────────────────
-    var total_ns = (
-        t_broadcast_ns
-        + t_policy_ns
-        + t_sample_build_ns
-        + t_rew_dyn_ns
-        + t_terminal_policy_ns
-        + t_q_ensemble_ns
-        + t_softmax_mean_std_ns
-        + t_download_ns
-        + t_cpu_select_ns
-    )
-    var total_ms = Float64(total_ns) / 1e6
-    if total_ms > 0:
-        comptime streams_on = "ON" if USE_STREAMS else "OFF"
-        print(
-            "  MPPI profile (ms) [streams="
-            + streams_on
-            + "]:"
-            + " bcast="
-            + String(Float64(t_broadcast_ns) / 1e6)[:7]
-            + " pol="
-            + String(Float64(t_policy_ns) / 1e6)[:7]
-            + " samp="
-            + String(Float64(t_sample_build_ns) / 1e6)[:7]
-            + " rew+dyn="
-            + String(Float64(t_rew_dyn_ns) / 1e6)[:7]
-            + " tpol="
-            + String(Float64(t_terminal_policy_ns) / 1e6)[:7]
-            + " Q5="
-            + String(Float64(t_q_ensemble_ns) / 1e6)[:7]
-            + " sfmx="
-            + String(Float64(t_softmax_mean_std_ns) / 1e6)[:7]
-            + " dl="
-            + String(Float64(t_download_ns) / 1e6)[:7]
-            + " cpu="
-            + String(Float64(t_cpu_select_ns) / 1e6)[:7]
-            + " total="
-            + String(total_ms)[:7]
-        )

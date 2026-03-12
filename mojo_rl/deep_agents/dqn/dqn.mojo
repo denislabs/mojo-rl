@@ -1015,7 +1015,6 @@ struct DQNAgent[
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
-            PROFILE: Whether to profile the training loop.
 
         Args:
             ctx: GPU device context.

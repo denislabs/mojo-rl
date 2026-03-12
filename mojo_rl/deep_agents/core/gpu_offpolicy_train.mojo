@@ -316,11 +316,13 @@ fn run_offpolicy_continuous_train_gpu[
     Parameters:
         E: GPU environment type implementing GPUContinuousEnv.
         A: Agent type implementing GPUOffPolicyAgent.
+        PROFILE: Whether to profile the training loop.
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_steps: Total env transitions across all parallel envs.
+        timer: PerfTimer to add slots to.
         warmup_steps: Transitions before training starts (default: 1000).
         gradient_steps: Training steps per env collection iteration.
             Default 0 = n_envs (1:1 replay ratio with CleanRL convention).
@@ -731,11 +733,13 @@ fn run_offpolicy_discrete_train_gpu[
     Parameters:
         E: GPU environment type implementing GPUDiscreteEnv.
         A: Agent type implementing GPUOffPolicyAgent.
+        PROFILE: Whether to profile the training loop.
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_steps: Total env transitions across all parallel envs.
+        timer: PerfTimer to add slots to.
         warmup_steps: Transitions before training starts (default: 1000).
         gradient_steps: Training steps per env collection iteration.
             Default 0 = n_envs (1:1 replay ratio with CleanRL convention).

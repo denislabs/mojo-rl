@@ -423,6 +423,7 @@ fn run_onpolicy_discrete_train_gpu[
         agent: On-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_updates: Number of rollout + update cycles.
+        timer: PerfTimer to add slots to.
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
         checkpoint_every: Save checkpoint every N updates (default: 0 = never).
         checkpoint_path: Path to save checkpoints (default: "").
@@ -809,11 +810,13 @@ fn run_onpolicy_continuous_train_gpu[
         E: GPU environment type implementing GPUContinuousEnv.
         A: Agent type implementing GPUOnPolicyContinuousAgent.
         CurriculumType: Curriculum scheduler type (default: NoCurriculumScheduler).
+        PROFILE: Whether to profile the training loop.
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_updates: Number of rollout + update cycles.
+        timer: PerfTimer to add slots to.
         target_episodes: Target number of episodes to complete (default: 0 = unlimited).
         target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
