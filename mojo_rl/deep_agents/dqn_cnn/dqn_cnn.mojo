@@ -745,6 +745,15 @@ struct DQNCNNAgent[
     fn set_total_steps(mut self, steps: Int):
         self.train_step_count = steps
 
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        """Linear epsilon schedule matching CleanRL."""
+        var duration = Float64(num_steps) * 0.5
+        var slope = (self.epsilon_min - 1.0) / duration
+        self.epsilon = max(
+            self.epsilon_min,
+            slope * Float64(total_steps) + 1.0,
+        )
+
     fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,

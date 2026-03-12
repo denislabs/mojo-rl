@@ -62,6 +62,7 @@ from mojo_rl.deep_agents.core.kernels import (
     increment_steps_kernel,
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
+    uniform_random_discrete_actions_kernel,
 )
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
@@ -252,6 +253,18 @@ trait GPUOffPolicyAgent:
         Args:
             ctx: GPU device context.
             gpu_state: GPU state with online and target network buffers.
+        """
+        ...
+
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        """Decay exploration rate based on training progress.
+
+        Called once per collection step in GPU training loops.
+        No-op for agents without epsilon-greedy exploration (SAC, TD3, DDPG).
+
+        Args:
+            total_steps: Total env transitions so far.
+            num_steps: Total planned transitions (for linear schedule).
         """
         ...
 
@@ -774,6 +787,13 @@ fn run_offpolicy_discrete_train_gpu[
 
     from layout import Layout, LayoutTensor
 
+    # Discrete warmup kernel wrapper (uniform random action indices)
+    comptime act_tpb = 256
+    comptime act_blocks = (n_envs + act_tpb - 1) // act_tpb
+    comptime discrete_warmup_kernel = uniform_random_discrete_actions_kernel[
+        dtype, n_envs, E.NUM_ACTIONS
+    ]
+
     # Resolve gradient_steps: 0 means n_envs (1:1 replay ratio)
     var grad_steps = gradient_steps
     if grad_steps <= 0:
@@ -799,8 +819,20 @@ fn run_offpolicy_discrete_train_gpu[
     while total_steps < num_steps:
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
-        # --- Action selection ---
-        agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
+        # --- Action selection: warmup uses uniform random, then agent's policy ---
+        if total_steps < warmup_steps:
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var warmup_seed = Scalar[DType.uint32](step_seed)
+            ctx.enqueue_function[discrete_warmup_kernel, discrete_warmup_kernel](
+                act_t,
+                warmup_seed,
+                grid_dim=(act_blocks,),
+                block_dim=(act_tpb,),
+            )
+        else:
+            agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
 
         # --- Environment step ---
         E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
@@ -896,6 +928,9 @@ fn run_offpolicy_discrete_train_gpu[
 
         total_steps += n_envs
         step_seed += 1
+
+        # Decay exploration (e.g. epsilon for DQN, no-op for continuous agents)
+        agent.decay_explore_gpu(total_steps, num_steps)
 
         # Progress bar (no GPU sync, pure CPU counters)
         # Shows progress within the current print interval (0% → 100%)

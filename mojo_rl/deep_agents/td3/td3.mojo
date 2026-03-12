@@ -1279,6 +1279,9 @@ struct DeepTD3Agent[
     fn set_total_steps(mut self, steps: Int):
         self.total_steps = steps
 
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        pass  # TD3 uses deterministic policy + Gaussian noise, no epsilon
+
     fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,

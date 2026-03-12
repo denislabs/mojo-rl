@@ -245,9 +245,7 @@ fn log_and_reset_completed_kernel[
     episode_rewards: LayoutTensor[
         dtype, Layout.row_major(N_ENVS), MutAnyOrigin
     ],
-    episode_steps: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    episode_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     reward_sum: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     episode_count: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
 ):
@@ -516,7 +514,8 @@ fn gather_scalars_kernel[
         DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
     ],
 ):
-    """Gather scalar fields (actions, rewards, dones) for sampled transitions."""
+    """Gather scalar fields (actions, rewards, dones) for sampled transitions.
+    """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= SAMPLE_SIZE:
         return
@@ -1011,6 +1010,40 @@ fn uniform_random_actions_kernel[
     # Map [0, 1] -> [-action_scale, action_scale]
     var u = Scalar[dtype](Float32(rand_vals[0]))
     actions_out[b, a] = (u * 2 - 1) * action_scale
+
+
+# =============================================================================
+# Discrete Warmup: Uniform Random Action Indices
+# =============================================================================
+
+
+@always_inline
+fn uniform_random_discrete_actions_kernel[
+    dtype: DType,
+    BATCH: Int,
+    NUM_ACTIONS: Int,
+](
+    actions_out: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Fill actions with uniform random integer indices in [0, NUM_ACTIONS).
+
+    Used during warmup for discrete action environments.
+    One thread per environment.
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH:
+        return
+
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(tid) * UInt64(2654435761),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u = Float32(rand_vals[0])
+    actions_out[tid] = Scalar[dtype](
+        Int(u * Float32(NUM_ACTIONS)) % NUM_ACTIONS
+    )
 
 
 # =============================================================================

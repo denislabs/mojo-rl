@@ -542,7 +542,7 @@ struct DQNAgent[
         ](actions_buf.unsafe_ptr())
         var epsilon_s = Scalar[dtype](self.epsilon)
         var seed_s = Scalar[DType.uint32](
-            UInt32(self.train_step_count * 2654435761)
+            UInt32(self.get_total_steps() * 2654435761)
         )
 
         @always_inline
@@ -610,7 +610,7 @@ struct DQNAgent[
         # ---- Phase 1: Sample batch ----
         gpu_state.buffer.sample[BATCH](
             ctx,
-            UInt32(self.train_step_count),
+            UInt32(self.train_step_count * (BATCH + 1)),
             gpu_state.s_obs,
             gpu_state.s_act,
             gpu_state.s_rew,
@@ -785,6 +785,18 @@ struct DQNAgent[
 
     fn set_total_steps(mut self, steps: Int):
         self.train_step_count = steps
+
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        """Linear epsilon schedule matching CleanRL:
+        epsilon = max(end_e, start_e + (end_e - start_e) * t / duration).
+        Exploration fraction = 0.5 (decay over first half of training).
+        """
+        var duration = Float64(num_steps) * 0.5  # exploration_fraction = 0.5
+        var slope = (self.epsilon_min - 1.0) / duration
+        self.epsilon = max(
+            self.epsilon_min,
+            slope * Float64(total_steps) + 1.0,
+        )
 
     fn soft_update_targets_gpu(
         mut self,
