@@ -4,7 +4,7 @@ This tests the GPU environment implementation using the CPU fallback kernels
 to verify the physics and state layout are correct.
 
 Usage:
-    pixi run mojo run examples/test_lunar_lander_v2_gpu_cpu.mojo
+    pixi run mojo run -I . examples/test_lunar_lander_v2_gpu_cpu.mojo
 """
 
 from std.time import perf_counter_ns

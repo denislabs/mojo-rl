@@ -4,7 +4,7 @@ Compares our FK output (xpos, xquat, xipos) with MuJoCo's for the HalfCheetah
 model at multiple qpos configurations. Uses Python interop to call MuJoCo.
 
 Run with:
-    cd mojo-rl && pixi run mojo run test_fk_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run -I . test_fk_vs_mujoco.mojo
 """
 
 from std.python import Python, PythonObject

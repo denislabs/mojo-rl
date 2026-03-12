@@ -4,7 +4,7 @@ This tests the trained continuous PPO model using CPU evaluation
 with optional 3D visualization using the RenderableEnv trait.
 
 Run with:
-    pixi run mojo run tests/test_ppo_hopper_continuous_eval_cpu.mojo
+    pixi run mojo run -I . tests/test_ppo_hopper_continuous_eval_cpu.mojo
 """
 
 from std.random import seed

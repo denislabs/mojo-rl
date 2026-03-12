@@ -14,8 +14,8 @@ Action space (matching Gymnasium LunarLander-v3 continuous):
             magnitude > 0.5 activates the engine
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_lunar_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

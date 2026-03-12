@@ -3,7 +3,7 @@
 Measures training step performance to identify optimization opportunities.
 
 Run with:
-    pixi run mojo run examples/benchmark_deep_rl.mojo
+    pixi run mojo run -I . examples/benchmark_deep_rl.mojo
 """
 
 from std.time import perf_counter_ns

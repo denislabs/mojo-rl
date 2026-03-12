@@ -39,11 +39,11 @@ brew install pixi
 # Install all dependencies (Mojo, Python packages, etc.)
 pixi install
 
-# Run an example
-pixi run mojo run examples/solve_gridworld.mojo
+# Run an example (note: -I . is required for module resolution)
+pixi run mojo run -I . examples/solve_gridworld.mojo
 
 # Run benchmarks
-pixi run mojo run benchmarks/benchmark_matmul_apple.mojo
+pixi run mojo run -I . benchmarks/benchmark_matmul_apple.mojo
 ```
 
 ### GPU Support
@@ -52,10 +52,10 @@ GPU-accelerated code requires specifying the target environment with the `-e` fl
 
 ```bash
 # Apple Silicon (Metal)
-pixi run -e apple mojo run examples/lunar_lander_dqn.mojo
+pixi run -e apple mojo run -I . examples/lunar_lander_dqn.mojo
 
 # NVIDIA GPUs (CUDA)
-pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
+pixi run -e nvidia mojo run -I . examples/lunar_lander_dqn.mojo
 ```
 
 ## Project Structure

@@ -7,7 +7,7 @@ Requires:
     pip install "gymnasium[mujoco]" mujoco
 
 Run with:
-    pixi run mojo run tests/test_ppo_half_cheetah_gymnasium_eval_cpu.mojo
+    pixi run mojo run -I . tests/test_ppo_half_cheetah_gymnasium_eval_cpu.mojo
 """
 
 from std.random import seed

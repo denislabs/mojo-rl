@@ -4,7 +4,7 @@ This tests that the trained model performs well on the same GPU environment
 it was trained on, to confirm the CPU evaluation failure is due to physics mismatch.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_gpu_eval_gpu.mojo
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_gpu_eval_gpu.mojo
 """
 
 from std.random import seed

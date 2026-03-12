@@ -3,7 +3,7 @@
 This tests compilation time for the Linear layer's GPU methods.
 
 Run with:
-    pixi run -e apple mojo run tests/test_compile_nn.mojo
+    pixi run -e apple mojo run -I . tests/test_compile_nn.mojo
 """
 
 from std.time import perf_counter_ns

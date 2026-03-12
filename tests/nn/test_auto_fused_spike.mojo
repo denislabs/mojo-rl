@@ -5,7 +5,7 @@ Tests three unknowns:
 2. Can we construct fused ops from ops[i].IN_DIM/OUT_DIM and call methods?
 3. Can recursive forward execution work with buffer pointers?
 
-Run: cd mojo-rl && pixi run mojo run tests/test_auto_fused_spike.mojo
+Run: cd mojo-rl && pixi run mojo run -I . tests/test_auto_fused_spike.mojo
 """
 
 from mojo_rl.nn.constants import dtype

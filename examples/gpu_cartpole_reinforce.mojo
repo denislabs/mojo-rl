@@ -13,7 +13,7 @@ Key design:
 - Episode handling: auto-reset when done
 
 Run with:
-    pixi run -e apple mojo run examples/gpu_cartpole_reinforce.mojo
+    pixi run -e apple mojo run -I . examples/gpu_cartpole_reinforce.mojo
 """
 
 from std.time import perf_counter_ns

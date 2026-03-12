@@ -9,7 +9,7 @@ Tests:
 4. Kernel launch overhead
 
 Run with:
-    pixi run -e apple mojo run examples/benchmark_forward_pass.mojo
+    pixi run -e apple mojo run -I . examples/benchmark_forward_pass.mojo
 """
 
 from std.time import perf_counter_ns

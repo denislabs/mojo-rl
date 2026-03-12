@@ -22,7 +22,7 @@ Best algorithms for FrozenLake:
 This example also demonstrates non-slippery mode for comparison.
 
 Run with:
-    pixi run mojo run examples/solve_frozenlake.mojo
+    pixi run mojo run -I . examples/solve_frozenlake.mojo
 """
 
 from mojo_rl.envs import FrozenLakeEnv

@@ -7,7 +7,7 @@ This helps verify if the train-eval gap issue is environment-specific
 by testing on Pendulum instead of LunarLander.
 
 Run with:
-    pixi run mojo run tests/eval_ppo_pendulum_cpu.mojo
+    pixi run mojo run -I . tests/eval_ppo_pendulum_cpu.mojo
 
 Requirements:
     - SDL2 installed (brew install sdl2 sdl2_ttf on macOS)

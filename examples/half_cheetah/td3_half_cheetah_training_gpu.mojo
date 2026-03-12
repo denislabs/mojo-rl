@@ -13,8 +13,8 @@ TD3 key features:
 - Target policy smoothing (clipped noise on target actions)
 
 Run with:
-    pixi run -e apple mojo run examples/half_cheetah/td3_half_cheetah_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run examples/half_cheetah/td3_half_cheetah_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

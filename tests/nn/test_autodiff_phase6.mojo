@@ -5,7 +5,7 @@ Tests: DropoutOp, Flatten, Embedding.
 Per op: (1) forward correctness, (2) backward correctness / gradient check.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase6.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase6.mojo
 """
 
 from std.random import seed, random_float64

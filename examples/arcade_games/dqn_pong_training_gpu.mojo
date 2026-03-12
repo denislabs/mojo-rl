@@ -5,8 +5,8 @@ parallel environments. Pong has 3 discrete actions (NOOP, UP, DOWN) and
 6D observations (ball_xy, ball_vxy, paddle_y, cpu_paddle_y — all normalized).
 
 Run with:
-    pixi run -e apple mojo run examples/arcade_games/dqn_pong_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run examples/arcade_games/dqn_pong_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/arcade_games/dqn_pong_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/arcade_games/dqn_pong_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

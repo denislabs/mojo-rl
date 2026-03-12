@@ -4,7 +4,7 @@ This test isolates how much drift comes from std.random number differences
 vs actual physics implementation differences.
 
 Run with:
-    pixi run -e apple mojo run tests/test_deterministic_physics.mojo
+    pixi run -e apple mojo run -I . tests/test_deterministic_physics.mojo
 """
 
 from std.math import cos, sin, sqrt, pi

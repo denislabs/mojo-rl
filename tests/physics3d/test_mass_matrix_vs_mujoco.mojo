@@ -5,7 +5,7 @@ HalfCheetah model at multiple qpos configurations. Uses Python interop to
 call MuJoCo.
 
 Run with:
-    cd mojo-rl && pixi run mojo run test_mass_matrix_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run -I . test_mass_matrix_vs_mujoco.mojo
 """
 
 from std.python import Python, PythonObject

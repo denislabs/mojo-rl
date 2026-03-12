@@ -1,6 +1,6 @@
 """Demo of the native Mojo Acrobot environment with SDL2 rendering.
 
-Run with: pixi run mojo run examples/acrobot_native_demo.mojo
+Run with: pixi run mojo run -I . examples/acrobot_native_demo.mojo
 
 Requires SDL2: brew install sdl2 sdl2_ttf
 """

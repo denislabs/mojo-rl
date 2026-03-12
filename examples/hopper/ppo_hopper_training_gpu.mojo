@@ -13,8 +13,8 @@ Action space (3D continuous):
 - action[2]: foot torque (-1.0 to 1.0)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_hopper_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_hopper_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_hopper_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_hopper_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

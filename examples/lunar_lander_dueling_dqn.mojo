@@ -1,6 +1,6 @@
 """Train Deep Dueling DQN on LunarLander.
 
-Run with: pixi run mojo run examples/lunar_lander_dueling_dqn.mojo
+Run with: pixi run mojo run -I . examples/lunar_lander_dueling_dqn.mojo
 
 This trains a Dueling Deep Q-Network on the native Mojo LunarLander environment.
 

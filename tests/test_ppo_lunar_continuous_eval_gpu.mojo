@@ -4,8 +4,8 @@ This tests that the trained continuous PPO model performs well on the GPU enviro
 it was trained on.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_continuous_eval_gpu.mojo
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_continuous_eval_gpu.mojo
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_continuous_eval_gpu.mojo
+    pixi run -e nvidia mojo run -I . tests/test_ppo_lunar_continuous_eval_gpu.mojo
 """
 
 from std.random import seed

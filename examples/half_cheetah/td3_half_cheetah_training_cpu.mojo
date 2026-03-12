@@ -12,7 +12,7 @@ TD3 key features:
 - Target policy smoothing (clipped noise on target actions)
 
 Run with:
-    pixi run mojo run examples/half_cheetah/td3_half_cheetah_training_cpu.mojo
+    pixi run mojo run -I . examples/half_cheetah/td3_half_cheetah_training_cpu.mojo
 """
 
 from std.random import seed

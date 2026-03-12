@@ -1,6 +1,6 @@
 """Deep A2C and PPO on CartPole.
 
-Run with: pixi run mojo run examples/cartpole_deep_a2c_ppo.mojo
+Run with: pixi run mojo run -I . examples/cartpole_deep_a2c_ppo.mojo
 
 This trains Deep A2C and Deep PPO on the native Mojo CartPole environment.
 Compares the two on-policy algorithms:

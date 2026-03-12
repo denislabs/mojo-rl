@@ -7,7 +7,7 @@ This tests the new DQN implementation using:
 - train() and evaluate() methods
 
 Run with:
-    pixi run mojo run test_dqn.mojo
+    pixi run mojo run -I . test_dqn.mojo
 """
 
 from std.random import seed

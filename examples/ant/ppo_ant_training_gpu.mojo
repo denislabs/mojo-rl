@@ -18,8 +18,8 @@ Action space (8D continuous):
 - action[7]: ankle_3 torque (-1.0 to 1.0) * gear=150
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_ant_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_ant_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_ant_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_ant_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

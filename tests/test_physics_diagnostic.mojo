@@ -7,7 +7,7 @@ This test isolates each physics component:
 4. Angular dynamics (rotation integration)
 
 Run with:
-    pixi run -e apple mojo run tests/test_physics_diagnostic.mojo
+    pixi run -e apple mojo run -I . tests/test_physics_diagnostic.mojo
 """
 
 from std.math import cos, sin, sqrt

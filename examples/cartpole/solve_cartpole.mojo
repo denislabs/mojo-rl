@@ -22,7 +22,7 @@ Best algorithms for CartPole:
 3. PPO: Policy gradient with clipping (more complex)
 
 Run with:
-    pixi run mojo run examples/solve_cartpole.mojo
+    pixi run mojo run -I . examples/solve_cartpole.mojo
 
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """

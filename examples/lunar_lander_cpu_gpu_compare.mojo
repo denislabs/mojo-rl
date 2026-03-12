@@ -4,7 +4,7 @@ This script compares the behavior of LunarLander between CPU and GPU modes to
 identify any discrepancies in physics, observations, or rewards.
 
 Usage:
-    pixi run -e apple mojo run examples/lunar_lander_cpu_gpu_compare.mojo
+    pixi run -e apple mojo run -I . examples/lunar_lander_cpu_gpu_compare.mojo
 """
 
 from std.math import sqrt

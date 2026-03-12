@@ -6,7 +6,7 @@ Tests: MishOp, Scale, ElemMul, ReduceSum, ReduceMean, SoftmaxOp,
 Per op: (1) forward vs manual computation, (2) finite-difference gradient check.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase3.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase3.mojo
 """
 
 from std.random import seed, random_float64

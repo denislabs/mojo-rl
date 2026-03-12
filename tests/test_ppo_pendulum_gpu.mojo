@@ -12,8 +12,8 @@ Pendulum is a great test case because:
 - Optimal policy is to swing up and balance at θ=0
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_pendulum_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_pendulum_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_pendulum_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_pendulum_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

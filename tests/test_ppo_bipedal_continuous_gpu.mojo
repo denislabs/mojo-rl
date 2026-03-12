@@ -14,8 +14,8 @@ Action space (matching Gymnasium BipedalWalker-v3 continuous):
 - action[3]: knee2 torque (-1.0 to 1.0)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_bipedal_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_bipedal_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_bipedal_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_bipedal_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

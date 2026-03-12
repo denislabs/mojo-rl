@@ -6,7 +6,7 @@ Per combinator: (1) dimension checks, (2) forward correctness,
 (3) finite-difference gradient check, (4) composition & training convergence.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase4.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase4.mojo
 """
 
 from std.random import seed, random_float64

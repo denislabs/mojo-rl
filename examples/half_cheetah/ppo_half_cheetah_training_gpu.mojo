@@ -16,8 +16,8 @@ Action space (6D continuous):
 - action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_half_cheetah_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_half_cheetah_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_half_cheetah_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_half_cheetah_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

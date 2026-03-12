@@ -18,7 +18,7 @@ Pendulum starts from a random position and must learn to apply
 torque to reach the upright position.
 
 Run with:
-    pixi run mojo run examples/pendulum_td3.mojo
+    pixi run mojo run -I . examples/pendulum_td3.mojo
 
 Requirements:
     - SDL2 for rendering (optional): brew install sdl2 sdl2_ttf

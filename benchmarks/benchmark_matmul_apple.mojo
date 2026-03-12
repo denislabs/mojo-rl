@@ -7,7 +7,7 @@ Compares:
 4. FP16 kernel
 
 Run with:
-    pixi run -e apple mojo run tests/benchmark_matmul_apple.mojo
+    pixi run -e apple mojo run -I . benchmarks/benchmark_matmul_apple.mojo
 """
 
 from std.gpu.host import DeviceContext

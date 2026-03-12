@@ -1,7 +1,7 @@
 """Compare CPU vs GPU V3 physics.
 
 Run with:
-    pixi run -e apple mojo run tests/test_physics_v3_compare.mojo
+    pixi run -e apple mojo run -I . tests/test_physics_v3_compare.mojo
 """
 
 from std.math import sqrt

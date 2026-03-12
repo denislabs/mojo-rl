@@ -8,7 +8,7 @@ This demonstrates training RL agents on Gymnasium environments:
 Continuous action environments (Pendulum, BipedalWalker, MuJoCo) are shown
 with simple heuristic policies since they require policy gradient methods.
 
-Run with: pixi run mojo run examples/gymnasium_demo.mojo
+Run with: pixi run mojo run -I . examples/gymnasium_demo.mojo
 """
 
 from std.python import Python

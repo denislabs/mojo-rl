@@ -33,7 +33,7 @@ Best algorithms for Taxi:
 3. Dyna-Q: Model-based planning speeds up learning
 
 Run with:
-    pixi run mojo run examples/solve_taxi.mojo
+    pixi run mojo run -I . examples/solve_taxi.mojo
 """
 
 from mojo_rl.envs import TaxiEnv

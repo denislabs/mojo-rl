@@ -842,8 +842,10 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
         )
 
-        # Reward: +1 for every step including termination (matches Gymnasium default)
-        var reward = Scalar[gpu_dtype](1.0)
+        # Reward: +1 for every step the pole stays upright, 0 on termination
+        var reward = Scalar[gpu_dtype](1.0) if not done else Scalar[gpu_dtype](
+            0.0
+        )
 
         rewards[i] = reward
         dones[i] = Scalar[gpu_dtype](done)

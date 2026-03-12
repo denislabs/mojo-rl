@@ -7,7 +7,7 @@ The HalfCheetah environment uses the Generalized Coordinates (GC) physics
 engine which provides MuJoCo-style joint-space dynamics.
 
 Run with:
-    pixi run mojo run tests/test_ppo_half_cheetah_continuous_eval_cpu.mojo
+    pixi run mojo run -I . tests/test_ppo_half_cheetah_continuous_eval_cpu.mojo
 """
 
 from std.random import seed

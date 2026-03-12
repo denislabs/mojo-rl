@@ -1,6 +1,6 @@
 """Demo of BipedalWalker v2 GPU environment (CPU single-env mode).
 
-Run with: pixi run mojo run examples/bipedal_walker_v2_demo.mojo
+Run with: pixi run mojo run -I . examples/bipedal_walker_v2_demo.mojo
 
 Features:
 - Uses physics2d module for physics simulation

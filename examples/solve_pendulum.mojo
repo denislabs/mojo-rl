@@ -23,7 +23,7 @@ Best algorithms for Pendulum:
 3. SAC: Soft Actor-Critic - maximum entropy RL
 
 Run with:
-    pixi run mojo run examples/solve_pendulum.mojo
+    pixi run mojo run -I . examples/solve_pendulum.mojo
 
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """

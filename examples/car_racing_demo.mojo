@@ -4,7 +4,7 @@ This demo creates a CarRacing environment and runs it with keyboard controls
 or random actions to test the rendering system.
 
 Usage:
-    pixi run mojo run examples/car_racing_v2_demo.mojo
+    pixi run mojo run -I . examples/car_racing_v2_demo.mojo
 """
 
 from std.time import sleep

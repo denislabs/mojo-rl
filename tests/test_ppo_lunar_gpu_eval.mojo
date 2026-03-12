@@ -4,7 +4,7 @@ This evaluates a PPO agent trained on GPU using the CPU LunarLander environment.
 Includes debug output to diagnose any issues with the transfer.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_gpu_eval.mojo
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_gpu_eval.mojo
 """
 
 from std.math import exp

@@ -3,7 +3,7 @@
 Tests different configurations to find optimal GPU parameters for Metal.
 
 Run with:
-    pixi run -e apple mojo run tests/benchmark_tpb_tile.mojo
+    pixi run -e apple mojo run benchmarks/benchmark_tpb_tile.mojo
 """
 
 from std.time import perf_counter_ns

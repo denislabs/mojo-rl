@@ -15,8 +15,8 @@ SAC key features:
 - No target actor (only critic targets)
 
 Run with:
-    pixi run -e apple mojo run examples/half_cheetah/sac_half_cheetah_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

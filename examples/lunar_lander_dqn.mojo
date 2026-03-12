@@ -1,6 +1,6 @@
 """Train Deep DQN on LunarLander.
 
-Run with: pixi run mojo run examples/lunar_lander_dqn.mojo
+Run with: pixi run mojo run -I . examples/lunar_lander_dqn.mojo
 
 This trains a Deep Q-Network on the native Mojo LunarLander environment.
 DQN uses:

@@ -14,7 +14,7 @@ SAC key features:
 - No target actor (only critic targets)
 
 Run with:
-    pixi run mojo run examples/half_cheetah/sac_half_cheetah_training_cpu.mojo
+    pixi run mojo run -I . examples/half_cheetah/sac_half_cheetah_training_cpu.mojo
 """
 
 from std.random import seed

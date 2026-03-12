@@ -18,7 +18,7 @@ discretization levels, function approximation (tile coding) would be
 more efficient for finer resolution.
 
 Run with:
-    pixi run mojo run examples/solve_acrobot.mojo
+    pixi run mojo run -I . examples/solve_acrobot.mojo
 
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """

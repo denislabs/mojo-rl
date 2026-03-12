@@ -17,7 +17,7 @@ Action space (6D continuous):
 - action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
 
 Run with:
-    pixi run mojo run examples/half_cheetah/tdmpc2_half_cheetah_training_cpu.mojo
+    pixi run mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_training_cpu.mojo
 """
 
 from std.random import seed

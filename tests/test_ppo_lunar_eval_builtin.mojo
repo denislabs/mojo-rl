@@ -4,7 +4,7 @@ This tests whether the built-in GPU evaluation produces the same results
 as training, to help diagnose the CPU/GPU forward pass divergence.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_eval_builtin.mojo
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_eval_builtin.mojo
 """
 
 from std.random import seed

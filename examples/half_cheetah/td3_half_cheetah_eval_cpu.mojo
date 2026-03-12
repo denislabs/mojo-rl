@@ -5,7 +5,7 @@ environment. Load a checkpoint from GPU training and run deterministic
 evaluation episodes.
 
 Run with:
-    pixi run mojo run examples/half_cheetah/td3_half_cheetah_eval_cpu.mojo
+    pixi run mojo run -I . examples/half_cheetah/td3_half_cheetah_eval_cpu.mojo
 """
 
 from std.random import seed

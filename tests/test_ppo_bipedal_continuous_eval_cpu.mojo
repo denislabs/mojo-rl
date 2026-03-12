@@ -4,7 +4,7 @@ This tests the trained continuous PPO model using the CPU evaluate method
 with optional rendering to visualize the agent's behavior.
 
 Run with:
-    pixi run mojo run tests/test_ppo_bipedal_continuous_eval_cpu.mojo
+    pixi run mojo run -I . tests/test_ppo_bipedal_continuous_eval_cpu.mojo
 """
 
 from std.random import seed

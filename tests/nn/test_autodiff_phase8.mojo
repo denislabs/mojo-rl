@@ -3,7 +3,7 @@
 Tests: ScaledDotProductAttention, transformer composites.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase8.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase8.mojo
 """
 
 from std.random import seed, random_float64

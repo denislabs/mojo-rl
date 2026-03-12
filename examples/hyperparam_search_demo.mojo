@@ -4,7 +4,7 @@ This example demonstrates both grid search and random search for
 hyperparameter optimization on Q-Learning with GridWorld.
 
 Run with:
-    pixi run mojo run examples/hyperparam_search_demo.mojo
+    pixi run mojo run -I . examples/hyperparam_search_demo.mojo
 """
 
 from mojo_rl.envs.gridworld import GridWorldEnv

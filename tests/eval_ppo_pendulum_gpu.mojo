@@ -7,8 +7,8 @@ This helps verify if the train-eval gap issue is environment-specific
 by testing on Pendulum instead of LunarLander.
 
 Run with:
-    pixi run -e apple mojo run tests/eval_ppo_pendulum_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/eval_ppo_pendulum_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/eval_ppo_pendulum_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/eval_ppo_pendulum_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

@@ -12,7 +12,7 @@ We measure:
 - Crossover point where GPU wins
 
 Run with:
-    pixi run -e apple mojo run examples/benchmark_vec_env.mojo
+    pixi run -e apple mojo run -I . examples/benchmark_vec_env.mojo
 """
 
 from std.time import perf_counter_ns

@@ -12,7 +12,7 @@ Tests:
 9. Convenience alias dimensions
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase1.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase1.mojo
 """
 
 from std.random import seed, random_float64

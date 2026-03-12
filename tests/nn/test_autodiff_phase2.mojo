@@ -1,7 +1,7 @@
 """Phase 2 verification tests for fused autodiff ops.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase2.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase2.mojo
 """
 
 from std.random import seed, random_float64

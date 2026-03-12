@@ -16,7 +16,7 @@ This benchmark explores:
 3. Break-even point analysis
 
 Run with:
-    pixi run -e apple mojo run examples/benchmark_gpu_analysis.mojo
+    pixi run -e apple mojo run -I . examples/benchmark_gpu_analysis.mojo
 """
 
 from std.time import perf_counter_ns

@@ -14,7 +14,7 @@ Uses the new trait-based architecture with:
 - Tanh-bounded deterministic policy
 
 Run with:
-    pixi run mojo run examples/pendulum_deep_td3.mojo
+    pixi run mojo run -I . examples/pendulum_deep_td3.mojo
 """
 
 from mojo_rl.deep_agents.td3 import DeepTD3Agent

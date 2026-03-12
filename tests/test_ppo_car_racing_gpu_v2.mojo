@@ -8,8 +8,8 @@ CarRacing environment with:
 - Continuous action space (steering, gas, brake)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_car_racing_gpu_v2.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_car_racing_gpu_v2.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_car_racing_gpu_v2.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_car_racing_gpu_v2.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

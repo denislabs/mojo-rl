@@ -6,7 +6,7 @@ Fields with |xml - def| > 1e-4 are marked  *** DIFF ***
 
 Run with:
     pixi run -e apple  mojo run tests/test_compare_halfcheetah_models.mojo
-    pixi run -e nvidia mojo run tests/test_compare_halfcheetah_models.mojo
+    pixi run -e nvidia mojo run -I . tests/test_compare_halfcheetah_models.mojo
 """
 
 from std.collections import InlineArray

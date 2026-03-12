@@ -2,10 +2,10 @@
 
 Run with:
   # Apple Silicon (Metal)
-  pixi run -e apple mojo run examples/bipedal_walker_v2_gpu_demo.mojo
+  pixi run -e apple mojo run -I . examples/bipedal_walker_v2_gpu_demo.mojo
 
   # NVIDIA GPUs (CUDA)
-  pixi run -e nvidia mojo run examples/bipedal_walker_v2_gpu_demo.mojo
+  pixi run -e nvidia mojo run -I . examples/bipedal_walker_v2_gpu_demo.mojo
 
 Features:
 - Batched physics simulation on GPU

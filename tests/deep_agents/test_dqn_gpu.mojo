@@ -6,8 +6,8 @@ This tests the GPU implementation of DQN using:
 - Double DQN with experience replay
 
 Run with:
-    pixi run -e apple mojo run test_dqn_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run test_dqn_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . test_dqn_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . test_dqn_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed
@@ -25,16 +25,15 @@ from mojo_rl.envs import CartPoleEnv
 
 comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
-comptime HIDDEN_DIM = 64
-comptime BUFFER_CAPACITY = 10000
-comptime BATCH_SIZE = 64  # Training batch size for gradient updates
-comptime N_ENVS = 32  # Smaller number of parallel environments
+comptime HIDDEN_DIM = 120
+comptime BUFFER_CAPACITY = 100_000
+comptime BATCH_SIZE = 128  # Training batch size for gradient updates
+comptime N_ENVS = 256  # Parallel environments for GPU collection
 
-comptime NUM_EPISODES = 1000  # More episodes for better convergence
+comptime NUM_STEPS = 100_000  # Total env transitions
 comptime MAX_STEPS = 500
-comptime WARMUP_STEPS = 1000  # Standard warmup
-comptime TRAIN_EVERY = 1  # Train every iteration
-comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N episodes
+comptime WARMUP_STEPS = 10_000  # Fill buffer before training
+comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
 
 
 # =============================================================================
@@ -62,13 +61,11 @@ fn main() raises:
             BUFFER_CAPACITY,
             BATCH_SIZE,
             N_ENVS,
-            lr=0.001,
+            lr=2.5e-4,
         ](
             gamma=0.99,
             tau=0.005,
-            epsilon=1.0,
-            epsilon_min=0.01,
-            epsilon_decay=0.995,
+            epsilon_min=0.05,
         )
 
         print("Environment: CartPole")
@@ -91,9 +88,9 @@ fn main() raises:
 
         var metrics = agent.train_gpu[CartPoleEnv[DType.float32]](
             ctx,
-            num_steps=NUM_EPISODES * N_ENVS,
+            num_steps=NUM_STEPS,
             warmup_steps=WARMUP_STEPS,
-            gradient_steps=0,
+            gradient_steps=128,
             sync_every=SYNC_EVERY,
             verbose=True,
             print_every=10_000,
@@ -114,7 +111,7 @@ fn main() raises:
         print("GPU Training Complete")
         print("=" * 70)
         print()
-        print("Total episodes: " + String(NUM_EPISODES))
+        print("Total steps: " + String(NUM_STEPS))
         print("Total train steps: " + String(agent.get_train_steps()))
         print("Training time: " + String(elapsed_s)[:6] + " seconds")
         print()

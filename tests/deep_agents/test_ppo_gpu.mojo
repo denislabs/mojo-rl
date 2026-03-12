@@ -7,8 +7,8 @@ This tests the GPU implementation of PPO using:
 - Actor-Critic training with clipped surrogate objective
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_ppo_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_ppo_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

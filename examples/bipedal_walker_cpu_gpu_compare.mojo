@@ -4,7 +4,7 @@ This script compares the behavior of BipedalWalker between CPU and GPU modes to
 identify any discrepancies in physics, observations, or rewards.
 
 Usage:
-    pixi run -e apple mojo run examples/bipedal_walker_cpu_gpu_compare.mojo
+    pixi run -e apple mojo run -I . examples/bipedal_walker_cpu_gpu_compare.mojo
 """
 
 from std.math import sqrt

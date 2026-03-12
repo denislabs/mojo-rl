@@ -4,7 +4,7 @@ This tests the reward normalization fix that prevents dense fuel penalties
 from dominating over sparse landing bonuses.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_debug_mean.mojo
+    pixi run -e apple mojo run -I . tests/test_ppo_lunar_debug_mean.mojo
 """
 
 from std.random import seed

@@ -9,7 +9,7 @@ Pattern A: Dimension as compile-time Int (current approach) - recompiles per siz
 Pattern B: Layout as type param + size as runtime UInt (puzzle p07 pattern)
 
 Run with:
-    pixi run -e apple mojo run tests/test_compile_patterns.mojo
+    pixi run -e apple mojo run -I . tests/test_compile_patterns.mojo
 """
 
 from std.time import perf_counter_ns

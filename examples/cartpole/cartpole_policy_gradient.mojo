@@ -16,7 +16,7 @@ Advantages over value-based methods:
 4. Better convergence properties in some settings
 
 Usage:
-    pixi run mojo run examples/cartpole_policy_gradient.mojo
+    pixi run mojo run -I . examples/cartpole_policy_gradient.mojo
 """
 from mojo_rl.envs import CartPoleEnv
 from mojo_rl.agents.reinforce import REINFORCEAgent

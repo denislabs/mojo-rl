@@ -24,7 +24,7 @@ Best algorithms for MountainCar:
 2. Tiled SARSA(lambda): Faster credit assignment
 
 Run with:
-    pixi run mojo run examples/solve_mountaincar.mojo
+    pixi run mojo run -I . examples/solve_mountaincar.mojo
 
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """

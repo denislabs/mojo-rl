@@ -12,7 +12,7 @@ This example demonstrates solving GridWorld using multiple algorithms
 and comparing their performance.
 
 Run with:
-    pixi run mojo run examples/solve_gridworld.mojo
+    pixi run mojo run -I . examples/solve_gridworld.mojo
 """
 
 from mojo_rl.envs import GridWorldEnv

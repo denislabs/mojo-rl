@@ -5,7 +5,7 @@ environment. SAC (Soft Actor-Critic) is a maximum entropy RL algorithm that
 learns a stochastic policy for continuous control.
 
 Run with:
-    pixi run mojo run examples/deep_sac_demo.mojo
+    pixi run mojo run -I . examples/deep_sac_demo.mojo
 """
 
 from mojo_rl.deep_agents import DeepSACAgent

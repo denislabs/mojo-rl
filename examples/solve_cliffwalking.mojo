@@ -24,7 +24,7 @@ This makes CliffWalking a famous example of why SARSA can outperform
 Q-Learning during training, even though Q-Learning finds the optimal policy.
 
 Run with:
-    pixi run mojo run examples/solve_cliffwalking.mojo
+    pixi run mojo run -I . examples/solve_cliffwalking.mojo
 """
 
 from mojo_rl.envs import CliffWalkingEnv

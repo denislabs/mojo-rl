@@ -4,7 +4,7 @@ This test verifies that the improved GPU physics (V2) with sub-stepping,
 Velocity Verlet, and contact iteration matches CPU physics better than V1.
 
 Run with:
-    pixi run -e apple mojo run tests/test_cpu_gpu_physics_match_v2.mojo
+    pixi run -e apple mojo run -I . tests/test_cpu_gpu_physics_match_v2.mojo
 """
 
 from std.math import cos, sin, sqrt

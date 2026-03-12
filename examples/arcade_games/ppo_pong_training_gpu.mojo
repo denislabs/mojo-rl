@@ -8,8 +8,8 @@ Each PPO update collects rollout_len * n_envs = 256 * 128 = 32768 transitions,
 then performs num_epochs mini-batch updates on them.
 
 Run with:
-    pixi run -e apple mojo run examples/arcade_games/ppo_pong_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run examples/arcade_games/ppo_pong_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/arcade_games/ppo_pong_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/arcade_games/ppo_pong_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed

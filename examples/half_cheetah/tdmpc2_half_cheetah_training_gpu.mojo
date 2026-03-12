@@ -18,8 +18,8 @@ Action space (6D continuous):
 - action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
 
 Run with:
-    pixi run -e apple mojo run examples/half_cheetah/tdmpc2_half_cheetah_training_gpu.mojo   # Apple Silicon
-    pixi run -e nvidia mojo run examples/half_cheetah/tdmpc2_half_cheetah_training_gpu.mojo  # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_training_gpu.mojo   # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
 from std.random import seed
@@ -114,10 +114,10 @@ fn main() raises:
             rho=0.5,
             tau=0.01,
             consistency_coef=20.0,
-            reward_coef=0.5,  # Reference default
+            reward_coef=0.1,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
-            entropy_coef=1e-3,
+            entropy_coef=1e-4,  # Reference default
             temperature=0.5,
             action_scale=1.0,
             warmup_steps=5_000,

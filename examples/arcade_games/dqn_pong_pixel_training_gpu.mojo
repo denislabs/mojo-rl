@@ -11,8 +11,8 @@ The Nature DQN architecture processes raw pixels:
   Dense[512→3]
 
 Run with:
-    pixi run -e apple mojo run examples/arcade_games/dqn_pong_pixel_training_gpu.mojo
-    pixi run -e nvidia mojo run examples/arcade_games/dqn_pong_pixel_training_gpu.mojo
+    pixi run -e apple mojo run -I . examples/arcade_games/dqn_pong_pixel_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/arcade_games/dqn_pong_pixel_training_gpu.mojo
 """
 
 from std.random import seed

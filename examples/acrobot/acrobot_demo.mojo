@@ -1,6 +1,6 @@
 """Demo of the native Mojo Acrobot environment.
 
-Run with: pixi run mojo run examples/acrobot_demo.mojo
+Run with: pixi run mojo run -I . examples/acrobot_demo.mojo
 """
 
 from mojo_rl.envs import AcrobotEnv, AcrobotAction

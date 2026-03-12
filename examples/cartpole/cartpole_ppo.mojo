@@ -22,7 +22,7 @@ PPO hyperparameters:
 - entropy_coef: Entropy bonus for exploration
 
 Usage:
-    pixi run mojo run examples/cartpole_ppo.mojo
+    pixi run mojo run -I . examples/cartpole_ppo.mojo
 """
 
 from mojo_rl.agents.ppo import PPOAgent, PPOAgentWithMinibatch

@@ -6,7 +6,7 @@ Per op: (1) forward vs manual computation, (2) finite-difference gradient check,
         (3) composition tests with AutoDiffChain.
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase7.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase7.mojo
 """
 
 from std.random import seed, random_float64

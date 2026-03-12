@@ -12,7 +12,7 @@ Key insight: If kernel launch overhead is 700+ μs, and we can fuse 6+ kernels i
 we save 5+ × 700 μs = 3.5+ ms per training step!
 
 Run with:
-    pixi run -e apple mojo run examples/benchmark_mega_kernel.mojo
+    pixi run -e apple mojo run -I . examples/benchmark_mega_kernel.mojo
 """
 
 from std.time import perf_counter_ns

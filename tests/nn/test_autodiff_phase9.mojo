@@ -10,7 +10,7 @@ Tests:
   9.4 Transformer architectures (Attention + FFN + Repeat)
 
 Run with:
-    pixi run mojo run tests/test_autodiff_phase9.mojo
+    pixi run mojo run -I . tests/test_autodiff_phase9.mojo
 """
 
 from std.random import seed, random_float64

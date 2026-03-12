@@ -9,7 +9,7 @@ Uses the new trait-based architecture with:
 - Tanh-bounded deterministic policy
 
 Run with:
-    pixi run mojo run examples/pendulum_deep_ddpg.mojo
+    pixi run mojo run -I . examples/pendulum_deep_ddpg.mojo
 """
 
 from mojo_rl.deep_agents.ddpg import DeepDDPGAgent

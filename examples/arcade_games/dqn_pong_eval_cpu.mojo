@@ -4,7 +4,7 @@ Loads a trained DQN checkpoint and runs evaluation episodes with the
 SDL3 renderer, so you can watch the agent play Pong.
 
 Run with:
-    pixi run mojo run examples/arcade_games/dqn_pong_eval_cpu.mojo
+    pixi run mojo run -I . examples/arcade_games/dqn_pong_eval_cpu.mojo
 """
 
 from std.random import seed

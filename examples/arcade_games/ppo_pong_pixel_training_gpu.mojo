@@ -4,8 +4,8 @@ Trains a PPO CNN agent on the native Pong environment using
 pixel observations (4×84×84 stacked grayscale frames).
 
 Run with:
-    pixi run -e apple mojo run examples/arcade_games/ppo_pong_pixel_training_gpu.mojo
-    pixi run -e nvidia mojo run examples/arcade_games/ppo_pong_pixel_training_gpu.mojo
+    pixi run -e apple mojo run -I . examples/arcade_games/ppo_pong_pixel_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/arcade_games/ppo_pong_pixel_training_gpu.mojo
 """
 
 from std.random import seed

@@ -1,6 +1,6 @@
 """Comprehensive test suite for AutoFused automatic fusion.
 
-Run: cd mojo-rl && pixi run mojo run tests/test_auto_fused.mojo
+Run: cd mojo-rl && pixi run mojo run -I . tests/test_auto_fused.mojo
 """
 
 from std.random import seed, random_float64

@@ -5,7 +5,7 @@ trait and uses the physics2d architecture with GPU methods for full physics
 simulation on GPU.
 
 Usage:
-    pixi run -e apple mojo run examples/train_lunar_lander_v2_gpu.mojo
+    pixi run -e apple mojo run -I . examples/train_lunar_lander_v2_gpu.mojo
 """
 
 from std.time import perf_counter_ns

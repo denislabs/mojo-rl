@@ -4,8 +4,8 @@ On NVIDIA: tests tensor core MMA kernel (gpu_matmul dispatches to mma_matmul_ker
 On Apple: tests tiled scalar kernel (gpu_matmul dispatches to tiled_matmul_kernel).
 
 Run with:
-    pixi run -e apple mojo run tests/test_mma_matmul.mojo   # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_mma_matmul.mojo  # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/test_mma_matmul.mojo   # Apple Silicon
+    pixi run -e nvidia mojo run -I . tests/test_mma_matmul.mojo  # NVIDIA GPU
 """
 
 from std.random import seed, random_float64
