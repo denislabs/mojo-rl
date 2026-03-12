@@ -581,7 +581,7 @@ fn run_offpolicy_continuous_train_gpu[
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
-                agent.soft_update_targets_gpu(ctx, gpu_state)
+            agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
@@ -971,7 +971,7 @@ fn run_offpolicy_discrete_train_gpu[
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
-                agent.soft_update_targets_gpu(ctx, gpu_state)
+            agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
