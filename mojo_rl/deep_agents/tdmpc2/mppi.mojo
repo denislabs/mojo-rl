@@ -32,6 +32,8 @@ from .kernels import (
     mppi_copy_z_kernel,
     mppi_broadcast_z0_batched_kernel,
     mppi_sample_actions_batched_kernel,
+    mppi_softmax_weights_kernel,
+    mppi_weighted_mean_std_kernel,
     tdmpc2_build_za_kernel,
     tdmpc2_apply_tanh_build_za_deterministic_kernel,
     tdmpc2_q_decode_kernel,
@@ -1089,6 +1091,19 @@ fn plan_gpu_batched[
         dtype, BATCH_TOTAL, NUM_BINS
     ]
     comptime zero_returns = tdmpc2_zero_kernel[dtype, BATCH_TOTAL]
+    comptime softmax_weights = mppi_softmax_weights_kernel[
+        dtype, N_ENVS, TOTAL_SAMPLES, TPB
+    ]
+    comptime weighted_mean_std = mppi_weighted_mean_std_kernel[
+        dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM
+    ]
+    comptime MEAN_STD_TOTAL = N_ENVS * HORIZON * ACTION_DIM
+    comptime MEAN_STD_BLOCKS = (MEAN_STD_TOTAL + TPB - 1) // TPB
+
+    # ─── Tensor views for weights on GPU ───────────────────────────────────
+    var weights_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin
+    ](mb.weights_buf.unsafe_ptr())
 
     # ─── Initialize per-env mean/std on CPU, upload to GPU ─────────────────
     for env_idx in range(N_ENVS):
@@ -1111,17 +1126,8 @@ fn plan_gpu_batched[
     ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
     ctx.enqueue_copy(mb.std_buf, mb.std_host)
 
-    # ─── Per-env softmax weights (reused across iterations) ────────────────
-    var weights = List[Float64](capacity=TOTAL_SAMPLES)
-    for _ in range(TOTAL_SAMPLES):
-        weights.append(0.0)
-
-    # Per-env last weights for action selection
-    var env_weights = List[List[Float64]](capacity=N_ENVS)
-    for _ in range(N_ENVS):
-        env_weights.append(List[Float64]())
-
-    # ─── Main MPPI iterations ──────────────────────────────────────────────
+    # ─── Main MPPI iterations (fully GPU, zero mid-iteration syncs) ────────
+    var temp_scalar = Scalar[dtype](temperature)
     for mppi_iter in range(NUM_ITERATIONS):
         var rng_seed = rng_base_seed + UInt32(
             mppi_iter * BATCH_TOTAL * HORIZON * ACTION_DIM * 2
@@ -1283,90 +1289,37 @@ fn plan_gpu_batched[
             block_dim=(TPB,),
         )
 
-        # 5. Download returns + all actions — ONE sync for ALL envs
-        ctx.enqueue_copy(mb.returns_host, mb.returns_buf)
-        ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)
-        ctx.synchronize()
+        # 5. GPU: softmax weights from returns (1 block per env)
+        ctx.enqueue_function[softmax_weights, softmax_weights](
+            returns_tensor,
+            weights_tensor,
+            temp_scalar,
+            grid_dim=(N_ENVS,),
+            block_dim=(TPB,),
+        )
 
-        # 6. CPU: per-env softmax weights + mean/std update
-        for env_idx in range(N_ENVS):
-            var env_ret_off = env_idx * TOTAL_SAMPLES
-            var env_act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
-            var mean_base = env_idx * HORIZON * ACTION_DIM
+        # 6. GPU: weighted mean/std update from weights + actions
+        ctx.enqueue_function[weighted_mean_std, weighted_mean_std](
+            weights_tensor,
+            all_actions_tensor,
+            mean_tensor,
+            std_tensor,
+            grid_dim=(MEAN_STD_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
-            # Find max return for this env
-            var max_return = Float64(mb.returns_host[env_ret_off])
-            for s in range(1, TOTAL_SAMPLES):
-                var v = Float64(mb.returns_host[env_ret_off + s])
-                if v > max_return:
-                    max_return = v
-
-            # Compute weights
-            var sum_w: Float64 = 0.0
-            for s in range(TOTAL_SAMPLES):
-                var w = exp(
-                    temperature
-                    * (Float64(mb.returns_host[env_ret_off + s]) - max_return)
-                )
-                weights[s] = w
-                sum_w += w
-
-            if sum_w < 1e-10:
-                sum_w = 1e-10
-            for s in range(TOTAL_SAMPLES):
-                weights[s] = weights[s] / sum_w
-
-            # Update mean and std for this env
-            for t in range(HORIZON):
-                for a in range(ACTION_DIM):
-                    var new_mean: Float64 = 0.0
-                    for s in range(TOTAL_SAMPLES):
-                        var idx = (
-                            env_act_off
-                            + s * HORIZON * ACTION_DIM
-                            + t * ACTION_DIM
-                            + a
-                        )
-                        new_mean += weights[s] * Float64(
-                            mb.all_actions_host[idx]
-                        )
-                    mb.mean_host[mean_base + t * ACTION_DIM + a] = Scalar[
-                        dtype
-                    ](new_mean)
-
-                    var new_var: Float64 = 0.0
-                    for s in range(TOTAL_SAMPLES):
-                        var idx = (
-                            env_act_off
-                            + s * HORIZON * ACTION_DIM
-                            + t * ACTION_DIM
-                            + a
-                        )
-                        var diff = Float64(
-                            mb.all_actions_host[idx]
-                        ) - new_mean
-                        new_var += weights[s] * diff * diff
-
-                    var new_std = sqrt(new_var + 1e-8)
-                    new_std = _clamp(new_std, STD_MIN, STD_MAX)
-                    mb.std_host[mean_base + t * ACTION_DIM + a] = Scalar[
-                        dtype
-                    ](new_std)
-
-            # Save weights on last iteration for action selection
-            if mppi_iter == NUM_ITERATIONS - 1:
-                env_weights[env_idx] = List[Float64](capacity=TOTAL_SAMPLES)
-                for s in range(TOTAL_SAMPLES):
-                    env_weights[env_idx].append(weights[s])
-
-        # 7. Upload updated mean/std for ALL envs — one copy
-        ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
-        ctx.enqueue_copy(mb.std_buf, mb.std_host)
+    # ─── Single sync: download actions + weights + mean/std ────────────────
+    ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)
+    ctx.enqueue_copy(mb.weights_host, mb.weights_buf)
+    ctx.enqueue_copy(mb.mean_host, mb.mean_buf)
+    ctx.enqueue_copy(mb.std_host, mb.std_buf)
+    ctx.synchronize()
 
     # ─── Store final means + action selection per env ──────────────────────
     for env_idx in range(N_ENVS):
         var mean_base = env_idx * HORIZON * ACTION_DIM
         var env_act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+        var w_off = env_idx * TOTAL_SAMPLES
 
         # Store final mean for warm-starting next timestep
         env_prev_means[env_idx] = List[Float64](capacity=HORIZON * ACTION_DIM)
@@ -1376,10 +1329,11 @@ fn plan_gpu_batched[
             )
         env_t0_flags[env_idx] = False
 
-        # Weighted random sample for this env
-        var selected_s = _weighted_sample(
-            env_weights[env_idx], TOTAL_SAMPLES
-        )
+        # Weighted random sample for this env using final weights
+        var env_w = List[Float64](capacity=TOTAL_SAMPLES)
+        for s in range(TOTAL_SAMPLES):
+            env_w.append(Float64(mb.weights_host[w_off + s]))
+        var selected_s = _weighted_sample(env_w, TOTAL_SAMPLES)
 
         for a in range(ACTION_DIM):
             var act = Float64(

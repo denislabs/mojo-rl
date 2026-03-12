@@ -2086,3 +2086,162 @@ fn mppi_sample_actions_batched_kernel[
 
         act_step[i, j] = act
         all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
+
+
+@always_inline
+fn mppi_softmax_weights_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    BLOCK_SIZE: Int,
+](
+    returns: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    temperature: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Per-env softmax over returns → normalized weights. All on GPU.
+
+    Grid: N_ENVS blocks. Block: BLOCK_SIZE threads.
+    Each block handles one env's TOTAL_SAMPLES returns.
+    Uses shared memory for max-reduction and sum-reduction.
+    """
+    var env_idx = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var base = env_idx * TOTAL_SAMPLES
+
+    # Shared memory for reductions
+    var smem = stack_allocation[BLOCK_SIZE, dtype]()
+
+    # ── Pass 1: find max return for numerical stability ──
+    var local_max = Scalar[dtype](-1e30)
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        var v = Scalar[dtype](returns[base + s][0])
+        if v > local_max:
+            local_max = v
+        s += BLOCK_SIZE
+    smem[tid] = local_max
+
+    barrier()
+
+    # Tree reduction for max
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            var other = Scalar[dtype](smem[tid + stride])
+            var mine = Scalar[dtype](smem[tid])
+            if other > mine:
+                smem[tid] = other
+        barrier()
+        stride >>= 1
+
+    var max_ret = Scalar[dtype](smem[0])
+    barrier()
+
+    # ── Pass 2: compute exp weights and local sum ──
+    var local_sum = Scalar[dtype](0.0)
+    s = tid
+    while s < TOTAL_SAMPLES:
+        var w = exp(temperature * (Scalar[dtype](returns[base + s][0]) - max_ret))
+        weights[base + s] = w
+        local_sum += w
+        s += BLOCK_SIZE
+    smem[tid] = local_sum
+
+    barrier()
+
+    # Tree reduction for sum
+    stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = Scalar[dtype](smem[tid]) + Scalar[dtype](smem[tid + stride])
+        barrier()
+        stride >>= 1
+
+    var total_sum = Scalar[dtype](smem[0])
+    if total_sum < Scalar[dtype](1e-10):
+        total_sum = Scalar[dtype](1e-10)
+    barrier()
+
+    # ── Pass 3: normalize weights ──
+    var inv_sum = Scalar[dtype](1.0) / total_sum
+    s = tid
+    while s < TOTAL_SAMPLES:
+        weights[base + s] = Scalar[dtype](weights[base + s][0]) * inv_sum
+        s += BLOCK_SIZE
+
+
+@always_inline
+fn mppi_weighted_mean_std_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    HORIZON: Int,
+    ACTION_DIM: Int,
+](
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    mean_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    std_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Compute per-env weighted mean and std of actions on GPU.
+
+    One thread per (env, t, a) triplet. Total threads = N_ENVS * H * ACT.
+    Each thread reduces over TOTAL_SAMPLES using the softmax weights.
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
+    if tid >= TOTAL_DIMS:
+        return
+
+    var env_idx = tid // (HORIZON * ACTION_DIM)
+    var rem = tid % (HORIZON * ACTION_DIM)
+    var t = rem // ACTION_DIM
+    var a = rem % ACTION_DIM
+
+    var w_off = env_idx * TOTAL_SAMPLES
+    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+
+    # Weighted mean
+    var wm = Scalar[dtype](0.0)
+    for s in range(TOTAL_SAMPLES):
+        var w = Scalar[dtype](weights[w_off + s][0])
+        var act = Scalar[dtype](all_actions[
+            act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+        ][0])
+        wm += w * act
+
+    mean_out[tid] = wm
+
+    # Weighted variance
+    var wv = Scalar[dtype](0.0)
+    for s in range(TOTAL_SAMPLES):
+        var w = Scalar[dtype](weights[w_off + s][0])
+        var act = Scalar[dtype](all_actions[
+            act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+        ][0])
+        var diff = act - wm
+        wv += w * diff * diff
+
+    # std = clamp(sqrt(var + eps), STD_MIN, STD_MAX)
+    var std_val = sqrt(wv + Scalar[dtype](1e-8))
+    if std_val < Scalar[dtype](0.05):
+        std_val = Scalar[dtype](0.05)
+    if std_val > Scalar[dtype](2.0):
+        std_val = Scalar[dtype](2.0)
+
+    std_out[tid] = std_val

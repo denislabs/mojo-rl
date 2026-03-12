@@ -261,12 +261,14 @@ struct BatchedMPPIGPUBuffers[
     # ── Per-env distribution buffers ──────────────────────────────────────
     var mean_buf: DeviceBuffer[dtype]
     var std_buf: DeviceBuffer[dtype]
+    var weights_buf: DeviceBuffer[dtype]  # [BATCH_TOTAL] softmax weights
 
     # ── Host buffers for CPU distribution update ──────────────────────────
     var returns_host: HostBuffer[dtype]
     var all_actions_host: HostBuffer[dtype]
     var mean_host: HostBuffer[dtype]
     var std_host: HostBuffer[dtype]
+    var weights_host: HostBuffer[dtype]  # [BATCH_TOTAL]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all batched MPPI GPU and host buffers."""
@@ -304,6 +306,7 @@ struct BatchedMPPIGPUBuffers[
         # Distribution buffers (per-env)
         self.mean_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
         self.std_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
+        self.weights_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
 
         # Host buffers
         self.returns_host = ctx.enqueue_create_host_buffer[dtype](
@@ -314,6 +317,9 @@ struct BatchedMPPIGPUBuffers[
         )
         self.mean_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
         self.std_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
+        self.weights_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TOTAL
+        )
 
 
 # =============================================================================
