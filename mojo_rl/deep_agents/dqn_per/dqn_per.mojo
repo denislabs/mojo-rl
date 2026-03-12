@@ -72,6 +72,7 @@ from mojo_rl.deep_agents.core import (
     Checkpointable,
 )
 from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
 from .state import DQNPERGPUState
 from mojo_rl.deep_agents.dqn.kernels import dqn_td_target_kernel, dqn_double_td_target_kernel
@@ -175,6 +176,7 @@ struct DQNPERAgent[
     n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
+    profile: Int = 0,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """DQN Agent with Prioritized Experience Replay using NetworkState architecture.
 
@@ -257,6 +259,9 @@ struct DQNPERAgent[
     var total_steps: Int
     var train_step_count: Int
 
+    # Level-2 profiler: sub-phases of do_gpu_train_step
+    var train_timer: PerfTimer[Self.profile >= 1]
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -302,6 +307,14 @@ struct DQNPERAgent[
 
         self.total_steps = 0
         self.train_step_count = 0
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            _ = self.train_timer.add_slot("sample_batch")
+            _ = self.train_timer.add_slot("online_forward")
+            _ = self.train_timer.add_slot("target_forward")
+            _ = self.train_timer.add_slot("td_targets")
+            _ = self.train_timer.add_slot("grad_kernel")
+            _ = self.train_timer.add_slot("backward_update")
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
@@ -702,6 +715,8 @@ struct DQNPERAgent[
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         # ---- Phase 1: Sample batch ----
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
         gpu_state.buffer.sample[BATCH](
             ctx,
             UInt32(self.train_step_count * (BATCH + 1)),
@@ -712,6 +727,9 @@ struct DQNPERAgent[
             gpu_state.s_done,
             gpu_state.s_idx,
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
 
         # LayoutTensor views for sampled batch
         var obs_t = LayoutTensor[
@@ -756,11 +774,18 @@ struct DQNPERAgent[
         Self.Q_Network.forward_gpu_with_cache[BATCH](
             ctx, obs_t, q_t, p_online, cache_t, gpu_state.train_ws
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 3: Target forward (no cache) ----
         Self.Q_Network.forward_gpu[BATCH](
             ctx, next_obs_t, next_q_t, p_target, gpu_state.train_ws
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 4: Compute TD targets ----
         var gamma_s = Scalar[dtype](self.gamma)
@@ -826,6 +851,10 @@ struct DQNPERAgent[
                 block_dim=(TPB,),
             )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
+            self.train_timer.mark()
+
         # ---- Phase 5: Gradient kernel (masked MSE grad) ----
         @always_inline
         fn grad_wrapper(
@@ -861,6 +890,10 @@ struct DQNPERAgent[
             block_dim=(TPB,),
         )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(4, ctx)
+            self.train_timer.mark()
+
         # ---- Phase 6: Backward + optimizer step ----
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
@@ -868,6 +901,8 @@ struct DQNPERAgent[
             ctx, grad_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws
         )
         gpu_state.online.optimizer_step(ctx)
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(5, ctx)
 
         self.train_step_count += 1
 
@@ -933,6 +968,7 @@ struct DQNPERAgent[
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
+            PROFILE: Whether to profile the training loop.
 
         Args:
             ctx: GPU device context.
@@ -953,10 +989,20 @@ struct DQNPERAgent[
             if not Self.double_dqn
             else "Double DQN+PER (GPU, uniform replay)"
         )
-        return run_offpolicy_discrete_train_gpu[E, Self](
+        var timer = PerfTimer[Self.profile >= 1]()
+        _ = timer.add_slot("copy_prev_obs")
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("buffer_store")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("train_step")
+        _ = timer.add_slot("gpu_cpu_sync")
+        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
             self,
             ctx,
             num_steps,
+            timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
@@ -965,6 +1011,14 @@ struct DQNPERAgent[
             environment_name=environment_name,
             algorithm_name=algo_name,
         )
+
+        # Merge L2 sub-phases as children of train_step (slot 6)
+        comptime if Self.profile >= 2:
+            timer.merge_children(6, self.train_timer)
+
+        comptime if Self.profile >= 1:
+            timer.print_report(algo_name + " Profile")
+        return metrics^
 
     # =========================================================================
     # High-level CPU Training and Evaluation

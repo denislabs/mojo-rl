@@ -68,6 +68,7 @@ from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
 )
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
 # =============================================================================
@@ -277,10 +278,12 @@ trait GPUOffPolicyAgent:
 fn run_offpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOffPolicyAgent & Checkpointable,
+    PROFILE: Int = 0,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_steps: Int,
+    mut timer: PerfTimer[PROFILE >= 1],
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -443,7 +446,12 @@ fn run_offpolicy_continuous_train_gpu[
         # ------------------------------------------------------------------
         # Save current obs as prev_obs (before environment step)
         # ------------------------------------------------------------------
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(0, ctx)
+            timer.mark()
 
         # ------------------------------------------------------------------
         # Select actions: warmup uses uniform random, then agent's policy
@@ -467,6 +475,9 @@ fn run_offpolicy_continuous_train_gpu[
             agent.select_actions_gpu[n_envs](
                 ctx, gpu_state, obs_buf, actions_buf
             )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(1, ctx)
+            timer.mark()
 
         # Update agent's total_steps so exploration RNG seed varies each call
         agent.set_total_steps(agent.get_total_steps() + n_envs)
@@ -485,6 +496,9 @@ fn run_offpolicy_continuous_train_gpu[
             rng_seed=UInt64(step_seed),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(2, ctx)
+            timer.mark()
 
         # ------------------------------------------------------------------
         # Store transitions: (prev_obs, action, reward, next_obs, terminated)
@@ -493,6 +507,8 @@ fn run_offpolicy_continuous_train_gpu[
         gpu_state.gpu_store[n_envs](
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(3, ctx)
 
         # ------------------------------------------------------------------
         # Accumulate episode rewards/steps + log completed (all on GPU)
@@ -538,6 +554,10 @@ fn run_offpolicy_continuous_train_gpu[
             grid_dim=(1,),
             block_dim=(1,),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
+            timer.accumulate(4)
+            timer.mark()
 
         # ------------------------------------------------------------------
         # Reset done environments (reuse model from workspace)
@@ -549,6 +569,9 @@ fn run_offpolicy_continuous_train_gpu[
             rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(5, ctx)
+            timer.mark()
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
@@ -558,6 +581,8 @@ fn run_offpolicy_continuous_train_gpu[
                 agent.do_gpu_train_step(ctx, gpu_state)
                 agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(6, ctx)
 
         # ------------------------------------------------------------------
         # Periodic GPU→CPU sync (for evaluate() and checkpointing)
@@ -645,7 +670,11 @@ fn run_offpolicy_continuous_train_gpu[
         for _ in range(final_count):
             metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
 
+    comptime if PROFILE >= 1:
+        timer.sync_and_mark(ctx)
     agent.download_from_gpu(gpu_state, ctx)
+    comptime if PROFILE >= 1:
+        timer.accumulate(7)
 
     # Print final stats
     if verbose:
@@ -676,10 +705,12 @@ fn run_offpolicy_continuous_train_gpu[
 fn run_offpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOffPolicyAgent & Checkpointable,
+    PROFILE: Int = 0,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_steps: Int,
+    mut timer: PerfTimer[PROFILE >= 1],
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -817,7 +848,12 @@ fn run_offpolicy_discrete_train_gpu[
     var next_progress = progress_interval
 
     while total_steps < num_steps:
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(0, ctx)
+            timer.mark()
 
         # --- Action selection: warmup uses uniform random, then agent's policy ---
         if total_steps < warmup_steps:
@@ -833,6 +869,9 @@ fn run_offpolicy_discrete_train_gpu[
             )
         else:
             agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(1, ctx)
+            timer.mark()
 
         # --- Environment step ---
         E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
@@ -846,12 +885,17 @@ fn run_offpolicy_discrete_train_gpu[
             rng_seed=UInt64(step_seed),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(2, ctx)
+            timer.mark()
 
         # --- Replay buffer store ---
         # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
         gpu_state.gpu_store[n_envs](
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(3, ctx)
 
         # ------------------------------------------------------------------
         # Accumulate episode rewards/steps + log completed (all on GPU)
@@ -896,6 +940,10 @@ fn run_offpolicy_discrete_train_gpu[
             grid_dim=(1,),
             block_dim=(1,),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
+            timer.accumulate(4)
+            timer.mark()
 
         # Reuse model from workspace for reset
         E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
@@ -905,6 +953,9 @@ fn run_offpolicy_discrete_train_gpu[
             rng_seed=UInt64(step_seed + 1),
             workspace_ptr=workspace_buf.unsafe_ptr(),
         )
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(5, ctx)
+            timer.mark()
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
@@ -914,6 +965,8 @@ fn run_offpolicy_discrete_train_gpu[
                 agent.do_gpu_train_step(ctx, gpu_state)
                 agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(6, ctx)
 
         if total_steps >= next_sync:
             agent.download_from_gpu(gpu_state, ctx)
@@ -993,7 +1046,11 @@ fn run_offpolicy_discrete_train_gpu[
         for _ in range(final_count):
             metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
 
+    comptime if PROFILE >= 1:
+        timer.sync_and_mark(ctx)
     agent.download_from_gpu(gpu_state, ctx)
+    comptime if PROFILE >= 1:
+        timer.accumulate(7)
 
     # Print final stats
     if verbose:

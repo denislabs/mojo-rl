@@ -76,6 +76,7 @@ from mojo_rl.deep_agents.core import (
     Checkpointable,
 )
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.gpu.random import gaussian_noise
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
@@ -116,6 +117,7 @@ struct DeepTD3Agent[
     actor_lr: Float64 = 0.001,
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
+    profile: Int = 0,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Twin Delayed DDPG agent — unified CPU + GPU.
 
@@ -216,6 +218,9 @@ struct DeepTD3Agent[
     var train_step_count: Int
     var update_count: Int
 
+    # Level-2 profiler: sub-phases of do_gpu_train_step
+    var train_timer: PerfTimer[Self.profile >= 1]
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -265,6 +270,13 @@ struct DeepTD3Agent[
         self.update_count = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            _ = self.train_timer.add_slot("sample_batch")
+            _ = self.train_timer.add_slot("td_targets")
+            _ = self.train_timer.add_slot("critic1_update")
+            _ = self.train_timer.add_slot("critic2_update")
+            _ = self.train_timer.add_slot("actor_update")
 
     # =========================================================================
     # OffPolicyContinuousAgent trait — required methods (CPU training)
@@ -859,6 +871,8 @@ struct DeepTD3Agent[
         self.update_count += 1
 
         # ----- Phase 1: Sample batch -----
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
         # Kernel uses BATCH seeds [seed, seed+BATCH-1]; stride must be >= BATCH
         gpu_state.buffer.sample[BATCH](
             ctx,
@@ -870,6 +884,9 @@ struct DeepTD3Agent[
             sampled_dones=gpu_state.s_done,
             indices=gpu_state.s_idx,
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
 
         # LayoutTensor views on sampled data
         var obs_t = LayoutTensor[
@@ -1030,6 +1047,10 @@ struct DeepTD3Agent[
             block_dim=(TPB256,),
         )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
+
         # ----- Phase 7: Concat(obs, actions) → ci -----
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
@@ -1101,6 +1122,9 @@ struct DeepTD3Agent[
             gpu_state.critic1_ws,
         )
         gpu_state.critic1.online.optimizer_step(ctx)
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
+            self.train_timer.mark()
 
         # ----- Phase 9: Critic2 forward + MSE grad + backward + optim -----
         var q2_t = LayoutTensor[
@@ -1148,6 +1172,9 @@ struct DeepTD3Agent[
             gpu_state.critic2_ws,
         )
         gpu_state.critic2.online.optimizer_step(ctx)
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
+            self.train_timer.mark()
 
         # ----- Phase 10+: Delayed actor update (TD3 Innovation #2) -----
         if self.update_count % self.policy_delay == 0:
@@ -1269,6 +1296,8 @@ struct DeepTD3Agent[
                 gpu_state.actor_ws,
             )
             gpu_state.actor.online.optimizer_step(ctx)
+            comptime if Self.profile >= 2:
+                self.train_timer.sync_and_accumulate(4, ctx)
 
     fn get_action_scale(self) -> Float64:
         return self.action_scale
@@ -1341,10 +1370,20 @@ struct DeepTD3Agent[
         """
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        return run_offpolicy_continuous_train_gpu[E, Self](
+        var timer = PerfTimer[Self.profile >= 1]()
+        _ = timer.add_slot("copy_prev_obs")
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("buffer_store")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("train_step")
+        _ = timer.add_slot("gpu_cpu_sync")
+        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
             self,
             ctx,
             num_steps,
+            timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
@@ -1355,6 +1394,14 @@ struct DeepTD3Agent[
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
         )
+
+        # Merge L2 sub-phases as children of train_step (slot 6)
+        comptime if Self.profile >= 2:
+            timer.merge_children(6, self.train_timer)
+
+        comptime if Self.profile >= 1:
+            timer.print_report("TD3 (GPU) Profile")
+        return metrics^
 
     # =========================================================================
     # Checkpoint Save / Load

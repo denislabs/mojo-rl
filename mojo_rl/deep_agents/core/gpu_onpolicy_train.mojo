@@ -72,6 +72,7 @@ from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
 )
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
 # =============================================================================
@@ -388,10 +389,12 @@ trait GPUOnPolicyContinuousAgent:
 fn run_onpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOnPolicyDiscreteAgent & Checkpointable,
+    PROFILE: Int = 0,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
+    mut timer: PerfTimer[PROFILE >= 1],
     sync_every: Int = 50,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -414,6 +417,7 @@ fn run_onpolicy_discrete_train_gpu[
     Parameters:
         E: GPU environment type implementing GPUDiscreteEnv.
         A: Agent type implementing GPUOnPolicyDiscreteAgent.
+        PROFILE: Whether to profile the training loop.
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
@@ -532,6 +536,8 @@ fn run_onpolicy_discrete_train_gpu[
         gpu_state.gpu_rollout_reset()
         for _t in range(A.ROLLOUT_LEN):
             # Select actions (actor + critic forward + sampling)
+            comptime if PROFILE >= 1:
+                timer.sync_and_mark(ctx)
             agent.select_actions_with_meta_gpu[n_envs](
                 ctx,
                 gpu_state,
@@ -541,6 +547,9 @@ fn run_onpolicy_discrete_train_gpu[
                 values_buf,
                 rng_seed=step_seed,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(0, ctx)
+                timer.mark()
 
             # Store pre-step data (obs, actions, log_probs, values) BEFORE env step
             # so that obs_buf still contains the current (pre-step) observations.
@@ -551,6 +560,9 @@ fn run_onpolicy_discrete_train_gpu[
                 log_probs_buf,
                 values_buf,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(1, ctx)
+                timer.mark()
 
             # Step environment (obs_buf is updated to next_obs after this call)
             E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
@@ -564,6 +576,9 @@ fn run_onpolicy_discrete_train_gpu[
                 rng_seed=UInt64(step_seed),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(2, ctx)
+                timer.mark()
 
             # Store post-step data (rewards, dones) and advance rollout pointer
             gpu_state.gpu_store_post_step[n_envs](
@@ -571,6 +586,8 @@ fn run_onpolicy_discrete_train_gpu[
                 rewards_buf,
                 dones_buf,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(3, ctx)
 
             # Accumulate episode rewards and steps
             var episode_rewards_t = LayoutTensor[
@@ -627,6 +644,9 @@ fn run_onpolicy_discrete_train_gpu[
             ctx.enqueue_copy(completed_mask_host, completed_mask_buf)
             ctx.synchronize()
 
+            # Episode tracking (CPU loop — already synced above)
+            comptime if PROFILE >= 1:
+                timer.mark()
             for i in range(n_envs):
                 if Float64(completed_mask_host[i]) > 0.5:
                     var ep_reward = Float64(completed_rewards_host[i])
@@ -635,6 +655,9 @@ fn run_onpolicy_discrete_train_gpu[
                         completed_episodes, ep_reward, ep_steps, 0.0
                     )
                     completed_episodes += 1
+            comptime if PROFILE >= 1:
+                timer.accumulate(4)
+                timer.mark()
 
             # Reset episode tracking for done environments
             ctx.enqueue_function[
@@ -655,6 +678,8 @@ fn run_onpolicy_discrete_train_gpu[
                 rng_seed=UInt64(step_seed + 1),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(5, ctx)
 
             total_steps += n_envs
             step_seed += 2
@@ -662,12 +687,19 @@ fn run_onpolicy_discrete_train_gpu[
         # ==================================================================
         # Phase 2: Compute GAE advantages
         # ==================================================================
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
         agent.compute_advantages_gpu(ctx, gpu_state, obs_buf)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(6, ctx)
+            timer.mark()
 
         # ==================================================================
         # Phase 3: Update epochs
         # ==================================================================
         agent.update_epochs_gpu(ctx, gpu_state, update)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(7, ctx)
 
         # ==================================================================
         # Periodic GPU → CPU sync
@@ -712,8 +744,12 @@ fn run_onpolicy_discrete_train_gpu[
             )
 
     # Final sync to ensure CPU params are up to date
+    comptime if PROFILE >= 1:
+        timer.sync_and_mark(ctx)
     ctx.synchronize()
     agent.download_from_gpu(gpu_state, ctx)
+    comptime if PROFILE >= 1:
+        timer.accumulate(8)
 
     # Print final stats
     if verbose:
@@ -748,10 +784,12 @@ fn run_onpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOnPolicyContinuousAgent & Checkpointable,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
+    PROFILE: Int = 0,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
+    mut timer: PerfTimer[PROFILE >= 1],
     target_episodes: Int = 0,
     target_total_steps: Int = 0,
     sync_every: Int = 50,
@@ -888,6 +926,8 @@ fn run_onpolicy_continuous_train_gpu[
         # Phase 1: Collect rollout
         gpu_state.gpu_rollout_reset()
         for _t in range(A.ROLLOUT_LEN):
+            comptime if PROFILE >= 1:
+                timer.sync_and_mark(ctx)
             agent.select_actions_with_meta_gpu[n_envs](
                 ctx,
                 gpu_state,
@@ -897,6 +937,9 @@ fn run_onpolicy_continuous_train_gpu[
                 values_buf,
                 rng_seed=step_seed,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(0, ctx)
+                timer.mark()
 
             # Store pre-step data BEFORE env step (obs_buf = current obs)
             gpu_state.gpu_store_pre_step[n_envs](
@@ -906,6 +949,9 @@ fn run_onpolicy_continuous_train_gpu[
                 log_probs_buf,
                 values_buf,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(1, ctx)
+                timer.mark()
 
             E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
                 ctx,
@@ -918,6 +964,9 @@ fn run_onpolicy_continuous_train_gpu[
                 rng_seed=UInt64(step_seed),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(2, ctx)
+                timer.mark()
 
             # Store post-step data AFTER env step and advance rollout pointer
             gpu_state.gpu_store_post_step[n_envs](
@@ -925,6 +974,8 @@ fn run_onpolicy_continuous_train_gpu[
                 rewards_buf,
                 dones_buf,
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(3, ctx)
 
             var episode_rewards_t = LayoutTensor[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
@@ -977,6 +1028,9 @@ fn run_onpolicy_continuous_train_gpu[
             ctx.enqueue_copy(completed_mask_host, completed_mask_buf)
             ctx.synchronize()
 
+            # Episode tracking (CPU loop — already synced above)
+            comptime if PROFILE >= 1:
+                timer.mark()
             for i in range(n_envs):
                 if Float64(completed_mask_host[i]) > 0.5:
                     var ep_reward = Float64(completed_rewards_host[i])
@@ -985,6 +1039,9 @@ fn run_onpolicy_continuous_train_gpu[
                         completed_episodes, ep_reward, ep_steps, 0.0
                     )
                     completed_episodes += 1
+            comptime if PROFILE >= 1:
+                timer.accumulate(4)
+                timer.mark()
 
             ctx.enqueue_function[
                 reset_tracking_wrapper, reset_tracking_wrapper
@@ -1010,6 +1067,8 @@ fn run_onpolicy_continuous_train_gpu[
             E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
                 ctx, states_buf, obs_buf
             )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(5, ctx)
 
             total_steps += n_envs
             # Increment seed by the full action-sampling range width + 2 (for env reset seed).
@@ -1021,10 +1080,17 @@ fn run_onpolicy_continuous_train_gpu[
             step_seed += UInt32(seed_stride)
 
         # Phase 2: Compute advantages
+        comptime if PROFILE >= 1:
+            timer.sync_and_mark(ctx)
         agent.compute_advantages_gpu(ctx, gpu_state, obs_buf)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(6, ctx)
+            timer.mark()
 
         # Phase 3: Update epochs
         agent.update_epochs_gpu(ctx, gpu_state, update)
+        comptime if PROFILE >= 1:
+            timer.sync_and_accumulate(7, ctx)
 
         if update % sync_every == 0:
             agent.download_from_gpu(gpu_state, ctx)
@@ -1066,8 +1132,12 @@ fn run_onpolicy_continuous_train_gpu[
                 + String(total_steps)
             )
 
+    comptime if PROFILE >= 1:
+        timer.sync_and_mark(ctx)
     ctx.synchronize()
     agent.download_from_gpu(gpu_state, ctx)
+    comptime if PROFILE >= 1:
+        timer.accumulate(8)
 
     # Print final stats
     if verbose:

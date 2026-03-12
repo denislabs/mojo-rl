@@ -58,6 +58,8 @@ from .gpu_onpolicy_train import (
     run_onpolicy_continuous_train_gpu,
 )
 
+from .perf_timer import PerfTimer
+
 from .kernels import (
     soft_update_kernel,
     zero_buffer_kernel,

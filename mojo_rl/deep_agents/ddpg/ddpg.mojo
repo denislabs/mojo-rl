@@ -76,6 +76,7 @@ from mojo_rl.deep_agents.core.kernels import (
     actor_grad_from_critic_kernel,
     td_target_continuous_kernel,
 )
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
@@ -108,6 +109,7 @@ struct DeepDDPGAgent[
     actor_lr: Float64 = 0.001,
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
+    profile: Int = 0,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Deterministic Policy Gradient agent — unified CPU + GPU.
 
@@ -201,6 +203,9 @@ struct DeepDDPGAgent[
     var total_steps: Int
     var train_step_count: Int
 
+    # Level-2 profiler: sub-phases of do_gpu_train_step
+    var train_timer: PerfTimer[Self.profile >= 1]
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -238,6 +243,12 @@ struct DeepDDPGAgent[
         self.noise_decay = noise_decay
         self.total_steps = 0
         self.train_step_count = 0
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            _ = self.train_timer.add_slot("sample_batch")
+            _ = self.train_timer.add_slot("td_targets")
+            _ = self.train_timer.add_slot("critic_update")
+            _ = self.train_timer.add_slot("actor_update")
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
@@ -639,6 +650,8 @@ struct DeepDDPGAgent[
         comptime ACT_BLOCKS = (BATCH * ACTIONS + TPB - 1) // TPB
 
         # ---- Phase 1: Sample batch ----
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
         # Kernel uses BATCH seeds [seed, seed+BATCH-1]; stride must be >= BATCH
         gpu_state.buffer.sample[BATCH](
             ctx,
@@ -666,6 +679,10 @@ struct DeepDDPGAgent[
         var done_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
             gpu_state.s_done.unsafe_ptr()
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 2: TD targets ----
         var next_act_t = LayoutTensor[
@@ -739,6 +756,10 @@ struct DeepDDPGAgent[
             block_dim=(TPB,),
         )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
+
         # ---- Phase 3: Critic update ----
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
@@ -808,6 +829,10 @@ struct DeepDDPGAgent[
             gpu_state.critic_ws,
         )
         gpu_state.critic.online.optimizer_step(ctx)
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 4: Actor update ----
         var actor_act_t = LayoutTensor[
@@ -908,6 +933,8 @@ struct DeepDDPGAgent[
             gpu_state.actor_ws,
         )
         gpu_state.actor.online.optimizer_step(ctx)
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
 
     fn get_action_scale(self) -> Float64:
         return self.action_scale
@@ -1023,10 +1050,20 @@ struct DeepDDPGAgent[
         Returns:
             TrainingMetrics with episode-level statistics.
         """
-        return run_offpolicy_continuous_train_gpu[E, Self](
+        var timer = PerfTimer[Self.profile >= 1]()
+        _ = timer.add_slot("copy_prev_obs")
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("buffer_store")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("train_step")
+        _ = timer.add_slot("gpu_cpu_sync")
+        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
             self,
             ctx,
             num_steps,
+            timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
@@ -1035,6 +1072,14 @@ struct DeepDDPGAgent[
             environment_name=environment_name,
             algorithm_name="Deep DDPG GPU",
         )
+
+        # Merge L2 sub-phases as children of train_step (slot 6)
+        comptime if Self.profile >= 2:
+            timer.merge_children(6, self.train_timer)
+
+        comptime if Self.profile >= 1:
+            timer.print_report("Deep DDPG GPU Profile")
+        return metrics^
 
     # =========================================================================
     # Evaluation (deterministic policy, no noise)

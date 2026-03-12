@@ -88,6 +88,7 @@ from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
     GPUOnPolicyDiscreteAgent,
     run_onpolicy_discrete_train_gpu,
 )
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 
 from mojo_rl.deep_agents.ppo.kernels import (
@@ -144,6 +145,7 @@ struct DeepPPOCNNAgent[
     gpu_minibatch_size: Int = 256,
     actor_lr: Float64 = 0.00025,
     critic_lr: Float64 = 0.00025,
+    profile: Int = 0,
 ](
     Checkpointable,
     GPUOnPolicyDiscreteAgent,
@@ -245,6 +247,9 @@ struct DeepPPOCNNAgent[
     # Training state
     var train_step_count: Int
 
+    # Level-2 profiler: sub-phases of select_actions / compute_advantages / update_epochs
+    var train_timer: PerfTimer[Self.profile >= 1]
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -284,6 +289,23 @@ struct DeepPPOCNNAgent[
         self.clip_value = clip_value
         self.norm_adv_per_minibatch = norm_adv_per_minibatch
         self.train_step_count = 0
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            # select_actions sub-phases (slots 0-2)
+            _ = self.train_timer.add_slot("actor_forward")
+            _ = self.train_timer.add_slot("critic_forward")
+            _ = self.train_timer.add_slot("action_sampling")
+            # compute_advantages sub-phases (slots 3-6)
+            _ = self.train_timer.add_slot("critic_bootstrap")
+            _ = self.train_timer.add_slot("gpu_to_host_copy")
+            _ = self.train_timer.add_slot("cpu_gae")
+            _ = self.train_timer.add_slot("host_to_gpu_copy")
+            # update_epochs sub-phases (slots 7-11)
+            _ = self.train_timer.add_slot("gather_minibatch")
+            _ = self.train_timer.add_slot("actor_forward_cached")
+            _ = self.train_timer.add_slot("actor_backward")
+            _ = self.train_timer.add_slot("critic_forward_cached")
+            _ = self.train_timer.add_slot("critic_backward")
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
@@ -351,6 +373,9 @@ struct DeepPPOCNNAgent[
             MutAnyOrigin,
         ](values_buf.unsafe_ptr())
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
+
         Self.ActorModel.forward_gpu_no_cache[N_ENVS](
             ctx,
             logits_t,
@@ -358,6 +383,11 @@ struct DeepPPOCNNAgent[
             actor_params_t,
             gpu_state.actor_env_workspace_buf,
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
+
         Self.CriticModel.forward_gpu_no_cache[N_ENVS](
             ctx,
             values_t,
@@ -365,6 +395,10 @@ struct DeepPPOCNNAgent[
             critic_params_t,
             gpu_state.critic_env_workspace_buf,
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
 
         comptime sample_wrapper = _sample_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS
@@ -377,6 +411,9 @@ struct DeepPPOCNNAgent[
             grid_dim=(blocks,),
             block_dim=(TPB,),
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
 
     # =========================================================================
     # GPU Advantage Computation
@@ -401,6 +438,10 @@ struct DeepPPOCNNAgent[
             MutAnyOrigin,
         ](gpu_state.values_env_buf.unsafe_ptr())
 
+        # Forward critic on final obs to get bootstrap values
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
+
         Self.CriticModel.forward_gpu_no_cache[Self.n_envs](
             ctx,
             bootstrap_t,
@@ -408,6 +449,10 @@ struct DeepPPOCNNAgent[
             critic_params_t,
             gpu_state.critic_env_workspace_buf,
         )
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
+            self.train_timer.mark()
 
         ctx.enqueue_copy(
             gpu_state.bootstrap_values_host, gpu_state.values_env_buf
@@ -422,6 +467,10 @@ struct DeepPPOCNNAgent[
             gpu_state.rollout_dones_host, gpu_state.rollout_dones_buf
         )
         ctx.synchronize()
+
+        comptime if Self.profile >= 2:
+            self.train_timer.accumulate(4)
+            self.train_timer.mark()
 
         for env_idx in range(Self.n_envs):
             var gae = Scalar[dtype](0.0)
@@ -471,9 +520,16 @@ struct DeepPPOCNNAgent[
                     gpu_state.advantages_host[i] - mean
                 ) / (std + Scalar[dtype](1e-8))
 
+        comptime if Self.profile >= 2:
+            self.train_timer.accumulate(5)
+            self.train_timer.mark()
+
         ctx.enqueue_copy(gpu_state.advantages_buf, gpu_state.advantages_host)
         ctx.enqueue_copy(gpu_state.returns_buf, gpu_state.returns_host)
         ctx.synchronize()
+
+        comptime if Self.profile >= 2:
+            self.train_timer.accumulate(6)
 
     # =========================================================================
     # GPU PPO Update Epochs
@@ -656,6 +712,9 @@ struct DeepPPOCNNAgent[
                     break
                 var start_idx = mb_idx * MINIBATCH
 
+                comptime if Self.profile >= 2:
+                    self.train_timer.sync_and_mark(ctx)
+
                 for i in range(MINIBATCH):
                     gpu_state.mb_indices_host[i] = Int32(
                         indices_list[start_idx + i]
@@ -716,6 +775,10 @@ struct DeepPPOCNNAgent[
                     )
                     ctx.synchronize()
 
+                comptime if Self.profile >= 2:
+                    self.train_timer.accumulate(7)
+                    self.train_timer.mark()
+
                 # ---- Train actor ----
                 gpu_state.gpu_actor.zero_grads(ctx)
                 Self.ActorModel.forward_gpu[MINIBATCH](
@@ -758,6 +821,10 @@ struct DeepPPOCNNAgent[
                         kl_early_stop = True
                         break
 
+                comptime if Self.profile >= 2:
+                    self.train_timer.accumulate(8)
+                    self.train_timer.mark()
+
                 Self.ActorModel.backward_gpu[MINIBATCH](
                     ctx,
                     actor_grad_input_t,
@@ -799,6 +866,10 @@ struct DeepPPOCNNAgent[
                 gpu_state.gpu_actor.optimizer_step(ctx)
                 ctx.synchronize()
 
+                comptime if Self.profile >= 2:
+                    self.train_timer.accumulate(9)
+                    self.train_timer.mark()
+
                 # ---- Train critic ----
                 gpu_state.gpu_critic.zero_grads(ctx)
                 Self.CriticModel.forward_gpu[MINIBATCH](
@@ -838,6 +909,10 @@ struct DeepPPOCNNAgent[
                         block_dim=(TPB,),
                     )
                 ctx.synchronize()
+
+                comptime if Self.profile >= 2:
+                    self.train_timer.accumulate(10)
+                    self.train_timer.mark()
 
                 Self.CriticModel.backward_gpu[MINIBATCH](
                     ctx,
@@ -880,6 +955,9 @@ struct DeepPPOCNNAgent[
                 gpu_state.gpu_critic.optimizer_step(ctx)
                 ctx.synchronize()
 
+                comptime if Self.profile >= 2:
+                    self.train_timer.accumulate(11)
+
         gpu_state.rollout_step = 0
         self.train_step_count += 1
 
@@ -888,7 +966,7 @@ struct DeepPPOCNNAgent[
     # =========================================================================
 
     fn train_gpu[
-        EnvType: GPUDiscreteEnv
+        EnvType: GPUDiscreteEnv,
     ](
         mut self,
         ctx: DeviceContext,
@@ -907,13 +985,33 @@ struct DeepPPOCNNAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
-        return run_onpolicy_discrete_train_gpu[EnvType](
+        var timer = PerfTimer[Self.profile >= 1]()
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("store_pre_step")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("store_post_step")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("compute_advantages")
+        _ = timer.add_slot("update_epochs")
+        _ = timer.add_slot("gpu_cpu_sync")
+        var metrics = run_onpolicy_discrete_train_gpu[EnvType, Self, Self.profile](
             self,
             ctx,
             num_updates,
+            timer,
             verbose=verbose,
             print_every=print_every,
         )
+
+        comptime if Self.profile >= 2:
+            timer.merge_children_range(0, self.train_timer, 0, 3)
+            timer.merge_children_range(6, self.train_timer, 3, 7)
+            timer.merge_children_range(7, self.train_timer, 7, 12)
+
+        comptime if Self.profile >= 1:
+            timer.print_report("PPO CNN (GPU) Profile")
+        return metrics^
 
     # =========================================================================
     # Checkpoint Save/Load

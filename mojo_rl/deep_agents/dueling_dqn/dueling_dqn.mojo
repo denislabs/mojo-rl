@@ -65,6 +65,7 @@ from mojo_rl.deep_agents.core import (
     run_offpolicy_discrete_train_gpu,
     Checkpointable,
 )
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.gpu import (
     xorshift32,
     random_uniform,
@@ -181,6 +182,7 @@ struct DuelingDQNAgent[
     n_envs: Int = 1024,
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
+    profile: Int = 0,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Dueling DQN Agent using NetworkState architecture.
 
@@ -270,6 +272,9 @@ struct DuelingDQNAgent[
     var total_steps: Int
     var train_step_count: Int
 
+    # Level-2 profiler: sub-phases of do_gpu_train_step
+    var train_timer: PerfTimer[Self.profile >= 1]
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -294,6 +299,15 @@ struct DuelingDQNAgent[
         self.train_step_count = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            _ = self.train_timer.add_slot("sample_batch")
+            _ = self.train_timer.add_slot("online_forward")
+            _ = self.train_timer.add_slot("target_forward")
+            _ = self.train_timer.add_slot("td_targets")
+            _ = self.train_timer.add_slot("grad_kernel")
+            _ = self.train_timer.add_slot("dueling_grad")
+            _ = self.train_timer.add_slot("backward_update")
 
     # =========================================================================
     # Dueling Forward Helper
@@ -776,6 +790,8 @@ struct DuelingDQNAgent[
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         # ---- Phase 1: Sample batch ----
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
         gpu_state.buffer.sample[BATCH](
             ctx,
             UInt32(self.train_step_count * (BATCH + 1)),
@@ -786,6 +802,9 @@ struct DuelingDQNAgent[
             gpu_state.s_done,
             gpu_state.s_idx,
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
 
         # LayoutTensor views for sampled batch
         var obs_t = LayoutTensor[
@@ -856,6 +875,9 @@ struct DuelingDQNAgent[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 3: Target forward → combine ----
         Self.DuelingNet.forward_gpu[BATCH](
@@ -881,6 +903,9 @@ struct DuelingDQNAgent[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 4: Compute TD targets ----
         var gamma_s = Scalar[dtype](self.gamma)
@@ -989,6 +1014,10 @@ struct DuelingDQNAgent[
                 block_dim=(TPB,),
             )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
+            self.train_timer.mark()
+
         # ---- Phase 5: Gradient kernel (masked MSE grad on Q values) ----
         # Reuse next_q_values buffer for dQ grad (no longer needed after TD targets)
         var dq_t = LayoutTensor[
@@ -1028,6 +1057,9 @@ struct DuelingDQNAgent[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(4, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 6: Transform dQ → dueling output gradient ----
         var dueling_grad_t = LayoutTensor[
@@ -1053,6 +1085,9 @@ struct DuelingDQNAgent[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(5, ctx)
+            self.train_timer.mark()
 
         # ---- Phase 7: Backward + optimizer step ----
         var grad_in_t = LayoutTensor[
@@ -1070,6 +1105,8 @@ struct DuelingDQNAgent[
             gpu_state.train_ws,
         )
         gpu_state.online.optimizer_step(ctx)
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(6, ctx)
 
         self.train_step_count += 1
 
@@ -1213,10 +1250,23 @@ struct DuelingDQNAgent[
             if not Self.double_dqn
             else "Double Dueling DQN (GPU)"
         )
-        return run_offpolicy_discrete_train_gpu[E, Self](
+
+        # Create profiling timer with L1 slots (off-policy phases)
+        var timer = PerfTimer[Self.profile >= 1]()
+        _ = timer.add_slot("copy_prev_obs")
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("buffer_store")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("train_step")
+        _ = timer.add_slot("gpu_cpu_sync")
+
+        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
             self,
             ctx,
             num_steps,
+            timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
@@ -1225,6 +1275,15 @@ struct DuelingDQNAgent[
             environment_name=environment_name,
             algorithm_name=algo_name,
         )
+
+        # Merge L2 sub-phases as children of train_step (slot 6)
+        comptime if Self.profile >= 2:
+            timer.merge_children(6, self.train_timer)
+
+        comptime if Self.profile >= 1:
+            timer.print_report(algo_name + " Profile")
+
+        return metrics^
 
     # =========================================================================
     # Checkpoint Save / Load

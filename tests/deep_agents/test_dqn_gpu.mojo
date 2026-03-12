@@ -62,6 +62,7 @@ fn main() raises:
             BATCH_SIZE,
             N_ENVS,
             lr=2.5e-4,
+            profile=2,
         ](
             gamma=0.99,
             tau=0.005,
