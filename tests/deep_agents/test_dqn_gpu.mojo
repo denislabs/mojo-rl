@@ -30,7 +30,7 @@ comptime BUFFER_CAPACITY = 100_000
 comptime BATCH_SIZE = 128  # Training batch size for gradient updates
 comptime N_ENVS = 256  # Parallel environments for GPU collection
 
-comptime NUM_STEPS = 100_000  # Total env transitions
+comptime NUM_STEPS = 200_000  # Total env transitions
 comptime MAX_STEPS = 500
 comptime WARMUP_STEPS = 10_000  # Fill buffer before training
 comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
