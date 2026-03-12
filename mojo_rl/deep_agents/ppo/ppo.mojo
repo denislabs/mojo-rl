@@ -317,8 +317,8 @@ struct DeepPPOAgent[
         for i in range(OUTPUT_BIASES):
             (self.state.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
 
-        # Initialize critic AFTER actor output shrink (RNG ordering: actor_kaiming → shrink → critic_kaiming)
-        self.state.critic.initialize[Kaiming[]]()
+        # Initialize critic AFTER actor output shrink
+        self.state.critic.initialize[Xavier[]]()
 
         # Store hyperparameters
         self.gamma = gamma
@@ -880,7 +880,7 @@ struct DeepPPOAgent[
             (s.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](0.01)
         for i in range(Self.ACTIONS):
             (s.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
-        s.critic.initialize[Kaiming[]]()
+        s.critic.initialize[Xavier[]]()
         return s^
 
     fn collect_rollout[

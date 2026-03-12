@@ -107,9 +107,9 @@ struct PPODiscreteState[
 
     fn __init__(out self):
         """Allocate networks (Kaiming init + small actor output), rollout buffers, and scratch."""
-        # Initialize actor with Kaiming (agent __init__ applies small output init after)
+        # Initialize actor with Xavier (agent __init__ applies small output init after)
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
-        self.actor.initialize[Kaiming[]]()
+        self.actor.initialize[Xavier[]]()
         # NOTE: Do NOT initialize critic here — agent.__init__ does it after
         # shrinking actor output, to match continuous PPO's RNG ordering.
         self.critic = NetworkState[Self.CriticModel, Self.CriticOpt]()
