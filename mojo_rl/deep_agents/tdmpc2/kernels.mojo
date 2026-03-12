@@ -2165,18 +2165,18 @@ fn mppi_softmax_weights_kernel[
     var stride = BLOCK_SIZE >> 1
     while stride > 0:
         if tid < stride:
-            var other = rebind[Scalar[dtype]](smem[tid + stride])
-            var mine = rebind[Scalar[dtype]](smem[tid])
+            var other = smem[tid + stride]
+            var mine = smem[tid]
             if other > mine:
                 smem[tid] = other
         barrier()
         stride >>= 1
 
-    var max_ret = rebind[Scalar[dtype]](smem[0])
+    var max_ret = smem[0]
     barrier()
 
     # ── Pass 2: compute exp weights and local sum ──
-    var local_sum = Scalar[dtype](0.0)
+    var local_sum: smem.element_type = 0.0
     s = tid
     while s < TOTAL_SAMPLES:
         var w = exp(
