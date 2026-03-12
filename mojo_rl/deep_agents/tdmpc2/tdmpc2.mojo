@@ -60,9 +60,9 @@ from mojo_rl.deep_agents.core.utils import (
     clear_progress_bar,
 )
 
-from .state import TDMPC2GPUState, TDMPC2CPUState, MPPIGPUBuffers
+from .state import TDMPC2GPUState, TDMPC2CPUState, MPPIGPUBuffers, BatchedMPPIGPUBuffers
 from .world_model import WorldModel, decode_value_batch_scalar
-from .mppi import plan, plan_gpu
+from .mppi import plan, plan_gpu, plan_gpu_batched
 from .kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
@@ -2000,7 +2000,7 @@ struct TDMPC2Agent[
         # =================================================================
         # MPPI GPU buffers (allocated if use_mppi=True)
         # =================================================================
-        comptime MPPIBufs = MPPIGPUBuffers[
+        comptime BatchedMPPIBufs = BatchedMPPIGPUBuffers[
             Self.WM.DynModel,  # EncModel placeholder
             Self.WMOpt,  # EncOpt placeholder
             Self.WM.DynModel,
@@ -2017,14 +2017,12 @@ struct TDMPC2Agent[
             Self.num_samples,
             Self.num_pi_trajs,
             Self.H,
+            n_envs,
         ]
-        # Allocate MPPI buffers (conditional allocation not possible in Mojo,
-        # so we always allocate — cost is ~10MB GPU memory)
-        var mppi_bufs = MPPIBufs(ctx)
+        # Allocate batched MPPI buffers (all envs planned in one GPU call)
+        var mppi_bufs = BatchedMPPIBufs(ctx)
 
-        # Per-env MPPI warm-start state (one z0 upload buf + per-env prev_mean)
-        var mppi_z0_buf = ctx.enqueue_create_buffer[dtype](Self.LATENT)
-        var mppi_z0_host = ctx.enqueue_create_host_buffer[dtype](Self.LATENT)
+        # Per-env MPPI warm-start state
         var env_prev_means = List[List[Float64]](capacity=n_envs)
         var env_t0_flags = List[Bool](capacity=n_envs)
         for _ in range(n_envs):
@@ -2107,7 +2105,7 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
             elif use_mppi:
-                # GPU-batched MPPI: encode all envs, then plan per-env
+                # GPU-batched MPPI: encode all envs, plan all simultaneously
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
                     ctx,
                     env_z_tensor,
@@ -2115,72 +2113,52 @@ struct TDMPC2Agent[
                     enc_params_tensor,
                     gs.enc_env_ws_buf,
                 )
-                # Download z to CPU (small: n_envs * LATENT floats)
-                var mppi_z_host = ctx.enqueue_create_host_buffer[dtype](
-                    ENV_LATENT
+
+                # Plan all envs in one batched GPU call (no per-env loop)
+                var mppi_seed = UInt32(
+                    total_steps * 1000003 + 7
                 )
-                ctx.enqueue_copy(mppi_z_host, gs.env_z_buf)
-                ctx.synchronize()
-
-                # Plan per-env sequentially (each batches 536 samples on GPU)
-                var mppi_z0_tensor = LayoutTensor[
-                    dtype, Layout.row_major(1, Self.LATENT), MutAnyOrigin
-                ](mppi_z0_buf.unsafe_ptr())
-
-                for env_idx in range(n_envs):
-                    # Upload z0 for this env
-                    for k in range(Self.LATENT):
-                        mppi_z0_host[k] = mppi_z_host[env_idx * Self.LATENT + k]
-                    ctx.enqueue_copy(mppi_z0_buf, mppi_z0_host)
-
-                    # Run GPU MPPI
-                    var mppi_seed = UInt32(
-                        total_steps * 1000003 + env_idx * 999983
-                    )
-                    var action = plan_gpu[
-                        Self.OBS,
-                        Self.ACT,
-                        Self.LATENT,
-                        Self.mlp_dim,
-                        Self.BINS,
-                        Self.num_q,
-                        Self.simplex_dim,
-                        Self.v_min,
-                        Self.v_max,
-                        Self.H,
-                        Self.num_samples,
-                        Self.num_pi_trajs,
-                        Self.num_iterations,
-                        Self.WM.DynModel,
-                        Self.WMOpt,
-                        Self.WM.RewModel,
-                        Self.WMOpt,
-                        Self.WM.PolModel,
-                        Self.PIOpt,
-                        Self.WM.QModel,
-                        Self.WMOpt,
-                    ](
-                        ctx,
-                        mppi_z0_tensor,
-                        dyn_params_tensor,
-                        rew_params_tensor,
-                        pol_params_tensor,
-                        qt_param_ptrs,
-                        bins_tensor,
-                        mppi_bufs,
-                        self.gamma,
-                        self.temperature,
-                        env_prev_means[env_idx],
-                        self.action_scale,
-                        False,  # not deterministic (exploration)
-                        env_t0_flags[env_idx],
-                        mppi_seed,
-                    )
-                    env_t0_flags[env_idx] = False
-
-                    # Write action into host buffer
-                    for k in range(Self.ACT):
-                        gs.env_act_host[env_idx * Self.ACT + k] = action[k]
+                plan_gpu_batched[
+                    Self.OBS,
+                    Self.ACT,
+                    Self.LATENT,
+                    Self.mlp_dim,
+                    Self.BINS,
+                    Self.num_q,
+                    Self.simplex_dim,
+                    Self.v_min,
+                    Self.v_max,
+                    Self.H,
+                    Self.num_samples,
+                    Self.num_pi_trajs,
+                    Self.num_iterations,
+                    Self.WM.DynModel,
+                    Self.WMOpt,
+                    Self.WM.RewModel,
+                    Self.WMOpt,
+                    Self.WM.PolModel,
+                    Self.PIOpt,
+                    Self.WM.QModel,
+                    Self.WMOpt,
+                    n_envs,
+                ](
+                    ctx,
+                    env_z_tensor,
+                    dyn_params_tensor,
+                    rew_params_tensor,
+                    pol_params_tensor,
+                    qt_param_ptrs,
+                    bins_tensor,
+                    mppi_bufs,
+                    self.gamma,
+                    self.temperature,
+                    env_prev_means,
+                    env_t0_flags,
+                    gs.env_act_host,
+                    self.action_scale,
+                    False,  # not deterministic (exploration)
+                    mppi_seed,
+                )
 
                 # Upload all actions to GPU
                 ctx.enqueue_copy(gs.env_act_buf, gs.env_act_host)

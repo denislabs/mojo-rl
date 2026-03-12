@@ -1972,3 +1972,117 @@ fn mppi_copy_z_kernel[
 
     for k in range(LATENT_DIM):
         dst[i, k] = src[i, k]
+
+
+# =============================================================================
+# Batched MPPI Kernels (all envs planned in one GPU call)
+# =============================================================================
+
+
+@always_inline
+fn mppi_broadcast_z0_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    z0: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
+    ],
+    z_all: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Broadcast per-env z0 [N_ENVS, LATENT] into [BATCH_TOTAL, LATENT].
+
+    Thread i corresponds to sample i. env_idx = i // TOTAL_SAMPLES.
+    Each sample copies its env's z0.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    for k in range(LATENT_DIM):
+        z_all[i, k] = z0[env_idx, k]
+
+
+@always_inline
+fn mppi_sample_actions_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    NUM_PI_TRAJS: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, POL_OUT), MutAnyOrigin
+    ],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    act_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, ACTION_DIM), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_TOTAL * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    step: Int,
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Sample actions for all envs' MPPI candidates at horizon step t.
+
+    Thread i is global sample index. env_idx = i // TOTAL_SAMPLES,
+    local_s = i % TOTAL_SAMPLES.
+    Policy trajs: local_s < NUM_PI_TRAJS use policy output + noise.
+    MPPI trajs: local_s >= NUM_PI_TRAJS sample from per-env Gaussian.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    var local_s = i % TOTAL_SAMPLES
+
+    for j in range(ACTION_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var noise = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        var act: Scalar[dtype]
+        if local_s < NUM_PI_TRAJS:
+            # Policy trajectory: use policy mean + small noise
+            var pi_mean = Scalar[dtype](pi_out[i, j][0])
+            act = pi_mean + noise * Scalar[dtype](0.1)
+        else:
+            # MPPI trajectory: sample from per-env Gaussian(mean, std)
+            var mean_idx = env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+            var mu = Scalar[dtype](mean[mean_idx][0])
+            var sigma = Scalar[dtype](std[mean_idx][0])
+            act = mu + sigma * noise
+
+        # Clamp to [-1, 1]
+        if act < Scalar[dtype](-1.0):
+            act = Scalar[dtype](-1.0)
+        if act > Scalar[dtype](1.0):
+            act = Scalar[dtype](1.0)
+
+        act_step[i, j] = act
+        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act

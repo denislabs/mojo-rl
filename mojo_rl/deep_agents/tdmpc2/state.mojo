@@ -179,6 +179,144 @@ struct MPPIGPUBuffers[
 
 
 # =============================================================================
+# BatchedMPPIGPUBuffers — plans all N_ENVS in one GPU call
+# =============================================================================
+
+
+struct BatchedMPPIGPUBuffers[
+    # Network model / optimizer types
+    EncModel: Model,
+    EncOpt: Optimizer,
+    DynModel: Model,
+    DynOpt: Optimizer,
+    RewModel: Model,
+    RewOpt: Optimizer,
+    PolModel: Model,
+    PolOpt: Optimizer,
+    QModel: Model,
+    QOpt: Optimizer,
+    # Dimension parameters
+    action_dim: Int,
+    latent_dim: Int,
+    num_bins: Int,
+    num_samples: Int,
+    num_pi_trajs: Int,
+    horizon: Int,
+    n_envs: Int,
+]:
+    """GPU buffers for batched MPPI planning across all environments.
+
+    All TOTAL_SAMPLES * N_ENVS trajectories are evaluated in one GPU call,
+    reducing sync points from N_ENVS * NUM_ITERATIONS to just NUM_ITERATIONS.
+    """
+
+    # ── Derived compile-time constants ──────────────────────────────────────
+    comptime TOTAL = Self.num_samples + Self.num_pi_trajs
+    comptime BATCH_TOTAL = Self.TOTAL * Self.n_envs
+    comptime H = Self.horizon
+    comptime ACT = Self.action_dim
+    comptime LATENT = Self.latent_dim
+    comptime BINS = Self.num_bins
+    comptime ZA = Self.LATENT + Self.ACT
+    comptime POL_OUT = Self.PolModel.OUT_DIM
+
+    # Buffer sizes
+    comptime BT_LATENT = Self.BATCH_TOTAL * Self.LATENT
+    comptime BT_ZA = Self.BATCH_TOTAL * Self.ZA
+    comptime BT_ACT = Self.BATCH_TOTAL * Self.ACT
+    comptime BT_BINS = Self.BATCH_TOTAL * Self.BINS
+    comptime ALL_ACTIONS = Self.BATCH_TOTAL * Self.H * Self.ACT
+    comptime MEAN_STD = Self.n_envs * Self.H * Self.ACT
+
+    # Workspace sizes per sample
+    comptime DYN_W = Network[
+        Self.DynModel, Self.DynOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime REW_W = Network[
+        Self.RewModel, Self.RewOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime POL_W = Network[
+        Self.PolModel, Self.PolOpt
+    ].WORKSPACE_SIZE_PER_SAMPLE
+    comptime Q_W = Network[Self.QModel, Self.QOpt].WORKSPACE_SIZE_PER_SAMPLE
+
+    # ── Network workspace buffers (BATCH_TOTAL-sized) ─────────────────────
+    var dyn_ws_buf: DeviceBuffer[dtype]
+    var rew_ws_buf: DeviceBuffer[dtype]
+    var pol_ws_buf: DeviceBuffer[dtype]
+    var q_ws_buf: DeviceBuffer[dtype]
+
+    # ── MPPI data buffers ─────────────────────────────────────────────────
+    var z_buf: DeviceBuffer[dtype]
+    var z_next_buf: DeviceBuffer[dtype]
+    var za_buf: DeviceBuffer[dtype]
+    var act_step_buf: DeviceBuffer[dtype]
+    var all_actions_buf: DeviceBuffer[dtype]
+    var rew_logits_buf: DeviceBuffer[dtype]
+    var q_logits_buf: DeviceBuffer[dtype]
+    var returns_buf: DeviceBuffer[dtype]
+    var q_min_buf: DeviceBuffer[dtype]
+    var pi_out_buf: DeviceBuffer[dtype]
+
+    # ── Per-env distribution buffers ──────────────────────────────────────
+    var mean_buf: DeviceBuffer[dtype]
+    var std_buf: DeviceBuffer[dtype]
+
+    # ── Host buffers for CPU distribution update ──────────────────────────
+    var returns_host: HostBuffer[dtype]
+    var all_actions_host: HostBuffer[dtype]
+    var mean_host: HostBuffer[dtype]
+    var std_host: HostBuffer[dtype]
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all batched MPPI GPU and host buffers."""
+
+        # Network workspaces
+        self.dyn_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.DYN_W
+        )
+        self.rew_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.REW_W
+        )
+        self.pol_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.POL_W
+        )
+        self.q_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.Q_W
+        )
+
+        # Data buffers
+        self.z_buf = ctx.enqueue_create_buffer[dtype](Self.BT_LATENT)
+        self.z_next_buf = ctx.enqueue_create_buffer[dtype](Self.BT_LATENT)
+        self.za_buf = ctx.enqueue_create_buffer[dtype](Self.BT_ZA)
+        self.act_step_buf = ctx.enqueue_create_buffer[dtype](Self.BT_ACT)
+        self.all_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ALL_ACTIONS
+        )
+        self.rew_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.q_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
+        self.q_min_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
+        self.pi_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.POL_OUT
+        )
+
+        # Distribution buffers (per-env)
+        self.mean_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
+        self.std_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD)
+
+        # Host buffers
+        self.returns_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TOTAL
+        )
+        self.all_actions_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ALL_ACTIONS
+        )
+        self.mean_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
+        self.std_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
+
+
+# =============================================================================
 # TDMPC2GPUState
 # =============================================================================
 
