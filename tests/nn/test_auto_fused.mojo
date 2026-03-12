@@ -16,10 +16,11 @@ from mojo_rl.nn.autodiff import (
     MishOp,
     AutoDiffChain,
     FusedMatMulBias,
-    FusedMatMulBiasReLU,
-    FusedMatMulBiasTanh,
-    FusedMatMulBiasSigmoid,
-    FusedMatMulBiasMish,
+    FusedMatMulBiasActivation,
+    ReLUActivation,
+    TanhActivation,
+    SigmoidActivation,
+    MishActivation,
 )
 from mojo_rl.nn.autodiff.auto_fused import AutoFused
 from layout import Layout, LayoutTensor
@@ -133,7 +134,8 @@ fn test_forward_5op() -> Int:
         BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]
+        FusedMatMulBiasActivation[IN_D, HID, ReLUActivation],
+        FusedMatMulBias[HID, OUT_D],
     ]
 
     # Verify dimensions match
@@ -207,7 +209,8 @@ fn test_backward_5op() -> Int:
         BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]
+        FusedMatMulBiasActivation[IN_D, HID, ReLUActivation],
+        FusedMatMulBias[HID, OUT_D],
     ]
 
     var params = make_rand_list(AF.PARAM_SIZE)
@@ -312,8 +315,8 @@ fn test_forward_8op() -> Int:
         BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[IN_D, H1],
-        FusedMatMulBiasTanh[H1, H2],
+        FusedMatMulBiasActivation[IN_D, H1, ReLUActivation],
+        FusedMatMulBiasActivation[H1, H2, TanhActivation],
         FusedMatMulBias[H2, OUT_D],
     ]
 
@@ -389,8 +392,8 @@ fn test_backward_8op() -> Int:
         BiasAdd[OUT_D],
     ]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[IN_D, H1],
-        FusedMatMulBiasTanh[H1, H2],
+        FusedMatMulBiasActivation[IN_D, H1, ReLUActivation],
+        FusedMatMulBiasActivation[H1, H2, TanhActivation],
         FusedMatMulBias[H2, OUT_D],
     ]
 
@@ -645,7 +648,9 @@ fn test_sigmoid_fusion() -> Int:
 
     comptime BATCH = 3
     comptime AF = AutoFused[MatMul[4, 2], BiasAdd[2], SigmoidOp[2]]
-    comptime Ref = AutoDiffChain[FusedMatMulBiasSigmoid[4, 2]]
+    comptime Ref = AutoDiffChain[
+        FusedMatMulBiasActivation[4, 2, SigmoidActivation]
+    ]
 
     check(AF.PARAM_SIZE == Ref.PARAM_SIZE, "PARAM_SIZE match", fails)
 
@@ -703,7 +708,9 @@ fn test_mish_fusion() -> Int:
 
     comptime BATCH = 3
     comptime AF = AutoFused[MatMul[4, 2], BiasAdd[2], MishOp[2]]
-    comptime Ref = AutoDiffChain[FusedMatMulBiasMish[4, 2]]
+    comptime Ref = AutoDiffChain[
+        FusedMatMulBiasActivation[4, 2, MishActivation]
+    ]
 
     check(AF.PARAM_SIZE == Ref.PARAM_SIZE, "PARAM_SIZE match", fails)
 
@@ -811,9 +818,9 @@ fn test_deep_chain() -> Int:
         BiasAdd[2],
     ]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[3, 16],
-        FusedMatMulBiasReLU[16, 8],
-        FusedMatMulBiasReLU[8, 4],
+        FusedMatMulBiasActivation[3, 16, ReLUActivation],
+        FusedMatMulBiasActivation[16, 8, ReLUActivation],
+        FusedMatMulBiasActivation[8, 4, ReLUActivation],
         FusedMatMulBias[4, 2],
     ]
 

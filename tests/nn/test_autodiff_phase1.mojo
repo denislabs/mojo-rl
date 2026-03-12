@@ -30,9 +30,9 @@ from mojo_rl.nn.autodiff import (
     TanhOp,
     SigmoidOp,
     AutoDiffChain,
-    LinearAD,
-    LinearReLUAD,
-    LinearTanhAD,
+    Dense,
+    DenseReLU,
+    DenseTanh,
 )
 from mojo_rl.nn.initializer import Kaiming
 from layout import Layout, LayoutTensor
@@ -549,12 +549,12 @@ fn test_chain_forward_matches_sequential() -> Int:
     comptime SEQ = Sequential[Linear[IN_D, H], ReLU[H]]
 
     # Verify dimensions
-    if ADC.IN_DIM != SEQ.IN_DIM:
+    comptime if ADC.IN_DIM != SEQ.IN_DIM:
         print("  FAIL: IN_DIM mismatch")
         fails += 1
     else:
         print("  PASS: IN_DIM=" + String(ADC.IN_DIM))
-    if ADC.OUT_DIM != SEQ.OUT_DIM:
+    comptime if ADC.OUT_DIM != SEQ.OUT_DIM:
         print("  FAIL: OUT_DIM mismatch")
         fails += 1
     else:
@@ -928,35 +928,35 @@ fn test_convenience_aliases() -> Int:
     comptime IN_D = 4
     comptime OUT_D = 8
 
-    if LinearAD[IN_D, OUT_D].IN_DIM != IN_D:
-        print("  FAIL: LinearAD IN_DIM")
+    comptime if Dense[IN_D, OUT_D].IN_DIM != IN_D:
+        print("  FAIL: Dense IN_DIM")
         fails += 1
     else:
-        print("  PASS: LinearAD IN_DIM=" + String(IN_D))
+        print("  PASS: Dense IN_DIM=" + String(IN_D))
 
-    if LinearAD[IN_D, OUT_D].OUT_DIM != OUT_D:
-        print("  FAIL: LinearAD OUT_DIM")
+    comptime if Dense[IN_D, OUT_D].OUT_DIM != OUT_D:
+        print("  FAIL: Dense OUT_DIM")
         fails += 1
     else:
         print("  PASS: LinearAD OUT_DIM=" + String(OUT_D))
 
-    if LinearAD[IN_D, OUT_D].PARAM_SIZE != IN_D * OUT_D + OUT_D:
+    comptime if Dense[IN_D, OUT_D].PARAM_SIZE != IN_D * OUT_D + OUT_D:
         print("  FAIL: LinearAD PARAM_SIZE")
         fails += 1
     else:
         print("  PASS: LinearAD PARAM_SIZE=" + String(IN_D * OUT_D + OUT_D))
 
-    if LinearReLUAD[IN_D, OUT_D].OUT_DIM != OUT_D:
+    comptime if DenseReLU[IN_D, OUT_D].OUT_DIM != OUT_D:
         print("  FAIL: LinearReLUAD OUT_DIM")
         fails += 1
     else:
         print("  PASS: LinearReLUAD OUT_DIM=" + String(OUT_D))
 
-    if LinearTanhAD[IN_D, OUT_D].OUT_DIM != OUT_D:
-        print("  FAIL: LinearTanhAD OUT_DIM")
+    comptime if DenseTanh[IN_D, OUT_D].OUT_DIM != OUT_D:
+        print("  FAIL: DenseTanh OUT_DIM")
         fails += 1
     else:
-        print("  PASS: LinearTanhAD OUT_DIM=" + String(OUT_D))
+        print("  PASS: DenseTanh OUT_DIM=" + String(OUT_D))
 
     return fails
 

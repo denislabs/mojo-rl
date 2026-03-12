@@ -1,14 +1,13 @@
-"""Test PPO Agent GPU Training on CartPole.
+"""Test DQN Agent GPU Training on CartPole.
 
-This tests the GPU implementation of PPO using:
-- Parallel environments on GPU
-- Rollout buffer for on-policy data
-- GAE (Generalized Advantage Estimation) computed on CPU
-- Actor-Critic training with clipped surrogate objective
+This tests the GPU implementation of DQN using:
+- Network wrapper GPU methods (forward_gpu, backward_gpu, update_gpu)
+- CPU environment interaction + GPU batch training
+- Double DQN with experience replay
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run test_dqn_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run test_dqn_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed
@@ -16,7 +15,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs import CartPoleEnv
 
 
@@ -27,11 +26,15 @@ from mojo_rl.envs import CartPoleEnv
 comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 64
-comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
-comptime N_ENVS = 256  # Smaller for testing (use 1024 for full training)
-comptime GPU_MINIBATCH_SIZE = 512  # Larger minibatch = fewer kernel launches
+comptime BUFFER_CAPACITY = 10000
+comptime BATCH_SIZE = 64  # Training batch size for gradient updates
+comptime N_ENVS = 32  # Smaller number of parallel environments
 
-comptime NUM_EPISODES = 17_500  # More episodes to reach convergence
+comptime NUM_EPISODES = 1000  # More episodes for better convergence
+comptime MAX_STEPS = 500
+comptime WARMUP_STEPS = 1000  # Standard warmup
+comptime TRAIN_EVERY = 1  # Train every iteration
+comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N episodes
 
 
 # =============================================================================
@@ -42,54 +45,39 @@ comptime NUM_EPISODES = 17_500  # More episodes to reach convergence
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Agent GPU Test on CartPole")
+    print("DQN Agent GPU Test on CartPole")
     print("=" * 70)
     print()
 
     # =========================================================================
-    # Create GPU context and agent
+    # Create GPU context, environment and agent
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = DeepPPOAgent[
+        var env = CartPoleEnv[DType.float32]()
+        var agent = DQNAgent[
             OBS_DIM,
             NUM_ACTIONS,
             HIDDEN_DIM,
-            ROLLOUT_LEN,
+            BUFFER_CAPACITY,
+            BATCH_SIZE,
             N_ENVS,
-            GPU_MINIBATCH_SIZE,
+            lr=0.001,
         ](
             gamma=0.99,
-            gae_lambda=0.95,
-            clip_epsilon=0.2,  # Standard PPO clipping
-            actor_lr=0.0003,
-            critic_lr=0.001,  # Higher critic LR for faster value fitting
-            entropy_coef=0.01,
-            value_loss_coef=0.5,
-            num_epochs=4,  # Standard PPO epochs
-            minibatch_size=GPU_MINIBATCH_SIZE,
-            normalize_advantages=True,
-            # Advanced hyperparameters
-            target_kl=0.02,  # KL threshold for early epoch stopping (set to 0 to disable)
-            max_grad_norm=0.5,  # Gradient clipping
-            anneal_lr=True,  # Linear LR decay
-            anneal_entropy=False,  # Keep exploration constant
-            target_total_steps=0,  # Auto-calculate based on num_episodes
+            tau=0.005,
+            epsilon=1.0,
+            epsilon_min=0.01,
+            epsilon_decay=0.995,
         )
 
-        print("Environment: CartPole (GPU)")
-        print("Agent: PPO (GPU)")
+        print("Environment: CartPole")
+        print("Agent: DQN (Double DQN enabled, GPU)")
         print("  Hidden dim: " + String(HIDDEN_DIM))
-        print("  Rollout length: " + String(ROLLOUT_LEN))
+        print("  Buffer capacity: " + String(BUFFER_CAPACITY))
+        print("  Batch size (training): " + String(BATCH_SIZE))
         print("  N envs (parallel): " + String(N_ENVS))
-        print("  Minibatch size: " + String(GPU_MINIBATCH_SIZE))
-        print(
-            "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
-        )
-        print("  Advanced features:")
-        print("    - LR annealing: enabled")
-        print("    - KL early stopping: target_kl=0.02")
-        print("    - Gradient clipping: max_grad_norm=0.5")
+        print("  Sync every: " + String(SYNC_EVERY) + " episodes")
         print()
 
         # =====================================================================
@@ -101,11 +89,15 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var metrics = agent.train_gpu[CartPoleEnv](
+        var metrics = agent.train_gpu[CartPoleEnv[DType.float32]](
             ctx,
-            num_episodes=NUM_EPISODES,
+            num_steps=NUM_EPISODES * N_ENVS,
+            warmup_steps=WARMUP_STEPS,
+            gradient_steps=0,
+            sync_every=SYNC_EVERY,
             verbose=True,
-            print_every=50,
+            print_every=10_000,
+            environment_name="CartPole (GPU)",
         )
 
         var end_time = perf_counter_ns()
@@ -123,6 +115,7 @@ fn main() raises:
         print("=" * 70)
         print()
         print("Total episodes: " + String(NUM_EPISODES))
+        print("Total train steps: " + String(agent.get_train_steps()))
         print("Training time: " + String(elapsed_s)[:6] + " seconds")
         print()
 
@@ -139,14 +132,21 @@ fn main() raises:
         # =====================================================================
 
         print("Evaluating greedy policy (10 episodes)...")
-        var env = CartPoleEnv[DType.float64]()
         var eval_avg = agent.evaluate(
-            env, num_episodes=10, max_steps=500, verbose=False
+            env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=True
         )
         print("Evaluation average: " + String(eval_avg)[:7])
 
-        agent.evaluate(
-            env, num_episodes=1, max_steps=500, verbose=False, render=True
+        print()
+        print("Evaluating with current epsilon (10 episodes)...")
+        var eval_eps_avg = agent.evaluate(
+            env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=False
+        )
+        print(
+            "Evaluation average (epsilon="
+            + String(agent.get_epsilon())[:5]
+            + "): "
+            + String(eval_eps_avg)[:7]
         )
 
         print()

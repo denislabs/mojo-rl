@@ -309,7 +309,7 @@ fn bench_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
 # =============================================================================
 
 
-def main():
+def main() raises:
     print("=" * 60)
     print("MMA Matmul Test")
     print("  Dispatch: NVIDIA → tensor core MMA, Apple → tiled scalar")

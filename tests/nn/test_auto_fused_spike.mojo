@@ -19,9 +19,8 @@ from mojo_rl.nn.autodiff import (
     TanhOp,
     SigmoidOp,
     FusedMatMulBias,
-    FusedMatMulBiasReLU,
-    FusedMatMulBiasTanh,
-    FusedMatMulBiasSigmoid,
+    FusedMatMulBiasActivation,
+    ReLUActivation,
 )
 from layout import Layout, LayoutTensor
 from std.builtin.variadics import Variadic
@@ -148,7 +147,9 @@ fn test_spike2():
     comptime ops = Variadic.types[
         T=DiffOp, MatMul[IN_D, OUT_D], BiasAdd[OUT_D], ReLUOp[OUT_D]
     ]
-    comptime Fused = FusedMatMulBiasReLU[ops[0].IN_DIM, ops[0].OUT_DIM]
+    comptime Fused = FusedMatMulBiasActivation[
+        ops[0].IN_DIM, ops[0].OUT_DIM, ReLUActivation
+    ]
 
     # Allocate buffers
     var params_storage = List[Scalar[dtype]](capacity=Fused.PARAM_SIZE)
@@ -237,9 +238,9 @@ fn _spike_forward[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
-                FusedMatMulBiasReLU[G_IN, G_OUT].eval[BATCH](
-                    in_v, out_v, p_v, c_v
-                )
+                FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].eval[
+                    BATCH
+                ](in_v, out_v, p_v, c_v)
             else:
                 # Not last
                 print(
@@ -253,9 +254,9 @@ fn _spike_forward[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
-                FusedMatMulBiasReLU[G_IN, G_OUT].eval[BATCH](
-                    in_v, out_v, p_v, c_v
-                )
+                FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].eval[
+                    BATCH
+                ](in_v, out_v, p_v, c_v)
                 # Debug: print inter values
                 for _b in range(BATCH):
                     for _j in range(G_OUT):
@@ -452,7 +453,8 @@ fn test_spike3():
 
     # Compare with reference: AutoDiffChain[FusedMBR, FusedMB]
     comptime Ref = AutoDiffChain[
-        FusedMatMulBiasReLU[IN_D, HID], FusedMatMulBias[HID, OUT_D]
+        FusedMatMulBiasActivation[IN_D, HID, ReLUActivation],
+        FusedMatMulBias[HID, OUT_D],
     ]
     var ref_output_s = List[Scalar[dtype]](capacity=BATCH * OUT_D)
     for _ in range(BATCH * OUT_D):
@@ -515,7 +517,9 @@ fn test_spike3():
     var m_c1 = LayoutTensor[
         dtype, Layout.row_major(BATCH, IN_D + HID), MutAnyOrigin
     ](man_cache1_s.unsafe_ptr())
-    FusedMatMulBiasReLU[IN_D, HID].eval[BATCH](m_inp, m_inter, m_p1, m_c1)
+    FusedMatMulBiasActivation[IN_D, HID, ReLUActivation].eval[BATCH](
+        m_inp, m_inter, m_p1, m_c1
+    )
 
     var m_inp2 = LayoutTensor[
         dtype, Layout.row_major(BATCH, HID), MutAnyOrigin

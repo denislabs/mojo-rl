@@ -38,7 +38,7 @@ comptime TRAIN_EVERY = 4
 # =============================================================================
 
 
-def main():
+def main() raises:
     seed(42)
     print("=" * 70)
     print("DQN Agent Test on CartPole")

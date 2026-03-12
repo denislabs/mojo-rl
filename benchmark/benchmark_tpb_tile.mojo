@@ -47,8 +47,8 @@ fn matmul_kernel_tile8[
     comptime TILE = 8
     var local_row = Int(thread_idx.y)
     var local_col = Int(thread_idx.x)
-    var row = Int(block_idx.y * TILE + local_row)
-    var col = Int(block_idx.x * TILE + local_col)
+    var row = Int(block_idx.y * TILE + UInt(local_row))
+    var col = Int(block_idx.x * TILE + UInt(local_col))
 
     if row >= M or col >= N:
         return
@@ -110,8 +110,8 @@ fn matmul_kernel_tile16[
     comptime TILE = 16
     var local_row = Int(thread_idx.y)
     var local_col = Int(thread_idx.x)
-    var row = Int(block_idx.y * TILE + local_row)
-    var col = Int(block_idx.x * TILE + local_col)
+    var row = Int(block_idx.y * TILE + UInt(local_row))
+    var col = Int(block_idx.x * TILE + UInt(local_col))
 
     if row >= M or col >= N:
         return
@@ -168,8 +168,8 @@ fn matmul_kernel_tile32[
     comptime TILE = 32
     var local_row = Int(thread_idx.y)
     var local_col = Int(thread_idx.x)
-    var row = Int(block_idx.y * TILE + local_row)
-    var col = Int(block_idx.x * TILE + local_col)
+    var row = Int(block_idx.y * TILE + UInt(local_row))
+    var col = Int(block_idx.x * TILE + UInt(local_col))
 
     if row >= M or col >= N:
         return
@@ -227,7 +227,7 @@ fn relu_kernel[
     y: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
 ):
     """ReLU kernel with parameterized TPB."""
-    var idx = Int(block_idx.x * TPB + thread_idx.x)
+    var idx = Int(block_idx.x * UInt(TPB) + thread_idx.x)
     if idx >= SIZE:
         return
     var val = rebind[Scalar[dtype]](x[idx])
@@ -242,7 +242,7 @@ fn add_kernel[
     c: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
 ):
     """Add kernel with parameterized TPB."""
-    var idx = Int(block_idx.x * TPB + thread_idx.x)
+    var idx = Int(block_idx.x * UInt(TPB) + thread_idx.x)
     if idx >= SIZE:
         return
     c[idx] = rebind[Scalar[dtype]](a[idx]) + rebind[Scalar[dtype]](b[idx])
