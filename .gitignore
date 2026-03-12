@@ -226,3 +226,4 @@ docs/
 .vscode/
 CLAUDE.md
 *.code-workspace
+*.mojopkg
