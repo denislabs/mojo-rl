@@ -13,9 +13,9 @@ Key features:
 - Entropy bonus for exploration
 - Advantage normalization
 
-Architecture:
-- Actor: obs -> hidden (ReLU) -> hidden (ReLU) -> num_actions (Softmax)
-- Critic: obs -> hidden (ReLU) -> hidden (ReLU) -> 1 (value)
+Architecture (CleanRL-style with Tanh activations):
+- Actor: obs -> hidden (Tanh) -> hidden (Tanh) -> num_actions (logits)
+- Critic: obs -> hidden (Tanh) -> hidden (Tanh) -> 1 (value)
 
 Usage:
     from mojo_rl.deep_agents.ppo import DeepPPOAgent
@@ -42,9 +42,10 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TILE, TPB
-from mojo_rl.nn.model import Linear, ReLU, LinearReLU, Sequential
+from mojo_rl.nn.model import Linear, Sequential
+from mojo_rl.nn import Dense, DenseTanh
 from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.initializer import Xavier, Kaiming
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.nn.checkpoint import (
     split_lines,
@@ -174,19 +175,19 @@ struct DeepPPOAgent[
     comptime TOTAL_ROLLOUT_SIZE: Int = Self.n_envs * Self.rollout_len
     comptime GPU_MINIBATCH = Self.gpu_minibatch_size
 
-    # Actor model and network (stateless ops)
+    # Actor model and network (stateless ops) — Tanh activations match CleanRL
     comptime ActorModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.ACTIONS],
+        DenseTanh[Self.OBS, Self.HIDDEN],
+        DenseTanh[Self.HIDDEN, Self.HIDDEN],
+        Dense[Self.HIDDEN, Self.ACTIONS],
     ]
     comptime ActorNet = Network[Self.ActorModel, Adam[Self.actor_lr]]
 
-    # Critic model and network (stateless ops)
+    # Critic model and network (stateless ops) — Tanh activations match CleanRL
     comptime CriticModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+        DenseTanh[Self.OBS, Self.HIDDEN],
+        DenseTanh[Self.HIDDEN, Self.HIDDEN],
+        Dense[Self.HIDDEN, 1],
     ]
     comptime CriticNet = Network[Self.CriticModel, Adam[Self.critic_lr]]
 
@@ -301,8 +302,23 @@ struct DeepPPOAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Initialize CPU state (actor + critic + rollout buffers)
+        # Initialize CPU state (actor Kaiming init, critic uninitialized)
         self.state = Self.CPUStateType()
+
+        # Shrink actor output layer weights to std ≈ 0.01 for near-uniform
+        # initial policy (CleanRL: orthogonal init with std=0.01)
+        # Output layer is the last Dense[HIDDEN, ACTIONS] in the Sequential
+        comptime OUTPUT_WEIGHTS = Self.HIDDEN * Self.ACTIONS
+        comptime OUTPUT_BIASES = Self.ACTIONS
+        comptime OUTPUT_TOTAL = OUTPUT_WEIGHTS + OUTPUT_BIASES
+        comptime OUTPUT_OFFSET = Self.ActorModel.PARAM_SIZE - OUTPUT_TOTAL
+        for i in range(OUTPUT_WEIGHTS):
+            (self.state.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](0.01)
+        for i in range(OUTPUT_BIASES):
+            (self.state.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
+
+        # Initialize critic AFTER actor output shrink (RNG ordering: actor_kaiming → shrink → critic_kaiming)
+        self.state.critic.initialize[Kaiming[]]()
 
         # Store hyperparameters
         self.gamma = gamma
@@ -854,9 +870,18 @@ struct DeepPPOAgent[
     # =========================================================================
 
     fn make_cpu_state(self) -> Self.CPUStateType:
-        """Allocate a fresh PPODiscreteState with Xavier-initialized networks.
-        """
-        return Self.CPUStateType()
+        """Allocate a fresh PPODiscreteState with Kaiming init + small actor output."""
+        var s = Self.CPUStateType()
+        # Apply same small output init as __init__
+        comptime OUTPUT_WEIGHTS = Self.HIDDEN * Self.ACTIONS
+        comptime OUTPUT_TOTAL = OUTPUT_WEIGHTS + Self.ACTIONS
+        comptime OUTPUT_OFFSET = Self.ActorModel.PARAM_SIZE - OUTPUT_TOTAL
+        for i in range(OUTPUT_WEIGHTS):
+            (s.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](0.01)
+        for i in range(Self.ACTIONS):
+            (s.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
+        s.critic.initialize[Kaiming[]]()
+        return s^
 
     fn collect_rollout[
         E: BoxDiscreteActionEnv

@@ -172,6 +172,8 @@ struct DQNAgent[
 
     # Training state
     var train_step_count: Int
+    var target_update_freq: Int  # soft-update target every N gradient steps
+    var _target_update_ctr: Int  # internal counter
 
     # Level-2 profiler: sub-phases of do_gpu_train_step
     var train_timer: PerfTimer[Self.profile >= 1]
@@ -192,6 +194,7 @@ struct DQNAgent[
         epsilon: Float64 = 1.0,
         epsilon_min: Float64 = 0.01,
         epsilon_decay: Float64 = 0.995,
+        target_update_freq: Int = 128,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -203,6 +206,7 @@ struct DQNAgent[
             epsilon: Initial exploration rate (default: 1.0).
             epsilon_min: Minimum exploration rate (default: 0.01).
             epsilon_decay: Epsilon decay per episode (default: 0.995).
+            target_update_freq: Soft-update target every N gradient steps (default: 128).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
         """
@@ -214,6 +218,8 @@ struct DQNAgent[
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.train_step_count = 0
+        self.target_update_freq = target_update_freq
+        self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.train_timer = PerfTimer[Self.profile >= 1]()
@@ -889,8 +895,11 @@ struct DQNAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """Soft-update target Q-network on GPU: θ_t ← τ*θ + (1-τ)*θ_t."""
-        gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+        """Soft-update target Q-network on GPU every target_update_freq gradient steps."""
+        self._target_update_ctr += 1
+        if self._target_update_ctr >= self.target_update_freq:
+            gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+            self._target_update_ctr = 0
 
     # =========================================================================
     # High-level CPU training and evaluation

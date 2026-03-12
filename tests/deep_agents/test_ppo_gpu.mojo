@@ -58,8 +58,8 @@ fn main() raises:
             ROLLOUT_LEN,
             N_ENVS,
             GPU_MINIBATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.001,  # Higher critic LR for faster value fitting
+            actor_lr=0.00025,  # CleanRL default: single lr=2.5e-4
+            critic_lr=0.00025,  # Same as actor (CleanRL shares optimizer)
         ](
             gamma=0.99,
             gae_lambda=0.95,
@@ -70,7 +70,7 @@ fn main() raises:
             minibatch_size=GPU_MINIBATCH_SIZE,
             normalize_advantages=True,
             # Advanced hyperparameters
-            target_kl=0.02,  # KL threshold for early epoch stopping (set to 0 to disable)
+            target_kl=0.0,  # Disabled (CleanRL default: None)
             max_grad_norm=0.5,  # Gradient clipping
             anneal_lr=True,  # Linear LR decay
             anneal_entropy=False,  # Keep exploration constant
