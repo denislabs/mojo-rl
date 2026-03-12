@@ -45,7 +45,9 @@ from std.math import abs as math_abs
 
 
 @always_inline
-fn _symlog[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
+fn _symlog[
+    dtype: DType
+](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
     """Symmetric logarithm: sign(x) * ln(1 + |x|).
 
     Compresses large values into a bounded range while preserving sign.
@@ -58,7 +60,9 @@ fn _symlog[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_float
 
 
 @always_inline
-fn _symexp[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
+fn _symexp[
+    dtype: DType
+](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
     """Inverse of symlog: sign(x) * (exp(|x|) - 1).
 
     Converts from symlog space back to actual value space.
@@ -1427,7 +1431,7 @@ fn tdmpc2_gradient_norm_5q_kernel[
         dtype,
         Layout.row_major(BLOCK_SIZE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Network 1
@@ -1542,14 +1546,16 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
         dtype,
         Layout.row_major(BLOCK_SIZE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # ── Network 1 ──
     var local_sum = Scalar[dtype](0.0)
     var ps_idx = thread_id
     while ps_idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums_5q[0 * NUM_BLOCKS + ps_idx])
+        local_sum += rebind[Scalar[dtype]](
+            partial_sums_5q[0 * NUM_BLOCKS + ps_idx]
+        )
         ps_idx += BLOCK_SIZE
     shared[thread_id] = local_sum
     barrier()
@@ -1571,7 +1577,9 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
     local_sum = Scalar[dtype](0.0)
     ps_idx = thread_id
     while ps_idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums_5q[1 * NUM_BLOCKS + ps_idx])
+        local_sum += rebind[Scalar[dtype]](
+            partial_sums_5q[1 * NUM_BLOCKS + ps_idx]
+        )
         ps_idx += BLOCK_SIZE
     shared[thread_id] = local_sum
     barrier()
@@ -1593,7 +1601,9 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
     local_sum = Scalar[dtype](0.0)
     ps_idx = thread_id
     while ps_idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums_5q[2 * NUM_BLOCKS + ps_idx])
+        local_sum += rebind[Scalar[dtype]](
+            partial_sums_5q[2 * NUM_BLOCKS + ps_idx]
+        )
         ps_idx += BLOCK_SIZE
     shared[thread_id] = local_sum
     barrier()
@@ -1615,7 +1625,9 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
     local_sum = Scalar[dtype](0.0)
     ps_idx = thread_id
     while ps_idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums_5q[3 * NUM_BLOCKS + ps_idx])
+        local_sum += rebind[Scalar[dtype]](
+            partial_sums_5q[3 * NUM_BLOCKS + ps_idx]
+        )
         ps_idx += BLOCK_SIZE
     shared[thread_id] = local_sum
     barrier()
@@ -1637,7 +1649,9 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
     local_sum = Scalar[dtype](0.0)
     ps_idx = thread_id
     while ps_idx < NUM_BLOCKS:
-        local_sum += rebind[Scalar[dtype]](partial_sums_5q[4 * NUM_BLOCKS + ps_idx])
+        local_sum += rebind[Scalar[dtype]](
+            partial_sums_5q[4 * NUM_BLOCKS + ps_idx]
+        )
         ps_idx += BLOCK_SIZE
     shared[thread_id] = local_sum
     barrier()
@@ -1657,11 +1671,21 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
 
     # Apply all 5 scales to gradients
     if idx < PARAM_SIZE:
-        grads1[idx] = grads1[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 5])
-        grads2[idx] = grads2[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 4])
-        grads3[idx] = grads3[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 3])
-        grads4[idx] = grads4[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 2])
-        grads5[idx] = grads5[idx] * rebind[Scalar[dtype]](shared[BLOCK_SIZE - 1])
+        grads1[idx] = grads1[idx] * rebind[Scalar[dtype]](
+            shared[BLOCK_SIZE - 5]
+        )
+        grads2[idx] = grads2[idx] * rebind[Scalar[dtype]](
+            shared[BLOCK_SIZE - 4]
+        )
+        grads3[idx] = grads3[idx] * rebind[Scalar[dtype]](
+            shared[BLOCK_SIZE - 3]
+        )
+        grads4[idx] = grads4[idx] * rebind[Scalar[dtype]](
+            shared[BLOCK_SIZE - 2]
+        )
+        grads5[idx] = grads5[idx] * rebind[Scalar[dtype]](
+            shared[BLOCK_SIZE - 1]
+        )
 
 
 @always_inline
@@ -1670,29 +1694,19 @@ fn tdmpc2_adam_step_5q_kernel[
 ](
     params1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    state1: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
-    ],
+    state1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
     params2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    state2: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
-    ],
+    state2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
     params3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    state3: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
-    ],
+    state3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
     params4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    state4: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
-    ],
+    state4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
     params5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    state5: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
-    ],
+    state5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
     lr: Scalar[dtype],
     beta1: Scalar[dtype],
     beta2: Scalar[dtype],
@@ -1716,42 +1730,62 @@ fn tdmpc2_adam_step_5q_kernel[
     # Q1
     var g1 = rebind[Scalar[dtype]](grads1[idx])
     var m1 = beta1 * rebind[Scalar[dtype]](state1[idx, 0]) + one_minus_b1 * g1
-    var v1 = beta2 * rebind[Scalar[dtype]](state1[idx, 1]) + one_minus_b2 * g1 * g1
+    var v1 = (
+        beta2 * rebind[Scalar[dtype]](state1[idx, 1]) + one_minus_b2 * g1 * g1
+    )
     state1[idx, 0] = m1
     state1[idx, 1] = v1
-    params1[idx] = rebind[Scalar[dtype]](params1[idx]) - lr * (m1 / bias_correction1) / (sqrt(v1 / bias_correction2) + eps)
+    params1[idx] = rebind[Scalar[dtype]](params1[idx]) - lr * (
+        m1 / bias_correction1
+    ) / (sqrt(v1 / bias_correction2) + eps)
 
     # Q2
     var g2 = rebind[Scalar[dtype]](grads2[idx])
     var m2 = beta1 * rebind[Scalar[dtype]](state2[idx, 0]) + one_minus_b1 * g2
-    var v2 = beta2 * rebind[Scalar[dtype]](state2[idx, 1]) + one_minus_b2 * g2 * g2
+    var v2 = (
+        beta2 * rebind[Scalar[dtype]](state2[idx, 1]) + one_minus_b2 * g2 * g2
+    )
     state2[idx, 0] = m2
     state2[idx, 1] = v2
-    params2[idx] = rebind[Scalar[dtype]](params2[idx]) - lr * (m2 / bias_correction1) / (sqrt(v2 / bias_correction2) + eps)
+    params2[idx] = rebind[Scalar[dtype]](params2[idx]) - lr * (
+        m2 / bias_correction1
+    ) / (sqrt(v2 / bias_correction2) + eps)
 
     # Q3
     var g3 = rebind[Scalar[dtype]](grads3[idx])
     var m3 = beta1 * rebind[Scalar[dtype]](state3[idx, 0]) + one_minus_b1 * g3
-    var v3 = beta2 * rebind[Scalar[dtype]](state3[idx, 1]) + one_minus_b2 * g3 * g3
+    var v3 = (
+        beta2 * rebind[Scalar[dtype]](state3[idx, 1]) + one_minus_b2 * g3 * g3
+    )
     state3[idx, 0] = m3
     state3[idx, 1] = v3
-    params3[idx] = rebind[Scalar[dtype]](params3[idx]) - lr * (m3 / bias_correction1) / (sqrt(v3 / bias_correction2) + eps)
+    params3[idx] = rebind[Scalar[dtype]](params3[idx]) - lr * (
+        m3 / bias_correction1
+    ) / (sqrt(v3 / bias_correction2) + eps)
 
     # Q4
     var g4 = rebind[Scalar[dtype]](grads4[idx])
     var m4 = beta1 * rebind[Scalar[dtype]](state4[idx, 0]) + one_minus_b1 * g4
-    var v4 = beta2 * rebind[Scalar[dtype]](state4[idx, 1]) + one_minus_b2 * g4 * g4
+    var v4 = (
+        beta2 * rebind[Scalar[dtype]](state4[idx, 1]) + one_minus_b2 * g4 * g4
+    )
     state4[idx, 0] = m4
     state4[idx, 1] = v4
-    params4[idx] = rebind[Scalar[dtype]](params4[idx]) - lr * (m4 / bias_correction1) / (sqrt(v4 / bias_correction2) + eps)
+    params4[idx] = rebind[Scalar[dtype]](params4[idx]) - lr * (
+        m4 / bias_correction1
+    ) / (sqrt(v4 / bias_correction2) + eps)
 
     # Q5
     var g5 = rebind[Scalar[dtype]](grads5[idx])
     var m5 = beta1 * rebind[Scalar[dtype]](state5[idx, 0]) + one_minus_b1 * g5
-    var v5 = beta2 * rebind[Scalar[dtype]](state5[idx, 1]) + one_minus_b2 * g5 * g5
+    var v5 = (
+        beta2 * rebind[Scalar[dtype]](state5[idx, 1]) + one_minus_b2 * g5 * g5
+    )
     state5[idx, 0] = m5
     state5[idx, 1] = v5
-    params5[idx] = rebind[Scalar[dtype]](params5[idx]) - lr * (m5 / bias_correction1) / (sqrt(v5 / bias_correction2) + eps)
+    params5[idx] = rebind[Scalar[dtype]](params5[idx]) - lr * (
+        m5 / bias_correction1
+    ) / (sqrt(v5 / bias_correction2) + eps)
 
 
 # =============================================================================
@@ -1878,9 +1912,7 @@ fn mppi_accumulate_reward_kernel[
         dtype, Layout.row_major(TOTAL_SAMPLES, BINS), MutAnyOrigin
     ],
     bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
-    returns: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
-    ],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
     discount: Scalar[dtype],
 ) where dtype.is_floating_point():
     """Decode reward logits and accumulate discounted reward into returns.
@@ -1923,12 +1955,8 @@ fn mppi_add_terminal_value_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
 ](
-    q_min: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
-    ],
-    returns: LayoutTensor[
-        dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin
-    ],
+    q_min: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
     discount: Scalar[dtype],
 ) where dtype.is_floating_point():
     """Add discounted terminal Q-value to returns.
@@ -1987,9 +2015,7 @@ fn mppi_broadcast_z0_batched_kernel[
     TOTAL_SAMPLES: Int,
     LATENT_DIM: Int,
 ](
-    z0: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ],
+    z0: LayoutTensor[dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin],
     z_all: LayoutTensor[
         dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
     ],
@@ -2073,7 +2099,9 @@ fn mppi_sample_actions_batched_kernel[
             act = pi_mean + noise * Scalar[dtype](0.1)
         else:
             # MPPI trajectory: sample from per-env Gaussian(mean, std)
-            var mean_idx = env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+            var mean_idx = (
+                env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+            )
             var mu = Scalar[dtype](mean[mean_idx][0])
             var sigma = Scalar[dtype](std[mean_idx][0])
             act = mu + sigma * noise
@@ -2118,7 +2146,7 @@ fn mppi_softmax_weights_kernel[
         dtype,
         Layout.row_major(BLOCK_SIZE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # ── Pass 1: find max return for numerical stability ──
@@ -2137,21 +2165,23 @@ fn mppi_softmax_weights_kernel[
     var stride = BLOCK_SIZE >> 1
     while stride > 0:
         if tid < stride:
-            var other = Scalar[dtype](smem[tid + stride])
-            var mine = Scalar[dtype](smem[tid])
+            var other = rebind[Scalar[dtype]](smem[tid + stride])
+            var mine = rebind[Scalar[dtype]](smem[tid])
             if other > mine:
                 smem[tid] = other
         barrier()
         stride >>= 1
 
-    var max_ret = Scalar[dtype](smem[0])
+    var max_ret = rebind[Scalar[dtype]](smem[0])
     barrier()
 
     # ── Pass 2: compute exp weights and local sum ──
     var local_sum = Scalar[dtype](0.0)
     s = tid
     while s < TOTAL_SAMPLES:
-        var w = exp(temperature * (Scalar[dtype](returns[base + s][0]) - max_ret))
+        var w = exp(
+            temperature * (Scalar[dtype](returns[base + s][0]) - max_ret)
+        )
         weights[base + s] = w
         local_sum += w
         s += BLOCK_SIZE
@@ -2163,11 +2193,13 @@ fn mppi_softmax_weights_kernel[
     stride = BLOCK_SIZE >> 1
     while stride > 0:
         if tid < stride:
-            smem[tid] = Scalar[dtype](smem[tid]) + Scalar[dtype](smem[tid + stride])
+            smem[tid] = rebind[Scalar[dtype]](smem[tid]) + rebind[
+                Scalar[dtype]
+            ](smem[tid + stride])
         barrier()
         stride >>= 1
 
-    var total_sum = Scalar[dtype](smem[0])
+    var total_sum = rebind[Scalar[dtype]](smem[0])
     if total_sum < Scalar[dtype](1e-10):
         total_sum = Scalar[dtype](1e-10)
     barrier()
@@ -2225,9 +2257,11 @@ fn mppi_weighted_mean_std_kernel[
     var wm = Scalar[dtype](0.0)
     for s in range(TOTAL_SAMPLES):
         var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](all_actions[
-            act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-        ][0])
+        var act = Scalar[dtype](
+            all_actions[
+                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+            ][0]
+        )
         wm += w * act
 
     mean_out[tid] = wm
@@ -2236,9 +2270,11 @@ fn mppi_weighted_mean_std_kernel[
     var wv = Scalar[dtype](0.0)
     for s in range(TOTAL_SAMPLES):
         var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](all_actions[
-            act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-        ][0])
+        var act = Scalar[dtype](
+            all_actions[
+                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+            ][0]
+        )
         var diff = act - wm
         wv += w * diff * diff
 
