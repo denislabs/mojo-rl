@@ -203,6 +203,8 @@ struct BatchedMPPIGPUBuffers[
     num_pi_trajs: Int,
     horizon: Int,
     n_envs: Int,
+    mlp_dim: Int = 256,
+    num_q: Int = 5,
 ]:
     """GPU buffers for batched MPPI planning across all environments.
 
@@ -279,6 +281,13 @@ struct BatchedMPPIGPUBuffers[
     # ── Separate reward workspace for parallel rew+dyn on streams ───────
     var rew_ws_buf2: DeviceBuffer[dtype]  # second rew workspace for stream
 
+    # ── Batched Q-ensemble buffers (grouped forward) ─────────────────────
+    # Two ping-pong buffers for intermediate activations [NUM_Q * BT * MLP]
+    # and one for concatenated params [NUM_Q * Q_PARAM_SIZE]
+    var q5_buf_a: DeviceBuffer[dtype]
+    var q5_buf_b: DeviceBuffer[dtype]
+    var q5_params_buf: DeviceBuffer[dtype]
+
     # ── Host buffers for CPU distribution update ──────────────────────────
     var returns_host: HostBuffer[dtype]
     var all_actions_host: HostBuffer[dtype]
@@ -353,6 +362,17 @@ struct BatchedMPPIGPUBuffers[
         # Separate reward workspace for parallel rew+dyn
         self.rew_ws_buf2 = ctx.enqueue_create_buffer[dtype](
             Self.BATCH_TOTAL * Self.REW_W
+        )
+
+        # Batched Q-ensemble buffers
+        # max(ZA_DIM, MLP_DIM) for ping-pong intermediate buffers
+        comptime ZA = Self.LATENT + Self.ACT
+        comptime Q5_DIM = ZA if ZA >= Self.mlp_dim else Self.mlp_dim
+        comptime Q5_INTER = Self.num_q * Self.BATCH_TOTAL * Q5_DIM
+        self.q5_buf_a = ctx.enqueue_create_buffer[dtype](Q5_INTER)
+        self.q5_buf_b = ctx.enqueue_create_buffer[dtype](Q5_INTER)
+        self.q5_params_buf = ctx.enqueue_create_buffer[dtype](
+            Self.num_q * Self.QModel.PARAM_SIZE
         )
 
 

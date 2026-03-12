@@ -23,6 +23,7 @@ from std.math import sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
@@ -1925,6 +1926,202 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # GPU Profiling
+    # =========================================================================
+
+    @staticmethod
+    fn register_gpu_profile_slots(
+        mut timer: PerfTimer[True], parent: Int = -1
+    ) -> Int:
+        """Register 5 profiling slots for RK4 GPU step phases.
+
+        Slots (relative to returned base):
+            +0: stage0  (dynamics + solver at (q0, v0))
+            +1: stage1  (dynamics + solver at half-step from stage0)
+            +2: stage2  (dynamics + solver at half-step from stage1)
+            +3: stage3  (dynamics + solver at full-step from stage2)
+            +4: combine  (RK4 weighted average + integration)
+
+        Args:
+            timer: PerfTimer to add slots to.
+            parent: Parent slot index (-1 = top-level).
+
+        Returns:
+            Base slot index.
+        """
+        var base = timer.add_slot("stage0", parent=parent)
+        _ = timer.add_slot("stage1", parent=parent)
+        _ = timer.add_slot("stage2", parent=parent)
+        _ = timer.add_slot("stage3", parent=parent)
+        _ = timer.add_slot("combine", parent=parent)
+        return base
+
+    @staticmethod
+    fn step_gpu_profiled[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        BATCH: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[DTYPE],
+        mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
+        mut timer: PerfTimer[True],
+        base: Int,
+    ) raises:
+        """Profiled GPU step — same as step_gpu but with per-stage timing.
+
+        Call register_gpu_profile_slots() first to get the base slot index.
+        Each slot covers a full RK4 stage (dynamics + solver).
+        """
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+        comptime MODEL_SIZE = model_size_with_invweight[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+        ]()
+        comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
+            NV, MAX_CONTACTS
+        ]()
+        comptime WS_SIZE = (
+            integrator_workspace_size[NV, NBODY]()
+            + NV * NV
+            + SOLVER_WS
+            + rk4_extra_workspace_size[NQ, NV]()
+        )
+
+        comptime V_SIZE = _max_one[NV]()
+        comptime ENV_BLOCKS = (BATCH + TPB - 1) // TPB
+        comptime THREADS = Self.SOLVER.solver_threads[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS
+        ]()
+        comptime SOLVER_THREADS_BLOCKS = (THREADS + THREADS - 1) // THREADS
+        comptime SOLVER_ENV_TPB = TPB // THREADS
+        comptime SOLVER_ENV_BLOCKS = (
+            BATCH + SOLVER_ENV_TPB - 1
+        ) // SOLVER_ENV_TPB
+
+        var state = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ](state_buf)
+        var model = LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf)
+        var workspace = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ](workspace_buf)
+
+        comptime solver_wrapper = Self.SOLVER.solve_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        ]
+
+        # ---- Stage 0 ----
+        timer.sync_and_mark(ctx)
+
+        comptime stage0_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 0, NM, SPARSE,
+        ]
+        ctx.enqueue_function[stage0_kernel, stage0_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        timer.sync_and_accumulate(base + 0, ctx)
+
+        # ---- Stage 1 ----
+        timer.mark()
+
+        comptime stage1_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 1, NM, SPARSE,
+        ]
+        ctx.enqueue_function[stage1_kernel, stage1_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        timer.sync_and_accumulate(base + 1, ctx)
+
+        # ---- Stage 2 ----
+        timer.mark()
+
+        comptime stage2_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 2, NM, SPARSE,
+        ]
+        ctx.enqueue_function[stage2_kernel, stage2_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        timer.sync_and_accumulate(base + 2, ctx)
+
+        # ---- Stage 3 ----
+        timer.mark()
+
+        comptime stage3_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 3, NM, SPARSE,
+        ]
+        ctx.enqueue_function[stage3_kernel, stage3_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        timer.sync_and_accumulate(base + 3, ctx)
+
+        # ---- Combine ----
+        timer.mark()
+
+        comptime combine_kernel = Self.rk4_combine_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, SOLVER_WS,
+        ]
+        ctx.enqueue_function[combine_kernel, combine_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+
+        timer.sync_and_accumulate(base + 4, ctx)
 
     @staticmethod
     fn simulate_gpu[

@@ -34,6 +34,7 @@ Kernels provided:
 
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
 from std.math import exp, log, sqrt, cos, tanh
 from std.random.philox import Random as PhiloxRandom
 from std.math import abs as math_abs
@@ -2324,3 +2325,294 @@ fn tdmpc2_min5_q_values_kernel[
     if v5 < m:
         m = v5
     q_min[i] = m
+
+
+# =============================================================================
+# Batched Q-Ensemble Kernels
+# =============================================================================
+# These kernels process all NUM_Q Q-networks in a single pass by using
+# "grouped" operations: each group of GROUP_SIZE rows shares one Q-network's
+# parameters. Reduces kernel launches from ~30 to ~8 for the Q ensemble.
+# =============================================================================
+
+
+@always_inline
+fn q5_concat_params_kernel[
+    dtype: DType,
+    PARAM_SIZE: Int,
+](
+    dst: LayoutTensor[
+        dtype, Layout.row_major(5 * PARAM_SIZE), MutAnyOrigin
+    ],
+    src1: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+    ],
+    src2: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+    ],
+    src3: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+    ],
+    src4: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+    ],
+    src5: LayoutTensor[
+        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Concatenate 5 Q-network param buffers into one contiguous buffer.
+
+    Grid: ((PARAM_SIZE + TPB - 1) // TPB,), Block: (TPB,).
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= PARAM_SIZE:
+        return
+    dst[0 * PARAM_SIZE + tid] = src1[tid]
+    dst[1 * PARAM_SIZE + tid] = src2[tid]
+    dst[2 * PARAM_SIZE + tid] = src3[tid]
+    dst[3 * PARAM_SIZE + tid] = src4[tid]
+    dst[4 * PARAM_SIZE + tid] = src5[tid]
+
+
+@always_inline
+fn q5_replicate_input_kernel[
+    dtype: DType,
+    GROUP_SIZE: Int,
+    DIM: Int,
+    NUM_Q: Int,
+](
+    output: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, DIM), MutAnyOrigin
+    ],
+    input: LayoutTensor[
+        dtype, Layout.row_major(GROUP_SIZE, DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Replicate input NUM_Q times: output[g*GROUP_SIZE + i, :] = input[i, :].
+
+    Grid: ((NUM_Q * GROUP_SIZE + TPB - 1) // TPB,), Block: (TPB,).
+    One thread per row.
+    """
+    var row = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if row >= NUM_Q * GROUP_SIZE:
+        return
+    var src_row = row % GROUP_SIZE
+    for d in range(DIM):
+        output[row, d] = input[src_row, d]
+
+
+@always_inline
+fn q5_grouped_matmul_bias_kernel[
+    dtype: DType,
+    NUM_Q: Int,
+    GROUP_SIZE: Int,
+    IN_DIM: Int,
+    OUT_DIM: Int,
+    PARAM_STRIDE: Int,
+    W_OFF: Int,
+    B_OFF: Int,
+](
+    output: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, OUT_DIM), MutAnyOrigin
+    ],
+    input: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, IN_DIM), MutAnyOrigin
+    ],
+    all_params: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * PARAM_STRIDE), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Grouped tiled matmul+bias: output[i] = input[i] @ W[group] + b[group].
+
+    Each group uses a different weight matrix and bias from all_params.
+    Grid: ((OUT_DIM + 15) // 16, (GROUP_SIZE + 15) // 16, NUM_Q)
+    Block: (16, 16)
+    block_idx.z selects the Q-network (group).
+    """
+    comptime _TILE = 16
+    var group = Int(block_idx.z)
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var row_in_group = Int(block_idx.y) * _TILE + local_row
+    var global_row = group * GROUP_SIZE + row_in_group
+    var global_col = Int(block_idx.x) * _TILE + local_col
+
+    # Param pointers for this group
+    var param_ptr = all_params.ptr
+    var w_ptr = param_ptr + group * PARAM_STRIDE + W_OFF
+    var b_ptr = param_ptr + group * PARAM_STRIDE + B_OFF
+
+    # Shared memory tiles
+    var x_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(_TILE, _TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var W_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(_TILE, _TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Initialize accumulator with bias
+    var acc: output.element_type = 0
+    if global_col < OUT_DIM:
+        acc = (b_ptr + global_col)[]
+
+    for tile_idx in range((IN_DIM + _TILE - 1) // _TILE):
+        var x_col = tile_idx * _TILE + local_col
+        if row_in_group < GROUP_SIZE and x_col < IN_DIM:
+            x_shared[local_row, local_col] = input[global_row, x_col]
+        else:
+            x_shared[local_row, local_col] = 0
+
+        var W_row = tile_idx * _TILE + local_row
+        if W_row < IN_DIM and global_col < OUT_DIM:
+            W_shared[local_row, local_col] = (
+                w_ptr + W_row * OUT_DIM + global_col
+            )[]
+        else:
+            W_shared[local_row, local_col] = 0
+
+        barrier()
+
+        comptime for k in range(_TILE):
+            acc += x_shared[local_row, k] * W_shared[k, local_col]
+
+        barrier()
+
+    if row_in_group < GROUP_SIZE and global_col < OUT_DIM:
+        output[global_row, global_col] = acc
+
+
+@always_inline
+fn q5_grouped_ln_mish_kernel[
+    dtype: DType,
+    NUM_Q: Int,
+    GROUP_SIZE: Int,
+    DIM: Int,
+    PARAM_STRIDE: Int,
+    GAMMA_OFF: Int,
+    BETA_OFF: Int,
+](
+    output: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, DIM), MutAnyOrigin
+    ],
+    input: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, DIM), MutAnyOrigin
+    ],
+    all_params: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * PARAM_STRIDE), MutAnyOrigin
+    ],
+    eps: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Grouped LayerNorm + Mish using per-group gamma/beta from all_params.
+
+    Grid: (NUM_Q * GROUP_SIZE,), Block: (1,).
+    One block per row.
+    """
+    var batch_idx = Int(block_idx.x)
+    if batch_idx >= NUM_Q * GROUP_SIZE:
+        return
+    if thread_idx.x != 0:
+        return
+
+    var group = batch_idx // GROUP_SIZE
+    var param_ptr = all_params.ptr
+    var gamma_ptr = param_ptr + group * PARAM_STRIDE + GAMMA_OFF
+    var beta_ptr = param_ptr + group * PARAM_STRIDE + BETA_OFF
+
+    var n = Scalar[dtype](DIM)
+
+    # Compute mean
+    var mean: output.element_type = 0.0
+    for j in range(DIM):
+        mean = mean + input[batch_idx, j]
+    mean = mean / n
+
+    # Compute variance
+    var var_: output.element_type = 0.0
+    for j in range(DIM):
+        var diff = input[batch_idx, j] - mean
+        var_ = var_ + diff * diff
+    var_ = var_ / n
+
+    var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
+
+    # Normalize + affine + Mish
+    for j in range(DIM):
+        var z_val = input[batch_idx, j]
+        var normalized = (z_val - mean) * inv_std
+        var gamma_j = (gamma_ptr + j)[]
+        var beta_j = (beta_ptr + j)[]
+        var ln_out = gamma_j * normalized + beta_j
+
+        var x_val = rebind[Scalar[DType.float32]](ln_out)
+        var sp: Scalar[DType.float32]
+        if x_val > 20.0:
+            sp = x_val
+        else:
+            sp = log(1.0 + exp(x_val))
+        var exp_sp = exp(sp)
+        var exp_neg_sp = exp(-sp)
+        var tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
+        output[batch_idx, j] = rebind[output.element_type](x_val * tanh_sp)
+
+
+@always_inline
+fn q5_decode_min_kernel[
+    dtype: DType,
+    NUM_Q: Int,
+    GROUP_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    q_min: LayoutTensor[dtype, Layout.row_major(GROUP_SIZE), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Decode NUM_Q distributional Q-values per sample and take min.
+
+    For each sample i: decode logits for all Q groups, store min.
+    Grid: ((GROUP_SIZE + TPB - 1) // TPB,), Block: (TPB,).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= GROUP_SIZE:
+        return
+
+    var min_val = Scalar[dtype](1e30)
+
+    for g in range(NUM_Q):
+        var row = g * GROUP_SIZE + i
+
+        # Numerically stable softmax + dot product
+        var max_l = Scalar[dtype](logits[row, 0][0])
+        for k in range(1, BINS):
+            var v = Scalar[dtype](logits[row, k][0])
+            if v > max_l:
+                max_l = v
+
+        var sum_exp = Scalar[dtype](0.0)
+        for k in range(BINS):
+            sum_exp = sum_exp + exp(
+                Scalar[dtype](logits[row, k][0]) - max_l
+            )
+
+        var expected_val = Scalar[dtype](0.0)
+        for k in range(BINS):
+            var sm_k = exp(
+                Scalar[dtype](logits[row, k][0]) - max_l
+            ) / sum_exp
+            expected_val = expected_val + sm_k * Scalar[dtype](
+                bins[k][0]
+            )
+
+        var val = _symexp[dtype](expected_val)
+        if val < min_val:
+            min_val = val
+
+    q_min[i] = min_val

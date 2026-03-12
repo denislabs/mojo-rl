@@ -28,6 +28,7 @@ from std.math import sqrt, abs
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from layout import LayoutTensor, Layout
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
@@ -2377,6 +2378,180 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # GPU Profiling
+    # =========================================================================
+
+    @staticmethod
+    fn register_gpu_profile_slots(
+        mut timer: PerfTimer[True], parent: Int = -1
+    ) -> Int:
+        """Register 4 profiling slots for Euler GPU step phases.
+
+        Slots (relative to returned base):
+            +0: dynamics  (step_kernel / step_kernel_mt)
+            +1: collision (contact_detection_kernel)
+            +2: solver    (constraint solve)
+            +3: finalize  (integration + normalization)
+
+        Args:
+            timer: PerfTimer to add slots to.
+            parent: Parent slot index (-1 = top-level).
+
+        Returns:
+            Base slot index.
+        """
+        var base = timer.add_slot("dynamics", parent=parent)
+        _ = timer.add_slot("collision", parent=parent)
+        _ = timer.add_slot("solver", parent=parent)
+        _ = timer.add_slot("finalize", parent=parent)
+        return base
+
+    @staticmethod
+    fn step_gpu_profiled[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        BATCH: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[DTYPE],
+        mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
+        mut timer: PerfTimer[True],
+        base: Int,
+    ) raises:
+        """Profiled GPU step — same as step_gpu but with per-phase timing.
+
+        Call register_gpu_profile_slots() first to get the base slot index.
+        Inserts GPU sync + timing between each kernel launch.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: Joint-space state [BATCH, STATE_SIZE].
+            model_buf: Model data.
+            workspace_buf: Solver workspace [BATCH, WS_SIZE].
+            timer: PerfTimer[True] to accumulate timings into.
+            base: Base slot index from register_gpu_profile_slots().
+        """
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
+        comptime MODEL_SIZE = model_size_with_invweight[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+        ]()
+        comptime WS_SIZE = integrator_workspace_size[
+            NV, NBODY
+        ]() + NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
+
+        comptime THREADS = Self.SOLVER.solver_threads[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS
+        ]()
+        comptime ENV_BLOCKS = (BATCH + TPB - 1) // TPB
+        comptime SOLVER_THREADS_BLOCKS = (THREADS + THREADS - 1) // THREADS
+        comptime SOLVER_ENV_TPB = TPB // THREADS
+        comptime SOLVER_ENV_BLOCKS = (
+            BATCH + SOLVER_ENV_TPB - 1
+        ) // SOLVER_ENV_TPB
+
+        var state = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ](state_buf)
+        var model = LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf)
+        var workspace = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ](workspace_buf)
+
+        # ---- Phase 0: Dynamics kernel ----
+        timer.sync_and_mark(ctx)
+
+        comptime if STEP_THREADS > 1:
+            comptime STEP_ENV_TPB = TPB // STEP_THREADS
+            comptime STEP_ENV_BLOCKS = (
+                BATCH + STEP_ENV_TPB - 1
+            ) // STEP_ENV_TPB
+            comptime mt_kernel_wrapper = Self.step_kernel_mt[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+                NM, SPARSE, STEP_THREADS,
+            ]
+            ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
+                state, model, workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            comptime kernel_wrapper = Self.step_kernel[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+                NM, SPARSE,
+            ]
+            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+                state, model, workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        timer.sync_and_accumulate(base + 0, ctx)
+
+        # ---- Phase 1: Contact detection ----
+        timer.mark()
+
+        comptime contact_kernel_wrapper = Self.contact_detection_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        ]
+        ctx.enqueue_function[contact_kernel_wrapper, contact_kernel_wrapper](
+            state, model,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        timer.sync_and_accumulate(base + 1, ctx)
+
+        # ---- Phase 2: Constraint solver ----
+        timer.mark()
+
+        comptime V_SIZE = _max_one[NV]()
+        comptime solver_wrapper = Self.SOLVER.solve_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        ]
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        timer.sync_and_accumulate(base + 2, ctx)
+
+        # ---- Phase 3: Finalize (integration + normalization) ----
+        timer.mark()
+
+        comptime finalize_kernel_wrapper = Self.step_finalize_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NM, SPARSE,
+        ]
+        ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        timer.sync_and_accumulate(base + 3, ctx)
 
     @staticmethod
     fn simulate_gpu[

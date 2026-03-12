@@ -20,6 +20,24 @@ ImplicitIntegrator[SOLVER]:
   - Better stability for systems with significant gyroscopic effects
 
 DefaultIntegrator is an alias for ImplicitFastIntegrator[PGSSolver].
+
+GPU Profiling:
+  All GPU-capable integrators (Euler, ImplicitFast, RK4) provide:
+  - register_gpu_profile_slots(timer, parent) -> base slot index
+  - step_gpu_profiled[...](..., timer, base) — same as step_gpu with per-phase timing
+
+  Euler: 4 slots (dynamics, collision, solver, finalize)
+  ImplicitFast: 3 slots (dynamics, solver, finalize)
+  RK4: 5 slots (stage0, stage1, stage2, stage3, combine)
+
+  Usage:
+    var timer = PerfTimer[True]()
+    var phys_base = EulerIntegrator[NewtonSolver].register_gpu_profile_slots(timer)
+    for _ in range(num_steps):
+        EulerIntegrator[NewtonSolver].step_gpu_profiled[...](
+            ctx, state_buf, model_buf, ws_buf, timer, phys_base
+        )
+    timer.print_report("Physics Profile")
 """
 
 from .euler_integrator import EulerDefaultIntegrator, EulerIntegrator

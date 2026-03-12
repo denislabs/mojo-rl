@@ -2158,6 +2158,8 @@ struct TDMPC2Agent[
             Self.num_pi_trajs,
             Self.H,
             n_envs,
+            Self.mlp_dim,
+            Self.num_q,
         ]
         # Allocate batched MPPI buffers (all envs planned in one GPU call)
         var mppi_bufs = BatchedMPPIBufs(ctx)
