@@ -11,11 +11,11 @@ Requires Inner.IN_DIM == Inner.OUT_DIM (same shape for chaining).
 """
 
 from ...constants import dtype, TPB
-from ...model.model import Model
+from ...model.model import Model, PerfTimerPtr, NULL_PERF
 from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 
 @fieldwise_init
@@ -273,6 +273,8 @@ struct Repeat[n: Int, Inner: Model](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         # Workspace: [inter_buf_0 | ... | inter_buf_{n-2} | Inner ws]
         comptime if Self.n == 1:
@@ -384,6 +386,8 @@ struct Repeat[n: Int, Inner: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         # Dummy cache carved from workspace (after inter region) — no allocation.
         var cache_v = LayoutTensor[
@@ -392,6 +396,26 @@ struct Repeat[n: Int, Inner: Model](Model):
             MutAnyOrigin,
         ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
         Self.forward_gpu[BATCH](ctx, output, input, params, cache_v, workspace)
+
+    @staticmethod
+    fn forward_gpu_no_cache_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward on stream — delegates to default stream."""
+        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -418,6 +442,8 @@ struct Repeat[n: Int, Inner: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         comptime if Self.n == 1:
             var ci = LayoutTensor[

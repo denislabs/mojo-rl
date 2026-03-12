@@ -2286,3 +2286,41 @@ fn mppi_weighted_mean_std_kernel[
         std_val = Scalar[dtype](2.0)
 
     std_out[tid] = std_val
+
+
+# =============================================================================
+# Min-reduce 5 Q values (for parallel stream Q evaluation)
+# =============================================================================
+
+
+@always_inline
+fn tdmpc2_min5_q_values_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+](
+    q1: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    q2: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    q3: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    q4: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    q5: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    q_min: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Element-wise min of 5 decoded Q-value vectors."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+    var v1 = Scalar[dtype](q1[i][0])
+    var v2 = Scalar[dtype](q2[i][0])
+    var v3 = Scalar[dtype](q3[i][0])
+    var v4 = Scalar[dtype](q4[i][0])
+    var v5 = Scalar[dtype](q5[i][0])
+    var m = v1
+    if v2 < m:
+        m = v2
+    if v3 < m:
+        m = v3
+    if v4 < m:
+        m = v4
+    if v5 < m:
+        m = v5
+    q_min[i] = m

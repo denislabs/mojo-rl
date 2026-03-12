@@ -861,14 +861,18 @@ fn run_offpolicy_discrete_train_gpu[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
             ](actions_buf.unsafe_ptr())
             var warmup_seed = Scalar[DType.uint32](step_seed)
-            ctx.enqueue_function[discrete_warmup_kernel, discrete_warmup_kernel](
+            ctx.enqueue_function[
+                discrete_warmup_kernel, discrete_warmup_kernel
+            ](
                 act_t,
                 warmup_seed,
                 grid_dim=(act_blocks,),
                 block_dim=(act_tpb,),
             )
         else:
-            agent.select_actions_gpu[n_envs](ctx, gpu_state, obs_buf, actions_buf)
+            agent.select_actions_gpu[n_envs](
+                ctx, gpu_state, obs_buf, actions_buf
+            )
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(1, ctx)
             timer.mark()

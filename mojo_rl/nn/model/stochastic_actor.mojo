@@ -1,5 +1,5 @@
 from ..constants import dtype
-from .model import Model
+from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
@@ -933,6 +933,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch forward pass on GPU with caching."""
         var W_mean = LayoutTensor[
@@ -1014,6 +1016,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
         var W_mean = LayoutTensor[
@@ -1089,6 +1093,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch backward pass on GPU.
 

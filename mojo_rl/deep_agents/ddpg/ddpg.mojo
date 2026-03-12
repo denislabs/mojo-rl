@@ -77,6 +77,7 @@ from mojo_rl.deep_agents.core.kernels import (
     td_target_continuous_kernel,
 )
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+from mojo_rl.nn.model.model import PerfTimerPtr
 from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
@@ -206,6 +207,16 @@ struct DeepDDPGAgent[
     # Level-2 profiler: sub-phases of do_gpu_train_step
     var train_timer: PerfTimer[Self.profile >= 1]
 
+    # Level-3 profiler: per-layer timing (base slot indices into train_timer)
+    var actor_target_fwd_base: Int   # actor target forward in td_targets phase
+    var critic_target_fwd_base: Int  # critic target forward in td_targets phase
+    var critic_fwd_base: Int         # critic forward in critic_update phase
+    var critic_bwd_base: Int         # critic backward in critic_update phase
+    var actor_fwd_base: Int          # actor forward in actor_update phase
+    var critic_policy_fwd_base: Int  # critic forward for policy grad in actor_update
+    var critic_policy_bwd_base: Int  # critic backward for policy grad in actor_update
+    var actor_bwd_base: Int          # actor backward in actor_update phase
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -244,13 +255,57 @@ struct DeepDDPGAgent[
         self.total_steps = 0
         self.train_step_count = 0
         self.train_timer = PerfTimer[Self.profile >= 1]()
+        self.actor_target_fwd_base = 0
+        self.critic_target_fwd_base = 0
+        self.critic_fwd_base = 0
+        self.critic_bwd_base = 0
+        self.actor_fwd_base = 0
+        self.critic_policy_fwd_base = 0
+        self.critic_policy_bwd_base = 0
+        self.actor_bwd_base = 0
         comptime if Self.profile >= 2:
             _ = self.train_timer.add_slot("sample_batch")
             _ = self.train_timer.add_slot("td_targets")
             _ = self.train_timer.add_slot("critic_update")
             _ = self.train_timer.add_slot("actor_update")
+        comptime if Self.profile >= 3:
+            # L3 slots as children of L2 sub-phases
+            # td_targets (slot 1): actor target fwd + critic target fwd
+            self.actor_target_fwd_base = Self.ActorModel.register_forward_slots(
+                self.train_timer, parent=1
+            )
+            self.critic_target_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=1
+            )
+            # critic_update (slot 2): critic fwd + critic bwd
+            self.critic_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=2
+            )
+            self.critic_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=2
+            )
+            # actor_update (slot 3): actor fwd + critic fwd + critic bwd + actor bwd
+            self.actor_fwd_base = Self.ActorModel.register_forward_slots(
+                self.train_timer, parent=3
+            )
+            self.critic_policy_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=3
+            )
+            self.critic_policy_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=3
+            )
+            self.actor_bwd_base = Self.ActorModel.register_backward_slots(
+                self.train_timer, parent=3
+            )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+
+    fn _perf_ptr(mut self) -> PerfTimerPtr:
+        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        comptime if Self.profile >= 3:
+            return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
+        else:
+            return PerfTimerPtr(unsafe_from_address=0)
 
     # =========================================================================
     # OffPolicyContinuousAgent trait — required methods (CPU training)
@@ -704,7 +759,8 @@ struct DeepDDPGAgent[
         var p_critic = gpu_state.critic.online.params_view()
 
         Self.ActorNet.forward_gpu[BATCH](
-            ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws
+            ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws,
+            perf=self._perf_ptr(), perf_slot=self.actor_target_fwd_base,
         )
 
         @always_inline
@@ -728,7 +784,8 @@ struct DeepDDPGAgent[
         )
 
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
+            ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws,
+            perf=self._perf_ptr(), perf_slot=self.critic_target_fwd_base,
         )
 
         var gamma_s = Scalar[dtype](self.gamma)
@@ -798,7 +855,8 @@ struct DeepDDPGAgent[
         )
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q_t, p_critic, q_cache_t, gpu_state.critic_ws
+            ctx, ci_t, q_t, p_critic, q_cache_t, gpu_state.critic_ws,
+            perf=self._perf_ptr(), perf_slot=self.critic_fwd_base,
         )
 
         @always_inline
@@ -827,6 +885,7 @@ struct DeepDDPGAgent[
             q_cache_t,
             g_critic,
             gpu_state.critic_ws,
+            perf=self._perf_ptr(), perf_slot=self.critic_bwd_base,
         )
         gpu_state.critic.online.optimizer_step(ctx)
 
@@ -864,7 +923,8 @@ struct DeepDDPGAgent[
         ](gpu_state.d_obs.unsafe_ptr())
 
         Self.ActorNet.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, actor_act_t, p_actor, actor_cache_t, gpu_state.actor_ws
+            ctx, obs_t, actor_act_t, p_actor, actor_cache_t, gpu_state.actor_ws,
+            perf=self._perf_ptr(), perf_slot=self.actor_fwd_base,
         )
 
         @always_inline
@@ -888,7 +948,8 @@ struct DeepDDPGAgent[
         )
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, new_ci_t, new_q_t, p_critic, new_q_cache_t, gpu_state.critic_ws
+            ctx, new_ci_t, new_q_t, p_critic, new_q_cache_t, gpu_state.critic_ws,
+            perf=self._perf_ptr(), perf_slot=self.critic_policy_fwd_base,
         )
 
         var g_critic2 = gpu_state.critic.online.grads_view()
@@ -901,6 +962,7 @@ struct DeepDDPGAgent[
             new_q_cache_t,
             g_critic2,
             gpu_state.critic_ws,
+            perf=self._perf_ptr(), perf_slot=self.critic_policy_bwd_base,
         )
 
         @always_inline
@@ -931,6 +993,7 @@ struct DeepDDPGAgent[
             actor_cache_t,
             g_actor,
             gpu_state.actor_ws,
+            perf=self._perf_ptr(), perf_slot=self.actor_bwd_base,
         )
         gpu_state.actor.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:

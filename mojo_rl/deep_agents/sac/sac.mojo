@@ -76,6 +76,7 @@ from mojo_rl.deep_agents.core import (
 )
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+from mojo_rl.nn.model.model import PerfTimerPtr
 
 from mojo_rl.nn.gpu.random import gaussian_noise
 from mojo_rl.deep_agents.core.kernels import (
@@ -245,6 +246,27 @@ struct DeepSACAgent[
     # Level-2 profiler: sub-phases of do_gpu_train_step
     var train_timer: PerfTimer[Self.profile >= 1]
 
+    # Level-3 profiler: per-layer timing (base slot indices into train_timer)
+    # Phase 1 (next_action_sample): actor forward
+    var next_actor_fwd_base: Int
+    # Phase 2 (td_targets): critic1_target forward, critic2_target forward
+    var c1t_fwd_base: Int
+    var c2t_fwd_base: Int
+    # Phase 3 (critic1_update): critic1 forward + backward
+    var c1_fwd_base: Int
+    var c1_bwd_base: Int
+    # Phase 4 (critic2_update): critic2 forward + backward
+    var c2_fwd_base: Int
+    var c2_bwd_base: Int
+    # Phase 5 (actor_alpha_update): actor fwd, critic1 fwd, critic2 fwd,
+    #   critic1 bwd, critic2 bwd, actor bwd
+    var actor_fwd_base: Int
+    var pg_c1_fwd_base: Int
+    var pg_c2_fwd_base: Int
+    var pg_c1_bwd_base: Int
+    var pg_c2_bwd_base: Int
+    var actor_bwd_base: Int
+
     # Auto-checkpoint settings
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -295,6 +317,19 @@ struct DeepSACAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.train_timer = PerfTimer[Self.profile >= 1]()
+        self.next_actor_fwd_base = 0
+        self.c1t_fwd_base = 0
+        self.c2t_fwd_base = 0
+        self.c1_fwd_base = 0
+        self.c1_bwd_base = 0
+        self.c2_fwd_base = 0
+        self.c2_bwd_base = 0
+        self.actor_fwd_base = 0
+        self.pg_c1_fwd_base = 0
+        self.pg_c2_fwd_base = 0
+        self.pg_c1_bwd_base = 0
+        self.pg_c2_bwd_base = 0
+        self.actor_bwd_base = 0
         comptime if Self.profile >= 2:
             _ = self.train_timer.add_slot("sample_batch")
             _ = self.train_timer.add_slot("next_action_sample")
@@ -302,6 +337,59 @@ struct DeepSACAgent[
             _ = self.train_timer.add_slot("critic1_update")
             _ = self.train_timer.add_slot("critic2_update")
             _ = self.train_timer.add_slot("actor_alpha_update")
+        comptime if Self.profile >= 3:
+            # Phase 1 (next_action_sample, L2 slot 1): actor forward
+            self.next_actor_fwd_base = Self.ActorModel.register_forward_slots(
+                self.train_timer, parent=1
+            )
+            # Phase 2 (td_targets, L2 slot 2): critic1_target fwd, critic2_target fwd
+            self.c1t_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=2
+            )
+            self.c2t_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=2
+            )
+            # Phase 3 (critic1_update, L2 slot 3): critic1 fwd + bwd
+            self.c1_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=3
+            )
+            self.c1_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=3
+            )
+            # Phase 4 (critic2_update, L2 slot 4): critic2 fwd + bwd
+            self.c2_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=4
+            )
+            self.c2_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=4
+            )
+            # Phase 5 (actor_alpha_update, L2 slot 5):
+            #   actor fwd, critic1 fwd, critic2 fwd, critic1 bwd, critic2 bwd, actor bwd
+            self.actor_fwd_base = Self.ActorModel.register_forward_slots(
+                self.train_timer, parent=5
+            )
+            self.pg_c1_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=5
+            )
+            self.pg_c2_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=5
+            )
+            self.pg_c1_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=5
+            )
+            self.pg_c2_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=5
+            )
+            self.actor_bwd_base = Self.ActorModel.register_backward_slots(
+                self.train_timer, parent=5
+            )
+
+    fn _perf_ptr(mut self) -> PerfTimerPtr:
+        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        comptime if Self.profile >= 3:
+            return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
+        else:
+            return PerfTimerPtr(unsafe_from_address=0)
 
     # =========================================================================
     # OffPolicyContinuousAgent trait — required methods
@@ -1211,7 +1299,8 @@ struct DeepSACAgent[
             dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
         ](gpu_state.next_actor_out.unsafe_ptr())
         Self.ActorNet.forward_gpu[BATCH](
-            ctx, nobs_t, next_actor_out_t, p_actor, gpu_state.actor_ws
+            ctx, nobs_t, next_actor_out_t, p_actor, gpu_state.actor_ws,
+            perf=self._perf_ptr(), perf_slot=self.next_actor_fwd_base,
         )
 
         # ----- Phase 3: sac_rsample next actions + log_probs -----
@@ -1303,10 +1392,12 @@ struct DeepSACAgent[
         ](gpu_state.nq2.unsafe_ptr())
 
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws
+            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws,
+            perf=self._perf_ptr(), perf_slot=self.c1t_fwd_base,
         )
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws
+            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws,
+            perf=self._perf_ptr(), perf_slot=self.c2t_fwd_base,
         )
 
         # ----- Phase 6: SAC TD targets with entropy bonus -----
@@ -1388,7 +1479,8 @@ struct DeepSACAgent[
         ](gpu_state.d_ci1.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws
+            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws,
+            perf=self._perf_ptr(), perf_slot=self.c1_fwd_base,
         )
 
         @always_inline
@@ -1417,6 +1509,7 @@ struct DeepSACAgent[
             q1_cache_t,
             g_c1,
             gpu_state.critic1_ws,
+            perf=self._perf_ptr(), perf_slot=self.c1_bwd_base,
         )
         gpu_state.critic1.online.optimizer_step(ctx)
 
@@ -1439,7 +1532,8 @@ struct DeepSACAgent[
         ](gpu_state.d_ci2.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws
+            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws,
+            perf=self._perf_ptr(), perf_slot=self.c2_fwd_base,
         )
 
         @always_inline
@@ -1468,6 +1562,7 @@ struct DeepSACAgent[
             q2_cache_t,
             g_c2,
             gpu_state.critic2_ws,
+            perf=self._perf_ptr(), perf_slot=self.c2_bwd_base,
         )
         gpu_state.critic2.online.optimizer_step(ctx)
 
@@ -1493,6 +1588,7 @@ struct DeepSACAgent[
                 p_actor,
                 actor_cache_t,
                 gpu_state.actor_ws,
+                perf=self._perf_ptr(), perf_slot=self.actor_fwd_base,
             )
 
             # 10b: sac_rsample with cache → curr_act, curr_lp, eps_cache (for backward)
@@ -1579,6 +1675,7 @@ struct DeepSACAgent[
                 p_c1,
                 new_q_cache_t,
                 gpu_state.critic1_ws,
+                perf=self._perf_ptr(), perf_slot=self.pg_c1_fwd_base,
             )
 
             # Q2 forward on policy actions (reuse q2_out/q2_cache — Phase 9 is done)
@@ -1596,6 +1693,7 @@ struct DeepSACAgent[
                 p_c2,
                 new_q2_cache_t,
                 gpu_state.critic2_ws,
+                perf=self._perf_ptr(), perf_slot=self.pg_c2_fwd_base,
             )
 
             # 10d2: min(Q1, Q2) mask → dq1 goes to dq, dq2 goes to q2_grad
@@ -1647,6 +1745,7 @@ struct DeepSACAgent[
                 new_q_cache_t,
                 g_c1_pg,
                 gpu_state.critic1_ws,
+                perf=self._perf_ptr(), perf_slot=self.pg_c1_bwd_base,
             )
             # Intentionally NO optimizer_step here
 
@@ -1665,6 +1764,7 @@ struct DeepSACAgent[
                 new_q2_cache_t,
                 g_c2_pg,
                 gpu_state.critic2_ws,
+                perf=self._perf_ptr(), perf_slot=self.pg_c2_bwd_base,
             )
             # Intentionally NO optimizer_step here
 
@@ -1775,6 +1875,7 @@ struct DeepSACAgent[
                 actor_cache_t,
                 g_actor,
                 gpu_state.actor_ws,
+                perf=self._perf_ptr(), perf_slot=self.actor_bwd_base,
             )
             gpu_state.actor.optimizer_step(ctx)
 

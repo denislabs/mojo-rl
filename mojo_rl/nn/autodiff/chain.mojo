@@ -1,10 +1,10 @@
 from ..constants import dtype
-from ..model.model import Model
+from ..model.model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from .op import DiffOp
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.builtin.variadics import Variadic
 
 # =============================================================================
@@ -407,6 +407,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward pass using pre-allocated workspace for intermediates.
 
@@ -525,6 +527,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU inference forward. Dummy cache carved from workspace — no allocation."""
 
@@ -569,6 +573,26 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 ctx, output, input, params, cache_v, workspace
             )
 
+    @staticmethod
+    fn forward_gpu_no_cache_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward on stream — delegates to default stream."""
+        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+
     # =========================================================================
     # GPU Backward
     # =========================================================================
@@ -594,6 +618,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU backward pass. Workspace inter region reused for gradient intermediates.
         """

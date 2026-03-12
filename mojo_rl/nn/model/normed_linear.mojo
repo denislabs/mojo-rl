@@ -1,9 +1,9 @@
 from ..constants import dtype, TILE, TPB
-from .model import Model
+from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block
 from std.math import sqrt, exp, log
@@ -929,6 +929,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward with caching: Linear kernel → fused LN+Mish kernel."""
         var W = LayoutTensor[
@@ -1045,6 +1047,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward without caching (inference)."""
         var W = LayoutTensor[
@@ -1138,6 +1142,116 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
+    fn forward_gpu_no_cache_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward without caching — on DeviceStream."""
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
+        ](params.ptr)
+        var b = LayoutTensor[
+            dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+        ](params.ptr + Self._B_OFFSET)
+        var gamma = LayoutTensor[
+            dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+        ](params.ptr + Self._GAMMA_OFFSET)
+        var beta = LayoutTensor[
+            dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+        ](params.ptr + Self._BETA_OFFSET)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+
+        var linear_out_mut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](workspace.unsafe_ptr())
+        var linear_out_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](workspace.unsafe_ptr())
+
+        var eps_scalar = Scalar[dtype](Self.EPSILON)
+
+        comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
+        comptime grid_y = (BATCH + TILE - 1) // TILE
+
+        @always_inline
+        fn linear_wrapper(
+            linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
+            ],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self.forward_linear_kernel_impl_no_cache[BATCH](
+                linear_out, input, W, b
+            )
+
+        var compiled_linear = ctx.compile_function[linear_wrapper, linear_wrapper]()
+        stream.enqueue_function(
+            compiled_linear,
+            linear_out_mut,
+            input_immut,
+            W,
+            b,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(TILE, TILE),
+        )
+
+        @always_inline
+        fn ln_mish_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            gamma: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            beta: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            eps: Scalar[dtype],
+        ):
+            Self.forward_ln_mish_kernel_impl_no_cache[BATCH](
+                output, linear_out, gamma, beta, eps
+            )
+
+        var compiled_ln_mish = ctx.compile_function[ln_mish_wrapper, ln_mish_wrapper]()
+        stream.enqueue_function(
+            compiled_ln_mish,
+            output,
+            linear_out_immut,
+            gamma,
+            beta,
+            eps_scalar,
+            grid_dim=(BATCH,),
+            block_dim=(1,),
+        )
+
+    @staticmethod
     fn backward_gpu[
         BATCH: Int,
     ](
@@ -1158,6 +1272,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU backward: fused Mish+LN kernel → fused Linear backward kernel."""
         var W = LayoutTensor[

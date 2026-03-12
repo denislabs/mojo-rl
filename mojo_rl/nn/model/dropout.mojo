@@ -1,9 +1,9 @@
 from ..constants import dtype
-from .model import Model
+from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.random import seed, random_ui64
 from ..constants import TPB
 
@@ -316,6 +316,8 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch forward pass on GPU with caching."""
         var input_immut = LayoutTensor[
@@ -389,6 +391,8 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch forward pass on GPU without caching (identity)."""
         var input_immut = LayoutTensor[
@@ -417,6 +421,26 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         )
 
     @staticmethod
+    fn forward_gpu_no_cache_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward on stream — delegates to default stream."""
+        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+
+    @staticmethod
     fn backward_gpu[
         BATCH: Int,
     ](
@@ -437,6 +461,8 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """Launch backward pass on GPU."""
         var grad_output_immut = LayoutTensor[

@@ -1,7 +1,14 @@
 from ..constants import dtype
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.memory import UnsafePointer
+
+# Opaque pointer for optional per-layer profiling timer.
+# Null (address=0) = no profiling. Non-null = points to a PerfTimer[True].
+# Sequential uses this to inject sync+timing around each layer.
+comptime PerfTimerPtr = UnsafePointer[NoneType, MutAnyOrigin]
+comptime NULL_PERF = PerfTimerPtr(unsafe_from_address=0)
 
 
 trait Model(Movable & ImplicitlyCopyable):
@@ -172,6 +179,8 @@ trait Model(Movable & ImplicitlyCopyable):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward pass with caching (for training).
 
@@ -182,6 +191,8 @@ trait Model(Movable & ImplicitlyCopyable):
             params: Parameters [PARAM_SIZE].
             cache: Cache [BATCH, CACHE_SIZE] (written).
             workspace: Pre-allocated workspace for Sequential intermediate buffers.
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index in the timer for per-layer timing.
         """
         ...
 
@@ -200,6 +211,8 @@ trait Model(Movable & ImplicitlyCopyable):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward pass without caching (for inference).
 
@@ -209,6 +222,36 @@ trait Model(Movable & ImplicitlyCopyable):
             input: Input [BATCH, IN_DIM].
             params: Parameters [PARAM_SIZE].
             workspace: Pre-allocated workspace for Sequential intermediate buffers.
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index in the timer for per-layer timing.
+        """
+        ...
+
+    # =========================================================================
+    # GPU forward pass (no cache) — on DeviceStream
+    # =========================================================================
+
+    @staticmethod
+    fn forward_gpu_no_cache_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass without caching, enqueued on a DeviceStream.
+
+        Default: delegates to forward_gpu_no_cache (default stream).
+        Override for actual stream parallelism.
         """
         ...
 
@@ -237,6 +280,8 @@ trait Model(Movable & ImplicitlyCopyable):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU backward pass.
 
@@ -248,5 +293,7 @@ trait Model(Movable & ImplicitlyCopyable):
             cache: Cache from forward pass [BATCH, CACHE_SIZE].
             grads: Parameter gradients [PARAM_SIZE] (accumulated).
             workspace: Pre-allocated workspace for Sequential intermediate buffers.
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index in the timer for per-layer timing.
         """
         ...

@@ -109,6 +109,7 @@ from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
 )
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+from mojo_rl.nn.model.model import PerfTimerPtr
 
 # =============================================================================
 # Deep PPO Continuous Agent
@@ -453,6 +454,13 @@ struct DeepPPOContinuousAgent[
             self.critic_bwd_base = Self.CriticModel.register_backward_slots(
                 self.train_timer, parent=11
             )
+
+    fn _perf_ptr(mut self) -> PerfTimerPtr:
+        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        comptime if Self.profile >= 3:
+            return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
+        else:
+            return PerfTimerPtr(unsafe_from_address=0)
 
     # =========================================================================
     # Action Selection (for evaluation)
@@ -2384,26 +2392,16 @@ struct DeepPPOContinuousAgent[
 
                 # Actor forward
                 gpu_state.gpu_actor.zero_grads(ctx)
-                comptime if Self.profile >= 3:
-                    Self.ActorModel.forward_gpu_profiled[MINIBATCH](
-                        ctx,
-                        actor_output_mb_t,
-                        mb_obs_t,
-                        actor_params_t,
-                        actor_cache_t,
-                        gpu_state.actor_mb_workspace_buf,
-                        self.train_timer,
-                        self.actor_fwd_base,
-                    )
-                else:
-                    Self.ActorModel.forward_gpu[MINIBATCH](
-                        ctx,
-                        actor_output_mb_t,
-                        mb_obs_t,
-                        actor_params_t,
-                        actor_cache_t,
-                        gpu_state.actor_mb_workspace_buf,
-                    )
+                Self.ActorModel.forward_gpu[MINIBATCH](
+                    ctx,
+                    actor_output_mb_t,
+                    mb_obs_t,
+                    actor_params_t,
+                    actor_cache_t,
+                    gpu_state.actor_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.actor_fwd_base,
+                )
 
                 # Actor grad kernel
                 ctx.enqueue_function[actor_grad_wrapper, actor_grad_wrapper](
@@ -2441,28 +2439,17 @@ struct DeepPPOContinuousAgent[
                     self.train_timer.mark()
 
                 # Actor backward
-                comptime if Self.profile >= 3:
-                    Self.ActorModel.backward_gpu_profiled[MINIBATCH](
-                        ctx,
-                        actor_grad_input_t,
-                        actor_grad_output_t,
-                        actor_params_t,
-                        actor_cache_t,
-                        actor_grads_t,
-                        gpu_state.actor_mb_workspace_buf,
-                        self.train_timer,
-                        self.actor_bwd_base,
-                    )
-                else:
-                    Self.ActorModel.backward_gpu[MINIBATCH](
-                        ctx,
-                        actor_grad_input_t,
-                        actor_grad_output_t,
-                        actor_params_t,
-                        actor_cache_t,
-                        actor_grads_t,
-                        gpu_state.actor_mb_workspace_buf,
-                    )
+                Self.ActorModel.backward_gpu[MINIBATCH](
+                    ctx,
+                    actor_grad_input_t,
+                    actor_grad_output_t,
+                    actor_params_t,
+                    actor_cache_t,
+                    actor_grads_t,
+                    gpu_state.actor_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.actor_bwd_base,
+                )
 
                 # Gradient clipping for actor (fused, 2 kernels)
                 if self.max_grad_norm > 0.0:
@@ -2501,26 +2488,16 @@ struct DeepPPOContinuousAgent[
 
                 # Critic forward
                 gpu_state.gpu_critic.zero_grads(ctx)
-                comptime if Self.profile >= 3:
-                    Self.CriticModel.forward_gpu_profiled[MINIBATCH](
-                        ctx,
-                        critic_values_t,
-                        mb_obs_t,
-                        critic_params_t,
-                        critic_cache_t,
-                        gpu_state.critic_mb_workspace_buf,
-                        self.train_timer,
-                        self.critic_fwd_base,
-                    )
-                else:
-                    Self.CriticModel.forward_gpu[MINIBATCH](
-                        ctx,
-                        critic_values_t,
-                        mb_obs_t,
-                        critic_params_t,
-                        critic_cache_t,
-                        gpu_state.critic_mb_workspace_buf,
-                    )
+                Self.CriticModel.forward_gpu[MINIBATCH](
+                    ctx,
+                    critic_values_t,
+                    mb_obs_t,
+                    critic_params_t,
+                    critic_cache_t,
+                    gpu_state.critic_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.critic_fwd_base,
+                )
 
                 # Critic grad kernel
                 comptime if Self.clip_value:
@@ -2556,28 +2533,17 @@ struct DeepPPOContinuousAgent[
                     self.train_timer.mark()
 
                 # Critic backward
-                comptime if Self.profile >= 3:
-                    Self.CriticModel.backward_gpu_profiled[MINIBATCH](
-                        ctx,
-                        critic_grad_input_t,
-                        critic_grad_output_t,
-                        critic_params_t,
-                        critic_cache_t,
-                        critic_grads_t,
-                        gpu_state.critic_mb_workspace_buf,
-                        self.train_timer,
-                        self.critic_bwd_base,
-                    )
-                else:
-                    Self.CriticModel.backward_gpu[MINIBATCH](
-                        ctx,
-                        critic_grad_input_t,
-                        critic_grad_output_t,
-                        critic_params_t,
-                        critic_cache_t,
-                        critic_grads_t,
-                        gpu_state.critic_mb_workspace_buf,
-                    )
+                Self.CriticModel.backward_gpu[MINIBATCH](
+                    ctx,
+                    critic_grad_input_t,
+                    critic_grad_output_t,
+                    critic_params_t,
+                    critic_cache_t,
+                    critic_grads_t,
+                    gpu_state.critic_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.critic_bwd_base,
+                )
 
                 # Gradient clipping for critic (fused, 2 kernels)
                 if self.max_grad_norm > 0.0:

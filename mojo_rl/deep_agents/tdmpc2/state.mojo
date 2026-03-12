@@ -263,6 +263,22 @@ struct BatchedMPPIGPUBuffers[
     var std_buf: DeviceBuffer[dtype]
     var weights_buf: DeviceBuffer[dtype]  # [BATCH_TOTAL] softmax weights
 
+    # ── Per-Q stream buffers (for parallel Q evaluation) ──────────────────
+    # 5 separate workspace + output buffers so Q1..Q5 can run on streams
+    var q_ws_buf1: DeviceBuffer[dtype]
+    var q_ws_buf2: DeviceBuffer[dtype]
+    var q_ws_buf3: DeviceBuffer[dtype]
+    var q_ws_buf4: DeviceBuffer[dtype]
+    var q_ws_buf5: DeviceBuffer[dtype]
+    var q_out_buf1: DeviceBuffer[dtype]
+    var q_out_buf2: DeviceBuffer[dtype]
+    var q_out_buf3: DeviceBuffer[dtype]
+    var q_out_buf4: DeviceBuffer[dtype]
+    var q_out_buf5: DeviceBuffer[dtype]
+
+    # ── Separate reward workspace for parallel rew+dyn on streams ───────
+    var rew_ws_buf2: DeviceBuffer[dtype]  # second rew workspace for stream
+
     # ── Host buffers for CPU distribution update ──────────────────────────
     var returns_host: HostBuffer[dtype]
     var all_actions_host: HostBuffer[dtype]
@@ -319,6 +335,24 @@ struct BatchedMPPIGPUBuffers[
         self.std_host = ctx.enqueue_create_host_buffer[dtype](Self.MEAN_STD)
         self.weights_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH_TOTAL
+        )
+
+        # Per-Q stream buffers
+        comptime Q_WS_SZ = Self.BATCH_TOTAL * Self.Q_W
+        self.q_ws_buf1 = ctx.enqueue_create_buffer[dtype](Q_WS_SZ)
+        self.q_ws_buf2 = ctx.enqueue_create_buffer[dtype](Q_WS_SZ)
+        self.q_ws_buf3 = ctx.enqueue_create_buffer[dtype](Q_WS_SZ)
+        self.q_ws_buf4 = ctx.enqueue_create_buffer[dtype](Q_WS_SZ)
+        self.q_ws_buf5 = ctx.enqueue_create_buffer[dtype](Q_WS_SZ)
+        self.q_out_buf1 = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.q_out_buf2 = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.q_out_buf3 = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.q_out_buf4 = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+        self.q_out_buf5 = ctx.enqueue_create_buffer[dtype](Self.BT_BINS)
+
+        # Separate reward workspace for parallel rew+dyn
+        self.rew_ws_buf2 = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL * Self.REW_W
         )
 
 

@@ -15,7 +15,7 @@ from ...constants import (
 from ...autodiff.op import DiffOp, FusedOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceStream
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu
@@ -1108,6 +1108,75 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 Self.eval_kernel_2x2[BATCH](output, input, W, b, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
+            output,
+            input_immut,
+            W,
+            b,
+            cache,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+    @staticmethod
+    fn eval_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+    ) raises:
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
+        ](params.ptr)
+        var b = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+        ](params.ptr + Self.in_dim * Self.out_dim)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ](input.ptr)
+
+        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        fn wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                ImmutAnyOrigin,
+            ],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.eval_kernel_mma[BATCH](output, input, W, b, cache)
+            else:
+                Self.eval_kernel_2x2[BATCH](output, input, W, b, cache)
+
+        var compiled = ctx.compile_function[wrapper, wrapper]()
+        stream.enqueue_function(
+            compiled,
             output,
             input_immut,
             W,

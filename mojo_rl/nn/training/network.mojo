@@ -41,6 +41,7 @@ Usage:
 """
 
 from ..model import Model
+from ..model.model import PerfTimerPtr, NULL_PERF
 from ..optimizer import Optimizer
 from ..constants import dtype
 
@@ -179,6 +180,8 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         workspace_buf: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward pass without caching.
 
@@ -188,9 +191,11 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             output: Device output tensor [BATCH, OUT_DIM] (written).
             params: Device params tensor [PARAM_SIZE] (e.g. gpu.params_view()).
             workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.forward_gpu_no_cache[BATCH](
-            ctx, output, input, params, workspace_buf
+            ctx, output, input, params, workspace_buf, perf, perf_slot
         )
 
     @staticmethod
@@ -211,6 +216,8 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
         workspace_buf: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU forward pass with caching (needed for backward).
 
@@ -221,9 +228,11 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             params: Device params tensor [PARAM_SIZE].
             cache: Device cache tensor [BATCH, CACHE_SIZE] (written).
             workspace_buf: Pre-allocated workspace.
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.forward_gpu[BATCH](
-            ctx, output, input, params, cache, workspace_buf
+            ctx, output, input, params, cache, workspace_buf, perf, perf_slot
         )
 
     @staticmethod
@@ -247,6 +256,8 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         workspace_buf: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
     ) raises:
         """GPU backward pass (accumulates into grads).
 
@@ -258,7 +269,10 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             cache: Cache from forward_gpu_with_cache [BATCH, CACHE_SIZE].
             grads: Device grads tensor [PARAM_SIZE] (e.g. gpu.grads_view()).
             workspace_buf: Pre-allocated workspace.
+            perf: Optional profiling timer pointer (null = no profiling).
+            perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.backward_gpu[BATCH](
-            ctx, grad_input, grad_output, params, cache, grads, workspace_buf
+            ctx, grad_input, grad_output, params, cache, grads, workspace_buf,
+            perf, perf_slot,
         )

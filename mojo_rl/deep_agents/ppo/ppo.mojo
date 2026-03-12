@@ -95,6 +95,8 @@ from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
     run_onpolicy_discrete_train_gpu,
 )
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+from mojo_rl.nn.model.model import PerfTimerPtr
+from std.memory import UnsafePointer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 from mojo_rl.deep_agents.core.eval import (
     run_onpolicy_discrete_eval,
@@ -246,6 +248,12 @@ struct DeepPPOAgent[
     # Level-2 profiler: sub-phases of GPU methods
     var train_timer: PerfTimer[Self.profile >= 1]
 
+    # Level-3 profiler: per-layer timing (base slot indices into train_timer)
+    var actor_fwd_base: Int
+    var actor_bwd_base: Int
+    var critic_fwd_base: Int
+    var critic_bwd_base: Int
+
     # Auto-checkpoint settings
     var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
     var checkpoint_path: String  # Path for auto-checkpointing
@@ -320,6 +328,10 @@ struct DeepPPOAgent[
 
         # Initialize profiling timer
         self.train_timer = PerfTimer[Self.profile >= 1]()
+        self.actor_fwd_base = 0
+        self.actor_bwd_base = 0
+        self.critic_fwd_base = 0
+        self.critic_bwd_base = 0
         comptime if Self.profile >= 2:
             # select_actions sub-phases (slots 0-2)
             _ = self.train_timer.add_slot("actor_forward")
@@ -336,10 +348,33 @@ struct DeepPPOAgent[
             _ = self.train_timer.add_slot("actor_backward")
             _ = self.train_timer.add_slot("critic_forward_cached")
             _ = self.train_timer.add_slot("critic_backward")
+        comptime if Self.profile >= 3:
+            # L3 slots as children of L2 update_epochs sub-phases
+            # slot 8 = actor_forward_cached, 9 = actor_backward
+            # slot 10 = critic_forward_cached, 11 = critic_backward
+            self.actor_fwd_base = Self.ActorModel.register_forward_slots(
+                self.train_timer, parent=8
+            )
+            self.actor_bwd_base = Self.ActorModel.register_backward_slots(
+                self.train_timer, parent=9
+            )
+            self.critic_fwd_base = Self.CriticModel.register_forward_slots(
+                self.train_timer, parent=10
+            )
+            self.critic_bwd_base = Self.CriticModel.register_backward_slots(
+                self.train_timer, parent=11
+            )
 
         # Auto-checkpoint settings
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+
+    fn _perf_ptr(mut self) -> PerfTimerPtr:
+        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        comptime if Self.profile >= 3:
+            return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
+        else:
+            return PerfTimerPtr(unsafe_from_address=0)
 
     fn select_action(
         self,
@@ -2207,6 +2242,8 @@ struct DeepPPOAgent[
                     actor_params_t,
                     actor_cache_t,
                     gpu_state.actor_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.actor_fwd_base,
                 )
                 ctx.synchronize()
 
@@ -2252,6 +2289,8 @@ struct DeepPPOAgent[
                     actor_cache_t,
                     actor_grads_t,
                     gpu_state.actor_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.actor_bwd_base,
                 )
 
                 if self.max_grad_norm > 0.0:
@@ -2298,6 +2337,8 @@ struct DeepPPOAgent[
                     critic_params_t,
                     critic_cache_t,
                     gpu_state.critic_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.critic_fwd_base,
                 )
                 ctx.synchronize()
 
@@ -2341,6 +2382,8 @@ struct DeepPPOAgent[
                     critic_cache_t,
                     critic_grads_t,
                     gpu_state.critic_mb_workspace_buf,
+                    perf=self._perf_ptr(),
+                    perf_slot=self.critic_bwd_base,
                 )
 
                 if self.max_grad_norm > 0.0:
@@ -2431,9 +2474,9 @@ struct DeepPPOAgent[
 
         # Merge L2 sub-phases into L1 slots
         comptime if Self.profile >= 2:
-            timer.merge_children_range(0, self.train_timer, 0, 3)
-            timer.merge_children_range(6, self.train_timer, 3, 7)
-            timer.merge_children_range(7, self.train_timer, 7, 12)
+            timer.merge_subtree_range(0, self.train_timer, 0, 3)
+            timer.merge_subtree_range(6, self.train_timer, 3, 7)
+            timer.merge_subtree_range(7, self.train_timer, 7, 12)
 
         comptime if Self.profile >= 1:
             timer.print_report("PPO Discrete (GPU) Profile")
