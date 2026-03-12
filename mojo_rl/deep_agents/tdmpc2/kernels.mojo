@@ -2114,7 +2114,12 @@ fn mppi_softmax_weights_kernel[
     var base = env_idx * TOTAL_SAMPLES
 
     # Shared memory for reductions
-    var smem = stack_allocation[BLOCK_SIZE, dtype]()
+    var smem = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
 
     # ── Pass 1: find max return for numerical stability ──
     var local_max = Scalar[dtype](-1e30)
