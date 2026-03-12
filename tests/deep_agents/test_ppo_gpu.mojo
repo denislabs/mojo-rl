@@ -70,7 +70,7 @@ fn main() raises:
             minibatch_size=GPU_MINIBATCH_SIZE,
             normalize_advantages=True,
             # Advanced hyperparameters
-            target_kl=0.0,  # Disabled (CleanRL default: None)
+            target_kl=0.02,  # KL threshold for early epoch stopping
             max_grad_norm=0.5,  # Gradient clipping
             anneal_lr=True,  # Linear LR decay
             anneal_entropy=False,  # Keep exploration constant
