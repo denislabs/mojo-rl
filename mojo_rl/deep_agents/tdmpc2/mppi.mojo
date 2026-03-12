@@ -14,7 +14,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
-from std.sys import is_nvidia_gpu
+from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream, HostBuffer
@@ -1144,7 +1144,7 @@ fn plan_gpu_batched[
     var t0_prof: UInt
 
     # ─── Create streams for parallel execution (NVIDIA only) ─────────────
-    comptime USE_STREAMS = is_nvidia_gpu()
+    comptime USE_STREAMS = has_nvidia_gpu_accelerator()
     var s1 = ctx.create_stream()  # reward / Q1
     var s2 = ctx.create_stream()  # dynamics / Q2
     var s3 = ctx.create_stream()  # Q3
