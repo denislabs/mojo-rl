@@ -237,6 +237,9 @@ struct TDMPC2Agent[
     var total_steps: Int
     var train_step_count: Int
 
+    # RunningScale: normalizes Q-values for policy loss (reference: 5th-95th percentile)
+    var running_scale: Float64
+
     # MPPI warm-start state
     var _prev_mean: List[Float64]
     var _episode_t0: Bool
@@ -311,6 +314,7 @@ struct TDMPC2Agent[
         self.warmup_steps = warmup_steps
         self.total_steps = 0
         self.train_step_count = 0
+        self.running_scale = 1.0
         self._prev_mean = List[Float64]()
         self._episode_t0 = True
 
@@ -2872,6 +2876,7 @@ struct TDMPC2Agent[
 
             var pol_rho_t = Scalar[dtype](1.0)
             var entropy_coef_scalar = Scalar[dtype](self.entropy_coef)
+            var scale_scalar = Scalar[dtype](self.running_scale)
 
             for t in range(Self.H):
                 ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
@@ -2918,6 +2923,67 @@ struct TDMPC2Agent[
                 var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
                 var q_rho = pol_rho_t / Scalar[dtype](2.0)
 
+                # ── RunningScale update at first horizon step ──
+                # Decode Q-values from first Q-net to update scale (reference:
+                # 5th-95th percentile range of Q-values, EMA with tau).
+                if t == 0:
+                    var qi_a_p = LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ](q_param_ptrs[qi_a])
+                    # Forward Q to get logits (no cache, just for scale)
+                    Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        ctx,
+                        logits_tensor,
+                        za_tensor,
+                        qi_a_p,
+                        gs.q1_batch_ws_buf,
+                    )
+                    # Decode logits → scalar Q-values into q_min_tensor
+                    ctx.enqueue_function[
+                        tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                        tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                    ](
+                        logits_tensor,
+                        bins_tensor,
+                        q_min_tensor,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                    # Download Q-values to CPU for percentile computation
+                    var q_vals_host = ctx.enqueue_create_host_buffer[dtype](
+                        Self.BATCH
+                    )
+                    ctx.enqueue_copy(q_vals_host, gs.q_min_buf)
+                    ctx.synchronize()
+
+                    # Sort Q-values to compute 5th and 95th percentiles
+                    # Simple insertion sort (BATCH=256, negligible cost)
+                    var sorted_q = List[Float64](capacity=Self.BATCH)
+                    for b in range(Self.BATCH):
+                        sorted_q.append(Float64(q_vals_host[b]))
+                    for i in range(1, Self.BATCH):
+                        var key = sorted_q[i]
+                        var j = i - 1
+                        while j >= 0 and sorted_q[j] > key:
+                            sorted_q[j + 1] = sorted_q[j]
+                            j -= 1
+                        sorted_q[j + 1] = key
+
+                    var idx_5 = Int(0.05 * Float64(Self.BATCH))
+                    var idx_95 = Int(0.95 * Float64(Self.BATCH))
+                    if idx_95 >= Self.BATCH:
+                        idx_95 = Self.BATCH - 1
+                    var pct_range = sorted_q[idx_95] - sorted_q[idx_5]
+                    if pct_range < 1.0:
+                        pct_range = 1.0
+
+                    # EMA update: scale ← (1-tau)*scale + tau*pct_range
+                    self.running_scale = (
+                        (1.0 - self.tau) * self.running_scale
+                        + self.tau * pct_range
+                    )
+                    scale_scalar = Scalar[dtype](self.running_scale)
+
                 for qi_iter in range(2):
                     var qi = qi_a if qi_iter == 0 else qi_b
                     # Entropy weighted by rho^t (temporal decay), applied once
@@ -2948,7 +3014,7 @@ struct TDMPC2Agent[
                         gs.q1_batch_ws_buf,
                     )
 
-                    # Decode Q + compute dL/d(logits)
+                    # Decode Q + compute dL/d(logits), normalized by running_scale
                     ctx.enqueue_function[
                         tdmpc2_q_decode_backward_kernel[
                             dtype, Self.BATCH, Self.BINS
@@ -2961,6 +3027,7 @@ struct TDMPC2Agent[
                         bins_tensor,
                         grad_logits_tensor,
                         q_rho,
+                        scale_scalar,
                         grid_dim=(Self.BATCH_BLOCKS,),
                         block_dim=(TPB,),
                     )

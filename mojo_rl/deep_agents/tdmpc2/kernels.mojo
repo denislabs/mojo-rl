@@ -707,11 +707,16 @@ fn tdmpc2_q_decode_backward_kernel[
         dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
     ],
     rho_weight: Scalar[dtype],
+    running_scale: Scalar[dtype] = Scalar[dtype](1.0),
 ) where dtype.is_floating_point():
     """Backward through distributional Q decode for policy gradient.
 
-    Q = sum(softmax(logits) * bins)
-    d(-Q)/d(logits_k) = -softmax_k * (bin_k - Q) * rho / BATCH
+    Q_symlog = sum(softmax(logits) * bins)
+    Gradient: d(-Q_symlog / running_scale) / d(logits_k)
+            = -softmax_k * (bin_k - Q_symlog) / (running_scale * BATCH) * rho
+
+    RunningScale normalizes Q-values to prevent gradient magnitude issues.
+    Reference TD-MPC2 uses 5th-95th percentile range normalization.
 
     WRITES (not accumulates) to grad_logits.
 
@@ -720,6 +725,7 @@ fn tdmpc2_q_decode_backward_kernel[
         bins: Bin centers [BINS].
         grad_logits: Output gradient [BATCH, BINS].
         rho_weight: Rho^t temporal decay weight.
+        running_scale: Q-value normalization scale (default: 1.0 = no scaling).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -736,19 +742,17 @@ fn tdmpc2_q_decode_backward_kernel[
     for k in range(BINS):
         sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
 
-    # Compute Q = E[bins] under softmax
+    # Compute Q_symlog = E[bins] under softmax (bins are in symlog space)
     var q_val = Scalar[dtype](0.0)
     for k in range(BINS):
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         q_val = q_val + prob_k * Scalar[dtype](bins[k][0])
 
-    # Optimize in symlog space: maximize symlog(Q) instead of Q directly.
-    # Since symlog is monotonically increasing, argmax_a symlog(Q(s,a)) = argmax_a Q(s,a).
-    # This avoids the symexp derivative (exp(|q_val|)) which causes gradient explosion
-    # when Q-values are large. The reference TD-MPC2 uses RunningScale to normalize
-    # Q-values before the policy loss, achieving the same bounded-gradient effect.
-    # d(-symlog(Q))/d(logits_k) = -softmax_k * (bin_k - Q_symlog) * rho / BATCH
-    var scale = -rho_weight / Scalar[dtype](BATCH_SIZE)
+    # d(-Q_symlog / S) / d(logits_k) = -softmax_k * (bin_k - Q_symlog) / (S * B) * rho
+    # Normalizing by running_scale prevents gradient magnitude issues when Q-values
+    # are large or small (matches reference RunningScale behavior).
+    var inv_scale = Scalar[dtype](1.0) / running_scale
+    var scale = -rho_weight * inv_scale / Scalar[dtype](BATCH_SIZE)
     for k in range(BINS):
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         grad_logits[i, k] = scale * prob_k * (Scalar[dtype](bins[k][0]) - q_val)
