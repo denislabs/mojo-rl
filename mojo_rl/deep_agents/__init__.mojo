@@ -14,6 +14,8 @@ Available agents:
 - DeepA2CAgent: Advantage Actor-Critic
 - DeepPPOAgent: Proximal Policy Optimization (discrete actions)
 - DeepPPOContinuousAgent: PPO for continuous action spaces
+- TDMPC2Agent: TD-MPC2 model-based agent
+- DreamerV3Agent: DreamerV3 world model-based agent
 """
 
 from .dqn import DQNAgent
@@ -25,3 +27,4 @@ from .td3 import DeepTD3Agent
 from .sac import DeepSACAgent
 from .a2c import DeepA2CAgent
 from .ppo import DeepPPOAgent, DeepPPOContinuousAgent
+from .dreamer_v3 import DreamerV3Agent, run_dreamer_v3_training

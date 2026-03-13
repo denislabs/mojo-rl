@@ -39,6 +39,7 @@ from mojo_rl.core import (
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from .checkpoint_trait import Checkpointable
 
 
@@ -495,6 +496,7 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
 
@@ -518,6 +520,7 @@ fn run_offpolicy_discrete_train[
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with per-episode rewards and statistics.
@@ -580,24 +583,32 @@ fn run_offpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        # Logger: per-episode reward
+        _log(logger, "episode_reward", episode_reward, total_steps)
+        _log(logger, "explore_rate", agent.get_explore_rate(), total_steps)
+
         if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if verbose and (episode + 1) % print_every == 0:
+        if (verbose or logger) and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            print(
-                "Episode "
-                + String(episode + 1)
-                + " | Avg reward: "
-                + String(avg_reward)[:7]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-                + " | Steps: "
-                + String(total_steps)
-            )
+            _log(logger, "avg_reward", avg_reward, total_steps)
 
+            if verbose:
+                print(
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -622,6 +633,7 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
 
@@ -648,6 +660,7 @@ fn run_offpolicy_discrete_train[
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with per-episode rewards and statistics.
@@ -712,24 +725,32 @@ fn run_offpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        # Logger: per-episode reward
+        _log(logger, "episode_reward", episode_reward, total_steps)
+        _log(logger, "explore_rate", agent.get_explore_rate(), total_steps)
+
         if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if verbose and (episode + 1) % print_every == 0:
+        if (verbose or logger) and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            print(
-                "Episode "
-                + String(episode + 1)
-                + " | Avg reward: "
-                + String(avg_reward)[:7]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-                + " | Steps: "
-                + String(total_steps)
-            )
+            _log(logger, "avg_reward", avg_reward, total_steps)
 
+            if verbose:
+                print(
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -753,6 +774,7 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
 
@@ -843,24 +865,32 @@ fn run_offpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
+        # Logger: per-episode reward
+        _log(logger, "episode_reward", episode_reward, total_steps)
+        _log(logger, "explore_rate", agent.get_explore_rate(), total_steps)
+
         if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if verbose and (episode + 1) % print_every == 0:
+        if (verbose or logger) and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            print(
-                "Episode "
-                + String(episode + 1)
-                + " | Avg reward: "
-                + String(avg_reward)[:7]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-                + " | Steps: "
-                + String(total_steps)
-            )
+            _log(logger, "avg_reward", avg_reward, total_steps)
 
+            if verbose:
+                print(
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -885,6 +915,7 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 
@@ -981,22 +1012,30 @@ fn run_offpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
+        # Logger: per-episode reward
+        _log(logger, "episode_reward", episode_reward, total_steps)
+        _log(logger, "explore_rate", agent.get_explore_rate(), total_steps)
+
         if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if verbose and (episode + 1) % print_every == 0:
+        if (verbose or logger) and (episode + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            print(
-                "Episode "
-                + String(episode + 1)
-                + " | Avg reward: "
-                + String(avg_reward)[:7]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-                + " | Steps: "
-                + String(total_steps)
-            )
+            _log(logger, "avg_reward", avg_reward, total_steps)
 
+            if verbose:
+                print(
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
+
+    _log_flush(logger)
     return metrics^

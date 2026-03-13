@@ -56,6 +56,7 @@ Usage:
 from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
 from mojo_rl.core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
@@ -294,6 +295,7 @@ fn run_offpolicy_continuous_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action off-policy agents.
 
@@ -625,9 +627,9 @@ fn run_offpolicy_continuous_train_gpu[
             next_progress += progress_interval
 
         # ------------------------------------------------------------------
-        # Print progress (only sync for episode stats at print boundaries)
+        # Collect episode stats + print/log at print boundaries
         # ------------------------------------------------------------------
-        if verbose and total_steps >= next_print:
+        if (verbose or logger) and total_steps >= next_print:
             # Download GPU-side episode stats (only sync point for tracking)
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -649,21 +651,32 @@ fn run_offpolicy_continuous_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-            # Clear progress bar, then full stats line
-            clear_progress_bar()
-            print(
-                algorithm_name
-                + " | Step "
-                + String(total_steps)
-                + " / "
-                + String(num_steps)
-                + " | Ep: "
-                + String(completed_episodes)
-                + " | AvgR: "
-                + String(last_avg_reward)[:7]
-                + " | Train: "
-                + String(total_train_steps)
+            # Logger: record metrics
+            _log(logger, "avg_reward", last_avg_reward, total_steps)
+            _log(logger, "episodes", Float64(completed_episodes), total_steps)
+            _log(
+                logger,
+                "train_steps",
+                Float64(total_train_steps),
+                total_steps,
             )
+
+            # Clear progress bar, then full stats line
+            if verbose:
+                clear_progress_bar()
+                print(
+                    algorithm_name
+                    + " | Step "
+                    + String(total_steps)
+                    + " / "
+                    + String(num_steps)
+                    + " | Ep: "
+                    + String(completed_episodes)
+                    + " | AvgR: "
+                    + String(last_avg_reward)[:7]
+                    + " | Train: "
+                    + String(total_train_steps)
+                )
             next_print += print_every
 
     # Final sync: download episode stats + params
@@ -685,7 +698,12 @@ fn run_offpolicy_continuous_train_gpu[
     comptime if PROFILE >= 1:
         timer.accumulate(7)
 
-    # Print final stats
+    # Final logger flush + print
+    _log(logger, "avg_reward", last_avg_reward, total_steps)
+    _log(logger, "episodes", Float64(completed_episodes), total_steps)
+    _log(logger, "train_steps", Float64(total_train_steps), total_steps)
+    _log_flush(logger)
+
     if verbose:
         clear_progress_bar()
         print(
@@ -729,6 +747,7 @@ fn run_offpolicy_discrete_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action off-policy agents (DQN etc.).
 
@@ -1032,7 +1051,7 @@ fn run_offpolicy_discrete_train_gpu[
             )
             next_progress += progress_interval
 
-        if verbose and total_steps >= next_print:
+        if (verbose or logger) and total_steps >= next_print:
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
@@ -1051,20 +1070,31 @@ fn run_offpolicy_discrete_train_gpu[
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-            clear_progress_bar()
-            print(
-                algorithm_name
-                + " | Step "
-                + String(total_steps)
-                + " / "
-                + String(num_steps)
-                + " | Ep: "
-                + String(completed_episodes)
-                + " | AvgR: "
-                + String(last_avg_reward)[:7]
-                + " | Train: "
-                + String(total_train_steps)
+            # Logger: record metrics
+            _log(logger, "avg_reward", last_avg_reward, total_steps)
+            _log(logger, "episodes", Float64(completed_episodes), total_steps)
+            _log(
+                logger,
+                "train_steps",
+                Float64(total_train_steps),
+                total_steps,
             )
+
+            if verbose:
+                clear_progress_bar()
+                print(
+                    algorithm_name
+                    + " | Step "
+                    + String(total_steps)
+                    + " / "
+                    + String(num_steps)
+                    + " | Ep: "
+                    + String(completed_episodes)
+                    + " | AvgR: "
+                    + String(last_avg_reward)[:7]
+                    + " | Train: "
+                    + String(total_train_steps)
+                )
 
             next_print += print_every
 
@@ -1087,7 +1117,12 @@ fn run_offpolicy_discrete_train_gpu[
     comptime if PROFILE >= 1:
         timer.accumulate(7)
 
-    # Print final stats
+    # Final logger flush + print
+    _log(logger, "avg_reward", last_avg_reward, total_steps)
+    _log(logger, "episodes", Float64(completed_episodes), total_steps)
+    _log(logger, "train_steps", Float64(total_train_steps), total_steps)
+    _log_flush(logger)
+
     if verbose:
         clear_progress_bar()
         print(

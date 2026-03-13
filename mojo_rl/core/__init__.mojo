@@ -32,6 +32,7 @@ from .metrics import (
     compute_success_rate,
     compute_convergence_episode,
 )
+from .logger import MetricsLogger, MetricEntry, LoggerPtr, _log, _log_flush
 from .tile_coding import TileCoding, TiledWeights
 from .linear_fa import (
     LinearWeights,

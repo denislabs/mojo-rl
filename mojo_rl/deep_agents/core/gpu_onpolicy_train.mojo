@@ -61,6 +61,7 @@ from mojo_rl.core import (
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
@@ -403,6 +404,7 @@ fn run_onpolicy_discrete_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action on-policy agents (PPO).
 
@@ -746,24 +748,31 @@ fn run_onpolicy_discrete_train_gpu[
             )
             next_progress += progress_interval
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
-            clear_progress_bar()
-            print(
-                algorithm_name
-                + " | Update "
-                + String(update + 1)
-                + " / "
-                + String(num_updates)
-                + " | Episodes: "
-                + String(completed_episodes)
-                + " | AvgR(100): "
-                + String(avg_reward)[:7]
-                + " | Steps: "
-                + String(total_steps)
-            )
+
+            # Logger: record metrics
+            _log(logger, "avg_reward", avg_reward, total_steps)
+            _log(logger, "episodes", Float64(completed_episodes), total_steps)
+            _log(logger, "update", Float64(update + 1), total_steps)
+
+            if verbose:
+                clear_progress_bar()
+                print(
+                    algorithm_name
+                    + " | Update "
+                    + String(update + 1)
+                    + " / "
+                    + String(num_updates)
+                    + " | Episodes: "
+                    + String(completed_episodes)
+                    + " | AvgR(100): "
+                    + String(avg_reward)[:7]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
 
     # Final sync to ensure CPU params are up to date
     comptime if PROFILE >= 1:
@@ -773,11 +782,14 @@ fn run_onpolicy_discrete_train_gpu[
     comptime if PROFILE >= 1:
         timer.accumulate(8)
 
-    # Print final stats
+    # Final logger flush + print
+    var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
+    _log(logger, "avg_reward", final_avg, total_steps)
+    _log(logger, "episodes", Float64(completed_episodes), total_steps)
+    _log(logger, "update", Float64(num_updates), total_steps)
+    _log_flush(logger)
+
     if verbose:
-        var avg_reward = metrics.mean_reward_last_n(
-            min(100, completed_episodes)
-        )
         clear_progress_bar()
         print(
             algorithm_name
@@ -788,7 +800,7 @@ fn run_onpolicy_discrete_train_gpu[
             + " | Episodes: "
             + String(completed_episodes)
             + " | AvgR(100): "
-            + String(avg_reward)[:7]
+            + String(final_avg)[:7]
             + " | Steps: "
             + String(total_steps)
             + " [DONE]"
@@ -821,6 +833,7 @@ fn run_onpolicy_continuous_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action on-policy agents (PPO).
 
@@ -1136,25 +1149,34 @@ fn run_onpolicy_continuous_train_gpu[
             )
             next_progress += progress_interval
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
-            var ep_progress = String(completed_episodes) + (
-                " / " + String(target_episodes) if target_episodes > 0 else ""
-            )
-            clear_progress_bar()
-            print(
-                algorithm_name
-                + " | Episodes: "
-                + ep_progress
-                + " | Update: "
-                + String(update + 1)
-                + " | AvgR(100): "
-                + String(avg_reward)[:7]
-                + " | Steps: "
-                + String(total_steps)
-            )
+
+            # Logger: record metrics
+            _log(logger, "avg_reward", avg_reward, total_steps)
+            _log(logger, "episodes", Float64(completed_episodes), total_steps)
+            _log(logger, "update", Float64(update + 1), total_steps)
+
+            if verbose:
+                var ep_progress = String(completed_episodes) + (
+                    " / " + String(target_episodes)
+                    if target_episodes > 0
+                    else ""
+                )
+                clear_progress_bar()
+                print(
+                    algorithm_name
+                    + " | Episodes: "
+                    + ep_progress
+                    + " | Update: "
+                    + String(update + 1)
+                    + " | AvgR(100): "
+                    + String(avg_reward)[:7]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
 
     comptime if PROFILE >= 1:
         timer.sync_and_mark(ctx)
@@ -1163,13 +1185,18 @@ fn run_onpolicy_continuous_train_gpu[
     comptime if PROFILE >= 1:
         timer.accumulate(8)
 
-    # Print final stats
+    # Final logger flush + print
+    var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
+    _log(logger, "avg_reward", final_avg, total_steps)
+    _log(logger, "episodes", Float64(completed_episodes), total_steps)
+    _log(logger, "update", Float64(num_updates), total_steps)
+    _log_flush(logger)
+
     if verbose:
-        var avg_reward = metrics.mean_reward_last_n(
-            min(100, completed_episodes)
-        )
         var ep_progress = String(completed_episodes) + (
-            " / " + String(target_episodes) if target_episodes > 0 else ""
+            " / " + String(target_episodes)
+            if target_episodes > 0
+            else ""
         )
         clear_progress_bar()
         print(
@@ -1179,7 +1206,7 @@ fn run_onpolicy_continuous_train_gpu[
             + " | Update: "
             + String(num_updates)
             + " | AvgR(100): "
-            + String(avg_reward)[:7]
+            + String(final_avg)[:7]
             + " | Steps: "
             + String(total_steps)
             + " [DONE]"

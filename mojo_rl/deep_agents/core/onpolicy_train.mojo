@@ -40,6 +40,7 @@ from mojo_rl.core import (
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from .checkpoint_trait import Checkpointable
 
 
@@ -137,6 +138,7 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop: collect → advantages → update × num_updates.
 
@@ -158,6 +160,7 @@ fn run_onpolicy_discrete_train[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with one entry per update (reward = policy loss).
@@ -180,22 +183,28 @@ fn run_onpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        _log(logger, "loss", loss, update)
+
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            print(
-                "Update "
-                + String(update + 1)
-                + " | Loss: "
-                + String(avg_loss)[:8]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-            )
+            _log(logger, "avg_loss", avg_loss, update)
 
+            if verbose:
+                print(
+                    "Update "
+                    + String(update + 1)
+                    + " | Loss: "
+                    + String(avg_loss)[:8]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -216,6 +225,7 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop: collect → advantages → update × num_updates.
 
@@ -235,6 +245,7 @@ fn run_onpolicy_continuous_train[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with one entry per update (reward = policy loss).
@@ -256,22 +267,28 @@ fn run_onpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
+        _log(logger, "loss", loss, update)
+
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            print(
-                "Update "
-                + String(update + 1)
-                + " | Loss: "
-                + String(avg_loss)[:8]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-            )
+            _log(logger, "avg_loss", avg_loss, update)
 
+            if verbose:
+                print(
+                    "Update "
+                    + String(update + 1)
+                    + " | Loss: "
+                    + String(avg_loss)[:8]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -455,6 +472,7 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop with explicit state: collect → advantages → update.
 
@@ -476,6 +494,7 @@ fn run_onpolicy_discrete_train[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with one entry per update (value = policy loss).
@@ -497,22 +516,28 @@ fn run_onpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
+        _log(logger, "loss", loss, update)
+
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            print(
-                "Update "
-                + String(update + 1)
-                + " | Loss: "
-                + String(avg_loss)[:8]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-            )
+            _log(logger, "avg_loss", avg_loss, update)
 
+            if verbose:
+                print(
+                    "Update "
+                    + String(update + 1)
+                    + " | Loss: "
+                    + String(avg_loss)[:8]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                )
+
+    _log_flush(logger)
     return metrics^
 
 
@@ -534,6 +559,7 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
+    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop with explicit state: collect → advantages → update.
 
@@ -555,6 +581,7 @@ fn run_onpolicy_continuous_train[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with one entry per update (value = policy loss).
@@ -576,20 +603,26 @@ fn run_onpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
+        _log(logger, "loss", loss, update)
+
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if verbose and (update + 1) % print_every == 0:
+        if (verbose or logger) and (update + 1) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            print(
-                "Update "
-                + String(update + 1)
-                + " | Loss: "
-                + String(avg_loss)[:8]
-                + " | Explore: "
-                + String(agent.get_explore_rate())[:5]
-            )
+            _log(logger, "avg_loss", avg_loss, update)
 
+            if verbose:
+                print(
+                    "Update "
+                    + String(update + 1)
+                    + " | Loss: "
+                    + String(avg_loss)[:8]
+                    + " | Explore: "
+                    + String(agent.get_explore_rate())[:5]
+                )
+
+    _log_flush(logger)
     return metrics^
