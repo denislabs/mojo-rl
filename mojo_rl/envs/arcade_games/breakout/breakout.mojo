@@ -30,7 +30,7 @@ from mojo_rl.core import (
     RenderableEnv,
 )
 from mojo_rl.render import Renderer2D, SDL_Color, Vec2, Camera, black, white
-from mojo_rl.nn.gpu import random_range, xorshift32
+from std.random.philox import Random as PhiloxRandom
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -555,15 +555,11 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Fire
         if action == 1 and stuck > Scalar[gpu_dtype](0.5):
             stuck = 0.0
-            var rng = xorshift32(
-                Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
+            var rng = PhiloxRandom(
+                seed=UInt64(rng_seed) * UInt64(BATCH_SIZE) + UInt64(i), offset=0
             )
-            var vx_result = random_range[gpu_dtype](
-                rng,
-                Scalar[gpu_dtype](-BALL_SPEED_X),
-                Scalar[gpu_dtype](BALL_SPEED_X),
-            )
-            bvx = vx_result[0]
+            var rand_vals = rng.step_uniform()
+            bvx = Scalar[gpu_dtype](-BALL_SPEED_X) + Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](2.0 * BALL_SPEED_X)
             bvy = Scalar[gpu_dtype](BALL_SPEED_Y)
 
         var is_done = False

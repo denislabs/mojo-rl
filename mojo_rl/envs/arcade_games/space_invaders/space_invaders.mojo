@@ -35,7 +35,7 @@ from mojo_rl.core import (
     RenderableEnv,
 )
 from mojo_rl.render import Renderer2D, SDL_Color, Vec2, Camera, black, white
-from mojo_rl.nn.gpu import random_range, xorshift32
+from std.random.philox import Random as PhiloxRandom
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -642,17 +642,11 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Alien firing (deterministic based on rng)
         if abul_active < Scalar[gpu_dtype](0.5):
-            var rng = xorshift32(
-                Scalar[DType.uint32](
-                    UInt32(i) * 2654435761
-                    + UInt32(rng_seed)
-                    + UInt32(Int(steps))
-                )
+            var rng = PhiloxRandom(
+                seed=UInt64(rng_seed) * UInt64(BATCH_SIZE) + UInt64(i) + UInt64(Int(steps)) * UInt64(1000003), offset=0
             )
-            var fire_result = random_range[gpu_dtype](
-                rng, Scalar[gpu_dtype](0.0), Scalar[gpu_dtype](1.0)
-            )
-            if fire_result[0] < Scalar[gpu_dtype](ALIEN_FIRE_CHANCE):
+            var rand_vals = rng.step_uniform()
+            if Scalar[gpu_dtype](rand_vals[0]) < Scalar[gpu_dtype](ALIEN_FIRE_CHANCE):
                 # Find a bottom-row alive alien
                 for row in range(ALIEN_ROWS - 1, -1, -1):
                     for col in range(ALIEN_COLS):

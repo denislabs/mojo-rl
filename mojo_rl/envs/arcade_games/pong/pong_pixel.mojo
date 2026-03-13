@@ -30,7 +30,6 @@ from mojo_rl.core import (
     RenderableEnv,
 )
 from mojo_rl.render import Renderer2D, SDL_Color
-from mojo_rl.nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer

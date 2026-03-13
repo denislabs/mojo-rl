@@ -92,7 +92,7 @@ nn/
 │   ├── matmul_ops.mojo     # Fused matmul+bias+activation kernels
 │   ├── matmul_v2.mojo      # Alternative matmul implementations
 │   ├── matmul_apple.mojo   # Apple Silicon Metal-specific optimizations
-│   └── random.mojo         # xorshift32 PRNG, Gaussian noise (Box-Muller)
+│   └── random.mojo         # Gaussian noise (Box-Muller)
 └── tests/                  # Test suite (9 files covering all autodiff phases)
 ```
 

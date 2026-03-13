@@ -31,7 +31,7 @@ from mojo_rl.core import (
     RenderableEnv,
 )
 from mojo_rl.render import Renderer2D, SDL_Color, Vec2, Camera, black, white
-from mojo_rl.nn.gpu import random_range, xorshift32
+from std.random.philox import Random as PhiloxRandom
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -787,13 +787,11 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if scored_player or scored_cpu:
             bx = Scalar[gpu_dtype](SCREEN_W // 2)
             by = Scalar[gpu_dtype](SCREEN_H // 2)
-            var rng = xorshift32(
-                Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
+            var rng = PhiloxRandom(
+                seed=UInt64(rng_seed) * UInt64(BATCH_SIZE) + UInt64(i), offset=0
             )
-            var vy_result = random_range[gpu_dtype](
-                rng, Scalar[gpu_dtype](-1.5), Scalar[gpu_dtype](1.5)
-            )
-            bvy = vy_result[0]
+            var rand_vals = rng.step_uniform()
+            bvy = Scalar[gpu_dtype](-1.5) + Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](3.0)
             if scored_cpu:
                 bvx = Scalar[gpu_dtype](BALL_SPEED)
             else:
@@ -847,26 +845,21 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if i >= BATCH_SIZE:
             return
 
-        var rng = xorshift32(
-            Scalar[DType.uint32](UInt32(i) * 2654435761 + 12345)
+        var rng = PhiloxRandom(
+            seed=UInt64(12345) * UInt64(BATCH_SIZE) + UInt64(i), offset=0
         )
 
         state[i, S_BALL_X] = Scalar[gpu_dtype](SCREEN_W // 2)
         state[i, S_BALL_Y] = Scalar[gpu_dtype](SCREEN_H // 2)
 
-        var vx_result = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-1.0), Scalar[gpu_dtype](1.0)
-        )
-        rng = vx_result[1]
-        if vx_result[0] >= 0:
+        var rand_vals = rng.step_uniform()
+        if Scalar[gpu_dtype](rand_vals[0]) >= Scalar[gpu_dtype](0.5):
             state[i, S_BALL_VX] = Scalar[gpu_dtype](BALL_SPEED)
         else:
             state[i, S_BALL_VX] = Scalar[gpu_dtype](-BALL_SPEED)
 
-        var vy_result = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-1.5), Scalar[gpu_dtype](1.5)
-        )
-        state[i, S_BALL_VY] = vy_result[0]
+        var rand_vals2 = rng.step_uniform()
+        state[i, S_BALL_VY] = Scalar[gpu_dtype](-1.5) + Scalar[gpu_dtype](rand_vals2[0]) * Scalar[gpu_dtype](3.0)
 
         state[i, S_PADDLE_Y] = Scalar[gpu_dtype](SCREEN_H // 2)
         state[i, S_CPU_PADDLE_Y] = Scalar[gpu_dtype](SCREEN_H // 2)
@@ -902,26 +895,21 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if dones[i] < Scalar[gpu_dtype](0.5):
             return
 
-        var rng = xorshift32(
-            Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
+        var rng = PhiloxRandom(
+            seed=UInt64(rng_seed) * UInt64(BATCH_SIZE) + UInt64(i), offset=0
         )
 
         state[i, S_BALL_X] = Scalar[gpu_dtype](SCREEN_W // 2)
         state[i, S_BALL_Y] = Scalar[gpu_dtype](SCREEN_H // 2)
 
-        var vx_result = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-1.0), Scalar[gpu_dtype](1.0)
-        )
-        rng = vx_result[1]
-        if vx_result[0] >= 0:
+        var rand_vals = rng.step_uniform()
+        if Scalar[gpu_dtype](rand_vals[0]) >= Scalar[gpu_dtype](0.5):
             state[i, S_BALL_VX] = Scalar[gpu_dtype](BALL_SPEED)
         else:
             state[i, S_BALL_VX] = Scalar[gpu_dtype](-BALL_SPEED)
 
-        var vy_result = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-1.5), Scalar[gpu_dtype](1.5)
-        )
-        state[i, S_BALL_VY] = vy_result[0]
+        var rand_vals2 = rng.step_uniform()
+        state[i, S_BALL_VY] = Scalar[gpu_dtype](-1.5) + Scalar[gpu_dtype](rand_vals2[0]) * Scalar[gpu_dtype](3.0)
 
         state[i, S_PADDLE_Y] = Scalar[gpu_dtype](SCREEN_H // 2)
         state[i, S_CPU_PADDLE_Y] = Scalar[gpu_dtype](SCREEN_H // 2)

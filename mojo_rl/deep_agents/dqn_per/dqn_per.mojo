@@ -58,7 +58,7 @@ from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from ..core.replay import PrioritizedReplayBuffer
 from mojo_rl.nn.model import Model
 from mojo_rl.nn.optimizer import Optimizer
-from mojo_rl.nn.gpu import xorshift32, random_uniform
+
 from mojo_rl.deep_agents.core import (
     fill_inline,
     obs_to_inline,
@@ -699,17 +699,17 @@ struct DQNPERAgent[
             if b >= N_ENVS:
                 return
 
-            var rng = xorshift32(
-                Scalar[DType.uint32](b * 2654435761) + base_seed
+            from std.random.philox import Random as PhiloxRandom
+            var rng = PhiloxRandom(
+                seed=UInt64(base_seed) * UInt64(N_ENVS) + UInt64(b), offset=0
             )
-            var rand_result = random_uniform[dtype](rng)
-            var rand_val = rand_result[0]
-            rng = rand_result[1]
+            var rand_vals = rng.step_uniform()
+            var rand_val = Scalar[dtype](rand_vals[0])
 
             if rand_val < eps:
-                var action_result = random_uniform[dtype](rng)
+                var rand_vals2 = rng.step_uniform()
                 acts[b] = Scalar[dtype](
-                    Int(action_result[0] * Scalar[dtype](Self.ACTIONS))
+                    Int(Scalar[dtype](rand_vals2[0]) * Scalar[dtype](Self.ACTIONS))
                 )
                 return
 

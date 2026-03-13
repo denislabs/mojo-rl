@@ -9,8 +9,6 @@ from std.gpu import block_dim, block_idx, thread_idx
 from layout import Layout, LayoutTensor
 from std.math import exp, log
 
-from mojo_rl.nn.gpu.random import random_uniform
-
 
 # =============================================================================
 # A2C GAE (Generalized Advantage Estimation)
@@ -98,9 +96,7 @@ fn a2c_softmax_sample_kernel[
     logits: LayoutTensor[
         dtype, Layout.row_major(N_ENVS, N_ACTIONS), MutAnyOrigin
     ],
-    rng_states: LayoutTensor[
-        DType.uint32, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    seed: Scalar[DType.uint32],
 ):
     """Sample discrete actions from softmax distribution and compute log-probabilities.
 
@@ -118,7 +114,7 @@ fn a2c_softmax_sample_kernel[
         actions:    Output sampled actions [N_ENVS].
         log_probs:  Output log-probabilities [N_ENVS].
         logits:     Input logits from actor [N_ENVS, N_ACTIONS].
-        rng_states: Per-env RNG states (updated in-place) [N_ENVS].
+        seed:       RNG seed for action sampling.
     """
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= N_ENVS:
@@ -137,10 +133,12 @@ fn a2c_softmax_sample_kernel[
         sum_exp += exp(logits[env, k] - max_logit)
 
     # Step 3: sample from Categorical via inverse CDF
-    var rng = rebind[UInt32](rng_states[env])
-    var u_result = random_uniform[dtype](rng)
-    var u: logits.element_type = u_result[0]
-    rng_states[env] = u_result[1]
+    from std.random.philox import Random as PhiloxRandom
+    var rng = PhiloxRandom(
+        seed=UInt64(seed) * UInt64(N_ENVS) + UInt64(env), offset=0
+    )
+    var rand_vals = rng.step_uniform()
+    var u = Scalar[dtype](rand_vals[0])
 
     var cum: logits.element_type = 0.0
     var sampled_action = N_ACTIONS - 1  # fallback

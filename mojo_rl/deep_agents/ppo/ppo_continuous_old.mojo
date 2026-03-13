@@ -57,10 +57,6 @@ from mojo_rl.nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from mojo_rl.nn.gpu import (
-    random_range,
-    random_uniform,
-)
 from mojo_rl.deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,

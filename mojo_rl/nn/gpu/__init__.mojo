@@ -24,11 +24,10 @@ This module provides common GPU operations used across deep RL algorithms.
 - matmul_backward_dW_kernel: Backward pass for weight gradient
 
 ## Random Number Generation (random.mojo)
-- xorshift32: Fast GPU-friendly PRNG
-- random_uniform: Uniform random in [0, 1)
-- random_range: Uniform random in [low, high)
 - gaussian_noise: Standard Gaussian noise (CPU, uses stdlib random)
 - gaussian_noise_pair: Two independent Gaussian samples (CPU)
+
+Note: For GPU random numbers, use `from std.random.philox import Random as PhiloxRandom`.
 
 Note: RL-specific kernels have moved to deep_agents.core.kernels and
 agent-specific kernels.mojo files (sac, td3, a2c).
@@ -67,9 +66,6 @@ from .matmul_ops import (
 )
 
 from .random import (
-    xorshift32,
-    random_uniform,
-    random_range,
     gaussian_noise,
     gaussian_noise_pair,
 )
