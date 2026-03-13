@@ -421,7 +421,7 @@ struct DQNAgent[
                     + Scalar[dtype](self.gamma) * max_next_q * done_mask
                 )
 
-        # Compute gradient (MSE, masked to taken action)
+        # Compute gradient (Huber loss, delta=1.0, masked to taken action)
         var grad_arr = InlineArray[
             Scalar[dtype], Self.batch_size * Self.ACTIONS
         ](uninitialized=True)
@@ -431,15 +431,27 @@ struct DQNAgent[
             var action = Int(batch_actions_tmp[b])
             var q_pred = q_arr[b * Self.ACTIONS + action]
             var td_error = q_pred - targets[b]
-            total_loss += Float64(td_error * td_error)
+            var abs_err = td_error if td_error >= Scalar[dtype](0) else -td_error
+
+            # Huber loss
+            if abs_err <= Scalar[dtype](1.0):
+                total_loss += Float64(Scalar[dtype](0.5) * td_error * td_error)
+            else:
+                total_loss += Float64(abs_err - Scalar[dtype](0.5))
+
+            # Huber gradient: clip to [-1, 1] then scale by 1/batch
+            var grad_val: Scalar[dtype]
+            if abs_err <= Scalar[dtype](1.0):
+                grad_val = td_error / Scalar[dtype](Self.batch_size)
+            else:
+                var sign = Scalar[dtype](1.0) if td_error > Scalar[dtype](
+                    0
+                ) else Scalar[dtype](-1.0)
+                grad_val = sign / Scalar[dtype](Self.batch_size)
 
             for a in range(Self.ACTIONS):
                 if a == action:
-                    grad_arr[b * Self.ACTIONS + a] = (
-                        Scalar[dtype](2.0)
-                        * td_error
-                        / Scalar[dtype](Self.batch_size)
-                    )
+                    grad_arr[b * Self.ACTIONS + a] = grad_val
                 else:
                     grad_arr[b * Self.ACTIONS + a] = Scalar[dtype](0.0)
 
@@ -811,7 +823,7 @@ struct DQNAgent[
         if self.train_step_count % 1000 == 0 and self.train_step_count > 0:
             self._log_train_diagnostics(ctx, gpu_state)
 
-        # ---- Phase 5: Gradient kernel (masked MSE grad) ----
+        # ---- Phase 5: Gradient kernel (Huber loss, delta=1.0) ----
         @always_inline
         fn grad_wrapper(
             grd: LayoutTensor[
@@ -828,12 +840,20 @@ struct DQNAgent[
                 return
             var action = Int(act[b])
             var q_pred = qv[b, action]
-            var td_error = q_pred - tgt[b]
+            var td_error = rebind[Scalar[dtype]](q_pred - tgt[b])
+            # Huber gradient: clip to [-1, 1] then scale by 1/batch
+            var abs_err = td_error if td_error >= Scalar[dtype](0) else -td_error
+            var grad_val: Scalar[dtype]
+            if abs_err <= Scalar[dtype](1.0):
+                grad_val = td_error / Scalar[dtype](BATCH)
+            else:
+                var sign = Scalar[dtype](1.0) if td_error > Scalar[dtype](
+                    0
+                ) else Scalar[dtype](-1.0)
+                grad_val = sign / Scalar[dtype](BATCH)
             for a in range(Self.ACTIONS):
                 if a == action:
-                    grd[b, a] = (
-                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
-                    )
+                    grd[b, a] = grad_val
                 else:
                     grd[b, a] = Scalar[dtype](0.0)
 
