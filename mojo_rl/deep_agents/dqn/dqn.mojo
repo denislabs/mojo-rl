@@ -431,7 +431,9 @@ struct DQNAgent[
             var action = Int(batch_actions_tmp[b])
             var q_pred = q_arr[b * Self.ACTIONS + action]
             var td_error = q_pred - targets[b]
-            var abs_err = td_error if td_error >= Scalar[dtype](0) else -td_error
+            var abs_err = (
+                td_error if td_error >= Scalar[dtype](0) else -td_error
+            )
 
             # Huber loss
             if abs_err <= Scalar[dtype](1.0):
@@ -625,7 +627,10 @@ struct DQNAgent[
 
             if rand_val < eps:
                 acts[b] = Scalar[dtype](
-                    Int(Scalar[dtype](rand_vals[1]) * Scalar[dtype](Self.ACTIONS))
+                    Int(
+                        Scalar[dtype](rand_vals[1])
+                        * Scalar[dtype](Self.ACTIONS)
+                    )
                     % Self.ACTIONS
                 )
                 return
@@ -820,8 +825,8 @@ struct DQNAgent[
             self.train_timer.mark()
 
         # ---- Diagnostic logging (every 1000 train steps) ----
-        if self.train_step_count % 1000 == 0 and self.train_step_count > 0:
-            self._log_train_diagnostics(ctx, gpu_state)
+        # if self.train_step_count % 1000 == 0 and self.train_step_count > 0:
+        #     self._log_train_diagnostics(ctx, gpu_state)
 
         # ---- Phase 5: Gradient kernel (Huber loss, delta=1.0) ----
         @always_inline
@@ -842,7 +847,9 @@ struct DQNAgent[
             var q_pred = qv[b, action]
             var td_error = rebind[Scalar[dtype]](q_pred - tgt[b])
             # Huber gradient: clip to [-1, 1] then scale by 1/batch
-            var abs_err = td_error if td_error >= Scalar[dtype](0) else -td_error
+            var abs_err = (
+                td_error if td_error >= Scalar[dtype](0) else -td_error
+            )
             var grad_val: Scalar[dtype]
             if abs_err <= Scalar[dtype](1.0):
                 grad_val = td_error / Scalar[dtype](BATCH)
@@ -1168,9 +1175,7 @@ struct DQNAgent[
                 + " d="
                 + String(Float64(h_done[b]))[:3]
                 + " Q(a)="
-                + String(
-                    Float64(h_q[b * Self.ACTIONS + Int(h_act[b])])
-                )[:7]
+                + String(Float64(h_q[b * Self.ACTIONS + Int(h_act[b])]))[:7]
                 + " tgt="
                 + String(Float64(h_tgt[b]))[:7]
             )
@@ -1204,10 +1209,13 @@ struct DQNAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """Soft-update target Q-network on GPU every target_update_freq gradient steps."""
+        """Soft-update target Q-network on GPU every target_update_freq gradient steps.
+        """
         self._target_update_ctr += 1
         if self._target_update_ctr >= self.target_update_freq:
-            gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+            gpu_state.target.soft_update_from_gpu(
+                gpu_state.online, self.tau, ctx
+            )
             self._target_update_ctr = 0
 
     # =========================================================================
