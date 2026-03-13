@@ -20,7 +20,7 @@ Usage:
     from mojo_rl.envs import CartPoleNative
 
     var env = CartPoleNative()
-    var agent = DQNAgent[4, 2, 64, 10000, 32]()
+    var agent = DQNAgent[obs_dim=4, num_actions=2, hidden_dim=64, buffer_capacity=10000, batch_size=32]()
 
     # CPU Training
     var metrics = agent.train(env, num_episodes=200)
@@ -91,27 +91,30 @@ from mojo_rl.nn.model.model import PerfTimerPtr
 struct DQNAgent[
     obs_dim: Int,
     num_actions: Int,
-    hidden_dim: Int = 64,
+    hidden_dim: Int = 120,
+    hidden_dim2: Int = 84,
     buffer_capacity: Int = 10000,
-    batch_size: Int = 256,
+    batch_size: Int = 128,
     n_envs: Int = 1024,
-    double_dqn: Bool = True,
-    lr: Float64 = 0.001,
+    double_dqn: Bool = False,
+    lr: Float64 = 2.5e-4,
     profile: Int = 0,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Q-Network agent — unified CPU + GPU.
 
     DQN is an off-policy value-based algorithm for discrete action spaces.
+    Defaults match CleanRL's dqn.py reference implementation.
 
     Parameters:
         obs_dim: Dimension of observation space.
         num_actions: Number of discrete actions.
-        hidden_dim: Hidden layer size (default: 64).
+        hidden_dim: First hidden layer size (default: 120, CleanRL).
+        hidden_dim2: Second hidden layer size (default: 84, CleanRL).
         buffer_capacity: Replay buffer capacity (default: 10000).
-        batch_size: Training batch size for gradient updates (default: 256).
+        batch_size: Training batch size for gradient updates (default: 128).
         n_envs: Number of parallel environments for GPU training (default: 1024).
-        double_dqn: Use Double DQN (default: True).
-        lr: Adam learning rate — compile-time (default: 0.001).
+        double_dqn: Use Double DQN (default: False, CleanRL).
+        lr: Adam learning rate — compile-time (default: 2.5e-4, CleanRL).
         profile: Level of profiling (0=none, 1=L2, 2=L3).
 
     Note on batch_size vs n_envs (GPU training):
@@ -121,13 +124,15 @@ struct DQNAgent[
     comptime OBS = Self.obs_dim
     comptime ACTIONS = Self.num_actions
     comptime HIDDEN = Self.hidden_dim
+    comptime HIDDEN2 = Self.hidden_dim2
     comptime BATCH = Self.batch_size
 
-    # Q-network: obs → hidden (ReLU) → hidden (ReLU) → num_actions
+    # Q-network: obs → hidden (ReLU) → hidden2 (ReLU) → num_actions
+    # Matches CleanRL: Linear(obs, 120) → ReLU → Linear(120, 84) → ReLU → Linear(84, actions)
     comptime Q_Model = Sequential[
         LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.ACTIONS],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN2],
+        Linear[Self.HIDDEN2, Self.ACTIONS],
     ]
     comptime Q_Network = Network[Self.Q_Model, Adam[Self.lr]]
 
@@ -169,8 +174,8 @@ struct DQNAgent[
 
     # Training state
     var train_step_count: Int
-    var target_update_freq: Int  # soft-update target every N gradient steps
-    var _target_update_ctr: Int  # internal counter
+    var target_update_freq: Int  # update target every N gradient steps
+    var _target_update_ctr: Int  # internal counter for target updates
 
     # Level-2 profiler: sub-phases of do_gpu_train_step
     var train_timer: PerfTimer[Self.profile >= 1]
@@ -187,23 +192,28 @@ struct DQNAgent[
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
-        tau: Float64 = 0.005,
+        tau: Float64 = 1.0,
         epsilon: Float64 = 1.0,
-        epsilon_min: Float64 = 0.01,
+        epsilon_min: Float64 = 0.05,
         epsilon_decay: Float64 = 0.995,
-        target_update_freq: Int = 128,
+        target_update_freq: Int = 50,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
         """Initialize DQN agent.
 
+        Defaults match CleanRL's dqn.py:
+          - tau=1.0 (hard copy), target_update_freq=50 gradient steps
+            (CleanRL: every 500 env steps / train_frequency=10 = 50 grad steps)
+          - epsilon_min=0.05, exploration_fraction=0.5
+
         Args:
             gamma: Discount factor (default: 0.99).
-            tau: Soft update rate for target network (default: 0.005).
+            tau: Target network update rate (default: 1.0 = hard copy, CleanRL).
             epsilon: Initial exploration rate (default: 1.0).
-            epsilon_min: Minimum exploration rate (default: 0.01).
-            epsilon_decay: Epsilon decay per episode (default: 0.995).
-            target_update_freq: Soft-update target every N gradient steps (default: 128).
+            epsilon_min: Minimum exploration rate (default: 0.05, CleanRL).
+            epsilon_decay: Epsilon decay per episode — CPU only (default: 0.995).
+            target_update_freq: Update target every N gradient steps (default: 50).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
         """
@@ -421,7 +431,7 @@ struct DQNAgent[
                     + Scalar[dtype](self.gamma) * max_next_q * done_mask
                 )
 
-        # Compute gradient (Huber loss, delta=1.0, masked to taken action)
+        # Compute gradient (MSE, masked to taken action)
         var grad_arr = InlineArray[
             Scalar[dtype], Self.batch_size * Self.ACTIONS
         ](uninitialized=True)
@@ -431,29 +441,15 @@ struct DQNAgent[
             var action = Int(batch_actions_tmp[b])
             var q_pred = q_arr[b * Self.ACTIONS + action]
             var td_error = q_pred - targets[b]
-            var abs_err = (
-                td_error if td_error >= Scalar[dtype](0) else -td_error
-            )
-
-            # Huber loss
-            if abs_err <= Scalar[dtype](1.0):
-                total_loss += Float64(Scalar[dtype](0.5) * td_error * td_error)
-            else:
-                total_loss += Float64(abs_err - Scalar[dtype](0.5))
-
-            # Huber gradient: clip to [-1, 1] then scale by 1/batch
-            var grad_val: Scalar[dtype]
-            if abs_err <= Scalar[dtype](1.0):
-                grad_val = td_error / Scalar[dtype](Self.batch_size)
-            else:
-                var sign = Scalar[dtype](1.0) if td_error > Scalar[dtype](
-                    0
-                ) else Scalar[dtype](-1.0)
-                grad_val = sign / Scalar[dtype](Self.batch_size)
+            total_loss += Float64(td_error * td_error)
 
             for a in range(Self.ACTIONS):
                 if a == action:
-                    grad_arr[b * Self.ACTIONS + a] = grad_val
+                    grad_arr[b * Self.ACTIONS + a] = (
+                        Scalar[dtype](2.0)
+                        * td_error
+                        / Scalar[dtype](Self.batch_size)
+                    )
                 else:
                     grad_arr[b * Self.ACTIONS + a] = Scalar[dtype](0.0)
 
@@ -828,7 +824,7 @@ struct DQNAgent[
         # if self.train_step_count % 1000 == 0 and self.train_step_count > 0:
         #     self._log_train_diagnostics(ctx, gpu_state)
 
-        # ---- Phase 5: Gradient kernel (Huber loss, delta=1.0) ----
+        # ---- Phase 5: Gradient kernel (masked MSE grad) ----
         @always_inline
         fn grad_wrapper(
             grd: LayoutTensor[
@@ -845,22 +841,12 @@ struct DQNAgent[
                 return
             var action = Int(act[b])
             var q_pred = qv[b, action]
-            var td_error = rebind[Scalar[dtype]](q_pred - tgt[b])
-            # Huber gradient: clip to [-1, 1] then scale by 1/batch
-            var abs_err = (
-                td_error if td_error >= Scalar[dtype](0) else -td_error
-            )
-            var grad_val: Scalar[dtype]
-            if abs_err <= Scalar[dtype](1.0):
-                grad_val = td_error / Scalar[dtype](BATCH)
-            else:
-                var sign = Scalar[dtype](1.0) if td_error > Scalar[dtype](
-                    0
-                ) else Scalar[dtype](-1.0)
-                grad_val = sign / Scalar[dtype](BATCH)
+            var td_error = q_pred - tgt[b]
             for a in range(Self.ACTIONS):
                 if a == action:
-                    grd[b, a] = grad_val
+                    grd[b, a] = (
+                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
+                    )
                 else:
                     grd[b, a] = Scalar[dtype](0.0)
 

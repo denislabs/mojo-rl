@@ -149,6 +149,7 @@ struct DeepPPOContinuousAgent[
         clip_value: Whether to clip value function updates (default: True).
         actor_lr: Learning rate for actor network (default: 0.0003).
         critic_lr: Learning rate for critic network (default: 0.001).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
 
     Note on hybrid training:
         - Neural network computations (forward/backward) run on GPU
@@ -163,7 +164,8 @@ struct DeepPPOContinuousAgent[
     comptime ROLLOUT = Self.rollout_len
 
     # Actor output: mean + log_std = 2 * action_dim
-    comptime ACTOR_OUT = Self.action_dim * 2
+    # NOTE: Must derive from ActorModel.OUT_DIM to avoid Mojo "unfolded expression" mismatch
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
 
     # Cache sizes
     # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + StochasticActor[h, action]
@@ -456,7 +458,8 @@ struct DeepPPOContinuousAgent[
             )
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:

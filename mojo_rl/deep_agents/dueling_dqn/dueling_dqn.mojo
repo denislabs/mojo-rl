@@ -203,6 +203,7 @@ struct DuelingDQNAgent[
         n_envs: Number of parallel environments for GPU training (default: 1024).
         double_dqn: If True, use Double DQN target computation.
         lr: Adam learning rate — compile-time (default: 0.0005).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     # Convenience aliases
@@ -310,13 +311,13 @@ struct DuelingDQNAgent[
         self.target_fwd_base = 0
         self.online_bwd_base = 0
         comptime if Self.profile >= 2:
-            _ = self.train_timer.add_slot("sample_batch")       # 0
-            _ = self.train_timer.add_slot("online_forward")     # 1
-            _ = self.train_timer.add_slot("target_forward")     # 2
-            _ = self.train_timer.add_slot("td_targets")         # 3
-            _ = self.train_timer.add_slot("grad_kernel")        # 4
-            _ = self.train_timer.add_slot("dueling_grad")       # 5
-            _ = self.train_timer.add_slot("backward_update")    # 6
+            _ = self.train_timer.add_slot("sample_batch")  # 0
+            _ = self.train_timer.add_slot("online_forward")  # 1
+            _ = self.train_timer.add_slot("target_forward")  # 2
+            _ = self.train_timer.add_slot("td_targets")  # 3
+            _ = self.train_timer.add_slot("grad_kernel")  # 4
+            _ = self.train_timer.add_slot("dueling_grad")  # 5
+            _ = self.train_timer.add_slot("backward_update")  # 6
         comptime if Self.profile >= 3:
             # L3 slots as children of L2 sub-phases
             # slot 1 = online_forward, 2 = target_forward, 6 = backward_update
@@ -331,7 +332,8 @@ struct DuelingDQNAgent[
             )
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -727,9 +729,9 @@ struct DuelingDQNAgent[
                 dtype, Layout.row_major(N_ENVS, Self.DUELING_OUT), MutAnyOrigin
             ],
         ):
-            dueling_combine_kernel[dtype, N_ENVS, Self.ACTIONS, Self.DUELING_OUT](
-                qv, dout
-            )
+            dueling_combine_kernel[
+                dtype, N_ENVS, Self.ACTIONS, Self.DUELING_OUT
+            ](qv, dout)
 
         ctx.enqueue_function[combine_wrapper, combine_wrapper](
             q_t,
@@ -880,8 +882,14 @@ struct DuelingDQNAgent[
         var p_online = gpu_state.online.params_view()
         var p_target = gpu_state.target.params_view()
         Self.DuelingNet.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, dueling_out_t, p_online, cache_t, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_fwd_base,
+            ctx,
+            obs_t,
+            dueling_out_t,
+            p_online,
+            cache_t,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_fwd_base,
         )
 
         # Combine V+A → Q values
@@ -910,8 +918,13 @@ struct DuelingDQNAgent[
 
         # ---- Phase 3: Target forward → combine ----
         Self.DuelingNet.forward_gpu[BATCH](
-            ctx, next_obs_t, dueling_next_t, p_target, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.target_fwd_base,
+            ctx,
+            next_obs_t,
+            dueling_next_t,
+            p_target,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.target_fwd_base,
         )
 
         @always_inline
@@ -981,21 +994,15 @@ struct DuelingDQNAgent[
 
             @always_inline
             fn double_td_wrapper(
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 onq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
                 tnq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
-                rew: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
-                don: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+                don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 g: Scalar[dtype],
             ):
                 dqn_double_td_target_kernel[dtype, BATCH, Self.ACTIONS](
@@ -1016,18 +1023,12 @@ struct DuelingDQNAgent[
 
             @always_inline
             fn td_wrapper(
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 nq: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
                 ],
-                rew: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
-                don: LayoutTensor[
-                    dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ],
+                rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+                don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
                 g: Scalar[dtype],
             ):
                 dqn_td_target_kernel[dtype, BATCH, Self.ACTIONS](
@@ -1133,7 +1134,8 @@ struct DuelingDQNAgent[
             cache_t,
             g,
             gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_bwd_base,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_bwd_base,
         )
         gpu_state.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:
@@ -1167,7 +1169,8 @@ struct DuelingDQNAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """Soft-update target dueling network on GPU: theta_t <- tau*theta + (1-tau)*theta_t."""
+        """Soft-update target dueling network on GPU: theta_t <- tau*theta + (1-tau)*theta_t.
+        """
         gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
 
     # =========================================================================
@@ -1277,9 +1280,7 @@ struct DuelingDQNAgent[
             TrainingMetrics with episode-level statistics.
         """
         var algo_name = String(
-            "Dueling DQN (GPU)"
-            if not Self.double_dqn
-            else "Double Dueling DQN (GPU)"
+            "Dueling DQN (GPU)" if not Self.double_dqn else "Double Dueling DQN (GPU)"
         )
 
         # Create profiling timer with L1 slots (off-policy phases)

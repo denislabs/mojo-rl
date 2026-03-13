@@ -3,7 +3,15 @@
 This tests the GPU implementation of DQN using:
 - Network wrapper GPU methods (forward_gpu, backward_gpu, update_gpu)
 - CPU environment interaction + GPU batch training
-- Double DQN with experience replay
+- Hyperparameters aligned with CleanRL's dqn.py reference
+
+CleanRL reference: references/RL-Algorithms/cleanrl-master/cleanrl/dqn.py
+  - Network: Linear(4,120) → ReLU → Linear(120,84) → ReLU → Linear(84,2)
+  - tau=1.0 (hard copy), target_network_frequency=500 env steps
+  - train_frequency=10 (1 grad step per 10 env steps)
+  - buffer_size=10000, batch_size=128, lr=2.5e-4
+  - exploration: linear 1.0 → 0.05 over 50% of training
+  - MSE loss, no Double DQN
 
 Run with:
     pixi run -e apple mojo run -I . test_dqn_gpu.mojo    # Apple Silicon
@@ -20,20 +28,29 @@ from mojo_rl.envs import CartPoleEnv
 
 
 # =============================================================================
-# Constants
+# Constants — aligned with CleanRL dqn.py defaults
 # =============================================================================
 
 comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
-comptime HIDDEN_DIM = 120
-comptime BUFFER_CAPACITY = 100_000
-comptime BATCH_SIZE = 128  # Training batch size for gradient updates
+comptime HIDDEN_DIM = 120  # CleanRL: first hidden layer
+comptime HIDDEN_DIM2 = 84  # CleanRL: second hidden layer
+comptime BUFFER_CAPACITY = 10_000  # CleanRL: buffer_size=10000
+comptime BATCH_SIZE = 128  # CleanRL: batch_size=128
 comptime N_ENVS = 256  # Parallel environments for GPU collection
 
-comptime NUM_STEPS = 500_000  # Total env transitions
+comptime NUM_STEPS = 500_000  # CleanRL: total_timesteps=500000
 comptime MAX_STEPS = 500
-comptime WARMUP_STEPS = 10_000  # Fill buffer before training
+comptime WARMUP_STEPS = 10_000  # CleanRL: learning_starts=10000
 comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
+
+# CleanRL: train_frequency=10 → 1 grad step per 10 env steps
+# With N_ENVS=256: 256/10 ≈ 26 gradient steps per collection
+comptime GRADIENT_STEPS = 26
+
+# CleanRL: target_network_frequency=500, train_frequency=10
+# → 500/10 = 50 gradient steps between target updates
+comptime TARGET_UPDATE_FREQ = 50
 
 
 # =============================================================================
@@ -44,7 +61,7 @@ comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("DQN Agent GPU Test on CartPole")
+    print("DQN Agent GPU Test on CartPole (CleanRL-aligned)")
     print("=" * 70)
     print()
 
@@ -58,6 +75,7 @@ fn main() raises:
             OBS_DIM,
             NUM_ACTIONS,
             HIDDEN_DIM,
+            HIDDEN_DIM2,
             BUFFER_CAPACITY,
             BATCH_SIZE,
             N_ENVS,
@@ -65,17 +83,20 @@ fn main() raises:
             profile=3,
         ](
             gamma=0.99,
-            tau=0.005,
+            tau=1.0,  # CleanRL: hard copy
             epsilon_min=0.05,
+            target_update_freq=TARGET_UPDATE_FREQ,
         )
 
         print("Environment: CartPole")
-        print("Agent: DQN (Double DQN enabled, GPU)")
-        print("  Hidden dim: " + String(HIDDEN_DIM))
+        print("Agent: DQN (GPU, CleanRL-aligned)")
+        print("  Network: " + String(HIDDEN_DIM) + " → " + String(HIDDEN_DIM2) + " → " + String(NUM_ACTIONS))
         print("  Buffer capacity: " + String(BUFFER_CAPACITY))
-        print("  Batch size (training): " + String(BATCH_SIZE))
+        print("  Batch size: " + String(BATCH_SIZE))
         print("  N envs (parallel): " + String(N_ENVS))
-        print("  Sync every: " + String(SYNC_EVERY) + " episodes")
+        print("  Gradient steps per collection: " + String(GRADIENT_STEPS))
+        print("  Target update: hard copy every " + String(TARGET_UPDATE_FREQ) + " grad steps")
+        print("  Sync every: " + String(SYNC_EVERY) + " transitions")
         print()
 
         # =====================================================================
@@ -91,7 +112,7 @@ fn main() raises:
             ctx,
             num_steps=NUM_STEPS,
             warmup_steps=WARMUP_STEPS,
-            gradient_steps=128,
+            gradient_steps=GRADIENT_STEPS,
             sync_every=SYNC_EVERY,
             verbose=True,
             print_every=10_000,

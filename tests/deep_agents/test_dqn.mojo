@@ -51,7 +51,12 @@ def main() raises:
 
     var env = CartPoleEnv[DType.float64]()
     var agent = DQNAgent[
-        OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE, lr=0.001
+        obs_dim=OBS_DIM,
+        num_actions=NUM_ACTIONS,
+        hidden_dim=HIDDEN_DIM,
+        buffer_capacity=BUFFER_CAPACITY,
+        batch_size=BATCH_SIZE,
+        lr=0.001,
     ](
         gamma=0.99,
         tau=0.005,

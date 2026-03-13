@@ -158,6 +158,7 @@ struct DeepPPOAgent[
         gpu_minibatch_size: Minibatch size for GPU training.
         actor_lr: Actor learning rate.
         critic_lr: Critic learning rate.
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
 
     Note on GPU training:
         - n_envs: Parallel environments on GPU (affects data collection rate)
@@ -313,9 +314,13 @@ struct DeepPPOAgent[
         comptime OUTPUT_TOTAL = OUTPUT_WEIGHTS + OUTPUT_BIASES
         comptime OUTPUT_OFFSET = Self.ActorModel.PARAM_SIZE - OUTPUT_TOTAL
         for i in range(OUTPUT_WEIGHTS):
-            (self.state.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](0.01)
+            (self.state.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](
+                0.01
+            )
         for i in range(OUTPUT_BIASES):
-            (self.state.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
+            (
+                self.state.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i
+            )[] = Scalar[dtype](0.0)
 
         # Initialize critic AFTER actor output shrink
         self.state.critic.initialize[Xavier[]]()
@@ -386,7 +391,8 @@ struct DeepPPOAgent[
         self.checkpoint_path = checkpoint_path
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -870,7 +876,8 @@ struct DeepPPOAgent[
     # =========================================================================
 
     fn make_cpu_state(self) -> Self.CPUStateType:
-        """Allocate a fresh PPODiscreteState with Kaiming init + small actor output."""
+        """Allocate a fresh PPODiscreteState with Kaiming init + small actor output.
+        """
         var s = Self.CPUStateType()
         # Apply same small output init as __init__
         comptime OUTPUT_WEIGHTS = Self.HIDDEN * Self.ACTIONS
@@ -879,7 +886,9 @@ struct DeepPPOAgent[
         for i in range(OUTPUT_WEIGHTS):
             (s.actor.params + OUTPUT_OFFSET + i)[] *= Scalar[dtype](0.01)
         for i in range(Self.ACTIONS):
-            (s.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[dtype](0.0)
+            (s.actor.params + OUTPUT_OFFSET + OUTPUT_WEIGHTS + i)[] = Scalar[
+                dtype
+            ](0.0)
         s.critic.initialize[Xavier[]]()
         return s^
 

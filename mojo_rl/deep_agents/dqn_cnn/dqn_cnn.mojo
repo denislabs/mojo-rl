@@ -130,6 +130,7 @@ struct DQNCNNAgent[
         n_envs: Parallel GPU environments (default: 64, smaller for pixel obs).
         double_dqn: Use Double DQN (default: True).
         lr: Adam learning rate (default: 0.00025, Nature DQN value).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     comptime OBS = 4 * 84 * 84  # 28224 = PIXEL_OBS_DIM
@@ -242,7 +243,8 @@ struct DQNCNNAgent[
         self.checkpoint_path = checkpoint_path
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -665,8 +667,14 @@ struct DQNCNNAgent[
         var p_online = gpu_state.online.params_view()
         var p_target = gpu_state.target.params_view()
         Self.Q_Network.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, q_t, p_online, cache_t, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_fwd_base,
+            ctx,
+            obs_t,
+            q_t,
+            p_online,
+            cache_t,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_fwd_base,
         )
         comptime if Self.profile >= 2:
             self.train_timer.sync_and_accumulate(1, ctx)
@@ -674,8 +682,13 @@ struct DQNCNNAgent[
 
         # ---- Phase 3: Target forward ----
         Self.Q_Network.forward_gpu[BATCH](
-            ctx, next_obs_t, next_q_t, p_target, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.target_fwd_base,
+            ctx,
+            next_obs_t,
+            next_q_t,
+            p_target,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.target_fwd_base,
         )
 
         comptime if Self.profile >= 2:
@@ -793,8 +806,15 @@ struct DQNCNNAgent[
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
         Self.Q_Network.backward_gpu[BATCH](
-            ctx, grad_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_bwd_base,
+            ctx,
+            grad_t,
+            grad_in_t,
+            p_online,
+            cache_t,
+            g,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_bwd_base,
         )
         gpu_state.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:

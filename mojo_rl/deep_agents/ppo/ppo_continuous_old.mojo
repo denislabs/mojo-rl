@@ -149,7 +149,8 @@ struct DeepPPOContinuousAgentOld[
     comptime ROLLOUT = Self.rollout_len
 
     # Actor output: mean + log_std = 2 * action_dim
-    comptime ACTOR_OUT = Self.action_dim * 2
+    # NOTE: Must derive from ActorModel.OUT_DIM to avoid Mojo "unfolded expression" mismatch
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
 
     # Cache sizes
     # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + StochasticActor[h, action]

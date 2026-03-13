@@ -61,7 +61,7 @@ fn dueling_combine_kernel[
     var v_s = dueling_output[b, 0]
 
     # Compute mean advantage
-    var mean_adv = Scalar[dtype](0.0)
+    var mean_adv: dueling_output.element_type = 0.0
     for a in range(NUM_ACTIONS):
         mean_adv += dueling_output[b, 1 + a]
     mean_adv /= Scalar[dtype](NUM_ACTIONS)
@@ -106,7 +106,7 @@ fn dueling_grad_kernel[
         return
 
     # Compute sum of dQ gradients
-    var sum_dq = Scalar[dtype](0.0)
+    var sum_dq: dq_grad.element_type = 0.0
     for a in range(NUM_ACTIONS):
         sum_dq += dq_grad[b, a]
 

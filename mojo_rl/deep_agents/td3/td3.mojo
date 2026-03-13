@@ -143,6 +143,7 @@ struct DeepTD3Agent[
         actor_lr: Actor Adam learning rate — compile-time (default: 0.001).
         critic_lr: Critic Adam learning rate — compile-time (default: 0.001).
         max_n_envs: Max parallel environments for GPU training (default: 64).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     # Convenience compile-time aliases
@@ -301,21 +302,25 @@ struct DeepTD3Agent[
         self.critic1_pg_bwd_base = 0
         self.actor_bwd_base = 0
         comptime if Self.profile >= 2:
-            _ = self.train_timer.add_slot("sample_batch")       # 0
-            _ = self.train_timer.add_slot("td_targets")         # 1
-            _ = self.train_timer.add_slot("critic1_update")     # 2
-            _ = self.train_timer.add_slot("critic2_update")     # 3
-            _ = self.train_timer.add_slot("actor_update")       # 4
+            _ = self.train_timer.add_slot("sample_batch")  # 0
+            _ = self.train_timer.add_slot("td_targets")  # 1
+            _ = self.train_timer.add_slot("critic1_update")  # 2
+            _ = self.train_timer.add_slot("critic2_update")  # 3
+            _ = self.train_timer.add_slot("actor_update")  # 4
         comptime if Self.profile >= 3:
             # td_targets (L2 slot 1): actor target fwd, critic1/2 target fwd
             self.actor_target_fwd_base = Self.ActorModel.register_forward_slots(
                 self.train_timer, parent=1
             )
-            self.critic1_target_fwd_base = Self.CriticModel.register_forward_slots(
-                self.train_timer, parent=1
+            self.critic1_target_fwd_base = (
+                Self.CriticModel.register_forward_slots(
+                    self.train_timer, parent=1
+                )
             )
-            self.critic2_target_fwd_base = Self.CriticModel.register_forward_slots(
-                self.train_timer, parent=1
+            self.critic2_target_fwd_base = (
+                Self.CriticModel.register_forward_slots(
+                    self.train_timer, parent=1
+                )
             )
             # critic1_update (L2 slot 2): critic1 online fwd + bwd
             self.critic1_fwd_base = Self.CriticModel.register_forward_slots(
@@ -346,7 +351,8 @@ struct DeepTD3Agent[
             )
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -1014,8 +1020,13 @@ struct DeepTD3Agent[
 
         # ----- Phase 2: Actor target → next_act -----
         Self.ActorNet.forward_gpu[BATCH](
-            ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws,
-            perf=self._perf_ptr(), perf_slot=self.actor_target_fwd_base,
+            ctx,
+            nobs_t,
+            next_act_t,
+            p_actor_t,
+            gpu_state.actor_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.actor_target_fwd_base,
         )
 
         # ----- Phase 3: Target policy smoothing (TD3 Innovation #3) -----
@@ -1081,12 +1092,22 @@ struct DeepTD3Agent[
 
         # ----- Phase 5: Both critics target forward -----
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic1_target_fwd_base,
+            ctx,
+            next_ci_t,
+            nq1_2d_t,
+            p_c1t,
+            gpu_state.critic1_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic1_target_fwd_base,
         )
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic2_target_fwd_base,
+            ctx,
+            next_ci_t,
+            nq2_2d_t,
+            p_c2t,
+            gpu_state.critic2_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic2_target_fwd_base,
         )
 
         # ----- Phase 6: TD targets (TD3 Innovation #1: min(Q1, Q2)) -----
@@ -1168,8 +1189,14 @@ struct DeepTD3Agent[
         ](gpu_state.d_ci1.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic1_fwd_base,
+            ctx,
+            ci_t,
+            q1_t,
+            p_c1,
+            q1_cache_t,
+            gpu_state.critic1_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic1_fwd_base,
         )
 
         @always_inline
@@ -1198,7 +1225,8 @@ struct DeepTD3Agent[
             q1_cache_t,
             g_c1,
             gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic1_bwd_base,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic1_bwd_base,
         )
         gpu_state.critic1.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:
@@ -1220,8 +1248,14 @@ struct DeepTD3Agent[
         ](gpu_state.d_ci2.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic2_fwd_base,
+            ctx,
+            ci_t,
+            q2_t,
+            p_c2,
+            q2_cache_t,
+            gpu_state.critic2_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic2_fwd_base,
         )
 
         @always_inline
@@ -1250,7 +1284,8 @@ struct DeepTD3Agent[
             q2_cache_t,
             g_c2,
             gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.critic2_bwd_base,
+            perf=self._perf_ptr(),
+            perf_slot=self.critic2_bwd_base,
         )
         gpu_state.critic2.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:
@@ -1295,7 +1330,8 @@ struct DeepTD3Agent[
                 p_actor,
                 actor_cache_t,
                 gpu_state.actor_ws,
-                perf=self._perf_ptr(), perf_slot=self.actor_fwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.actor_fwd_base,
             )
 
             # Concat(obs, actor_actions) → new_ci
@@ -1329,7 +1365,8 @@ struct DeepTD3Agent[
                 p_c1,
                 new_q_cache_t,
                 gpu_state.critic1_ws,
-                perf=self._perf_ptr(), perf_slot=self.critic1_pg_fwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.critic1_pg_fwd_base,
             )
 
             # Critic1 backward for action gradients (no optimizer step)
@@ -1343,7 +1380,8 @@ struct DeepTD3Agent[
                 new_q_cache_t,
                 g_c1_pg,
                 gpu_state.critic1_ws,
-                perf=self._perf_ptr(), perf_slot=self.critic1_pg_bwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.critic1_pg_bwd_base,
             )
 
             # Extract action gradients from critic input gradient
@@ -1378,7 +1416,8 @@ struct DeepTD3Agent[
                 actor_cache_t,
                 g_actor,
                 gpu_state.actor_ws,
-                perf=self._perf_ptr(), perf_slot=self.actor_bwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.actor_bwd_base,
             )
             gpu_state.actor.online.optimizer_step(ctx)
             comptime if Self.profile >= 2:

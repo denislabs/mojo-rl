@@ -163,6 +163,7 @@ struct DeepPPOCNNAgent[
         gpu_minibatch_size: Minibatch size for GPU training (default: 256).
         actor_lr: Actor learning rate (default: 2.5e-4).
         critic_lr: Critic learning rate (default: 2.5e-4).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     comptime OBS = 4 * 84 * 84  # 28224 = PIXEL_OBS_DIM
@@ -337,7 +338,8 @@ struct DeepPPOCNNAgent[
         self.checkpoint_path = checkpoint_path
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -1037,7 +1039,9 @@ struct DeepPPOCNNAgent[
         _ = timer.add_slot("compute_advantages")
         _ = timer.add_slot("update_epochs")
         _ = timer.add_slot("gpu_cpu_sync")
-        var metrics = run_onpolicy_discrete_train_gpu[EnvType, Self, Self.profile](
+        var metrics = run_onpolicy_discrete_train_gpu[
+            EnvType, Self, Self.profile
+        ](
             self,
             ctx,
             num_updates,

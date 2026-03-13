@@ -151,6 +151,7 @@ struct DeepSACAgent[
         actor_lr: Actor Adam learning rate — compile-time (default: 0.0003).
         critic_lr: Critic Adam learning rate — compile-time (default: 0.0003).
         max_n_envs: Maximum number of environments (default: 64).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     # Convenience compile-time aliases
@@ -385,7 +386,8 @@ struct DeepSACAgent[
             )
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -1299,8 +1301,13 @@ struct DeepSACAgent[
             dtype, Layout.row_major(BATCH, ACTOR_OUT), MutAnyOrigin
         ](gpu_state.next_actor_out.unsafe_ptr())
         Self.ActorNet.forward_gpu[BATCH](
-            ctx, nobs_t, next_actor_out_t, p_actor, gpu_state.actor_ws,
-            perf=self._perf_ptr(), perf_slot=self.next_actor_fwd_base,
+            ctx,
+            nobs_t,
+            next_actor_out_t,
+            p_actor,
+            gpu_state.actor_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.next_actor_fwd_base,
         )
 
         # ----- Phase 3: sac_rsample next actions + log_probs -----
@@ -1392,12 +1399,22 @@ struct DeepSACAgent[
         ](gpu_state.nq2.unsafe_ptr())
 
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq1_2d_t, p_c1t, gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.c1t_fwd_base,
+            ctx,
+            next_ci_t,
+            nq1_2d_t,
+            p_c1t,
+            gpu_state.critic1_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.c1t_fwd_base,
         )
         Self.CriticNet.forward_gpu[BATCH](
-            ctx, next_ci_t, nq2_2d_t, p_c2t, gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.c2t_fwd_base,
+            ctx,
+            next_ci_t,
+            nq2_2d_t,
+            p_c2t,
+            gpu_state.critic2_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.c2t_fwd_base,
         )
 
         # ----- Phase 6: SAC TD targets with entropy bonus -----
@@ -1479,8 +1496,14 @@ struct DeepSACAgent[
         ](gpu_state.d_ci1.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q1_t, p_c1, q1_cache_t, gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.c1_fwd_base,
+            ctx,
+            ci_t,
+            q1_t,
+            p_c1,
+            q1_cache_t,
+            gpu_state.critic1_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.c1_fwd_base,
         )
 
         @always_inline
@@ -1509,7 +1532,8 @@ struct DeepSACAgent[
             q1_cache_t,
             g_c1,
             gpu_state.critic1_ws,
-            perf=self._perf_ptr(), perf_slot=self.c1_bwd_base,
+            perf=self._perf_ptr(),
+            perf_slot=self.c1_bwd_base,
         )
         gpu_state.critic1.online.optimizer_step(ctx)
 
@@ -1532,8 +1556,14 @@ struct DeepSACAgent[
         ](gpu_state.d_ci2.unsafe_ptr())
 
         Self.CriticNet.forward_gpu_with_cache[BATCH](
-            ctx, ci_t, q2_t, p_c2, q2_cache_t, gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.c2_fwd_base,
+            ctx,
+            ci_t,
+            q2_t,
+            p_c2,
+            q2_cache_t,
+            gpu_state.critic2_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.c2_fwd_base,
         )
 
         @always_inline
@@ -1562,7 +1592,8 @@ struct DeepSACAgent[
             q2_cache_t,
             g_c2,
             gpu_state.critic2_ws,
-            perf=self._perf_ptr(), perf_slot=self.c2_bwd_base,
+            perf=self._perf_ptr(),
+            perf_slot=self.c2_bwd_base,
         )
         gpu_state.critic2.online.optimizer_step(ctx)
 
@@ -1588,7 +1619,8 @@ struct DeepSACAgent[
                 p_actor,
                 actor_cache_t,
                 gpu_state.actor_ws,
-                perf=self._perf_ptr(), perf_slot=self.actor_fwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.actor_fwd_base,
             )
 
             # 10b: sac_rsample with cache → curr_act, curr_lp, eps_cache (for backward)
@@ -1675,7 +1707,8 @@ struct DeepSACAgent[
                 p_c1,
                 new_q_cache_t,
                 gpu_state.critic1_ws,
-                perf=self._perf_ptr(), perf_slot=self.pg_c1_fwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.pg_c1_fwd_base,
             )
 
             # Q2 forward on policy actions (reuse q2_out/q2_cache — Phase 9 is done)
@@ -1693,7 +1726,8 @@ struct DeepSACAgent[
                 p_c2,
                 new_q2_cache_t,
                 gpu_state.critic2_ws,
-                perf=self._perf_ptr(), perf_slot=self.pg_c2_fwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.pg_c2_fwd_base,
             )
 
             # 10d2: min(Q1, Q2) mask → dq1 goes to dq, dq2 goes to q2_grad
@@ -1745,7 +1779,8 @@ struct DeepSACAgent[
                 new_q_cache_t,
                 g_c1_pg,
                 gpu_state.critic1_ws,
-                perf=self._perf_ptr(), perf_slot=self.pg_c1_bwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.pg_c1_bwd_base,
             )
             # Intentionally NO optimizer_step here
 
@@ -1764,7 +1799,8 @@ struct DeepSACAgent[
                 new_q2_cache_t,
                 g_c2_pg,
                 gpu_state.critic2_ws,
-                perf=self._perf_ptr(), perf_slot=self.pg_c2_bwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.pg_c2_bwd_base,
             )
             # Intentionally NO optimizer_step here
 
@@ -1875,7 +1911,8 @@ struct DeepSACAgent[
                 actor_cache_t,
                 g_actor,
                 gpu_state.actor_ws,
-                perf=self._perf_ptr(), perf_slot=self.actor_bwd_base,
+                perf=self._perf_ptr(),
+                perf_slot=self.actor_bwd_base,
             )
             gpu_state.actor.optimizer_step(ctx)
 

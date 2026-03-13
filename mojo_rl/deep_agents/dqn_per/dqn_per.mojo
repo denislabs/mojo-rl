@@ -74,9 +74,17 @@ from mojo_rl.deep_agents.core import (
 from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.model.model import PerfTimerPtr
-from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    RenderableEnv,
+)
 from .state import DQNPERGPUState
-from mojo_rl.deep_agents.dqn.kernels import dqn_td_target_kernel, dqn_double_td_target_kernel
+from mojo_rl.deep_agents.dqn.kernels import (
+    dqn_td_target_kernel,
+    dqn_double_td_target_kernel,
+)
 
 
 # =============================================================================
@@ -201,6 +209,7 @@ struct DQNPERAgent[
         n_envs: Number of parallel environments for GPU training (default: 1024).
         double_dqn: If True, use Double DQN (default: True).
         lr: Adam learning rate — compile-time (default: 0.0005).
+        profile: Level of profiling (0: none, 1: L2, 2: L3, 3: L4).
     """
 
     # Convenience aliases
@@ -318,12 +327,12 @@ struct DQNPERAgent[
         self.target_fwd_base = 0
         self.online_bwd_base = 0
         comptime if Self.profile >= 2:
-            _ = self.train_timer.add_slot("sample_batch")       # 0
-            _ = self.train_timer.add_slot("online_forward")     # 1
-            _ = self.train_timer.add_slot("target_forward")     # 2
-            _ = self.train_timer.add_slot("td_targets")         # 3
-            _ = self.train_timer.add_slot("grad_kernel")        # 4
-            _ = self.train_timer.add_slot("backward_update")    # 5
+            _ = self.train_timer.add_slot("sample_batch")  # 0
+            _ = self.train_timer.add_slot("online_forward")  # 1
+            _ = self.train_timer.add_slot("target_forward")  # 2
+            _ = self.train_timer.add_slot("td_targets")  # 3
+            _ = self.train_timer.add_slot("grad_kernel")  # 4
+            _ = self.train_timer.add_slot("backward_update")  # 5
         comptime if Self.profile >= 3:
             # L3 slots as children of L2 sub-phases
             # slot 1 = online_forward, 2 = target_forward, 5 = backward_update
@@ -340,7 +349,8 @@ struct DQNPERAgent[
         self.checkpoint_path = checkpoint_path
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
-        """Return opaque timer pointer for L3 profiling (null when profile < 3)."""
+        """Return opaque timer pointer for L3 profiling (null when profile < 3).
+        """
         comptime if Self.profile >= 3:
             return UnsafePointer(to=self.train_timer).bitcast[NoneType]()
         else:
@@ -800,8 +810,14 @@ struct DQNPERAgent[
         var p_online = gpu_state.online.params_view()
         var p_target = gpu_state.target.params_view()
         Self.Q_Network.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, q_t, p_online, cache_t, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_fwd_base,
+            ctx,
+            obs_t,
+            q_t,
+            p_online,
+            cache_t,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_fwd_base,
         )
         comptime if Self.profile >= 2:
             self.train_timer.sync_and_accumulate(1, ctx)
@@ -809,8 +825,13 @@ struct DQNPERAgent[
 
         # ---- Phase 3: Target forward (no cache) ----
         Self.Q_Network.forward_gpu[BATCH](
-            ctx, next_obs_t, next_q_t, p_target, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.target_fwd_base,
+            ctx,
+            next_obs_t,
+            next_q_t,
+            p_target,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.target_fwd_base,
         )
 
         comptime if Self.profile >= 2:
@@ -928,8 +949,15 @@ struct DQNPERAgent[
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
         Self.Q_Network.backward_gpu[BATCH](
-            ctx, grad_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws,
-            perf=self._perf_ptr(), perf_slot=self.online_bwd_base,
+            ctx,
+            grad_t,
+            grad_in_t,
+            p_online,
+            cache_t,
+            g,
+            gpu_state.train_ws,
+            perf=self._perf_ptr(),
+            perf_slot=self.online_bwd_base,
         )
         gpu_state.online.optimizer_step(ctx)
         comptime if Self.profile >= 2:
@@ -963,7 +991,8 @@ struct DQNPERAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """Soft-update target Q-network on GPU: theta_t <- tau*theta + (1-tau)*theta_t."""
+        """Soft-update target Q-network on GPU: theta_t <- tau*theta + (1-tau)*theta_t.
+        """
         gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
 
     # =========================================================================
@@ -999,7 +1028,6 @@ struct DQNPERAgent[
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
-            PROFILE: Whether to profile the training loop.
 
         Args:
             ctx: GPU device context.
@@ -1016,9 +1044,7 @@ struct DQNPERAgent[
             TrainingMetrics with episode-level statistics.
         """
         var algo_name = String(
-            "DQN+PER (GPU, uniform replay)"
-            if not Self.double_dqn
-            else "Double DQN+PER (GPU, uniform replay)"
+            "DQN+PER (GPU, uniform replay)" if not Self.double_dqn else "Double DQN+PER (GPU, uniform replay)"
         )
         var timer = PerfTimer[Self.profile >= 1]()
         _ = timer.add_slot("copy_prev_obs")
