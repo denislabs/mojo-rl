@@ -5,8 +5,8 @@
 # World Models (DreamerV3)
 
 from .rssm import RSSM, categorical_sample, kl_divergence
-from .state import DreamerV3CPUState
-from .dreamer_v3 import DreamerV3Agent, run_dreamer_v3_training
+from .state import DreamerV3CPUState, DreamerV3GPUState
+from .dreamer_v3 import DreamerV3Agent, run_dreamer_v3_training, run_dreamer_v3_training_gpu
 from .imagination import (
     compute_lambda_returns,
     normalize_returns,

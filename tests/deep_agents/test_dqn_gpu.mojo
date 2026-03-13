@@ -20,11 +20,13 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs import CartPoleEnv
+from mojo_rl.core.logger import MetricsLogger, LoggerPtr
 
 
 # =============================================================================
@@ -100,6 +102,24 @@ fn main() raises:
         print()
 
         # =====================================================================
+        # Setup logger — posts to local RL Monitor worker
+        # =====================================================================
+
+        var logger = MetricsLogger(
+            server_url="http://localhost:8787",
+            run_name="DQN CartPole GPU",
+            buffer_size=64,
+        )
+        logger.set_config("agent", "DQN")
+        logger.set_config("env", "CartPole")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("hidden_dim2", String(HIDDEN_DIM2))
+        logger.set_config("lr", "2.5e-4")
+        logger.set_config("gamma", "0.99")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+        logger.set_config("n_envs", String(N_ENVS))
+
+        # =====================================================================
         # Train using the train_gpu() method
         # =====================================================================
 
@@ -117,10 +137,14 @@ fn main() raises:
             verbose=True,
             print_every=10_000,
             environment_name="CartPole (GPU)",
+            logger=UnsafePointer(to=logger),
+            diag_every=50,
         )
 
         var end_time = perf_counter_ns()
         var elapsed_s = Float64(end_time - start_time) / 1e9
+
+        logger.close()
 
         print("-" * 70)
         print()

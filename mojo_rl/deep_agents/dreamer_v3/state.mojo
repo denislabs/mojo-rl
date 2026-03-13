@@ -1,21 +1,28 @@
-"""DreamerV3CPUState — CPU state container for DreamerV3 training.
+"""DreamerV3 State Containers — CPU and GPU state for DreamerV3 training.
 
-Holds all heap-allocated data needed for one DreamerV3 training loop:
+CPU state (DreamerV3CPUState):
   - RSSM world model (encoder, dynamics, decoder, reward/continue heads)
   - Actor-Critic networks with slow critic EMA
   - SequenceReplayBuffer for streaming obs/act/rew/done
   - Pre-allocated scratch buffers for BPTT, imagination, and actor-critic
 
-Created once in DreamerV3Agent.__init__.
+GPU state (DreamerV3GPUState):
+  - GPUNetworkState for all 13 networks (11 RSSM + actor + critic)
+  - Slow critic params on device
+  - DeviceBuffer scratch for observe, imagination, and training
+  - Symlog bins on device
+
+Created once in DreamerV3Agent.__init__ / make_gpu_state.
 """
 
 from std.memory import alloc, memset
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
@@ -445,3 +452,504 @@ struct DreamerV3CPUState[
             var s = Float64(self.slow_critic_params[i])
             var c = Float64(cp[i])
             self.slow_critic_params[i] = Scalar[dtype]((1.0 - tau) * s + tau * c)
+
+
+# =============================================================================
+# GPU State
+# =============================================================================
+
+
+struct DreamerV3GPUState[
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    DETER_DIM: Int = 512,
+    HIDDEN: Int = 128,
+    STOCH_DIM: Int = 8,
+    CLASSES: Int = 8,
+    UNITS: Int = 128,
+    NUM_BINS: Int = 255,
+    BLOCKS: Int = 4,
+    WM_LR: Float64 = 1e-4,
+    ACTOR_LR: Float64 = 3e-5,
+    CRITIC_LR: Float64 = 3e-5,
+    UNIMIX: Float64 = 0.01,
+    FREE_NATS: Float64 = 1.0,
+    BATCH_SIZE: Int = 16,
+    BATCH_LENGTH: Int = 64,
+    IMAGINE_HORIZON: Int = 15,
+    MAX_N_ENVS: Int = 64,
+](Movable):
+    """GPU-resident state for DreamerV3 training.
+
+    Holds all device buffers for GPU training: network states (params, grads,
+    optimizer state), scratch buffers for observe/imagination phases, and
+    symlog bins. SequenceReplayBuffer stays on CPU — sampled batches are
+    uploaded to GPU per training step.
+    """
+
+    # ── Derived compile-time constants ─────────────────────────────────────
+    comptime STOCH_FLAT: Int = Self.STOCH_DIM * Self.CLASSES
+    comptime FEAT_DIM: Int = Self.DETER_DIM + Self.STOCH_FLAT
+    comptime IMAG_BATCH: Int = Self.BATCH_SIZE * Self.BATCH_LENGTH
+
+    # ── Shorthand ────────────────────────────────────────────────────────
+    comptime BATCH: Int = Self.BATCH_SIZE
+    comptime BL: Int = Self.BATCH_LENGTH
+    comptime OBS: Int = Self.OBS_DIM
+    comptime ACT: Int = Self.ACTION_DIM
+    comptime DETER: Int = Self.DETER_DIM
+    comptime STOCH: Int = Self.STOCH_FLAT
+    comptime FEAT: Int = Self.FEAT_DIM
+    comptime BINS: Int = Self.NUM_BINS
+    comptime HORIZON: Int = Self.IMAGINE_HORIZON
+    comptime IB: Int = Self.IMAG_BATCH
+    comptime MAX_N: Int = Self.MAX_N_ENVS
+
+    # ── RSSM type alias (same as CPUState) ────────────────────────────────
+    comptime RSSMType = RSSM[
+        Self.OBS_DIM, Self.ACTION_DIM, Self.DETER_DIM, Self.HIDDEN,
+        Self.STOCH_DIM, Self.CLASSES, Self.UNITS, Self.NUM_BINS,
+        Self.BLOCKS, Self.WM_LR, Self.UNIMIX, Self.FREE_NATS,
+    ]
+
+    # ── Model type aliases (from RSSM + CPUState) ────────────────────────
+    comptime ActorModel = Sequential[
+        LinearMish[Self.FEAT_DIM, Self.UNITS],
+        LinearMish[Self.UNITS, Self.UNITS],
+        Parallel[
+            Linear[Self.UNITS, Self.ACTION_DIM],
+            Linear[Self.UNITS, Self.ACTION_DIM],
+        ],
+    ]
+    comptime CriticModel = Sequential[
+        LinearMish[Self.FEAT_DIM, Self.UNITS],
+        LinearMish[Self.UNITS, Self.UNITS],
+        Linear[Self.UNITS, Self.NUM_BINS],
+    ]
+
+    # Network wrapper type aliases
+    comptime WMOpt = Adam[LR=Self.WM_LR]
+    comptime ActorOpt = Adam[LR=Self.ACTOR_LR]
+    comptime CriticOpt = Adam[LR=Self.CRITIC_LR]
+
+    # ── RSSM GPU network states (11 networks) ────────────────────────────
+    var encoder: GPUNetworkState[Self.RSSMType.EncModel, Self.WMOpt]
+    var posterior: GPUNetworkState[Self.RSSMType.PostModel, Self.WMOpt]
+    var prior: GPUNetworkState[Self.RSSMType.PriorModel, Self.WMOpt]
+    var decoder: GPUNetworkState[Self.RSSMType.DecModel, Self.WMOpt]
+    var reward_head: GPUNetworkState[Self.RSSMType.RewModel, Self.WMOpt]
+    var continue_head: GPUNetworkState[Self.RSSMType.ContModel, Self.WMOpt]
+    var deter_proj: GPUNetworkState[Self.RSSMType.DeterProj, Self.WMOpt]
+    var stoch_proj: GPUNetworkState[Self.RSSMType.StochProj, Self.WMOpt]
+    var action_proj: GPUNetworkState[Self.RSSMType.ActionProj, Self.WMOpt]
+    var gru_hidden: GPUNetworkState[Self.RSSMType.GRUHiddenModel, Self.WMOpt]
+    var gru_gates: GPUNetworkState[Self.RSSMType.GRUGateModel, Self.WMOpt]
+
+    # ── Actor-Critic GPU network states ──────────────────────────────────
+    var actor: GPUNetworkState[Self.ActorModel, Self.ActorOpt]
+    var critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
+    var slow_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
+
+    # ── Symlog bins on device ────────────────────────────────────────────
+    var bins_buf: DeviceBuffer[dtype]  # [NUM_BINS]
+
+    # ── Batch data (uploaded from CPU per train step) ────────────────────
+    var batch_obs: DeviceBuffer[dtype]  # [BATCH * (BL+1) * OBS]
+    var batch_actions: DeviceBuffer[dtype]  # [BATCH * BL * ACT]
+    var batch_rewards: DeviceBuffer[dtype]  # [BATCH * BL]
+    var batch_dones: DeviceBuffer[dtype]  # [BATCH * BL]
+
+    # ── RSSM observe scratch (per-timestep, reused) ──────────────────────
+    var deter_buf: DeviceBuffer[dtype]  # [BATCH * DETER]
+    var stoch_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var new_deter_buf: DeviceBuffer[dtype]  # [BATCH * DETER]
+    var new_stoch_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var post_probs_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var prior_probs_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var feat_buf: DeviceBuffer[dtype]  # [BATCH * FEAT]
+    var obs_step_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var act_step_buf: DeviceBuffer[dtype]  # [BATCH * ACT]
+    var symlog_obs_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var embed_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var post_in_buf: DeviceBuffer[dtype]  # [BATCH * (DETER + STOCH)]
+    var post_logits_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var prior_logits_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var norm_action_buf: DeviceBuffer[dtype]  # [BATCH * ACT]
+
+    # GRU scratch
+    var proj_d_buf: DeviceBuffer[dtype]  # [BATCH * HIDDEN]
+    var proj_s_buf: DeviceBuffer[dtype]  # [BATCH * HIDDEN]
+    var proj_a_buf: DeviceBuffer[dtype]  # [BATCH * HIDDEN]
+    var concat_buf: DeviceBuffer[dtype]  # [BATCH * (DETER + 3*HIDDEN)]
+    var hidden_out_buf: DeviceBuffer[dtype]  # [BATCH * DETER]
+    var gate_out_buf: DeviceBuffer[dtype]  # [BATCH * 3*DETER]
+
+    # Dummy stoch for prior sampling
+    var dummy_stoch_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+
+    # ── Cached observe results (all timesteps for imagination) ───────────
+    var all_deter_buf: DeviceBuffer[dtype]  # [BL * BATCH * DETER]
+    var all_stoch_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
+    var all_post_probs_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
+    var all_prior_probs_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
+    var all_feats_buf: DeviceBuffer[dtype]  # [BL * BATCH * FEAT]
+
+    # ── Decoder/head scratch ─────────────────────────────────────────────
+    var dec_out_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var rew_logits_buf: DeviceBuffer[dtype]  # [max(BATCH, IB) * BINS]
+    var cont_out_buf: DeviceBuffer[dtype]  # [max(BATCH, IB) * 1]
+    var kl_buf: DeviceBuffer[dtype]  # [BATCH] (per-element KL)
+
+    # ── Imagination scratch [HORIZON x IB] ───────────────────────────────
+    # Using IB-sized buffers for all imagination steps
+    var imag_deter_buf: DeviceBuffer[dtype]  # [2 * IB * DETER] (ping-pong)
+    var imag_stoch_buf: DeviceBuffer[dtype]  # [2 * IB * STOCH]
+    var imag_feat_buf: DeviceBuffer[dtype]  # [IB * FEAT]
+
+    # Imagination scalars
+    var imag_rewards_buf: DeviceBuffer[dtype]  # [HORIZON * IB]
+    var imag_values_buf: DeviceBuffer[dtype]  # [HORIZON * IB]
+    var imag_continues_buf: DeviceBuffer[dtype]  # [HORIZON * IB]
+    var imag_returns_buf: DeviceBuffer[dtype]  # [HORIZON * IB]
+    var imag_actions_buf: DeviceBuffer[dtype]  # [IB * ACT]
+    var imag_log_probs_buf: DeviceBuffer[dtype]  # [IB]
+    var imag_advantages_buf: DeviceBuffer[dtype]  # [IB]
+
+    # ── Actor/Critic GPU scratch (IB-sized for imagination) ──────────────
+    var actor_out_buf: DeviceBuffer[dtype]  # [IB * 2*ACT]
+    var actor_cache_buf: DeviceBuffer[dtype]  # [IB * ActorModel.CACHE_SIZE]
+    var actor_grad_buf: DeviceBuffer[dtype]  # [IB * 2*ACT]
+    var actor_grad_in_buf: DeviceBuffer[dtype]  # [IB * FEAT]
+    var critic_logits_buf: DeviceBuffer[dtype]  # [IB * BINS]
+    var critic_cache_buf: DeviceBuffer[dtype]  # [IB * CriticModel.CACHE_SIZE]
+    var critic_grad_buf: DeviceBuffer[dtype]  # [IB * BINS]
+    var critic_grad_in_buf: DeviceBuffer[dtype]  # [IB * FEAT]
+    var two_hot_targets_buf: DeviceBuffer[dtype]  # [IB * BINS]
+    var symlog_returns_buf: DeviceBuffer[dtype]  # [IB]
+
+    # ── Decoder backward scratch ─────────────────────────────────────────
+    var dec_cache_buf: DeviceBuffer[dtype]  # [BATCH * DecModel.CACHE_SIZE]
+    var dec_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var dec_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * FEAT]
+    var dec_target_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+
+    # ── Continue backward scratch ────────────────────────────────────────
+    var cont_target_buf: DeviceBuffer[dtype]  # [BATCH * 1]
+    var cont_grad_buf: DeviceBuffer[dtype]  # [BATCH * 1]
+
+    # ── Network workspace buffers ────────────────────────────────────────
+    # Sized for the maximum batch dimension (IB for imagination phase)
+    var ws_encoder: DeviceBuffer[dtype]
+    var ws_posterior: DeviceBuffer[dtype]
+    var ws_prior: DeviceBuffer[dtype]
+    var ws_decoder: DeviceBuffer[dtype]
+    var ws_reward: DeviceBuffer[dtype]
+    var ws_continue: DeviceBuffer[dtype]
+    var ws_deter_proj: DeviceBuffer[dtype]
+    var ws_stoch_proj: DeviceBuffer[dtype]
+    var ws_action_proj: DeviceBuffer[dtype]
+    var ws_gru_hidden: DeviceBuffer[dtype]
+    var ws_gru_gates: DeviceBuffer[dtype]
+    var ws_actor: DeviceBuffer[dtype]
+    var ws_critic: DeviceBuffer[dtype]
+
+    # ── Inference buffers (for select_actions_gpu) ───────────────────────
+    var inf_obs_buf: DeviceBuffer[dtype]  # [MAX_N * OBS]
+    var inf_deter_buf: DeviceBuffer[dtype]  # [MAX_N * DETER]
+    var inf_stoch_buf: DeviceBuffer[dtype]  # [MAX_N * STOCH]
+    var inf_action_buf: DeviceBuffer[dtype]  # [MAX_N * ACT]
+    var inf_feat_buf: DeviceBuffer[dtype]  # [MAX_N * FEAT]
+    var inf_actor_out_buf: DeviceBuffer[dtype]  # [MAX_N * 2*ACT]
+
+    # ── Pinned host buffers for batch upload ─────────────────────────────
+    var host_batch_obs: DeviceBuffer[dtype]  # pinned [BATCH * (BL+1) * OBS]
+    var host_batch_actions: DeviceBuffer[dtype]  # pinned [BATCH * BL * ACT]
+    var host_batch_rewards: DeviceBuffer[dtype]  # pinned [BATCH * BL]
+    var host_batch_dones: DeviceBuffer[dtype]  # pinned [BATCH * BL]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Constructor
+    # ══════════════════════════════════════════════════════════════════════
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all GPU buffers."""
+        # ── RSSM network states ──────────────────────────────────────────
+        self.encoder = GPUNetworkState[Self.RSSMType.EncModel, Self.WMOpt](ctx)
+        self.posterior = GPUNetworkState[Self.RSSMType.PostModel, Self.WMOpt](ctx)
+        self.prior = GPUNetworkState[Self.RSSMType.PriorModel, Self.WMOpt](ctx)
+        self.decoder = GPUNetworkState[Self.RSSMType.DecModel, Self.WMOpt](ctx)
+        self.reward_head = GPUNetworkState[Self.RSSMType.RewModel, Self.WMOpt](ctx)
+        self.continue_head = GPUNetworkState[Self.RSSMType.ContModel, Self.WMOpt](ctx)
+        self.deter_proj = GPUNetworkState[Self.RSSMType.DeterProj, Self.WMOpt](ctx)
+        self.stoch_proj = GPUNetworkState[Self.RSSMType.StochProj, Self.WMOpt](ctx)
+        self.action_proj = GPUNetworkState[Self.RSSMType.ActionProj, Self.WMOpt](ctx)
+        self.gru_hidden = GPUNetworkState[Self.RSSMType.GRUHiddenModel, Self.WMOpt](ctx)
+        self.gru_gates = GPUNetworkState[Self.RSSMType.GRUGateModel, Self.WMOpt](ctx)
+
+        # ── Actor-Critic ─────────────────────────────────────────────────
+        self.actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
+        self.critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
+        self.slow_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
+
+        # ── Symlog bins ──────────────────────────────────────────────────
+        self.bins_buf = ctx.enqueue_create_buffer[dtype](Self.BINS)
+
+        # ── Batch data ───────────────────────────────────────────────────
+        self.batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
+        self.batch_actions = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
+        self.batch_rewards = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+        self.batch_dones = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+
+        # ── Observe scratch ──────────────────────────────────────────────
+        self.deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.new_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.new_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.post_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.obs_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.act_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
+        self.symlog_obs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.embed_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.post_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + Self.STOCH))
+        self.post_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.prior_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.norm_action_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
+
+        # GRU scratch
+        self.proj_d_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.proj_s_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.proj_a_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.concat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + 3 * Self.HIDDEN))
+        self.hidden_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.gate_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * 3 * Self.DETER)
+        self.dummy_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+
+        # ── Cached observe ───────────────────────────────────────────────
+        self.all_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.DETER)
+        self.all_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
+        self.all_post_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
+        self.all_prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
+        self.all_feats_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.FEAT)
+
+        # ── Decoder/head scratch ─────────────────────────────────────────
+        self.dec_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        comptime MAX_BATCH_BINS = Self.IB * Self.BINS  # IB > BATCH, so IB is max
+        self.rew_logits_buf = ctx.enqueue_create_buffer[dtype](MAX_BATCH_BINS)
+        comptime MAX_BATCH_1 = Self.IB
+        self.cont_out_buf = ctx.enqueue_create_buffer[dtype](MAX_BATCH_1)
+        self.kl_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+
+        # ── Imagination scratch ──────────────────────────────────────────
+        self.imag_deter_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.DETER)
+        self.imag_stoch_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.STOCH)
+        self.imag_feat_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
+
+        comptime IMAG_SCALAR = Self.HORIZON * Self.IB
+        self.imag_rewards_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
+        self.imag_values_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
+        self.imag_continues_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
+        self.imag_returns_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
+        self.imag_actions_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ACT)
+        self.imag_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+        self.imag_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+
+        # ── Actor/Critic scratch ─────────────────────────────────────────
+        comptime ACTOR_OUT_DIM = Self.ActorModel.OUT_DIM
+        self.actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * ACTOR_OUT_DIM)
+        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ActorModel.CACHE_SIZE)
+        self.actor_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB * ACTOR_OUT_DIM)
+        self.actor_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
+        self.critic_logits_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
+        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.CriticModel.CACHE_SIZE)
+        self.critic_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
+        self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
+        self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
+        self.symlog_returns_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+
+        # ── Decoder backward scratch ─────────────────────────────────────
+        self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE)
+        self.dec_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.dec_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.dec_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+
+        # ── Continue backward scratch ────────────────────────────────────
+        self.cont_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+        self.cont_grad_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+
+        # ── Network workspace buffers ────────────────────────────────────
+        # Use IB (imag batch) as max batch size for workspace allocation
+        comptime EncNet = Network[Self.RSSMType.EncModel, Self.WMOpt]
+        comptime PostNet = Network[Self.RSSMType.PostModel, Self.WMOpt]
+        comptime PriorNet = Network[Self.RSSMType.PriorModel, Self.WMOpt]
+        comptime DecNet = Network[Self.RSSMType.DecModel, Self.WMOpt]
+        comptime RewNet = Network[Self.RSSMType.RewModel, Self.WMOpt]
+        comptime ContNet = Network[Self.RSSMType.ContModel, Self.WMOpt]
+        comptime DProjNet = Network[Self.RSSMType.DeterProj, Self.WMOpt]
+        comptime SProjNet = Network[Self.RSSMType.StochProj, Self.WMOpt]
+        comptime AProjNet = Network[Self.RSSMType.ActionProj, Self.WMOpt]
+        comptime GHNet = Network[Self.RSSMType.GRUHiddenModel, Self.WMOpt]
+        comptime GGNet = Network[Self.RSSMType.GRUGateModel, Self.WMOpt]
+        comptime ActNet = Network[Self.ActorModel, Self.ActorOpt]
+        comptime CritNet = Network[Self.CriticModel, Self.CriticOpt]
+
+        # IB workspace for imagination-phase networks; BATCH for observe-phase
+        comptime WS_IB_ACTOR = Self.IB * ActNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_CRITIC = Self.IB * CritNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_REWARD = Self.IB * RewNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_CONT = Self.IB * ContNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_PRIOR = Self.IB * PriorNet.WORKSPACE_SIZE_PER_SAMPLE
+        # Observe-phase networks use BATCH
+        comptime WS_B_ENC = Self.BATCH * EncNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_POST = Self.BATCH * PostNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_PRIOR = Self.BATCH * PriorNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_DEC = Self.BATCH * DecNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_REW = Self.BATCH * RewNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_CONT = Self.BATCH * ContNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_DPROJ = Self.BATCH * DProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_SPROJ = Self.BATCH * SProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_APROJ = Self.BATCH * AProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_GH = Self.BATCH * GHNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_GG = Self.BATCH * GGNet.WORKSPACE_SIZE_PER_SAMPLE
+
+        # Use max of observe and imagination sizes, minimum 1
+        fn max_ws(a: Int, b: Int) -> Int:
+            return a if a > b else b
+
+        self.ws_encoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_ENC, 1))
+        self.ws_posterior = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_POST, 1))
+        self.ws_prior = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_PRIOR, max_ws(WS_B_PRIOR, 1)))
+        self.ws_decoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_DEC, 1))
+        self.ws_reward = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_REWARD, max_ws(WS_B_REW, 1)))
+        self.ws_continue = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CONT, max_ws(WS_B_CONT, 1)))
+        self.ws_deter_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_DPROJ, 1))
+        self.ws_stoch_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_SPROJ, 1))
+        self.ws_action_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_APROJ, 1))
+        self.ws_gru_hidden = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_GH, 1))
+        self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_GG, 1))
+        self.ws_actor = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_ACTOR, 1))
+        self.ws_critic = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CRITIC, 1))
+
+        # ── Inference buffers ────────────────────────────────────────────
+        self.inf_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.OBS)
+        self.inf_deter_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.DETER)
+        self.inf_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.STOCH)
+        self.inf_action_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.ACT)
+        self.inf_feat_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.FEAT)
+        self.inf_actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * ACTOR_OUT_DIM)
+
+        # ── Pinned host buffers ──────────────────────────────────────────
+        self.host_batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
+        self.host_batch_actions = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
+        self.host_batch_rewards = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+        self.host_batch_dones = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+
+        # Zero-initialize key buffers
+        ctx.enqueue_memset(self.deter_buf, 0)
+        ctx.enqueue_memset(self.stoch_buf, 0)
+        ctx.enqueue_memset(self.inf_deter_buf, 0)
+        ctx.enqueue_memset(self.inf_stoch_buf, 0)
+        ctx.enqueue_memset(self.inf_action_buf, 0)
+
+    fn __init__(out self, *, deinit take: Self):
+        """Move constructor."""
+        self.encoder = take.encoder^
+        self.posterior = take.posterior^
+        self.prior = take.prior^
+        self.decoder = take.decoder^
+        self.reward_head = take.reward_head^
+        self.continue_head = take.continue_head^
+        self.deter_proj = take.deter_proj^
+        self.stoch_proj = take.stoch_proj^
+        self.action_proj = take.action_proj^
+        self.gru_hidden = take.gru_hidden^
+        self.gru_gates = take.gru_gates^
+        self.actor = take.actor^
+        self.critic = take.critic^
+        self.slow_critic = take.slow_critic^
+        self.bins_buf = take.bins_buf^
+        self.batch_obs = take.batch_obs^
+        self.batch_actions = take.batch_actions^
+        self.batch_rewards = take.batch_rewards^
+        self.batch_dones = take.batch_dones^
+        self.deter_buf = take.deter_buf^
+        self.stoch_buf = take.stoch_buf^
+        self.new_deter_buf = take.new_deter_buf^
+        self.new_stoch_buf = take.new_stoch_buf^
+        self.post_probs_buf = take.post_probs_buf^
+        self.prior_probs_buf = take.prior_probs_buf^
+        self.feat_buf = take.feat_buf^
+        self.obs_step_buf = take.obs_step_buf^
+        self.act_step_buf = take.act_step_buf^
+        self.symlog_obs_buf = take.symlog_obs_buf^
+        self.embed_buf = take.embed_buf^
+        self.post_in_buf = take.post_in_buf^
+        self.post_logits_buf = take.post_logits_buf^
+        self.prior_logits_buf = take.prior_logits_buf^
+        self.norm_action_buf = take.norm_action_buf^
+        self.proj_d_buf = take.proj_d_buf^
+        self.proj_s_buf = take.proj_s_buf^
+        self.proj_a_buf = take.proj_a_buf^
+        self.concat_buf = take.concat_buf^
+        self.hidden_out_buf = take.hidden_out_buf^
+        self.gate_out_buf = take.gate_out_buf^
+        self.dummy_stoch_buf = take.dummy_stoch_buf^
+        self.all_deter_buf = take.all_deter_buf^
+        self.all_stoch_buf = take.all_stoch_buf^
+        self.all_post_probs_buf = take.all_post_probs_buf^
+        self.all_prior_probs_buf = take.all_prior_probs_buf^
+        self.all_feats_buf = take.all_feats_buf^
+        self.dec_out_buf = take.dec_out_buf^
+        self.rew_logits_buf = take.rew_logits_buf^
+        self.cont_out_buf = take.cont_out_buf^
+        self.kl_buf = take.kl_buf^
+        self.imag_deter_buf = take.imag_deter_buf^
+        self.imag_stoch_buf = take.imag_stoch_buf^
+        self.imag_feat_buf = take.imag_feat_buf^
+        self.imag_rewards_buf = take.imag_rewards_buf^
+        self.imag_values_buf = take.imag_values_buf^
+        self.imag_continues_buf = take.imag_continues_buf^
+        self.imag_returns_buf = take.imag_returns_buf^
+        self.imag_actions_buf = take.imag_actions_buf^
+        self.imag_log_probs_buf = take.imag_log_probs_buf^
+        self.imag_advantages_buf = take.imag_advantages_buf^
+        self.actor_out_buf = take.actor_out_buf^
+        self.actor_cache_buf = take.actor_cache_buf^
+        self.actor_grad_buf = take.actor_grad_buf^
+        self.actor_grad_in_buf = take.actor_grad_in_buf^
+        self.critic_logits_buf = take.critic_logits_buf^
+        self.critic_cache_buf = take.critic_cache_buf^
+        self.critic_grad_buf = take.critic_grad_buf^
+        self.critic_grad_in_buf = take.critic_grad_in_buf^
+        self.two_hot_targets_buf = take.two_hot_targets_buf^
+        self.symlog_returns_buf = take.symlog_returns_buf^
+        self.dec_cache_buf = take.dec_cache_buf^
+        self.dec_grad_out_buf = take.dec_grad_out_buf^
+        self.dec_grad_in_buf = take.dec_grad_in_buf^
+        self.dec_target_buf = take.dec_target_buf^
+        self.cont_target_buf = take.cont_target_buf^
+        self.cont_grad_buf = take.cont_grad_buf^
+        self.ws_encoder = take.ws_encoder^
+        self.ws_posterior = take.ws_posterior^
+        self.ws_prior = take.ws_prior^
+        self.ws_decoder = take.ws_decoder^
+        self.ws_reward = take.ws_reward^
+        self.ws_continue = take.ws_continue^
+        self.ws_deter_proj = take.ws_deter_proj^
+        self.ws_stoch_proj = take.ws_stoch_proj^
+        self.ws_action_proj = take.ws_action_proj^
+        self.ws_gru_hidden = take.ws_gru_hidden^
+        self.ws_gru_gates = take.ws_gru_gates^
+        self.ws_actor = take.ws_actor^
+        self.ws_critic = take.ws_critic^
+        self.inf_obs_buf = take.inf_obs_buf^
+        self.inf_deter_buf = take.inf_deter_buf^
+        self.inf_stoch_buf = take.inf_stoch_buf^
+        self.inf_action_buf = take.inf_action_buf^
+        self.inf_feat_buf = take.inf_feat_buf^
+        self.inf_actor_out_buf = take.inf_actor_out_buf^
+        self.host_batch_obs = take.host_batch_obs^
+        self.host_batch_actions = take.host_batch_actions^
+        self.host_batch_rewards = take.host_batch_rewards^
+        self.host_batch_dones = take.host_batch_dones^
