@@ -672,6 +672,9 @@ struct DreamerV3GPUState[
     var inf_feat_buf: DeviceBuffer[dtype]  # [MAX_N * FEAT]
     var inf_actor_out_buf: DeviceBuffer[dtype]  # [MAX_N * 2*ACT]
 
+    # ── Gradient clipping scratch ─────────────────────────────────────────
+    var grad_partial_sums_buf: DeviceBuffer[dtype]  # [1024] (shared across nets)
+
     # ── Pinned host buffers for batch upload ─────────────────────────────
     var host_batch_obs: DeviceBuffer[dtype]  # pinned [BATCH * (BL+1) * OBS]
     var host_batch_actions: DeviceBuffer[dtype]  # pinned [BATCH * BL * ACT]
@@ -858,6 +861,9 @@ struct DreamerV3GPUState[
         self.inf_feat_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.FEAT)
         self.inf_actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * ACTOR_OUT_DIM)
 
+        # ── Gradient clipping scratch ──────────────────────────────────
+        self.grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](1024)
+
         # ── Pinned host buffers ──────────────────────────────────────────
         self.host_batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
         self.host_batch_actions = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
@@ -977,6 +983,7 @@ struct DreamerV3GPUState[
         self.inf_action_buf = take.inf_action_buf^
         self.inf_feat_buf = take.inf_feat_buf^
         self.inf_actor_out_buf = take.inf_actor_out_buf^
+        self.grad_partial_sums_buf = take.grad_partial_sums_buf^
         self.host_batch_obs = take.host_batch_obs^
         self.host_batch_actions = take.host_batch_actions^
         self.host_batch_rewards = take.host_batch_rewards^

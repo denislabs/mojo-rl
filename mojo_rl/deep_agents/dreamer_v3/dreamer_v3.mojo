@@ -69,6 +69,8 @@ from .kernels import (
     copy_kernel,
     zero_kernel,
     advantage_kernel,
+    gradient_norm_kernel,
+    gradient_reduce_apply_fused_kernel,
     TPB,
 )
 
@@ -162,6 +164,7 @@ struct DreamerV3Agent[
     var actor_entropy: Float64
     var slow_critic_tau: Float64
     var return_norm_rate: Float64
+    var max_grad_norm: Float64
 
     # Running state for inference (single env)
     var _current_deter: UnsafePointer[Scalar[dtype], MutAnyOrigin]
@@ -186,6 +189,7 @@ struct DreamerV3Agent[
         slow_critic_tau: Float64 = 0.02,
         return_norm_rate: Float64 = 0.01,
         warmup_steps: Int = 1000,
+        max_grad_norm: Float64 = 1000.0,
     ):
         """Initialize DreamerV3 agent with all sub-networks and buffers.
 
@@ -197,6 +201,7 @@ struct DreamerV3Agent[
             slow_critic_tau: Slow critic EMA coefficient (default: 0.02).
             return_norm_rate: Return normalization EMA rate (default: 0.01).
             warmup_steps: Random exploration steps before training (default: 1000).
+            max_grad_norm: Maximum gradient norm for clipping (default: 1000.0).
         """
         self.state = Self.StateType()
         self.gamma = gamma
@@ -205,6 +210,7 @@ struct DreamerV3Agent[
         self.actor_entropy = actor_entropy
         self.slow_critic_tau = slow_critic_tau
         self.return_norm_rate = return_norm_rate
+        self.max_grad_norm = max_grad_norm
         self.total_steps = 0
         self.train_step_count = 0
         self.warmup_steps = warmup_steps
@@ -226,6 +232,7 @@ struct DreamerV3Agent[
         self.actor_entropy = take.actor_entropy
         self.slow_critic_tau = take.slow_critic_tau
         self.return_norm_rate = take.return_norm_rate
+        self.max_grad_norm = take.max_grad_norm
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
         self.warmup_steps = take.warmup_steps
@@ -1917,7 +1924,19 @@ struct DreamerV3Agent[
             ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
             ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
 
-        # ── 4. World model optimizer step ────────────────────────────────
+        # ── 4. World model gradient clipping + optimizer step ──────────────
+        var grad_norm_max = Scalar[dtype](self.max_grad_norm)
+        _clip_grads_gpu[EncNet.MODEL.PARAM_SIZE](ctx, gpu_state.encoder.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[PostNet.MODEL.PARAM_SIZE](ctx, gpu_state.posterior.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[PriorNet.MODEL.PARAM_SIZE](ctx, gpu_state.prior.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[DecNet.MODEL.PARAM_SIZE](ctx, gpu_state.decoder.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[RewNet.MODEL.PARAM_SIZE](ctx, gpu_state.reward_head.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[ContNet.MODEL.PARAM_SIZE](ctx, gpu_state.continue_head.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[DProjNet.MODEL.PARAM_SIZE](ctx, gpu_state.deter_proj.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[SProjNet.MODEL.PARAM_SIZE](ctx, gpu_state.stoch_proj.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[AProjNet.MODEL.PARAM_SIZE](ctx, gpu_state.action_proj.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[GHNet.MODEL.PARAM_SIZE](ctx, gpu_state.gru_hidden.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
+        _clip_grads_gpu[GGNet.MODEL.PARAM_SIZE](ctx, gpu_state.gru_gates.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
         gpu_state.encoder.optimizer_step(ctx)
         gpu_state.posterior.optimizer_step(ctx)
         gpu_state.prior.optimizer_step(ctx)
@@ -2474,7 +2493,8 @@ struct DreamerV3Agent[
             gpu_state.ws_critic,
         )
 
-        # ── Critic optimizer step ───────────────────────────────────────
+        # ── Critic gradient clipping + optimizer step ─────────────────────
+        _clip_grads_gpu[Self.CriticNet.MODEL.PARAM_SIZE](ctx, gpu_state.critic.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
         gpu_state.critic.optimizer_step(ctx)
 
         # ── Actor forward with cache ────────────────────────────────────
@@ -2576,7 +2596,8 @@ struct DreamerV3Agent[
             gpu_state.ws_actor,
         )
 
-        # ── Actor optimizer step ────────────────────────────────────────
+        # ── Actor gradient clipping + optimizer step ─────────────────────
+        _clip_grads_gpu[Self.ActorNet.MODEL.PARAM_SIZE](ctx, gpu_state.actor.grads_view(), gpu_state.grad_partial_sums_buf, grad_norm_max)
         gpu_state.actor.optimizer_step(ctx)
 
         # ── 8. Slow critic EMA update ──────────────────────────────────
@@ -2601,6 +2622,51 @@ fn _to_dtype_list[
     for i in range(len(src)):
         out.append(Scalar[dtype](src[i]))
     return out^
+
+
+fn _clip_grads_gpu[
+    PARAM_SIZE: Int,
+](
+    ctx: DeviceContext,
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    partial_sums_buf: DeviceBuffer[dtype],
+    max_grad_norm: Scalar[dtype],
+) raises:
+    """Clip gradients of a single network on GPU.
+
+    Two-kernel approach:
+    1. gradient_norm_kernel: compute partial sums of squared grads
+    2. gradient_reduce_apply_fused_kernel: reduce + clip in one pass
+    """
+    comptime GRAD_BLOCKS = (PARAM_SIZE + TPB - 1) // TPB
+    var ps = LayoutTensor[
+        dtype, Layout.row_major(GRAD_BLOCKS), MutAnyOrigin
+    ](partial_sums_buf.unsafe_ptr())
+
+    @always_inline
+    fn run_norm(
+        p: LayoutTensor[dtype, Layout.row_major(GRAD_BLOCKS), MutAnyOrigin],
+        g: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    ):
+        gradient_norm_kernel[dtype, PARAM_SIZE, GRAD_BLOCKS, TPB](p, g)
+
+    ctx.enqueue_function[run_norm, run_norm](
+        ps, grads,
+        grid_dim=(GRAD_BLOCKS,), block_dim=(TPB,),
+    )
+
+    @always_inline
+    fn run_clip(
+        g: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        p: LayoutTensor[dtype, Layout.row_major(GRAD_BLOCKS), MutAnyOrigin],
+        m: Scalar[dtype],
+    ):
+        gradient_reduce_apply_fused_kernel[dtype, PARAM_SIZE, GRAD_BLOCKS, TPB](g, p, m)
+
+    ctx.enqueue_function[run_clip, run_clip](
+        grads, ps, max_grad_norm,
+        grid_dim=(GRAD_BLOCKS,), block_dim=(TPB,),
+    )
 
 
 # =============================================================================

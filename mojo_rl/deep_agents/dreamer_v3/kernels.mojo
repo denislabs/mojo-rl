@@ -17,8 +17,9 @@ by the standard forward_gpu/backward_gpu network methods:
   - REINFORCE gradient computation
 """
 
-from std.math import exp, log, abs
-from std.gpu import block_dim, block_idx, thread_idx
+from std.math import exp, log, abs, sqrt
+from std.gpu import block_dim, block_idx, thread_idx, barrier
+from std.memory import AddressSpace
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
@@ -881,3 +882,104 @@ fn advantage_kernel[
     if i >= SIZE:
         return
     adv[i] = rebind[S](returns[i]) - rebind[S](values[i])
+
+
+# =============================================================================
+# Gradient clipping kernels
+# =============================================================================
+
+
+@always_inline
+fn gradient_norm_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    """Compute partial sum of squared gradients for gradient norm."""
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    if idx < PARAM_SIZE:
+        var g = grads[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+
+    barrier()
+
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    if thread_id == 0:
+        partial_sums[block_id] = shared[0]
+
+
+@always_inline
+fn gradient_reduce_apply_fused_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
+    max_grad_norm: Scalar[dtype],
+):
+    """Fused kernel: reduce partial sums AND apply gradient clipping.
+
+    Each block redundantly computes the total gradient norm by reducing
+    all partial_sums, then applies the computed scale to its portion of grads.
+    """
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var local_sum = Scalar[dtype](0.0)
+    var ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums[ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+
+    barrier()
+
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    if thread_id == 0:
+        var total_sq_sum = rebind[Scalar[dtype]](shared[0])
+        var norm = Scalar[dtype](sqrt(total_sq_sum))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[1] = scale
+
+    barrier()
+
+    if idx < PARAM_SIZE:
+        grads[idx] = grads[idx] * rebind[Scalar[dtype]](shared[1])
