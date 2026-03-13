@@ -928,10 +928,10 @@ struct DeepPPOCNNAgent[
                     ](
                         critic_grad_output_t,
                         critic_values_t,
-                        mb_old_values_t,
                         mb_returns_t,
-                        Scalar[dtype](self.value_loss_coef),
+                        mb_old_values_t,
                         Scalar[dtype](self.clip_epsilon),
+                        Scalar[dtype](self.value_loss_coef),
                         MINIBATCH,
                         grid_dim=(MINIBATCH_BLOCKS,),
                         block_dim=(TPB,),
