@@ -807,6 +807,10 @@ struct DQNAgent[
             self.train_timer.sync_and_accumulate(3, ctx)
             self.train_timer.mark()
 
+        # ---- Diagnostic logging (every 1000 train steps) ----
+        if self.train_step_count % 1000 == 0 and self.train_step_count > 0:
+            self._log_train_diagnostics(ctx, gpu_state)
+
         # ---- Phase 5: Gradient kernel (masked MSE grad) ----
         @always_inline
         fn grad_wrapper(
@@ -865,6 +869,294 @@ struct DQNAgent[
             self.train_timer.sync_and_accumulate(5, ctx)
 
         self.train_step_count += 1
+
+    fn _log_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        gpu_state: Self.GPUStateType,
+    ) raises:
+        """Download key training tensors from GPU and print diagnostics."""
+        comptime BATCH = Self.batch_size
+
+        # Download Q-values (online), next-Q (target), TD targets, rewards, dones, actions
+        var h_q = ctx.enqueue_create_host_buffer[dtype](BATCH * Self.ACTIONS)
+        ctx.enqueue_copy(h_q, gpu_state.q_values)
+
+        var h_nq = ctx.enqueue_create_host_buffer[dtype](BATCH * Self.ACTIONS)
+        ctx.enqueue_copy(h_nq, gpu_state.next_q_values)
+
+        var h_tgt = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        ctx.enqueue_copy(h_tgt, gpu_state.targets)
+
+        var h_rew = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        ctx.enqueue_copy(h_rew, gpu_state.s_rew)
+
+        var h_done = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        ctx.enqueue_copy(h_done, gpu_state.s_done)
+
+        var h_act = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        ctx.enqueue_copy(h_act, gpu_state.s_act)
+
+        var h_obs = ctx.enqueue_create_host_buffer[dtype](BATCH * Self.OBS)
+        ctx.enqueue_copy(h_obs, gpu_state.s_obs)
+
+        var h_nobs = ctx.enqueue_create_host_buffer[dtype](BATCH * Self.OBS)
+        ctx.enqueue_copy(h_nobs, gpu_state.s_nobs)
+
+        ctx.synchronize()
+
+        # Compute Q-value stats
+        var q_min = Float64(h_q[0])
+        var q_max = Float64(h_q[0])
+        var q_sum: Float64 = 0.0
+        for i in range(BATCH * Self.ACTIONS):
+            var v = Float64(h_q[i])
+            q_sum += v
+            if v < q_min:
+                q_min = v
+            if v > q_max:
+                q_max = v
+        var q_mean = q_sum / Float64(BATCH * Self.ACTIONS)
+
+        # Compute next Q-value stats (target network)
+        var nq_min = Float64(h_nq[0])
+        var nq_max = Float64(h_nq[0])
+        var nq_sum: Float64 = 0.0
+        for i in range(BATCH * Self.ACTIONS):
+            var v = Float64(h_nq[i])
+            nq_sum += v
+            if v < nq_min:
+                nq_min = v
+            if v > nq_max:
+                nq_max = v
+        var nq_mean = nq_sum / Float64(BATCH * Self.ACTIONS)
+
+        # Compute TD target stats
+        var tgt_min = Float64(h_tgt[0])
+        var tgt_max = Float64(h_tgt[0])
+        var tgt_sum: Float64 = 0.0
+        for i in range(BATCH):
+            var v = Float64(h_tgt[i])
+            tgt_sum += v
+            if v < tgt_min:
+                tgt_min = v
+            if v > tgt_max:
+                tgt_max = v
+        var tgt_mean = tgt_sum / Float64(BATCH)
+
+        # Compute TD error stats
+        var td_err_sum: Float64 = 0.0
+        var td_err_abs_sum: Float64 = 0.0
+        var td_err_max: Float64 = 0.0
+        for b in range(BATCH):
+            var action = Int(h_act[b])
+            var q_pred = Float64(h_q[b * Self.ACTIONS + action])
+            var td_err = q_pred - Float64(h_tgt[b])
+            td_err_sum += td_err
+            var abs_err = td_err if td_err >= 0 else -td_err
+            td_err_abs_sum += abs_err
+            if abs_err > td_err_max:
+                td_err_max = abs_err
+        var td_err_mean = td_err_sum / Float64(BATCH)
+        var td_err_abs_mean = td_err_abs_sum / Float64(BATCH)
+
+        # Reward stats
+        var rew_sum: Float64 = 0.0
+        var rew_min = Float64(h_rew[0])
+        var rew_max = Float64(h_rew[0])
+        for i in range(BATCH):
+            var v = Float64(h_rew[i])
+            rew_sum += v
+            if v < rew_min:
+                rew_min = v
+            if v > rew_max:
+                rew_max = v
+        var rew_mean = rew_sum / Float64(BATCH)
+
+        # Done stats
+        var done_count = 0
+        for i in range(BATCH):
+            if Float64(h_done[i]) > 0.5:
+                done_count += 1
+
+        # Action distribution
+        var action_counts = InlineArray[Int, Self.ACTIONS](fill=0)
+        for i in range(BATCH):
+            var a = Int(h_act[i])
+            if a >= 0 and a < Self.ACTIONS:
+                action_counts[a] += 1
+
+        # Obs stats (check for NaN/Inf/extreme values)
+        var obs_min = Float64(h_obs[0])
+        var obs_max = Float64(h_obs[0])
+        var obs_sum: Float64 = 0.0
+        var obs_nan_count = 0
+        for i in range(BATCH * Self.OBS):
+            var v = Float64(h_obs[i])
+            obs_sum += v
+            if v < obs_min:
+                obs_min = v
+            if v > obs_max:
+                obs_max = v
+            if v != v:  # NaN check
+                obs_nan_count += 1
+
+        # Next-obs stats
+        var nobs_min = Float64(h_nobs[0])
+        var nobs_max = Float64(h_nobs[0])
+        var nobs_sum: Float64 = 0.0
+        var nobs_nan_count = 0
+        for i in range(BATCH * Self.OBS):
+            var v = Float64(h_nobs[i])
+            nobs_sum += v
+            if v < nobs_min:
+                nobs_min = v
+            if v > nobs_max:
+                nobs_max = v
+            if v != v:
+                nobs_nan_count += 1
+
+        # Check for obs == next_obs (identical transitions = suspicious)
+        var identical_count = 0
+        for b in range(BATCH):
+            var same = True
+            for d in range(Self.OBS):
+                if h_obs[b * Self.OBS + d] != h_nobs[b * Self.OBS + d]:
+                    same = False
+                    break
+            if same:
+                identical_count += 1
+
+        # Print first 3 transitions for inspection
+        print("=" * 60)
+        print(
+            "[DIAG] Train step "
+            + String(self.train_step_count)
+            + " | eps="
+            + String(self.epsilon)[:6]
+        )
+        print(
+            "  Q-values  : mean="
+            + String(q_mean)[:8]
+            + " min="
+            + String(q_min)[:8]
+            + " max="
+            + String(q_max)[:8]
+        )
+        print(
+            "  Next-Q(tgt): mean="
+            + String(nq_mean)[:8]
+            + " min="
+            + String(nq_min)[:8]
+            + " max="
+            + String(nq_max)[:8]
+        )
+        print(
+            "  TD targets : mean="
+            + String(tgt_mean)[:8]
+            + " min="
+            + String(tgt_min)[:8]
+            + " max="
+            + String(tgt_max)[:8]
+        )
+        print(
+            "  TD errors  : mean="
+            + String(td_err_mean)[:8]
+            + " |mean|="
+            + String(td_err_abs_mean)[:8]
+            + " max|err|="
+            + String(td_err_max)[:8]
+        )
+        print(
+            "  Rewards    : mean="
+            + String(rew_mean)[:8]
+            + " min="
+            + String(rew_min)[:8]
+            + " max="
+            + String(rew_max)[:8]
+        )
+        print(
+            "  Dones      : "
+            + String(done_count)
+            + "/"
+            + String(BATCH)
+            + " ("
+            + String(Float64(done_count) / Float64(BATCH) * 100.0)[:5]
+            + "%)"
+        )
+        var act_str = String("  Actions    : [")
+        for a in range(Self.ACTIONS):
+            if a > 0:
+                act_str += ", "
+            act_str += String(action_counts[a])
+        act_str += "]"
+        print(act_str)
+        print(
+            "  Obs        : mean="
+            + String(obs_sum / Float64(BATCH * Self.OBS))[:8]
+            + " min="
+            + String(obs_min)[:8]
+            + " max="
+            + String(obs_max)[:8]
+            + " NaN="
+            + String(obs_nan_count)
+        )
+        print(
+            "  Next-Obs   : mean="
+            + String(nobs_sum / Float64(BATCH * Self.OBS))[:8]
+            + " min="
+            + String(nobs_min)[:8]
+            + " max="
+            + String(nobs_max)[:8]
+            + " NaN="
+            + String(nobs_nan_count)
+        )
+        print(
+            "  Identical obs==nobs: "
+            + String(identical_count)
+            + "/"
+            + String(BATCH)
+        )
+        print(
+            "  Buffer size: "
+            + String(gpu_state.buffer.size)
+            + " / "
+            + String(Self.buffer_capacity)
+        )
+
+        # Print 3 sample transitions
+        for b in range(min(3, BATCH)):
+            var obs_str = String("    [")
+            for d in range(Self.OBS):
+                if d > 0:
+                    obs_str += ", "
+                obs_str += String(Float64(h_obs[b * Self.OBS + d]))[:7]
+            obs_str += "]"
+            var nobs_str = String("    [")
+            for d in range(Self.OBS):
+                if d > 0:
+                    nobs_str += ", "
+                nobs_str += String(Float64(h_nobs[b * Self.OBS + d]))[:7]
+            nobs_str += "]"
+            print(
+                "  Trans["
+                + String(b)
+                + "]: a="
+                + String(Int(h_act[b]))
+                + " r="
+                + String(Float64(h_rew[b]))[:7]
+                + " d="
+                + String(Float64(h_done[b]))[:3]
+                + " Q(a)="
+                + String(
+                    Float64(h_q[b * Self.ACTIONS + Int(h_act[b])])
+                )[:7]
+                + " tgt="
+                + String(Float64(h_tgt[b]))[:7]
+            )
+            print("    obs =" + obs_str)
+            print("    nobs=" + nobs_str)
+        print("=" * 60)
 
     fn get_action_scale(self) -> Float64:
         return 1.0  # Discrete actions don't use action_scale
