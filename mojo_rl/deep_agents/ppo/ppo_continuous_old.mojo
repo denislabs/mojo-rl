@@ -59,7 +59,6 @@ from mojo_rl.nn.checkpoint import (
 )
 from mojo_rl.nn.gpu import (
     random_range,
-    xorshift32,
     random_uniform,
 )
 from mojo_rl.deep_agents.core.kernels import (

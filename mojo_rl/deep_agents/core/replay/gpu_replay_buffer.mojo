@@ -377,7 +377,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
         Args:
             ctx: GPU device context.
-            rng_seed: Base seed for xorshift32 RNG (vary per call).
+            rng_seed: Base seed for RNG (vary per call).
             sampled_obs: Output observations [BATCH * OBS_DIM].
             sampled_actions: Output actions [BATCH * ACTION_DIM].
             sampled_rewards: Output rewards [BATCH].

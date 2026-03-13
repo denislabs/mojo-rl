@@ -47,11 +47,6 @@ from mojo_rl.nn.checkpoint import (
     save_checkpoint_file,
     read_checkpoint_file,
 )
-from mojo_rl.nn.gpu import (
-    random_range,
-    xorshift32,
-    random_uniform,
-)
 from mojo_rl.deep_agents.core.kernels import (
     zero_buffer_kernel,
     copy_buffer_kernel,
@@ -1202,12 +1197,18 @@ fn _sample_actions_kernel[
     seed: Scalar[DType.uint32],
 ):
     """Sample actions from categorical distribution and compute log probs."""
+    from std.random.philox import Random as PhiloxRandom
+
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= N_ENVS:
         return
 
-    var rng_state = UInt32(seed) ^ (UInt32(i) * 2654435761)
-    rng_state = xorshift32(rng_state)
+    # Per-thread RNG using PhiloxRandom
+    var rng = PhiloxRandom(
+        seed=UInt64(seed) * UInt64(N_ENVS) + UInt64(i), offset=0
+    )
+    var rand_vals = rng.step_uniform()
+    var rand_val = Scalar[dtype](rand_vals[0])
 
     var max_logit = logits[i, 0]
     for a in range(1, NUM_ACTIONS):
@@ -1219,10 +1220,6 @@ fn _sample_actions_kernel[
     for a in range(NUM_ACTIONS):
         var logit_val = logits[i, a] - max_logit
         sum_exp = sum_exp + exp(logit_val)
-
-    var rand_result = random_uniform[dtype](rng_state)
-    var rand_val = rand_result[0]
-    rng_state = rand_result[1]
 
     var cumsum_val = Scalar[dtype](0.0)
     var selected_action: actions.element_type = 0
