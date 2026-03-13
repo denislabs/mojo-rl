@@ -56,13 +56,13 @@ fn main() raises:
 
     # Test 4: Fill buffer and run GPU train step
     print("Test do_gpu_train_step...")
-    for ep in range(10):
+    for _ in range(10):
         for step in range(20):
             var o = List[Scalar[dtype]](capacity=OBS)
-            for i in range(OBS):
+            for _ in range(OBS):
                 o.append(Scalar[dtype](random_float64(-1.0, 1.0)))
             var a = List[Scalar[dtype]](capacity=ACT)
-            for i in range(ACT):
+            for _ in range(ACT):
                 a.append(Scalar[dtype](random_float64(-1.0, 1.0)))
             var r = random_float64(-1.0, 1.0)
             var done = step == 19
@@ -85,17 +85,29 @@ fn main() raises:
         batch_dones.append(Scalar[DType.float32](0))
 
     agent.state.buffer.sample_sequences[B, BL](
-        batch_obs, batch_actions, batch_rewards, batch_dones,
+        batch_obs,
+        batch_actions,
+        batch_rewards,
+        batch_dones,
     )
 
-    print("  Batch sampled: obs=" + String(len(batch_obs))
-        + " act=" + String(len(batch_actions))
-        + " rew=" + String(len(batch_rewards)))
+    print(
+        "  Batch sampled: obs="
+        + String(len(batch_obs))
+        + " act="
+        + String(len(batch_actions))
+        + " rew="
+        + String(len(batch_rewards))
+    )
 
     # Run GPU train step
     agent.do_gpu_train_step(
-        ctx, gpu_state,
-        batch_obs, batch_actions, batch_rewards, batch_dones,
+        ctx,
+        gpu_state,
+        batch_obs,
+        batch_actions,
+        batch_rewards,
+        batch_dones,
     )
     print("  Train step count: " + String(agent.train_step_count))
     print("  PASS: GPU train step completed")
@@ -103,11 +115,18 @@ fn main() raises:
     # Test 5: Second GPU train step
     print("Test second GPU train step...")
     agent.state.buffer.sample_sequences[B, BL](
-        batch_obs, batch_actions, batch_rewards, batch_dones,
+        batch_obs,
+        batch_actions,
+        batch_rewards,
+        batch_dones,
     )
     agent.do_gpu_train_step(
-        ctx, gpu_state,
-        batch_obs, batch_actions, batch_rewards, batch_dones,
+        ctx,
+        gpu_state,
+        batch_obs,
+        batch_actions,
+        batch_rewards,
+        batch_dones,
     )
     print("  Train step count: " + String(agent.train_step_count))
     print("  PASS")

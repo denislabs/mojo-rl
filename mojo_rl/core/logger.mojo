@@ -95,6 +95,7 @@ struct MetricsLogger(Movable):
     # Backends
     var file_path: String
     var server_url: String
+    var api_key: String
 
     # Buffer
     var entries: List[MetricEntry]
@@ -119,6 +120,7 @@ struct MetricsLogger(Movable):
         server_url: String = "",
         run_id: String = "",
         buffer_size: Int = 200,
+        api_key: String = "",
     ):
         """Initialize the metrics logger.
 
@@ -128,6 +130,7 @@ struct MetricsLogger(Movable):
             server_url: Base URL of the dashboard server (empty to disable).
             run_id: Unique run identifier. Auto-generated from timestamp if empty.
             buffer_size: Number of entries to buffer before auto-flushing.
+            api_key: Bearer token for remote server auth (empty to disable).
         """
         self._start_ns = perf_counter_ns()
 
@@ -140,6 +143,7 @@ struct MetricsLogger(Movable):
         self.run_name = run_name if len(run_name) > 0 else self.run_id
         self.file_path = file_path
         self.server_url = server_url
+        self.api_key = api_key
         self.entries = List[MetricEntry]()
         self.buffer_size = buffer_size
         self._config_keys = List[String]()
@@ -153,6 +157,7 @@ struct MetricsLogger(Movable):
         self.run_name = take.run_name^
         self.file_path = take.file_path^
         self.server_url = take.server_url^
+        self.api_key = take.api_key^
         self.entries = take.entries^
         self.buffer_size = take.buffer_size
         self._start_ns = take._start_ns
@@ -327,7 +332,7 @@ struct MetricsLogger(Movable):
         payload["metrics"] = metrics_list
 
         var url = self.server_url + "/ingest"
-        _http_post(urllib_request, json_mod, url, payload)
+        _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
     fn _register_run(
         mut self,
@@ -347,7 +352,7 @@ struct MetricsLogger(Movable):
         payload["config"] = config
 
         var url = self.server_url + "/runs"
-        _http_post(urllib_request, json_mod, url, payload)
+        _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
     # =========================================================================
     # Stats
@@ -408,6 +413,7 @@ fn _http_post(
     json_mod: PythonObject,
     url: String,
     payload: PythonObject,
+    api_key: String = "",
 ) raises:
     """POST JSON payload to a URL. Silently ignores errors to avoid
     disrupting training if the server is down.
@@ -417,6 +423,7 @@ fn _http_post(
         json_mod: Python json module.
         url: Target URL.
         payload: Python dict to serialize as JSON.
+        api_key: Bearer token for Authorization header (empty to skip).
     """
     try:
         var data = json_mod.dumps(payload).encode("utf-8")
@@ -425,6 +432,10 @@ fn _http_post(
             data=data,
         )
         req.add_header("Content-Type", "application/json")
+        if len(api_key) > 0:
+            req.add_header(
+                "Authorization", "Bearer " + api_key
+            )
         _ = urllib_request.urlopen(req, timeout=5)
     except:
         # Silently ignore network errors to not disrupt training

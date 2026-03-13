@@ -24,6 +24,7 @@ from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs import CartPoleEnv
 from mojo_rl.core.logger import MetricsLogger, LoggerPtr
@@ -92,12 +93,23 @@ fn main() raises:
 
         print("Environment: CartPole")
         print("Agent: DQN (GPU, CleanRL-aligned)")
-        print("  Network: " + String(HIDDEN_DIM) + " → " + String(HIDDEN_DIM2) + " → " + String(NUM_ACTIONS))
+        print(
+            "  Network: "
+            + String(HIDDEN_DIM)
+            + " → "
+            + String(HIDDEN_DIM2)
+            + " → "
+            + String(NUM_ACTIONS)
+        )
         print("  Buffer capacity: " + String(BUFFER_CAPACITY))
         print("  Batch size: " + String(BATCH_SIZE))
         print("  N envs (parallel): " + String(N_ENVS))
         print("  Gradient steps per collection: " + String(GRADIENT_STEPS))
-        print("  Target update: hard copy every " + String(TARGET_UPDATE_FREQ) + " grad steps")
+        print(
+            "  Target update: hard copy every "
+            + String(TARGET_UPDATE_FREQ)
+            + " grad steps"
+        )
         print("  Sync every: " + String(SYNC_EVERY) + " transitions")
         print()
 
@@ -105,10 +117,15 @@ fn main() raises:
         # Setup logger — posts to local RL Monitor worker
         # =====================================================================
 
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
         var logger = MetricsLogger(
-            server_url="http://localhost:8787",
+            server_url=url,
             run_name="DQN CartPole GPU",
             buffer_size=64,
+            api_key=api_key,
         )
         logger.set_config("agent", "DQN")
         logger.set_config("env", "CartPole")

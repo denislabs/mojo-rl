@@ -143,6 +143,9 @@ struct DreamerV3Agent[
         Self.units,
         Self.num_bins,
         Self.blocks,
+        BATCH_SIZE = Self.batch_size,
+        BATCH_LENGTH = Self.batch_length,
+        IMAGINE_HORIZON = Self.imagine_horizon,
     ]
 
     # ── Actor/Critic Network aliases (matching state.mojo definitions) ───
@@ -2140,28 +2143,140 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
                 ](gpu_state.imag_stoch_buf.unsafe_ptr() + write_off * STOCH)
 
-                # GRU core forward for imagination (reusing observe-sized buffers
-                # won't work since IB > BATCH — we need IB-sized scratch)
-                # For now, run on CPU by downloading, running, and uploading.
-                # TODO: Add IB-sized GRU scratch buffers for full GPU path.
-                # Simplified approach: use prior network directly
-                # (skip GRU in imagination — approximation)
+                # ── GRU core forward on GPU (IB-sized) ────────────────
 
-                # Actually, let's run the prior from the current deter
-                # This is a simplification: in full DreamerV3, imagination
-                # uses the GRU core. Here we use prior(deter) directly.
-                # The full GPU GRU path would require IB-sized scratch buffers.
-                var prior_logits_ib = LayoutTensor[
+                # Action normalize
+                var imag_norm_act_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, ACT), MutAnyOrigin
+                ](gpu_state.imag_norm_act_buf.unsafe_ptr())
+
+                @always_inline
+                fn run_imag_act_norm(
+                    o: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
+                    inp: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
+                ):
+                    action_normalize_kernel[IB, ACT](o, inp)
+
+                comptime IMAG_NORM_BLOCKS = (IB * ACT + TPB - 1) // TPB
+                ctx.enqueue_function[run_imag_act_norm, run_imag_act_norm](
+                    imag_norm_act_2d, actions_2d,
+                    grid_dim=(IMAG_NORM_BLOCKS,), block_dim=(TPB,),
+                )
+
+                # Input projections
+                var imag_proj_d_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
+                ](gpu_state.imag_proj_d_buf.unsafe_ptr())
+                var imag_proj_s_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
+                ](gpu_state.imag_proj_s_buf.unsafe_ptr())
+                var imag_proj_a_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
+                ](gpu_state.imag_proj_a_buf.unsafe_ptr())
+
+                DProjNet.forward_gpu[IB](
+                    ctx, imag_deter_2d, imag_proj_d_2d,
+                    gpu_state.deter_proj.params_view(), gpu_state.ws_deter_proj,
+                )
+                SProjNet.forward_gpu[IB](
+                    ctx, imag_stoch_2d, imag_proj_s_2d,
+                    gpu_state.stoch_proj.params_view(), gpu_state.ws_stoch_proj,
+                )
+                AProjNet.forward_gpu[IB](
+                    ctx, imag_norm_act_2d, imag_proj_a_2d,
+                    gpu_state.action_proj.params_view(), gpu_state.ws_action_proj,
+                )
+
+                # Concat [deter, proj_d, proj_s, proj_a]
+                comptime GRU_IN_IB = DETER + 3 * HID
+                var imag_concat_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, GRU_IN_IB), MutAnyOrigin
+                ](gpu_state.imag_concat_buf.unsafe_ptr())
+
+                @always_inline
+                fn run_imag_concat_gru(
+                    co: LayoutTensor[dtype, Layout.row_major(IB, GRU_IN_IB), MutAnyOrigin],
+                    d: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
+                    pd: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
+                    ps: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
+                    pa: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
+                ):
+                    concat_gru_input_kernel[IB, DETER, HID](co, d, pd, ps, pa)
+
+                comptime IMAG_CONCAT_BLOCKS = (IB * GRU_IN_IB + TPB - 1) // TPB
+                ctx.enqueue_function[run_imag_concat_gru, run_imag_concat_gru](
+                    imag_concat_2d, imag_deter_2d,
+                    imag_proj_d_2d, imag_proj_s_2d, imag_proj_a_2d,
+                    grid_dim=(IMAG_CONCAT_BLOCKS,), block_dim=(TPB,),
+                )
+
+                # GRU hidden layer
+                var imag_hidden_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
+                ](gpu_state.imag_hidden_buf.unsafe_ptr())
+                GHNet.forward_gpu[IB](
+                    ctx, imag_concat_2d, imag_hidden_2d,
+                    gpu_state.gru_hidden.params_view(), gpu_state.ws_gru_hidden,
+                )
+
+                # GRU gates
+                var imag_gate_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin
+                ](gpu_state.imag_gate_buf.unsafe_ptr())
+                GGNet.forward_gpu[IB](
+                    ctx, imag_hidden_2d, imag_gate_2d,
+                    gpu_state.gru_gates.params_view(), gpu_state.ws_gru_gates,
+                )
+
+                # Apply GRU gating -> next_deter
+                @always_inline
+                fn run_imag_gru_gate(
+                    nd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
+                    pd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
+                    go: LayoutTensor[dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin],
+                ):
+                    gru_gate_kernel[IB, DETER](nd, pd, go)
+
+                comptime IMAG_GATE_BLOCKS = (IB * DETER + TPB - 1) // TPB
+                ctx.enqueue_function[run_imag_gru_gate, run_imag_gru_gate](
+                    next_deter_2d, imag_deter_2d, imag_gate_2d,
+                    grid_dim=(IMAG_GATE_BLOCKS,), block_dim=(TPB,),
+                )
+
+                # ── Prior: deter -> logits -> sample stoch ────────────
+
+                var imag_prior_logits_2d = LayoutTensor[
                     dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                ](gpu_state.prior_logits_buf.unsafe_ptr())
-                # Reuse prior_logits_buf (sized for BATCH, but we need IB)
-                # This is a limitation — for full GPU, we'd need IB-sized buffers
-                # For now, synchronize and run on CPU for imagination GRU steps
-                ctx.synchronize()
+                ](gpu_state.imag_prior_logits_buf.unsafe_ptr())
+                PriorNet.forward_gpu[IB](
+                    ctx, next_deter_2d, imag_prior_logits_2d,
+                    gpu_state.prior.params_view(), gpu_state.ws_prior,
+                )
 
-                # Run RSSM imagine_step on CPU (download -> compute -> upload)
-                self._gpu_imagine_step(
-                    ctx, gpu_state, h, read_off, write_off,
+                # Categorical sample from prior
+                var imag_prior_probs_2d = LayoutTensor[
+                    dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
+                ](gpu_state.imag_prior_probs_buf.unsafe_ptr())
+
+                var imag_cat_seed = Scalar[DType.uint32](
+                    UInt32(self.train_step_count * HORIZON + h + 1000) * UInt32(IB * Self.stoch_dim * Self.classes + 1)
+                )
+
+                @always_inline
+                fn run_imag_cat_prior(
+                    o: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
+                    p: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
+                    l: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
+                    s: Scalar[DType.uint32],
+                    tr: Scalar[DType.bool],
+                ):
+                    categorical_sample_kernel[IB, Self.stoch_dim, Self.classes, Self.StateType.RSSMType.UNIMIX](o, p, l, s, tr)
+
+                comptime IMAG_CAT_BLOCKS = (IB * Self.stoch_dim + TPB - 1) // TPB
+                ctx.enqueue_function[run_imag_cat_prior, run_imag_cat_prior](
+                    next_stoch_2d, imag_prior_probs_2d, imag_prior_logits_2d,
+                    imag_cat_seed, Scalar[DType.bool](True),
+                    grid_dim=(IMAG_CAT_BLOCKS,), block_dim=(TPB,),
                 )
 
         # ── 6. Lambda returns ────────────────────────────────────────────
@@ -2472,115 +2587,20 @@ struct DreamerV3Agent[
         ctx.synchronize()
         self.train_step_count += 1
 
-    fn _gpu_imagine_step(
-        mut self,
-        ctx: DeviceContext,
-        mut gpu_state: Self.GPUStateType,
-        h: Int,
-        read_off: Int,
-        write_off: Int,
-    ) raises:
-        """Run one RSSM imagination step with CPU fallback.
+# =============================================================================
+# Helpers
+# =============================================================================
 
-        Downloads current deter/stoch/actions, runs imagine_step on CPU,
-        uploads results back to GPU.
-        """
-        comptime DETER = Self.deter_dim
-        comptime STOCH = Self.STOCH_FLAT
-        comptime FEAT = Self.FEAT_DIM
-        comptime ACT = Self.action_dim
-        comptime IB = Self.IMAG_BATCH
 
-        # Download current deter, stoch, actions
-        var host_deter = ctx.enqueue_create_host_buffer[dtype](IB * DETER)
-        var host_stoch = ctx.enqueue_create_host_buffer[dtype](IB * STOCH)
-        var host_actions = ctx.enqueue_create_host_buffer[dtype](IB * ACT)
-
-        # Create non-owning device buffer views at the right offsets
-        var deter_src = DeviceBuffer[dtype](
-            ctx, gpu_state.imag_deter_buf.unsafe_ptr() + read_off * DETER,
-            IB * DETER, owning=False,
-        )
-        var stoch_src = DeviceBuffer[dtype](
-            ctx, gpu_state.imag_stoch_buf.unsafe_ptr() + read_off * STOCH,
-            IB * STOCH, owning=False,
-        )
-
-        ctx.enqueue_copy(host_deter, deter_src)
-        ctx.enqueue_copy(host_stoch, stoch_src)
-        ctx.enqueue_copy(host_actions, gpu_state.imag_actions_buf)
-        ctx.synchronize()
-
-        # Allocate CPU buffers
-        var cpu_deter = alloc[Scalar[dtype]](IB * DETER)
-        var cpu_stoch = alloc[Scalar[dtype]](IB * STOCH)
-        var cpu_actions = alloc[Scalar[dtype]](IB * ACT)
-        var cpu_new_deter = alloc[Scalar[dtype]](IB * DETER)
-        memset(cpu_new_deter, 0, IB * DETER)
-        var cpu_new_stoch = alloc[Scalar[dtype]](IB * STOCH)
-        memset(cpu_new_stoch, 0, IB * STOCH)
-        var cpu_feat = alloc[Scalar[dtype]](IB * FEAT)
-        memset(cpu_feat, 0, IB * FEAT)
-
-        for i in range(IB * DETER):
-            cpu_deter[i] = host_deter[i]
-        for i in range(IB * STOCH):
-            cpu_stoch[i] = host_stoch[i]
-        for i in range(IB * ACT):
-            cpu_actions[i] = host_actions[i]
-
-        # Run CPU imagine_step
-        var deter_t = LayoutTensor[
-            dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-        ](cpu_deter)
-        var stoch_t = LayoutTensor[
-            dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-        ](cpu_stoch)
-        var action_t = LayoutTensor[
-            dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-        ](cpu_actions)
-        var new_deter_t = LayoutTensor[
-            dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-        ](cpu_new_deter)
-        var new_stoch_t = LayoutTensor[
-            dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-        ](cpu_new_stoch)
-        var feat_t = LayoutTensor[
-            dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-        ](cpu_feat)
-
-        self.state.rssm.imagine_step[IB](
-            deter_t, stoch_t, action_t,
-            new_deter_t, new_stoch_t, feat_t, True,
-        )
-
-        # Upload results to GPU (write offset)
-        var host_new_deter = ctx.enqueue_create_host_buffer[dtype](IB * DETER)
-        var host_new_stoch = ctx.enqueue_create_host_buffer[dtype](IB * STOCH)
-        for i in range(IB * DETER):
-            host_new_deter[i] = cpu_new_deter[i]
-        for i in range(IB * STOCH):
-            host_new_stoch[i] = cpu_new_stoch[i]
-
-        var deter_dst = DeviceBuffer[dtype](
-            ctx, gpu_state.imag_deter_buf.unsafe_ptr() + write_off * DETER,
-            IB * DETER, owning=False,
-        )
-        var stoch_dst = DeviceBuffer[dtype](
-            ctx, gpu_state.imag_stoch_buf.unsafe_ptr() + write_off * STOCH,
-            IB * STOCH, owning=False,
-        )
-
-        ctx.enqueue_copy(deter_dst, host_new_deter)
-        ctx.enqueue_copy(stoch_dst, host_new_stoch)
-
-        # Free CPU buffers
-        cpu_deter.free()
-        cpu_stoch.free()
-        cpu_actions.free()
-        cpu_new_deter.free()
-        cpu_new_stoch.free()
-        cpu_feat.free()
+@always_inline
+fn _to_dtype_list[
+    SRC: DType
+](src: List[Scalar[SRC]]) -> List[Scalar[dtype]]:
+    """Convert a list of scalars from any floating-point DType to dtype."""
+    var out = List[Scalar[dtype]](capacity=len(src))
+    for i in range(len(src)):
+        out.append(Scalar[dtype](src[i]))
+    return out^
 
 
 # =============================================================================
@@ -2650,7 +2670,7 @@ fn run_dreamer_v3_training[
     for _ in range(seed_episodes):
         var done = False
         while not done:
-            var obs = env.get_obs_list()
+            var obs = _to_dtype_list(env.get_obs_list())
             var action = List[Scalar[dtype]](capacity=action_dim)
             for _ in range(action_dim):
                 action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
@@ -2667,7 +2687,7 @@ fn run_dreamer_v3_training[
     agent.reset_episode()
 
     for step in range(total_timesteps):
-        var obs = env.get_obs_list()
+        var obs = _to_dtype_list(env.get_obs_list())
 
         # Select action
         var action: List[Scalar[dtype]]
@@ -2818,7 +2838,7 @@ fn run_dreamer_v3_training_gpu[
     for _ in range(seed_episodes):
         var done = False
         while not done:
-            var obs = env.get_obs_list()
+            var obs = _to_dtype_list(env.get_obs_list())
             var action = List[Scalar[dtype]](capacity=ACT)
             for _ in range(ACT):
                 action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
@@ -2835,7 +2855,7 @@ fn run_dreamer_v3_training_gpu[
     agent.reset_episode()
 
     for step in range(total_timesteps):
-        var obs = env.get_obs_list()
+        var obs = _to_dtype_list(env.get_obs_list())
 
         # Select action (CPU, using CPU weights)
         var action: List[Scalar[dtype]]

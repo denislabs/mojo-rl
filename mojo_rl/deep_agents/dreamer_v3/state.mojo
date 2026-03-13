@@ -600,6 +600,17 @@ struct DreamerV3GPUState[
     var cont_out_buf: DeviceBuffer[dtype]  # [max(BATCH, IB) * 1]
     var kl_buf: DeviceBuffer[dtype]  # [BATCH] (per-element KL)
 
+    # ── Imagination GRU scratch (IB-sized) ───────────────────────────────
+    var imag_proj_d_buf: DeviceBuffer[dtype]  # [IB * HIDDEN]
+    var imag_proj_s_buf: DeviceBuffer[dtype]  # [IB * HIDDEN]
+    var imag_proj_a_buf: DeviceBuffer[dtype]  # [IB * HIDDEN]
+    var imag_concat_buf: DeviceBuffer[dtype]  # [IB * (DETER + 3*HIDDEN)]
+    var imag_hidden_buf: DeviceBuffer[dtype]  # [IB * DETER]
+    var imag_gate_buf: DeviceBuffer[dtype]  # [IB * 3*DETER]
+    var imag_norm_act_buf: DeviceBuffer[dtype]  # [IB * ACT]
+    var imag_prior_logits_buf: DeviceBuffer[dtype]  # [IB * STOCH]
+    var imag_prior_probs_buf: DeviceBuffer[dtype]  # [IB * STOCH]
+
     # ── Imagination scratch [HORIZON x IB] ───────────────────────────────
     # Using IB-sized buffers for all imagination steps
     var imag_deter_buf: DeviceBuffer[dtype]  # [2 * IB * DETER] (ping-pong)
@@ -741,6 +752,17 @@ struct DreamerV3GPUState[
         self.cont_out_buf = ctx.enqueue_create_buffer[dtype](MAX_BATCH_1)
         self.kl_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
 
+        # ── Imagination GRU scratch (IB-sized) ──────────────────────────
+        self.imag_proj_d_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
+        self.imag_proj_s_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
+        self.imag_proj_a_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
+        self.imag_concat_buf = ctx.enqueue_create_buffer[dtype](Self.IB * (Self.DETER + 3 * Self.HIDDEN))
+        self.imag_hidden_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.DETER)
+        self.imag_gate_buf = ctx.enqueue_create_buffer[dtype](Self.IB * 3 * Self.DETER)
+        self.imag_norm_act_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ACT)
+        self.imag_prior_logits_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.STOCH)
+        self.imag_prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.STOCH)
+
         # ── Imagination scratch ──────────────────────────────────────────
         self.imag_deter_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.DETER)
         self.imag_stoch_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.STOCH)
@@ -794,24 +816,21 @@ struct DreamerV3GPUState[
         comptime ActNet = Network[Self.ActorModel, Self.ActorOpt]
         comptime CritNet = Network[Self.CriticModel, Self.CriticOpt]
 
-        # IB workspace for imagination-phase networks; BATCH for observe-phase
+        # Workspace sizes — use max(BATCH, IB) for networks used in both phases
         comptime WS_IB_ACTOR = Self.IB * ActNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_CRITIC = Self.IB * CritNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_REWARD = Self.IB * RewNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_CONT = Self.IB * ContNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_PRIOR = Self.IB * PriorNet.WORKSPACE_SIZE_PER_SAMPLE
-        # Observe-phase networks use BATCH
+        comptime WS_IB_DPROJ = Self.IB * DProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_SPROJ = Self.IB * SProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_APROJ = Self.IB * AProjNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_GH = Self.IB * GHNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_GG = Self.IB * GGNet.WORKSPACE_SIZE_PER_SAMPLE
+        # Observe-phase only
         comptime WS_B_ENC = Self.BATCH * EncNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_B_POST = Self.BATCH * PostNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_PRIOR = Self.BATCH * PriorNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_B_DEC = Self.BATCH * DecNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_REW = Self.BATCH * RewNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_CONT = Self.BATCH * ContNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_DPROJ = Self.BATCH * DProjNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_SPROJ = Self.BATCH * SProjNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_APROJ = Self.BATCH * AProjNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_GH = Self.BATCH * GHNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_B_GG = Self.BATCH * GGNet.WORKSPACE_SIZE_PER_SAMPLE
 
         # Use max of observe and imagination sizes, minimum 1
         fn max_ws(a: Int, b: Int) -> Int:
@@ -819,15 +838,15 @@ struct DreamerV3GPUState[
 
         self.ws_encoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_ENC, 1))
         self.ws_posterior = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_POST, 1))
-        self.ws_prior = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_PRIOR, max_ws(WS_B_PRIOR, 1)))
+        self.ws_prior = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_PRIOR, 1))
         self.ws_decoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_DEC, 1))
-        self.ws_reward = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_REWARD, max_ws(WS_B_REW, 1)))
-        self.ws_continue = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CONT, max_ws(WS_B_CONT, 1)))
-        self.ws_deter_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_DPROJ, 1))
-        self.ws_stoch_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_SPROJ, 1))
-        self.ws_action_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_APROJ, 1))
-        self.ws_gru_hidden = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_GH, 1))
-        self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_GG, 1))
+        self.ws_reward = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_REWARD, 1))
+        self.ws_continue = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CONT, 1))
+        self.ws_deter_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_DPROJ, 1))
+        self.ws_stoch_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_SPROJ, 1))
+        self.ws_action_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_APROJ, 1))
+        self.ws_gru_hidden = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GH, 1))
+        self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GG, 1))
         self.ws_actor = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_ACTOR, 1))
         self.ws_critic = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CRITIC, 1))
 
@@ -904,6 +923,15 @@ struct DreamerV3GPUState[
         self.rew_logits_buf = take.rew_logits_buf^
         self.cont_out_buf = take.cont_out_buf^
         self.kl_buf = take.kl_buf^
+        self.imag_proj_d_buf = take.imag_proj_d_buf^
+        self.imag_proj_s_buf = take.imag_proj_s_buf^
+        self.imag_proj_a_buf = take.imag_proj_a_buf^
+        self.imag_concat_buf = take.imag_concat_buf^
+        self.imag_hidden_buf = take.imag_hidden_buf^
+        self.imag_gate_buf = take.imag_gate_buf^
+        self.imag_norm_act_buf = take.imag_norm_act_buf^
+        self.imag_prior_logits_buf = take.imag_prior_logits_buf^
+        self.imag_prior_probs_buf = take.imag_prior_probs_buf^
         self.imag_deter_buf = take.imag_deter_buf^
         self.imag_stoch_buf = take.imag_stoch_buf^
         self.imag_feat_buf = take.imag_feat_buf^
