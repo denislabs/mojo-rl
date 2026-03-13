@@ -15,7 +15,7 @@ The scalar value is decoded from logits as:
 Typical values: num_bins=101, v_min=-10.0, v_max=10.0
 """
 
-from std.math import exp, log
+from std.math import exp, log, abs
 from ..constants import dtype
 
 
@@ -38,6 +38,28 @@ fn compute_bins[
     var step = (v_max - v_min) / Float32(NUM_BINS - 1)
     for i in range(NUM_BINS):
         bins[i] = v_min + step * Float32(i)
+    return bins^
+
+
+fn compute_symlog_bins[
+    NUM_BINS: Int
+]() -> InlineArray[Float32, NUM_BINS]:
+    """Compute symlog-spaced bin values for DreamerV3 distributional RL.
+
+    Bins are evenly spaced in symlog space: linspace(-20, 20, NUM_BINS).
+    Values are encoded/decoded in symlog space. Apply symexp to the decoded
+    value to recover the original scale.
+
+    Returns:
+        Array of NUM_BINS evenly spaced values from -20 to 20.
+    """
+    var bins = InlineArray[Float32, NUM_BINS](fill=0)
+    if NUM_BINS == 1:
+        bins[0] = Float32(0.0)
+        return bins^
+    var step = Float32(40.0) / Float32(NUM_BINS - 1)  # range [-20, 20]
+    for i in range(NUM_BINS):
+        bins[i] = Float32(-20.0) + step * Float32(i)
     return bins^
 
 

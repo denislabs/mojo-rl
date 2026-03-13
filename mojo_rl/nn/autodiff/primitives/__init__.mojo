@@ -13,3 +13,4 @@ from .embedding import Embedding
 from .conv2d import Conv2D
 from .pool import MaxPool2D, AvgPool2D
 from .attention import ScaledDotProductAttention
+from .symlog import SymlogOp

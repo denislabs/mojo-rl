@@ -29,6 +29,7 @@ from .model import (
     FlattenLayer,
 )
 from .loss import LossFunction, MSELoss, HuberLoss, CrossEntropyLoss
+from .loss.two_hot import compute_symlog_bins, symlog, symexp
 from .optimizer import Optimizer, SGD, Adam, RMSprop, AdamW
 from .training import (
     Trainer,
@@ -79,6 +80,7 @@ from .autodiff import (
     DenseTanh,
     DenseSigmoid,
     DenseMish,
+    SymlogOp,
 )
 from .composites import ResBlock, ResNet, LeNet8x8, NatureDQN, FFN
 from .checkpoint import (

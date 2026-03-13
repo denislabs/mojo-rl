@@ -28,6 +28,7 @@ struct OpID:
     comptime SIGMOID = OpID(12)
     comptime MISH = OpID(13)
     comptime SOFTMAX = OpID(14)
+    comptime SYMLOG = OpID(15)
 
     # Normalization (20-29)
     comptime LAYER_NORM = OpID(20)

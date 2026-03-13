@@ -21,6 +21,7 @@ from .primitives import (
     MaxPool2D,
     AvgPool2D,
     ScaledDotProductAttention,
+    SymlogOp,
 )
 from .fused import (
     FusedMatMulBias,
