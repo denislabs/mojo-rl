@@ -41,10 +41,10 @@ from mojo_rl.render import (
     black,
     white,
 )
-from mojo_rl.nn.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random.philox import Random as PhiloxRandom
 
 # =============================================================================
 # Physics Constants (shared by CPU and GPU)
@@ -149,7 +149,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     comptime ActionType = CartPoleAction
 
     # GPUDiscreteEnv trait constants
-    comptime STATE_SIZE: Int = 4  # [x, x_dot, theta, theta_dot]
+    comptime STATE_SIZE: Int = 5  # [x, x_dot, theta, theta_dot, step_count]
     comptime OBS_DIM: Int = 4  # Same as state for CartPole
     comptime NUM_ACTIONS: Int = 2  # Left (0) or Right (1)
     comptime STEP_WS_SHARED: Int = 0
@@ -834,18 +834,25 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         states[i, 2] += Scalar[gpu_dtype](TAU) * states[i, 3]
         states[i, 3] += Scalar[gpu_dtype](TAU) * theta_acc
 
-        # Check termination conditions
-        var done = (
+        # Increment step counter (stored at index 4)
+        states[i, 4] += Scalar[gpu_dtype](1.0)
+
+        # Check termination conditions (physics bounds)
+        var terminated = (
             (states[i, 0] < Scalar[gpu_dtype](-X_THRESHOLD))
             or (states[i, 0] > Scalar[gpu_dtype](X_THRESHOLD))
             or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
             or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
         )
 
-        # Reward: +1 for every step the pole stays upright, 0 on termination
-        var reward = Scalar[gpu_dtype](1.0) if not done else Scalar[gpu_dtype](
-            0.0
-        )
+        # Check truncation (max steps reached)
+        var truncated = states[i, 4] >= Scalar[gpu_dtype](MAX_STEPS)
+
+        var done = terminated or truncated
+
+        # Reward: +1 for every step taken (including termination step)
+        # Matches Gymnasium CartPole-v1 default behavior
+        var reward = Scalar[gpu_dtype](1.0)
 
         rewards[i] = reward
         dones[i] = Scalar[gpu_dtype](done)
@@ -871,38 +878,15 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if i >= BATCH_SIZE:
             return
 
-        # GPU-compatible random: seed based on thread index
-        # Using prime multiplier for better distribution across threads
-        var rng = xorshift32(Scalar[DType.uint32](i * 2654435761 + 12345))
+        var rng = PhiloxRandom(seed=UInt64(i) * UInt64(2654435761) + 12345, offset=0)
+        var rand_vals = rng.step_uniform()
 
-        # Generate 4 random values in [-0.05, 0.05] for initial state
-        var result_x = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var x = result_x[0]
-        rng = result_x[1]
-
-        var result_x_dot = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var x_dot = result_x_dot[0]
-        rng = result_x_dot[1]
-
-        var result_theta = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var theta = result_theta[0]
-        rng = result_theta[1]
-
-        var result_theta_dot = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var theta_dot = result_theta_dot[0]
-
-        state[i, 0] = x
-        state[i, 1] = x_dot
-        state[i, 2] = theta
-        state[i, 3] = theta_dot
+        # Map [0, 1) → [-0.05, 0.05]
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 4] = Scalar[gpu_dtype](0.0)  # Reset step counter
 
     @staticmethod
     @always_inline
@@ -940,39 +924,17 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if dones[i] < Scalar[gpu_dtype](0.5):
             return
 
-        # GPU-compatible random: seed based on thread index + external seed
-        var rng = xorshift32(
-            Scalar[DType.uint32](UInt32(i) * 2654435761 + UInt32(rng_seed))
+        var rng = PhiloxRandom(
+            seed=UInt64(i) * UInt64(2654435761) + UInt64(rng_seed), offset=0
         )
+        var rand_vals = rng.step_uniform()
 
-        # Generate 4 random values in [-0.05, 0.05] for initial state
-        var result_x = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var x = result_x[0]
-        rng = result_x[1]
-
-        var result_x_dot = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var x_dot = result_x_dot[0]
-        rng = result_x_dot[1]
-
-        var result_theta = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var theta = result_theta[0]
-        rng = result_theta[1]
-
-        var result_theta_dot = random_range[gpu_dtype](
-            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
-        )
-        var theta_dot = result_theta_dot[0]
-
-        state[i, 0] = x
-        state[i, 1] = x_dot
-        state[i, 2] = theta
-        state[i, 3] = theta_dot
+        # Map [0, 1) → [-0.05, 0.05]
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 4] = Scalar[gpu_dtype](0.0)  # Reset step counter
 
         # Clear done flag for next episode
         dones[i] = Scalar[gpu_dtype](0.0)
@@ -1068,11 +1030,18 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Self.step_kernel[BATCH_SIZE, STATE_SIZE](
                 states, actions, rewards, dones, rng_seed
             )
-            # CartPole: all dones are true termination (no truncation in GPU kernel)
+            # CartPole: terminated = physics bounds exceeded (not truncation)
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i < BATCH_SIZE:
-                terminated_out[i] = dones[i]
-                # Extract observations (for CartPole, obs == state)
+                # Check if terminated by physics (not truncation)
+                var is_terminated = (
+                    (states[i, 0] < Scalar[gpu_dtype](-X_THRESHOLD))
+                    or (states[i, 0] > Scalar[gpu_dtype](X_THRESHOLD))
+                    or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
+                    or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
+                )
+                terminated_out[i] = Scalar[gpu_dtype](is_terminated)
+                # Extract observations (obs == first 4 state elements)
                 for d in range(OBS_DIM):
                     obs[i, d] = states[i, d]
 

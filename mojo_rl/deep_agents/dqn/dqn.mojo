@@ -39,6 +39,7 @@ from std.random import random_float64, seed
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
+from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TILE, TPB
@@ -69,10 +70,6 @@ from mojo_rl.nn.checkpoint import (
     read_metadata_section,
     get_metadata_value,
     save_checkpoint_file,
-)
-from mojo_rl.nn.gpu import (
-    xorshift32,
-    random_uniform,
 )
 from mojo_rl.core import (
     TrainingMetrics,
@@ -590,8 +587,8 @@ struct DQNAgent[
             dtype, Layout.row_major(N_ENVS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
         var epsilon_s = Scalar[dtype](self.epsilon)
-        var seed_s = Scalar[DType.uint32](
-            UInt32(self.get_total_steps() * 2654435761)
+        var seed_val = Scalar[DType.uint64](
+            UInt64(self.get_total_steps()) * UInt64(2654435761)
         )
 
         @always_inline
@@ -601,23 +598,23 @@ struct DQNAgent[
                 dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
             ],
             acts: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-            base_seed: Scalar[DType.uint32],
+            base_seed: Scalar[DType.uint64],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
             if b >= N_ENVS:
                 return
 
-            var rng = xorshift32(
-                Scalar[DType.uint32](b * 2654435761) + base_seed
+            var rng = PhiloxRandom(
+                seed=UInt64(base_seed) + UInt64(b),
+                offset=0,
             )
-            var rand_result = random_uniform[dtype](rng)
-            var rand_val = rand_result[0]
-            rng = rand_result[1]
+            var rand_vals = rng.step_uniform()
+            var rand_val = Scalar[dtype](rand_vals[0])
 
             if rand_val < eps:
-                var action_result = random_uniform[dtype](rng)
                 acts[b] = Scalar[dtype](
-                    Int(action_result[0] * Scalar[dtype](Self.ACTIONS))
+                    Int(Scalar[dtype](rand_vals[1]) * Scalar[dtype](Self.ACTIONS))
+                    % Self.ACTIONS
                 )
                 return
 
@@ -635,7 +632,7 @@ struct DQNAgent[
             epsilon_s,
             q_t,
             actions_t,
-            seed_s,
+            seed_val,
             grid_dim=((N_ENVS + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
