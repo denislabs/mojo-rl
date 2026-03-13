@@ -73,6 +73,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log
 from .state import DuelingDQNGPUState
 from .kernels import (
     dueling_combine_kernel,
@@ -282,6 +283,10 @@ struct DuelingDQNAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -326,6 +331,8 @@ struct DuelingDQNAgent[
             self.online_bwd_base = Self.DuelingModel.register_backward_slots(
                 self.train_timer, parent=6
             )
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -590,6 +597,38 @@ struct DuelingDQNAgent[
 
         # --- Phase 6: Soft update target network ---
         cpu_state.target.soft_update_from(cpu_state.online, self.tau)
+
+        # Log Dueling DQN diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", loss, step)
+
+                # Q-value stats
+                var q_min = Float64(q_arr[0])
+                var q_max = Float64(q_arr[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH * Self.ACTIONS):
+                    var v = Float64(q_arr[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                _log(self.logger, "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step)
+                _log(self.logger, "q_min", q_min, step)
+                _log(self.logger, "q_max", q_max, step)
+
+                # TD target stats
+                var tgt_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    tgt_sum += Float64(targets[i])
+                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+            except:
+                pass
 
         self.train_step_count += 1
 
@@ -1185,7 +1224,11 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var ckpt_every = self.checkpoint_every
         var ckpt_path = self.checkpoint_path
@@ -1203,8 +1246,10 @@ struct DuelingDQNAgent[
             print_every,
             environment_name,
             "Deep Dueling DQN",
+            logger,
         )
         self.state = cpu_state^
+        self.logger = LoggerPtr()
         return metrics
 
     fn evaluate[
@@ -1247,6 +1292,8 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
 
@@ -1275,6 +1322,8 @@ struct DuelingDQNAgent[
         Returns:
             TrainingMetrics with episode-level statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var algo_name = String(
             "Dueling DQN (GPU)" if not Self.double_dqn else "Double Dueling DQN (GPU)"
         )
@@ -1302,6 +1351,7 @@ struct DuelingDQNAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
+            logger=logger,
         )
 
         # Merge L2 sub-phases as children of train_step (slot 6)
@@ -1311,6 +1361,7 @@ struct DuelingDQNAgent[
         comptime if Self.profile >= 1:
             timer.print_report(algo_name + " Profile")
 
+        self.logger = LoggerPtr()
         return metrics^
 
     # =========================================================================

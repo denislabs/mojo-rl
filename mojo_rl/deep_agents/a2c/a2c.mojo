@@ -68,6 +68,7 @@ from mojo_rl.core.utils.softmax import (
     argmax_probs_inline,
 )
 from mojo_rl.core.utils.normalization import normalize_inline
+from mojo_rl.core.logger import LoggerPtr, _log
 
 
 # =============================================================================
@@ -158,6 +159,10 @@ struct DeepA2CAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -215,6 +220,8 @@ struct DeepA2CAgent[
         # Checkpointing
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn select_action(
         self,
@@ -506,6 +513,21 @@ struct DeepA2CAgent[
             + Scalar[dtype](self.value_loss_coef) * total_value_loss / n
             - Scalar[dtype](self.entropy_coef) * total_entropy / n
         )
+
+        # Log A2C diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "entropy", Float64(total_entropy / n), step)
+                _log(self.logger, "loss", Float64(total_loss), step)
+            except:
+                pass
+
         return Float64(total_loss)
 
     fn _list_to_inline[
@@ -810,6 +832,8 @@ struct DeepA2CAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the A2C agent on a discrete action environment.
 
@@ -820,13 +844,17 @@ struct DeepA2CAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        return run_onpolicy_discrete_train(
+        var metrics = run_onpolicy_discrete_train(
             self,
             env,
             num_updates,
@@ -836,7 +864,10 @@ struct DeepA2CAgent[
             print_every,
             environment_name,
             "Deep A2C",
+            logger,
         )
+        self.logger = LoggerPtr()
+        return metrics
 
     fn save_checkpoint(self, path: String) raises:
         """Save agent state to a single checkpoint file.

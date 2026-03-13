@@ -72,6 +72,7 @@ from mojo_rl.deep_agents.dqn.kernels import (
     dqn_td_target_kernel,
     dqn_double_td_target_kernel,
 )
+from mojo_rl.core.logger import LoggerPtr, _log
 
 
 # =============================================================================
@@ -195,6 +196,10 @@ struct DQNCNNAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Diagnostics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -237,6 +242,8 @@ struct DQNCNNAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -424,6 +431,41 @@ struct DQNCNNAgent[
                     grad_arr[b * Self.ACTIONS + a] = Scalar[dtype](0.0)
 
         total_loss /= Float64(Self.batch_size)
+
+        # Log DQN CNN diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                var q_sum = Scalar[dtype](0.0)
+                var q_min_v = q_arr[Int(batch_actions_tmp[0]) + 0]
+                var q_max_v = q_min_v
+                var td_sum = Scalar[dtype](0.0)
+                var td_err_sum = Scalar[dtype](0.0)
+                for b in range(Self.batch_size):
+                    var a = Int(batch_actions_tmp[b])
+                    var q = q_arr[b * Self.ACTIONS + a]
+                    q_sum += q
+                    if q < q_min_v:
+                        q_min_v = q
+                    if q > q_max_v:
+                        q_max_v = q
+                    td_sum += targets[b]
+                    var td_err = q - targets[b]
+                    if td_err < 0:
+                        td_err = -td_err
+                    td_err_sum += td_err
+                var bs = Float64(Self.batch_size)
+                _log(self.logger, "loss", total_loss, step)
+                _log(self.logger, "q_mean", Float64(q_sum) / bs, step)
+                _log(self.logger, "q_min", Float64(q_min_v), step)
+                _log(self.logger, "q_max", Float64(q_max_v), step)
+                _log(self.logger, "td_target_mean", Float64(td_sum) / bs, step)
+                _log(self.logger, "td_error_abs_mean", Float64(td_err_sum) / bs, step)
+            except:
+                pass
 
         # Backward
         var grad_t = LayoutTensor[
@@ -859,10 +901,14 @@ struct DQNCNNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         var algo_name = String("DQN CNN")
         if Self.double_dqn:
             algo_name = String("Double DQN CNN")
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var checkpoint_every = self.checkpoint_every
         var checkpoint_path = self.checkpoint_path
@@ -880,7 +926,9 @@ struct DQNCNNAgent[
             print_every,
             environment_name,
             algo_name,
+            logger,
         )
+        self.logger = LoggerPtr()
         self.state = cpu_state^
         return metrics
 
@@ -920,7 +968,11 @@ struct DQNCNNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
+        self.logger = logger
+        self.diag_every = diag_every
         var algo_name = String(
             "DQN CNN (GPU)" if not Self.double_dqn else "Double DQN CNN (GPU)"
         )
@@ -948,7 +1000,10 @@ struct DQNCNNAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
+            logger=logger,
         )
+
+        self.logger = LoggerPtr()
 
         # Merge L2 sub-phases as children of train_step (slot 6)
         comptime if Self.profile >= 2:

@@ -94,6 +94,7 @@ from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.model.model import PerfTimerPtr
 from std.memory import UnsafePointer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.core.logger import LoggerPtr, _log
 from mojo_rl.deep_agents.core.eval import (
     run_onpolicy_discrete_eval,
     run_onpolicy_continuous_eval,
@@ -255,6 +256,10 @@ struct DeepPPOAgent[
     var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
     var checkpoint_path: String  # Path for auto-checkpointing
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -384,6 +389,8 @@ struct DeepPPOAgent[
         # Auto-checkpoint settings
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -559,6 +566,12 @@ struct DeepPPOAgent[
         # =====================================================================
 
         var total_loss = Scalar[dtype](0.0)
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_entropy = Scalar[dtype](0.0)
+        var total_clip_frac = Scalar[dtype](0.0)
+        var total_approx_kl = Scalar[dtype](0.0)
+        var sample_count = 0
         var indices = List[Int](capacity=buffer_len)
         for i in range(buffer_len):
             indices.append(i)
@@ -845,6 +858,16 @@ struct DeepPPOAgent[
                         + Scalar[dtype](self.value_loss_coef) * value_loss
                         - Scalar[dtype](self.entropy_coef) * entropy
                     )
+                    total_policy_loss += policy_loss
+                    total_value_loss += value_loss
+                    total_entropy += entropy
+                    if is_clipped:
+                        total_clip_frac += Scalar[dtype](1.0)
+                    # Approx KL: (ratio - 1) - log(ratio)
+                    total_approx_kl += (ratio - Scalar[dtype](1.0)) - log(
+                        ratio + Scalar[dtype](1e-8)
+                    )
+                    sample_count += 1
 
                 batch_start = batch_end
 
@@ -852,7 +875,26 @@ struct DeepPPOAgent[
         self.state.buffer_idx = 0
         self.train_step_count += 1
 
-        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+        var n = Scalar[dtype](max(sample_count, 1))
+        var avg_loss = Float64(total_loss / n)
+
+        # Log PPO diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_loss, step)
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "entropy", Float64(total_entropy / n), step)
+                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
+                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+            except:
+                pass
+
+        return avg_loss
 
     fn _list_to_inline[
         dtype: DType
@@ -991,6 +1033,12 @@ struct DeepPPOAgent[
             cpu_state._indices[i] = i
 
         var total_loss = Scalar[dtype](0.0)
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_entropy = Scalar[dtype](0.0)
+        var total_clip_frac = Scalar[dtype](0.0)
+        var total_approx_kl = Scalar[dtype](0.0)
+        var sample_count = 0
 
         for epoch in range(self.num_epochs):
             # Shuffle indices (Fisher-Yates)
@@ -1219,12 +1267,39 @@ struct DeepPPOAgent[
                         + Scalar[dtype](self.value_loss_coef) * value_loss
                         - Scalar[dtype](self.entropy_coef) * entropy
                     )
+                    total_policy_loss += policy_loss
+                    total_value_loss += value_loss
+                    total_entropy += entropy
+                    if is_clipped:
+                        total_clip_frac += Scalar[dtype](1.0)
+                    total_approx_kl += (ratio - Scalar[dtype](1.0)) - log(
+                        ratio + Scalar[dtype](1e-8)
+                    )
+                    sample_count += 1
 
                 batch_start = batch_end
 
         cpu_state.buffer_idx = 0
         self.train_step_count += 1
-        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+        var n = Scalar[dtype](max(sample_count, 1))
+        var avg_loss = Float64(total_loss / n)
+
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_loss, step)
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "entropy", Float64(total_entropy / n), step)
+                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
+                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+            except:
+                pass
+
+        return avg_loss
 
     fn select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
@@ -1365,6 +1440,12 @@ struct DeepPPOAgent[
             self.state._indices[i] = i
 
         var total_loss = Scalar[dtype](0.0)
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_entropy = Scalar[dtype](0.0)
+        var total_clip_frac = Scalar[dtype](0.0)
+        var total_approx_kl = Scalar[dtype](0.0)
+        var sample_count = 0
 
         for epoch in range(self.num_epochs):
             fisher_yates_shuffle(self.state._indices, buffer_len)
@@ -1588,12 +1669,39 @@ struct DeepPPOAgent[
                         + Scalar[dtype](self.value_loss_coef) * value_loss
                         - Scalar[dtype](self.entropy_coef) * entropy
                     )
+                    total_policy_loss += policy_loss
+                    total_value_loss += value_loss
+                    total_entropy += entropy
+                    if is_clipped:
+                        total_clip_frac += Scalar[dtype](1.0)
+                    total_approx_kl += (ratio - Scalar[dtype](1.0)) - log(
+                        ratio + Scalar[dtype](1e-8)
+                    )
+                    sample_count += 1
 
                 batch_start = batch_end
 
         self.state.buffer_idx = 0
         self.train_step_count += 1
-        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+        var n = Scalar[dtype](max(sample_count, 1))
+        var avg_loss = Float64(total_loss / n)
+
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_loss, step)
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "entropy", Float64(total_entropy / n), step)
+                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
+                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+            except:
+                pass
+
+        return avg_loss
 
     fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select greedy action using self.state (OnPolicyAgent overload)."""
@@ -1677,11 +1785,10 @@ struct DeepPPOAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the PPO agent on a discrete action environment.
-
-        Delegates to the shared on-policy training loop.
-        num_episodes is treated as num_updates (rollout-based, not episode-based).
 
         Args:
             env: The environment to train on.
@@ -1690,13 +1797,17 @@ struct DeepPPOAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics with one entry per update (reward = policy loss).
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        return run_onpolicy_discrete_train(
+        var metrics = run_onpolicy_discrete_train(
             self,
             env,
             num_episodes,
@@ -1706,7 +1817,10 @@ struct DeepPPOAgent[
             print_every,
             environment_name,
             "PPO",
+            logger,
         )
+        self.logger = LoggerPtr()
+        return metrics
 
     fn evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
@@ -2465,6 +2579,8 @@ struct DeepPPOAgent[
         num_updates: Int,
         verbose: Bool = False,
         print_every: Int = 10,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO on GPU with parallel environments.
 
@@ -2480,6 +2596,8 @@ struct DeepPPOAgent[
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var timer = PerfTimer[Self.profile >= 1]()
         _ = timer.add_slot("select_actions")
         _ = timer.add_slot("store_pre_step")
@@ -2499,6 +2617,7 @@ struct DeepPPOAgent[
             timer,
             verbose=verbose,
             print_every=print_every,
+            logger=logger,
         )
 
         # Merge L2 sub-phases into L1 slots
@@ -2509,6 +2628,7 @@ struct DeepPPOAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report("PPO Discrete (GPU) Profile")
+        self.logger = LoggerPtr()
         return metrics^
 
     # =========================================================================

@@ -110,6 +110,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log
 
 
 # =============================================================================
@@ -272,6 +273,10 @@ struct DeepSACAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -384,6 +389,8 @@ struct DeepSACAgent[
             self.actor_bwd_base = Self.ActorModel.register_backward_slots(
                 self.train_timer, parent=5
             )
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -858,6 +865,44 @@ struct DeepSACAgent[
         cpu_state.critic2.optimizer_step()
 
         var avg_critic_loss = (critic1_loss + critic2_loss) / 2.0
+
+        # Log SAC diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_critic_loss, step)
+                _log(self.logger, "critic1_loss", critic1_loss, step)
+                _log(self.logger, "critic2_loss", critic2_loss, step)
+                _log(self.logger, "alpha", self.alpha, step)
+
+                # Q1 stats
+                var q1_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    q1_sum += Float64(cpu_state._q1_out[i])
+                _log(self.logger, "q1_mean", q1_sum / Float64(Self.BATCH), step)
+
+                # Q2 stats
+                var q2_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    q2_sum += Float64(cpu_state._q2_out[i])
+                _log(self.logger, "q2_mean", q2_sum / Float64(Self.BATCH), step)
+
+                # TD target stats
+                var tgt_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    tgt_sum += Float64(cpu_state._targets[i])
+                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+
+                # Entropy (mean log_prob)
+                var lp_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    lp_sum += Float64(cpu_state._curr_log_pi[i])
+                _log(self.logger, "entropy", -(lp_sum / Float64(Self.BATCH)), step)
+            except:
+                pass
 
         # =================================================================
         # Phase 4: Update Actor
@@ -1996,6 +2041,8 @@ struct DeepSACAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
 
@@ -2024,6 +2071,8 @@ struct DeepSACAgent[
         Returns:
             TrainingMetrics with episode-level statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
         var timer = PerfTimer[Self.profile >= 1]()
@@ -2049,6 +2098,7 @@ struct DeepSACAgent[
             algorithm_name="SAC (GPU)",
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            logger=logger,
         )
         # Merge L2 sub-phases as children of train_step (slot 6)
         comptime if Self.profile >= 2:
@@ -2056,6 +2106,7 @@ struct DeepSACAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report("SAC (GPU) Profile")
+        self.logger = LoggerPtr()
         return metrics^
 
     # =========================================================================
@@ -2074,11 +2125,10 @@ struct DeepSACAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the SAC agent on a continuous action environment.
-
-        Delegates to run_offpolicy_continuous_train which handles warmup,
-        episode loop, and metric logging.
 
         Args:
             env: Environment implementing BoxContinuousActionEnv.
@@ -2089,10 +2139,14 @@ struct DeepSACAgent[
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
@@ -2110,8 +2164,10 @@ struct DeepSACAgent[
             algorithm_name="SAC (CPU)",
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            logger=logger,
         )
         self.state = cpu_state^
+        self.logger = LoggerPtr()
         return metrics
 
     # =========================================================================

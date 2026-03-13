@@ -94,6 +94,7 @@ from mojo_rl.core import (
     RenderableEnv,
     GPUContinuousEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log
 from .state import DDPGCPUState, DDPGGPUState
 
 # =============================================================================
@@ -222,6 +223,10 @@ struct DeepDDPGAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -306,6 +311,8 @@ struct DeepDDPGAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -506,6 +513,38 @@ struct DeepDDPGAgent[
                 Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
             )
         critic_loss /= Float64(Self.BATCH)
+
+        # Log DDPG diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                # Q-value stats
+                var q_min = Float64(cpu_state._q_out[0])
+                var q_max = Float64(cpu_state._q_out[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    var v = Float64(cpu_state._q_out[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                _log(self.logger, "q_mean", q_sum / Float64(Self.BATCH), step)
+                _log(self.logger, "q_min", q_min, step)
+                _log(self.logger, "q_max", q_max, step)
+
+                # TD target stats
+                var tgt_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    tgt_sum += Float64(cpu_state._targets[i])
+                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+
+                _log(self.logger, "loss", critic_loss, step)
+            except:
+                pass
 
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
@@ -1075,6 +1114,8 @@ struct DeepDDPGAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the DDPG agent on a continuous action environment (CPU).
 
@@ -1087,10 +1128,14 @@ struct DeepDDPGAgent[
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var metrics = run_offpolicy_continuous_train(
             self,
@@ -1104,8 +1149,10 @@ struct DeepDDPGAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name="Deep DDPG",
+            logger=logger,
         )
         self.state = cpu_state^
+        self.logger = LoggerPtr()
         return metrics
 
     # =========================================================================
@@ -1124,6 +1171,8 @@ struct DeepDDPGAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
 
@@ -1152,6 +1201,8 @@ struct DeepDDPGAgent[
         Returns:
             TrainingMetrics with episode-level statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var timer = PerfTimer[Self.profile >= 1]()
         _ = timer.add_slot("copy_prev_obs")
         _ = timer.add_slot("select_actions")
@@ -1173,6 +1224,7 @@ struct DeepDDPGAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name="Deep DDPG GPU",
+            logger=logger,
         )
 
         # Merge L2 sub-phases as children of train_step (slot 6)
@@ -1181,6 +1233,7 @@ struct DeepDDPGAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report("Deep DDPG GPU Profile")
+        self.logger = LoggerPtr()
         return metrics^
 
     # =========================================================================

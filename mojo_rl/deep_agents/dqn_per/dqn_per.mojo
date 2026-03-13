@@ -80,6 +80,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
+from mojo_rl.core.logger import LoggerPtr, _log
 from .state import DQNPERGPUState
 from mojo_rl.deep_agents.dqn.kernels import (
     dqn_td_target_kernel,
@@ -281,6 +282,10 @@ struct DQNPERAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Optional metrics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -347,6 +352,8 @@ struct DQNPERAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -562,6 +569,41 @@ struct DQNPERAgent[
 
         # --- Phase 7: Soft update target ---
         cpu_state.target.soft_update_from(cpu_state.online, self.tau)
+
+        # Log DQN+PER diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", loss, step)
+                _log(self.logger, "beta", self.beta, step)
+
+                # Q-value stats
+                var q_min = Float64(q_arr[0])
+                var q_max = Float64(q_arr[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH * Self.ACTIONS):
+                    var v = Float64(q_arr[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                _log(self.logger, "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step)
+                _log(self.logger, "q_min", q_min, step)
+                _log(self.logger, "q_max", q_max, step)
+
+                # TD error stats
+                var td_abs_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    var td = Float64(td_errors[i])
+                    td_abs_sum += td if td >= 0 else -td
+                _log(self.logger, "td_error_abs_mean", td_abs_sum / Float64(Self.BATCH), step)
+            except:
+                pass
+
         self.train_step_count += 1
 
         return loss
@@ -1011,6 +1053,8 @@ struct DQNPERAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
 
@@ -1043,6 +1087,8 @@ struct DQNPERAgent[
         Returns:
             TrainingMetrics with episode-level statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var algo_name = String(
             "DQN+PER (GPU, uniform replay)" if not Self.double_dqn else "Double DQN+PER (GPU, uniform replay)"
         )
@@ -1067,6 +1113,7 @@ struct DQNPERAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
+            logger=logger,
         )
 
         # Merge L2 sub-phases as children of train_step (slot 6)
@@ -1075,6 +1122,7 @@ struct DQNPERAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report(algo_name + " Profile")
+        self.logger = LoggerPtr()
         return metrics^
 
     # =========================================================================
@@ -1093,6 +1141,8 @@ struct DQNPERAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the DQN+PER agent on a discrete action environment.
 
@@ -1105,10 +1155,14 @@ struct DQNPERAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N episodes if verbose.
             environment_name: Name of environment for metrics labeling.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics object with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = Self.CPUStateType(alpha=0.6, beta=self.beta_start)
         var checkpoint_every = self.checkpoint_every
         var checkpoint_path = self.checkpoint_path
@@ -1126,8 +1180,10 @@ struct DQNPERAgent[
             print_every,
             environment_name,
             "DQN + PER",
+            logger,
         )
         self.state = cpu_state^
+        self.logger = LoggerPtr()
         return metrics
 
     fn evaluate[

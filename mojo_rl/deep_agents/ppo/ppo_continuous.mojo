@@ -70,6 +70,7 @@ from mojo_rl.render import Renderer2D
 from std.memory import UnsafePointer
 from mojo_rl.core.utils.gae import compute_gae_inline
 from mojo_rl.core.utils.normalization import normalize_inline, RunningMeanStd
+from mojo_rl.core.logger import LoggerPtr, _log
 from mojo_rl.core.utils.shuffle import shuffle_indices_inline
 from .kernels import (
     _sample_continuous_actions_kernel,
@@ -272,6 +273,8 @@ struct DeepPPOContinuousAgent[
 
     # Training state
     var train_step_count: Int
+    var logger: LoggerPtr
+    var diag_every: Int
 
     # Auto-checkpoint settings
     var checkpoint_every: Int
@@ -410,6 +413,8 @@ struct DeepPPOContinuousAgent[
         self.action_bias = action_bias
 
         self.train_step_count = 0
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -710,7 +715,7 @@ struct DeepPPOContinuousAgent[
     fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Update actor/critic over num_epochs with minibatch PPO. Returns mean loss.
         """
-        from std.math import exp as _exp, log as _log, sqrt as _sqrt
+        from std.math import exp as _exp, sqrt as _sqrt
 
         var buffer_len = cpu_state.buffer_idx
         if buffer_len == 0:
@@ -721,6 +726,11 @@ struct DeepPPOContinuousAgent[
             cpu_state._indices[i] = i
 
         var total_loss = Scalar[dtype](0.0)
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_clip_frac = Scalar[dtype](0.0)
+        var total_approx_kl = Scalar[dtype](0.0)
+        var sample_count = 0
 
         for epoch in range(self.num_epochs):
             fisher_yates_shuffle(cpu_state._indices, buffer_len)
@@ -943,12 +953,38 @@ struct DeepPPOContinuousAgent[
                         policy_loss
                         + Scalar[dtype](self.value_loss_coef) * value_loss
                     )
+                    total_policy_loss += policy_loss
+                    total_value_loss += value_loss
+                    if is_clipped:
+                        total_clip_frac += Scalar[dtype](1.0)
+                    total_approx_kl += (ratio - Scalar[dtype](1.0)) - log(
+                        ratio + Scalar[dtype](1e-8)
+                    )
+                    sample_count += 1
 
                 batch_start = batch_end
 
         cpu_state.buffer_idx = 0
         self.train_step_count += 1
-        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+
+        var n = Scalar[dtype](max(sample_count, 1))
+        var avg_loss = Float64(total_loss / n)
+
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_loss, step)
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
+                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+            except:
+                pass
+
+        return avg_loss
 
     fn select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
@@ -986,6 +1022,8 @@ struct DeepPPOContinuousAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the PPO continuous agent on a continuous action environment.
 
@@ -998,13 +1036,17 @@ struct DeepPPOContinuousAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics with one entry per update (reward = policy loss).
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        return run_onpolicy_continuous_train(
+        var metrics = run_onpolicy_continuous_train(
             self,
             env,
             num_episodes,
@@ -1014,7 +1056,10 @@ struct DeepPPOContinuousAgent[
             print_every,
             environment_name,
             "PPO Continuous (GPU)",
+            logger=logger,
         )
+        self.logger = LoggerPtr()
+        return metrics^
 
     # =========================================================================
     # OnPolicyAgent trait methods (use self.state directly, no aliasing issue)
@@ -1127,7 +1172,7 @@ struct DeepPPOContinuousAgent[
     fn update_epochs(mut self) -> Float64:
         """Update actor/critic over num_epochs with minibatch PPO (OnPolicyAgent overload).
         """
-        from std.math import exp as _exp, log as _log, sqrt as _sqrt
+        from std.math import exp as _exp, sqrt as _sqrt
 
         var buffer_len = self.state.buffer_idx
         if buffer_len == 0:
@@ -1137,6 +1182,11 @@ struct DeepPPOContinuousAgent[
             self.state._indices[i] = i
 
         var total_loss = Scalar[dtype](0.0)
+        var total_policy_loss = Scalar[dtype](0.0)
+        var total_value_loss = Scalar[dtype](0.0)
+        var total_clip_frac = Scalar[dtype](0.0)
+        var total_approx_kl = Scalar[dtype](0.0)
+        var sample_count = 0
 
         for epoch in range(self.num_epochs):
             fisher_yates_shuffle(self.state._indices, buffer_len)
@@ -1351,12 +1401,38 @@ struct DeepPPOContinuousAgent[
                         policy_loss
                         + Scalar[dtype](self.value_loss_coef) * value_loss
                     )
+                    total_policy_loss += policy_loss
+                    total_value_loss += value_loss
+                    if is_clipped:
+                        total_clip_frac += Scalar[dtype](1.0)
+                    total_approx_kl += (ratio - Scalar[dtype](1.0)) - log(
+                        ratio + Scalar[dtype](1e-8)
+                    )
+                    sample_count += 1
 
                 batch_start = batch_end
 
         self.state.buffer_idx = 0
         self.train_step_count += 1
-        return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
+
+        var n = Scalar[dtype](max(sample_count, 1))
+        var avg_loss = Float64(total_loss / n)
+
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", avg_loss, step)
+                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
+                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
+                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+            except:
+                pass
+
+        return avg_loss
 
     fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select deterministic action (actor mean) for evaluation (OnPolicyAgent overload).
@@ -2593,6 +2669,8 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int,
         verbose: Bool = False,
         print_every: Int = 10,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO on GPU with GPU-native continuous action environments.
 
@@ -2604,10 +2682,14 @@ struct DeepPPOContinuousAgent[
             num_episodes: Target number of episodes to complete.
             verbose: Whether to print progress.
             print_every: Print progress every N rollouts.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
         var timer = PerfTimer[Self.profile >= 1]()
@@ -2635,7 +2717,9 @@ struct DeepPPOContinuousAgent[
             environment_name=EnvType.NAME,
             verbose=verbose,
             print_every=print_every,
+            logger=logger,
         )
+        self.logger = LoggerPtr()
 
         comptime if Self.profile >= 2:
             timer.merge_subtree_range(0, self.train_timer, 0, 3)

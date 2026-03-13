@@ -86,6 +86,7 @@ from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.model.model import PerfTimerPtr
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.core.logger import LoggerPtr, _log
 
 from mojo_rl.deep_agents.ppo.kernels import (
     ppo_actor_grad_kernel,
@@ -257,6 +258,10 @@ struct DeepPPOCNNAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Diagnostics logger
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -331,6 +336,8 @@ struct DeepPPOCNNAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
         """Return opaque timer pointer for L3 profiling (null when profile < 3).
@@ -1012,6 +1019,8 @@ struct DeepPPOCNNAgent[
         num_updates: Int,
         verbose: Bool = False,
         print_every: Int = 10,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO CNN on GPU with parallel environments.
 
@@ -1020,10 +1029,14 @@ struct DeepPPOCNNAgent[
             num_updates: Number of rollout+update cycles.
             verbose: Whether to print progress.
             print_every: Print progress every N updates.
+            logger: Optional metrics logger for diagnostics.
+            diag_every: Log diagnostics every N steps (0 = every step).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
+        self.logger = logger
+        self.diag_every = diag_every
         var timer = PerfTimer[Self.profile >= 1]()
         _ = timer.add_slot("select_actions")
         _ = timer.add_slot("store_pre_step")
@@ -1043,7 +1056,9 @@ struct DeepPPOCNNAgent[
             timer,
             verbose=verbose,
             print_every=print_every,
+            logger=logger,
         )
+        self.logger = LoggerPtr()
 
         comptime if Self.profile >= 2:
             timer.merge_subtree_range(0, self.train_timer, 0, 3)
