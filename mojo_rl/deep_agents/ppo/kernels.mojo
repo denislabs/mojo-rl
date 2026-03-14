@@ -244,6 +244,12 @@ fn ppo_continuous_actor_grad_kernel[
     kl_divergences: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
     ],
+    entropies: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    clip_flags: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
     # Inputs
     actor_output: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
@@ -358,6 +364,7 @@ fn ppo_continuous_actor_grad_kernel[
     elif kl > Scalar[dtype](100.0):
         kl = Scalar[dtype](100.0)
     kl_divergences[b] = kl
+    entropies[b] = entropy_sum
 
     # Clip ratio for clipped objective
     var clipped_ratio = ratio
@@ -371,6 +378,7 @@ fn ppo_continuous_actor_grad_kernel[
     var unclipped_obj = ratio * advantage
     var clipped_obj = clipped_ratio * advantage
     var is_clipped = clipped_obj < unclipped_obj
+    clip_flags[b] = Scalar[dtype](1.0) if is_clipped else Scalar[dtype](0.0)
 
     # Compute gradients for mean and log_std
     var batch_size_scalar = Scalar[dtype](BATCH_SIZE)
@@ -1162,6 +1170,12 @@ fn ppo_actor_grad_with_kl_kernel[
     kl_divergences: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
     ],
+    entropies: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    clip_flags: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
     # Inputs
     logits: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
@@ -1221,6 +1235,14 @@ fn ppo_actor_grad_with_kl_kernel[
         kl = Scalar[dtype](0.0)
     kl_divergences[b] = kl
 
+    # Compute entropy: H = -sum(p * log(p))
+    var ent: Scalar[dtype] = 0.0
+    for a in range(NUM_ACTIONS):
+        if probs[a] > Scalar[dtype](1e-10):
+            var p_log = Float32(probs[a]) + Float32(1e-8)
+            ent = ent - probs[a] * Scalar[dtype](log(p_log))
+    entropies[b] = ent
+
     # Clip ratio for clipped objective
     var clipped_ratio = ratio
     if clipped_ratio < Scalar[dtype](1.0) - clip_epsilon:
@@ -1233,6 +1255,7 @@ fn ppo_actor_grad_with_kl_kernel[
     var unclipped_obj = ratio * advantage
     var clipped_obj = clipped_ratio * advantage
     var is_clipped = clipped_obj < unclipped_obj
+    clip_flags[b] = Scalar[dtype](1.0) if is_clipped else Scalar[dtype](0.0)
 
     # Compute gradients
     for a in range(NUM_ACTIONS):

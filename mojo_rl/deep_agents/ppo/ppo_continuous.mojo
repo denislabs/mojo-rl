@@ -2333,6 +2333,12 @@ struct DeepPPOContinuousAgent[
         var kl_divergences_t = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](gpu_state.kl_divergences_buf.unsafe_ptr())
+        var diag_entropy_t = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+        ](gpu_state.diag_entropy_buf.unsafe_ptr())
+        var diag_clip_t = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+        ](gpu_state.diag_clip_buf.unsafe_ptr())
         var actor_grad_partial_sums_t = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
         ](gpu_state.actor_grad_partial_sums_buf.unsafe_ptr())
@@ -2404,6 +2410,17 @@ struct DeepPPOContinuousAgent[
         ]
 
         var kl_early_stop = False
+
+        # Diagnostic accumulators
+        var should_diag = self.logger and (
+            self.diag_every <= 0
+            or (self.train_step_count + 1) % self.diag_every == 0
+        )
+        var diag_kl_sum: Float64 = 0.0
+        var diag_entropy_sum: Float64 = 0.0
+        var diag_clip_sum: Float64 = 0.0
+        var diag_value_loss_sum: Float64 = 0.0
+        var diag_sample_count: Int = 0
 
         for epoch in range(self.num_epochs):
             if kl_early_stop:
@@ -2486,6 +2503,8 @@ struct DeepPPOContinuousAgent[
                 ctx.enqueue_function[actor_grad_wrapper, actor_grad_wrapper](
                     actor_grad_output_t,
                     kl_divergences_t,
+                    diag_entropy_t,
+                    diag_clip_t,
                     actor_output_mb_t,
                     mb_old_log_probs_t,
                     mb_advantages_t,
@@ -2497,8 +2516,8 @@ struct DeepPPOContinuousAgent[
                     block_dim=(TPB,),
                 )
 
-                # KL early stopping
-                if self.target_kl > 0.0:
+                # KL early stopping + diagnostic KL readback
+                if self.target_kl > 0.0 or should_diag:
                     ctx.synchronize()
                     ctx.enqueue_copy(
                         gpu_state.kl_divergences_host,
@@ -2508,10 +2527,32 @@ struct DeepPPOContinuousAgent[
                     var kl_sum = Scalar[dtype](0.0)
                     for i in range(MINIBATCH):
                         kl_sum += gpu_state.kl_divergences_host[i]
+                    if should_diag:
+                        diag_kl_sum += Float64(kl_sum)
                     var mean_kl = Float64(kl_sum) / Float64(MINIBATCH)
-                    if mean_kl > self.target_kl:
+                    if self.target_kl > 0.0 and mean_kl > self.target_kl:
                         kl_early_stop = True
                         break
+
+                # Accumulate diagnostics (entropy, clip fraction)
+                if should_diag:
+                    ctx.enqueue_copy(
+                        gpu_state.diag_entropy_host,
+                        gpu_state.diag_entropy_buf,
+                    )
+                    ctx.enqueue_copy(
+                        gpu_state.diag_clip_host,
+                        gpu_state.diag_clip_buf,
+                    )
+                    ctx.synchronize()
+                    for i in range(MINIBATCH):
+                        diag_entropy_sum += Float64(
+                            gpu_state.diag_entropy_host[i]
+                        )
+                        diag_clip_sum += Float64(
+                            gpu_state.diag_clip_host[i]
+                        )
+                    diag_sample_count += MINIBATCH
 
                 comptime if Self.profile >= 2:
                     self.train_timer.sync_and_accumulate(8, ctx)
@@ -2607,6 +2648,24 @@ struct DeepPPOContinuousAgent[
                         block_dim=(TPB,),
                     )
 
+                # Accumulate value loss diagnostics
+                if should_diag:
+                    ctx.synchronize()
+                    ctx.enqueue_copy(
+                        gpu_state.diag_values_host,
+                        gpu_state.critic_values_buf,
+                    )
+                    ctx.enqueue_copy(
+                        gpu_state.diag_returns_host,
+                        gpu_state.mb_returns_buf,
+                    )
+                    ctx.synchronize()
+                    for i in range(MINIBATCH):
+                        var diff = Float64(
+                            gpu_state.diag_values_host[i]
+                        ) - Float64(gpu_state.diag_returns_host[i])
+                        diag_value_loss_sum += diff * diff
+
                 comptime if Self.profile >= 2:
                     self.train_timer.sync_and_accumulate(10, ctx)
                     self.train_timer.mark()
@@ -2655,6 +2714,22 @@ struct DeepPPOContinuousAgent[
         # Reset rollout step so next rollout collection starts from position 0
         gpu_state.rollout_step = 0
         self.train_step_count += 1
+
+        # Log diagnostics
+        if should_diag and diag_sample_count > 0:
+            try:
+                var step = self.train_step_count
+                var n = Float64(diag_sample_count)
+                var avg_kl = diag_kl_sum / n
+                var avg_entropy = diag_entropy_sum / n
+                var avg_clip = diag_clip_sum / n
+                var avg_value_loss = diag_value_loss_sum / n
+                _log(self.logger, "approx_kl", avg_kl, step)
+                _log(self.logger, "entropy", avg_entropy, step)
+                _log(self.logger, "clip_fraction", avg_clip, step)
+                _log(self.logger, "value_loss", avg_value_loss, step)
+            except:
+                pass
 
     # =========================================================================
     # GPU Training with GPU Environments (Fully GPU)

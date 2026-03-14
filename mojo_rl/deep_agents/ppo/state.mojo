@@ -455,6 +455,13 @@ struct PPODiscreteGPUState[
     var kl_divergences_buf: DeviceBuffer[dtype]  # [MB]
     var kl_divergences_host: HostBuffer[dtype]  # [MB]
     var mb_advantages_host: HostBuffer[dtype]  # [MB]
+    # Diagnostic buffers for GPU training metrics
+    var diag_entropy_buf: DeviceBuffer[dtype]  # [MB]
+    var diag_entropy_host: HostBuffer[dtype]  # [MB]
+    var diag_clip_buf: DeviceBuffer[dtype]  # [MB]
+    var diag_clip_host: HostBuffer[dtype]  # [MB]
+    var diag_values_host: HostBuffer[dtype]  # [MB] (critic values readback)
+    var diag_returns_host: HostBuffer[dtype]  # [MB] (returns readback)
     var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
     var critic_grad_partial_sums_buf: DeviceBuffer[
         dtype
@@ -566,6 +573,12 @@ struct PPODiscreteGPUState[
             Self.MB
         )
         self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_entropy_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.diag_entropy_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_clip_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.diag_clip_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_values_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_returns_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
 
         self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
             Self.ACTOR_GRAD_BLOCKS
@@ -804,6 +817,13 @@ struct PPOContinuousGPUState[
     var kl_divergences_buf: DeviceBuffer[dtype]  # [MB]
     var kl_divergences_host: HostBuffer[dtype]  # [MB]
     var mb_advantages_host: HostBuffer[dtype]  # [MB]
+    # Diagnostic buffers for GPU training metrics
+    var diag_entropy_buf: DeviceBuffer[dtype]  # [MB]
+    var diag_entropy_host: HostBuffer[dtype]  # [MB]
+    var diag_clip_buf: DeviceBuffer[dtype]  # [MB]
+    var diag_clip_host: HostBuffer[dtype]  # [MB]
+    var diag_values_host: HostBuffer[dtype]  # [MB] (critic values readback)
+    var diag_returns_host: HostBuffer[dtype]  # [MB] (returns readback)
     var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
     var critic_grad_partial_sums_buf: DeviceBuffer[
         dtype
@@ -913,6 +933,12 @@ struct PPOContinuousGPUState[
             Self.MB
         )
         self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_entropy_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.diag_entropy_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_clip_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        self.diag_clip_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_values_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
+        self.diag_returns_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
 
         self.actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
             Self.ACTOR_GRAD_BLOCKS

@@ -1224,7 +1224,7 @@ struct DeepPPOContinuousAgentOld[
             MINIBATCH_OBS_SIZE
         )
 
-        # KL divergence and gradient clipping buffers
+        # KL divergence, diagnostic, and gradient clipping buffers
         var kl_divergences_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
         var kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
             MINIBATCH
@@ -1232,6 +1232,8 @@ struct DeepPPOContinuousAgentOld[
         var mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](
             MINIBATCH
         )
+        var diag_entropy_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
+        var diag_clip_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
 
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
         comptime CRITIC_GRAD_BLOCKS = (CRITIC_PARAMS + TPB - 1) // TPB
@@ -1362,6 +1364,12 @@ struct DeepPPOContinuousAgentOld[
         var kl_divergences_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](kl_divergences_buf.unsafe_ptr())
+        var diag_entropy_tensor = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+        ](diag_entropy_buf.unsafe_ptr())
+        var diag_clip_tensor = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+        ](diag_clip_buf.unsafe_ptr())
 
         var actor_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(ACTOR_GRAD_BLOCKS), MutAnyOrigin
@@ -2075,6 +2083,8 @@ struct DeepPPOContinuousAgentOld[
                     ](
                         actor_grad_output_tensor,
                         kl_divergences_tensor,
+                        diag_entropy_tensor,
+                        diag_clip_tensor,
                         actor_output_mb_tensor,
                         mb_old_log_probs_tensor,
                         mb_advantages_tensor,
