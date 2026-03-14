@@ -57,6 +57,11 @@ from .kernels import (
     categorical_sample_kernel,
     kl_divergence_kernel,
     kl_categorical_gradient_kernel,
+    gru_gate_backward_kernel,
+    accumulate_kernel,
+    concat_feat_backward_kernel,
+    concat_deter_embed_backward_kernel,
+    concat_gru_input_backward_kernel,
     lambda_returns_kernel,
     normalize_returns_elementwise_kernel,
     two_hot_ce_grad_kernel,
@@ -1560,16 +1565,43 @@ struct DreamerV3Agent[
                 grid_dim=(SYMLOG_BLOCKS,), block_dim=(TPB,),
             )
 
-            # Encode: symlog_obs -> embed
+            # Encode: symlog_obs -> embed (with cache for BPTT)
             var symlog_obs_2d = LayoutTensor[
                 dtype, Layout.row_major(B, OBS), MutAnyOrigin
             ](gpu_state.symlog_obs_buf.unsafe_ptr())
             var embed_2d = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.embed_buf.unsafe_ptr())
-            EncNet.forward_gpu[B](
+            comptime ENC_CACHE = Self.StateType.RSSMType.EncModel.CACHE_SIZE
+            var enc_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, ENC_CACHE), MutAnyOrigin
+            ](gpu_state.all_enc_cache_buf.unsafe_ptr() + t * B * ENC_CACHE)
+            EncNet.forward_gpu_with_cache[B](
                 ctx, symlog_obs_2d, embed_2d,
-                gpu_state.encoder.params_view(), gpu_state.ws_encoder,
+                gpu_state.encoder.params_view(), enc_cache_t,
+                gpu_state.ws_encoder,
+            )
+
+            # Save symlog_obs per timestep for BPTT encoder backward
+            comptime SYMLOG_SLICE = B * OBS
+            var all_symlog_t = LayoutTensor[
+                dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin
+            ](gpu_state.all_symlog_obs_buf.unsafe_ptr() + t * SYMLOG_SLICE)
+            var symlog_1d = LayoutTensor[
+                dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin
+            ](gpu_state.symlog_obs_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_symlog(
+                d: LayoutTensor[dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[SYMLOG_SLICE](d, s)
+
+            comptime COPY_SL_BLOCKS = (SYMLOG_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_symlog, copy_symlog](
+                all_symlog_t, symlog_1d,
+                grid_dim=(COPY_SL_BLOCKS,), block_dim=(TPB,),
             )
 
             # Action normalize
@@ -1593,10 +1625,54 @@ struct DreamerV3Agent[
                 grid_dim=(NORM_BLOCKS,), block_dim=(TPB,),
             )
 
-            # GRU input projections
+            # Save norm_action per timestep for BPTT
+            comptime ACT_SLICE = B * ACT
+            var all_nact_t = LayoutTensor[
+                dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin
+            ](gpu_state.all_norm_action_buf.unsafe_ptr() + t * ACT_SLICE)
+            var nact_1d = LayoutTensor[
+                dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin
+            ](gpu_state.norm_action_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_nact(
+                d: LayoutTensor[dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[ACT_SLICE](d, s)
+
+            comptime COPY_NA_BLOCKS = (ACT_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_nact, copy_nact](
+                all_nact_t, nact_1d,
+                grid_dim=(COPY_NA_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Save prev_deter per timestep for BPTT GRU backward
             var deter_2d = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.deter_buf.unsafe_ptr())
+            comptime PREV_D_SLICE = B * DETER
+            var all_prev_deter_t = LayoutTensor[
+                dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin
+            ](gpu_state.all_prev_deter_buf.unsafe_ptr() + t * PREV_D_SLICE)
+            var deter_1d_src = LayoutTensor[
+                dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin
+            ](gpu_state.deter_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_prev_d(
+                d: LayoutTensor[dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[PREV_D_SLICE](d, s)
+
+            comptime COPY_PD_BLOCKS = (PREV_D_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_prev_d, copy_prev_d](
+                all_prev_deter_t, deter_1d_src,
+                grid_dim=(COPY_PD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # GRU input projections (with cache for BPTT)
             var stoch_2d = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.stoch_buf.unsafe_ptr())
@@ -1610,17 +1686,33 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, HID), MutAnyOrigin
             ](gpu_state.proj_a_buf.unsafe_ptr())
 
-            DProjNet.forward_gpu[B](
+            comptime DPROJ_CACHE = Self.StateType.RSSMType.DeterProj.CACHE_SIZE
+            comptime SPROJ_CACHE = Self.StateType.RSSMType.StochProj.CACHE_SIZE
+            comptime APROJ_CACHE = Self.StateType.RSSMType.ActionProj.CACHE_SIZE
+            var dproj_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, DPROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_dproj_cache_buf.unsafe_ptr() + t * B * DPROJ_CACHE)
+            var sproj_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, SPROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_sproj_cache_buf.unsafe_ptr() + t * B * SPROJ_CACHE)
+            var aproj_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, APROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_aproj_cache_buf.unsafe_ptr() + t * B * APROJ_CACHE)
+
+            DProjNet.forward_gpu_with_cache[B](
                 ctx, deter_2d, proj_d_2d,
-                gpu_state.deter_proj.params_view(), gpu_state.ws_deter_proj,
+                gpu_state.deter_proj.params_view(), dproj_cache_t,
+                gpu_state.ws_deter_proj,
             )
-            SProjNet.forward_gpu[B](
+            SProjNet.forward_gpu_with_cache[B](
                 ctx, stoch_2d, proj_s_2d,
-                gpu_state.stoch_proj.params_view(), gpu_state.ws_stoch_proj,
+                gpu_state.stoch_proj.params_view(), sproj_cache_t,
+                gpu_state.ws_stoch_proj,
             )
-            AProjNet.forward_gpu[B](
+            AProjNet.forward_gpu_with_cache[B](
                 ctx, norm_act_2d, proj_a_2d,
-                gpu_state.action_proj.params_view(), gpu_state.ws_action_proj,
+                gpu_state.action_proj.params_view(), aproj_cache_t,
+                gpu_state.ws_action_proj,
             )
 
             # Concat [deter, proj_d, proj_s, proj_a]
@@ -1645,22 +1737,54 @@ struct DreamerV3Agent[
                 grid_dim=(CONCAT_BLOCKS,), block_dim=(TPB,),
             )
 
-            # GRU hidden layer
+            # GRU hidden layer (with cache for BPTT)
             var hidden_2d = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.hidden_out_buf.unsafe_ptr())
-            GHNet.forward_gpu[B](
+            comptime GH_CACHE = Self.StateType.RSSMType.GRUHiddenModel.CACHE_SIZE
+            var gh_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, GH_CACHE), MutAnyOrigin
+            ](gpu_state.all_gru_hidden_cache_buf.unsafe_ptr() + t * B * GH_CACHE)
+            GHNet.forward_gpu_with_cache[B](
                 ctx, concat_2d, hidden_2d,
-                gpu_state.gru_hidden.params_view(), gpu_state.ws_gru_hidden,
+                gpu_state.gru_hidden.params_view(), gh_cache_t,
+                gpu_state.ws_gru_hidden,
             )
 
-            # GRU gates
+            # GRU gates (with cache for BPTT)
             var gate_2d = LayoutTensor[
                 dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
             ](gpu_state.gate_out_buf.unsafe_ptr())
-            GGNet.forward_gpu[B](
+            comptime GG_CACHE = Self.StateType.RSSMType.GRUGateModel.CACHE_SIZE
+            var gg_cache_t = LayoutTensor[
+                dtype, Layout.row_major(B, GG_CACHE), MutAnyOrigin
+            ](gpu_state.all_gru_gates_cache_buf.unsafe_ptr() + t * B * GG_CACHE)
+            GGNet.forward_gpu_with_cache[B](
                 ctx, hidden_2d, gate_2d,
-                gpu_state.gru_gates.params_view(), gpu_state.ws_gru_gates,
+                gpu_state.gru_gates.params_view(), gg_cache_t,
+                gpu_state.ws_gru_gates,
+            )
+
+            # Save gate_out per timestep for BPTT GRU backward
+            comptime GATE_SLICE = B * 3 * DETER
+            var all_gate_t = LayoutTensor[
+                dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin
+            ](gpu_state.all_gate_out_buf.unsafe_ptr() + t * GATE_SLICE)
+            var gate_1d = LayoutTensor[
+                dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin
+            ](gpu_state.gate_out_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_gate(
+                d: LayoutTensor[dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[GATE_SLICE](d, s)
+
+            comptime COPY_G_BLOCKS = (GATE_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_gate, copy_gate](
+                all_gate_t, gate_1d,
+                grid_dim=(COPY_G_BLOCKS,), block_dim=(TPB,),
             )
 
             # Apply GRU gating
@@ -1708,21 +1832,21 @@ struct DreamerV3Agent[
             comptime POST_CACHE = Self.StateType.RSSMType.PostModel.CACHE_SIZE
             var post_cache_2d = LayoutTensor[
                 dtype, Layout.row_major(B, POST_CACHE), MutAnyOrigin
-            ](gpu_state.post_cache_buf.unsafe_ptr())
+            ](gpu_state.all_post_cache_buf.unsafe_ptr() + t * B * POST_CACHE)
             PostNet.forward_gpu_with_cache[B](
                 ctx, post_in_2d, post_logits_2d,
                 gpu_state.posterior.params_view(), post_cache_2d,
                 gpu_state.ws_posterior,
             )
 
-            # Prior
+            # Prior (with per-timestep cache for BPTT)
             var prior_logits_2d = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.prior_logits_buf.unsafe_ptr())
             comptime PRIOR_CACHE = Self.StateType.RSSMType.PriorModel.CACHE_SIZE
             var prior_cache_2d = LayoutTensor[
                 dtype, Layout.row_major(B, PRIOR_CACHE), MutAnyOrigin
-            ](gpu_state.prior_cache_buf.unsafe_ptr())
+            ](gpu_state.all_prior_cache_buf.unsafe_ptr() + t * B * PRIOR_CACHE)
             PriorNet.forward_gpu_with_cache[B](
                 ctx, new_deter_2d, prior_logits_2d,
                 gpu_state.prior.params_view(), prior_cache_2d,
@@ -2085,31 +2209,236 @@ struct DreamerV3Agent[
                 gpu_state.ws_continue,
             )
 
-            # ── KL backward ──────────────────────────────────────────────
-            # Compute KL divergence
-            var kl_1d = LayoutTensor[
+            # ── Accumulate d_feat = dec_grad_in + rew_grad_in + cont_grad_in ─
+            # Start with dec_grad_in, then add rew_grad_in and cont_grad_in
+            comptime FEAT_FLAT = B * FEAT
+            var d_feat_1d = LayoutTensor[
+                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.d_feat_buf.unsafe_ptr())
+            var dec_gi_1d = LayoutTensor[
+                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.dec_grad_in_buf.unsafe_ptr())
+            var rew_gi_1d = LayoutTensor[
+                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.rew_grad_in_buf.unsafe_ptr())
+            var cont_gi_1d = LayoutTensor[
+                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.cont_grad_in_buf.unsafe_ptr())
+
+            # Copy dec_grad_in -> d_feat
+            @always_inline
+            fn copy_dfeat(
+                d: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+            ):
+                copy_kernel[FEAT_FLAT](d, s)
+
+            comptime DFEAT_BLOCKS = (FEAT_FLAT + TPB - 1) // TPB
+            ctx.enqueue_function[copy_dfeat, copy_dfeat](
+                d_feat_1d, dec_gi_1d,
+                grid_dim=(DFEAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # d_feat += rew_grad_in
+            @always_inline
+            fn accum_rew(
+                d: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[FEAT_FLAT](d, s)
+
+            ctx.enqueue_function[accum_rew, accum_rew](
+                d_feat_1d, rew_gi_1d,
+                grid_dim=(DFEAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # d_feat += cont_grad_in
+            @always_inline
+            fn accum_cont(
+                d: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[FEAT_FLAT](d, s)
+
+            ctx.enqueue_function[accum_cont, accum_cont](
+                d_feat_1d, cont_gi_1d,
+                grid_dim=(DFEAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Save d_feat per timestep
+            var all_dfeat_t = LayoutTensor[
+                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.all_d_feat_buf.unsafe_ptr() + t * FEAT_FLAT)
+
+            @always_inline
+            fn copy_dfeat_save(
+                d: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin],
+            ):
+                copy_kernel[FEAT_FLAT](d, s)
+
+            ctx.enqueue_function[copy_dfeat_save, copy_dfeat_save](
+                all_dfeat_t, d_feat_1d,
+                grid_dim=(DFEAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Save post_probs and prior_probs per timestep (already saved in all_post_probs_buf/all_prior_probs_buf below)
+
+            # Store post/prior probs for BPTT KL gradient recomputation
+            comptime PROBS_SLICE = B * STOCH
+            var all_pp_t = LayoutTensor[
+                dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin
+            ](gpu_state.all_post_probs_buf.unsafe_ptr() + t * PROBS_SLICE)
+            var pp_1d = LayoutTensor[
+                dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin
+            ](gpu_state.post_probs_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_pp(
+                d: LayoutTensor[dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[PROBS_SLICE](d, s)
+
+            comptime COPY_PP_BLOCKS = (PROBS_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_pp, copy_pp](
+                all_pp_t, pp_1d,
+                grid_dim=(COPY_PP_BLOCKS,), block_dim=(TPB,),
+            )
+
+            var all_prp_t = LayoutTensor[
+                dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin
+            ](gpu_state.all_prior_probs_buf.unsafe_ptr() + t * PROBS_SLICE)
+            var prp_1d = LayoutTensor[
+                dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin
+            ](gpu_state.prior_probs_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_prp(
+                d: LayoutTensor[dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(PROBS_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[PROBS_SLICE](d, s)
+
+            ctx.enqueue_function[copy_prp, copy_prp](
+                all_prp_t, prp_1d,
+                grid_dim=(COPY_PP_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Swap deter/stoch for next timestep
+            ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
+            ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
+
+        # ── 3. BPTT Backward Loop ─────────────────────────────────────────
+        # Propagate gradients backward through time to train encoder,
+        # projections, and GRU networks.
+        ctx.enqueue_memset(gpu_state.d_recurrent_deter_buf, 0)
+        ctx.enqueue_memset(gpu_state.d_recurrent_stoch_buf, 0)
+
+        for t_rev in range(BL):
+            var t = BL - 1 - t_rev
+
+            # Load saved d_feat[t] -> d_feat_buf
+            comptime BPTT_FEAT_FLAT = B * FEAT
+            var bptt_d_feat = LayoutTensor[
+                dtype, Layout.row_major(BPTT_FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.all_d_feat_buf.unsafe_ptr() + t * BPTT_FEAT_FLAT)
+            var bptt_d_feat_cur = LayoutTensor[
+                dtype, Layout.row_major(BPTT_FEAT_FLAT), MutAnyOrigin
+            ](gpu_state.d_feat_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_copy_dfeat(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_FEAT_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_FEAT_FLAT), MutAnyOrigin],
+            ):
+                copy_kernel[BPTT_FEAT_FLAT](d, s)
+
+            comptime BPTT_DFEAT_BLOCKS = (BPTT_FEAT_FLAT + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_copy_dfeat, bptt_copy_dfeat](
+                bptt_d_feat_cur, bptt_d_feat,
+                grid_dim=(BPTT_DFEAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Split d_feat -> d_deter_feat, d_stoch_feat
+            var bptt_d_feat_2d = LayoutTensor[
+                dtype, Layout.row_major(B, FEAT), MutAnyOrigin
+            ](gpu_state.d_feat_buf.unsafe_ptr())
+            var bptt_d_deter = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_deter_total_buf.unsafe_ptr())
+            var bptt_d_stoch = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_split_feat(
+                dd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                ds: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
+                df: LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin],
+            ):
+                concat_feat_backward_kernel[B, DETER, STOCH](dd, ds, df)
+
+            comptime BPTT_SPLIT_BLOCKS = (B * FEAT + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_split_feat, bptt_split_feat](
+                bptt_d_deter, bptt_d_stoch, bptt_d_feat_2d,
+                grid_dim=(BPTT_SPLIT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Add recurrent stoch gradient from next timestep
+            comptime STOCH_FLAT_SZ = B * STOCH
+            var bptt_d_stoch_1d = LayoutTensor[
+                dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
+            ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
+            var bptt_rec_stoch = LayoutTensor[
+                dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
+            ](gpu_state.d_recurrent_stoch_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_add_rec_stoch(
+                d: LayoutTensor[dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin],
+            ):
+                accumulate_kernel[STOCH_FLAT_SZ](d, s)
+
+            comptime BPTT_STOCH_BLOCKS = (STOCH_FLAT_SZ + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_add_rec_stoch, bptt_add_rec_stoch](
+                bptt_d_stoch_1d, bptt_rec_stoch,
+                grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Compute KL gradients (recompute from saved probs)
+            var bptt_post_probs = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.all_post_probs_buf.unsafe_ptr() + t * B * STOCH)
+            var bptt_prior_probs = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.all_prior_probs_buf.unsafe_ptr() + t * B * STOCH)
+
+            # KL divergence
+            var bptt_kl = LayoutTensor[
                 dtype, Layout.row_major(B), MutAnyOrigin
             ](gpu_state.kl_buf.unsafe_ptr())
 
             @always_inline
-            fn run_kl_div(
+            fn bptt_kl_div(
                 kl: LayoutTensor[dtype, Layout.row_major(B), MutAnyOrigin],
                 pp: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
                 prp: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
             ):
                 kl_divergence_kernel[B, Self.stoch_dim, Self.classes](kl, pp, prp)
 
-            comptime KL_BLOCKS = (B + TPB - 1) // TPB
-            ctx.enqueue_function[run_kl_div, run_kl_div](
-                kl_1d, post_probs_2d, prior_probs_2d,
-                grid_dim=(KL_BLOCKS,), block_dim=(TPB,),
+            comptime BPTT_KL_BLOCKS = (B + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_kl_div, bptt_kl_div](
+                bptt_kl, bptt_post_probs, bptt_prior_probs,
+                grid_dim=(BPTT_KL_BLOCKS,), block_dim=(TPB,),
             )
 
-            # KL gradient
-            var post_grad_out_2d = LayoutTensor[
+            # KL gradient -> d_post_logits_kl, d_prior_logits
+            var bptt_d_post_kl = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.post_grad_out_buf.unsafe_ptr())
-            var prior_grad_out_2d = LayoutTensor[
+            var bptt_d_prior_logits = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.prior_grad_out_buf.unsafe_ptr())
             var kl_free_nats = Scalar[dtype](Self.StateType.RSSMType.FREE_NATS)
@@ -2118,7 +2447,7 @@ struct DreamerV3Agent[
             var kl_inv_batch = Scalar[dtype](1.0 / Float64(B))
 
             @always_inline
-            fn run_kl_grad(
+            fn bptt_kl_grad(
                 gp: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
                 gpr: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
                 pp: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
@@ -2133,39 +2462,388 @@ struct DreamerV3Agent[
                     gp, gpr, pp, prp, kl, fn_, ds, rs, ib,
                 )
 
-            comptime KL_GRAD_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
-            ctx.enqueue_function[run_kl_grad, run_kl_grad](
-                post_grad_out_2d, prior_grad_out_2d,
-                post_probs_2d, prior_probs_2d,
-                kl_1d, kl_free_nats, kl_dyn_scale, kl_rep_scale, kl_inv_batch,
-                grid_dim=(KL_GRAD_BLOCKS,), block_dim=(TPB,),
+            comptime BPTT_KL_GRAD_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_kl_grad, bptt_kl_grad](
+                bptt_d_post_kl, bptt_d_prior_logits,
+                bptt_post_probs, bptt_prior_probs,
+                bptt_kl, kl_free_nats, kl_dyn_scale, kl_rep_scale, kl_inv_batch,
+                grid_dim=(BPTT_KL_GRAD_BLOCKS,), block_dim=(TPB,),
             )
 
-            # Posterior backward
-            var post_grad_in_2d = LayoutTensor[
+            # d_post_logits_total = d_stoch_feat (straight-through) + d_post_logits_kl
+            var bptt_d_post_total = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
+
+            # Copy d_stoch_feat -> d_post_logits_total (straight-through estimator)
+            comptime BPTT_STOCH_SZ = B * STOCH
+            var bptt_dpt_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
+            var bptt_ds_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_copy_st(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+            ):
+                copy_kernel[BPTT_STOCH_SZ](d, s)
+
+            ctx.enqueue_function[bptt_copy_st, bptt_copy_st](
+                bptt_dpt_1d, bptt_ds_1d,
+                grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Add KL posterior gradient
+            var bptt_kl_post_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.post_grad_out_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_add_kl_post(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_STOCH_SZ](d, s)
+
+            ctx.enqueue_function[bptt_add_kl_post, bptt_add_kl_post](
+                bptt_dpt_1d, bptt_kl_post_1d,
+                grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Posterior backward: d_post_logits_total -> d_post_in
+            comptime BPTT_POST_CACHE = Self.StateType.RSSMType.PostModel.CACHE_SIZE
+            var bptt_post_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_POST_CACHE), MutAnyOrigin
+            ](gpu_state.all_post_cache_buf.unsafe_ptr() + t * B * BPTT_POST_CACHE)
+            var bptt_post_grad_in = LayoutTensor[
                 dtype, Layout.row_major(B, DETER + STOCH), MutAnyOrigin
             ](gpu_state.post_grad_in_buf.unsafe_ptr())
-            var post_grads = gpu_state.posterior.grads_view()
+            var bptt_post_grads = gpu_state.posterior.grads_view()
             PostNet.backward_gpu[B](
-                ctx, post_grad_out_2d, post_grad_in_2d,
-                gpu_state.posterior.params_view(), post_cache_2d, post_grads,
+                ctx, bptt_d_post_total, bptt_post_grad_in,
+                gpu_state.posterior.params_view(), bptt_post_cache, bptt_post_grads,
                 gpu_state.ws_posterior,
             )
 
-            # Prior backward
-            var prior_grad_in_2d = LayoutTensor[
+            # Split d_post_in -> d_deter_from_post, d_embed
+            comptime BPTT_POST_IN = DETER + STOCH
+            var bptt_d_deter_from_post = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_deter_from_post_buf.unsafe_ptr())
+            var bptt_d_embed = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.d_embed_bwd_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_split_post_in(
+                dd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                de: LayoutTensor[dtype, Layout.row_major(B, STOCH), MutAnyOrigin],
+                dc: LayoutTensor[dtype, Layout.row_major(B, BPTT_POST_IN), MutAnyOrigin],
+            ):
+                concat_deter_embed_backward_kernel[B, DETER, STOCH](dd, de, dc)
+
+            comptime BPTT_SPLIT_POST_BLOCKS = (B * BPTT_POST_IN + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_split_post_in, bptt_split_post_in](
+                bptt_d_deter_from_post, bptt_d_embed, bptt_post_grad_in,
+                grid_dim=(BPTT_SPLIT_POST_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Prior backward: d_prior_logits -> d_deter_from_prior
+            comptime BPTT_PRIOR_CACHE = Self.StateType.RSSMType.PriorModel.CACHE_SIZE
+            var bptt_prior_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_PRIOR_CACHE), MutAnyOrigin
+            ](gpu_state.all_prior_cache_buf.unsafe_ptr() + t * B * BPTT_PRIOR_CACHE)
+            var bptt_prior_grad_in = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.prior_grad_in_buf.unsafe_ptr())
-            var prior_grads = gpu_state.prior.grads_view()
+            var bptt_prior_grads = gpu_state.prior.grads_view()
             PriorNet.backward_gpu[B](
-                ctx, prior_grad_out_2d, prior_grad_in_2d,
-                gpu_state.prior.params_view(), prior_cache_2d, prior_grads,
+                ctx, bptt_d_prior_logits, bptt_prior_grad_in,
+                gpu_state.prior.params_view(), bptt_prior_cache, bptt_prior_grads,
                 gpu_state.ws_prior,
             )
 
-            # Swap deter/stoch for next timestep
-            ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
-            ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
+            # Encoder backward: d_embed -> d_symlog_obs (discarded)
+            comptime BPTT_ENC_CACHE = Self.StateType.RSSMType.EncModel.CACHE_SIZE
+            var bptt_enc_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_ENC_CACHE), MutAnyOrigin
+            ](gpu_state.all_enc_cache_buf.unsafe_ptr() + t * B * BPTT_ENC_CACHE)
+            var bptt_d_symlog = LayoutTensor[
+                dtype, Layout.row_major(B, OBS), MutAnyOrigin
+            ](gpu_state.d_symlog_obs_bwd_buf.unsafe_ptr())
+            var bptt_enc_grads = gpu_state.encoder.grads_view()
+            EncNet.backward_gpu[B](
+                ctx, bptt_d_embed, bptt_d_symlog,
+                gpu_state.encoder.params_view(), bptt_enc_cache, bptt_enc_grads,
+                gpu_state.ws_encoder,
+            )
+
+            # Accumulate d_deter_total = d_deter_feat + d_deter_from_post + d_deter_from_prior + d_recurrent
+            comptime BPTT_DETER_FLAT = B * DETER
+            var bptt_dd_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_deter_total_buf.unsafe_ptr())
+            var bptt_dd_post_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_deter_from_post_buf.unsafe_ptr())
+            var bptt_dd_prior_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.prior_grad_in_buf.unsafe_ptr())
+            var bptt_dd_rec_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_recurrent_deter_buf.unsafe_ptr())
+
+            comptime BPTT_DD_BLOCKS = (BPTT_DETER_FLAT + TPB - 1) // TPB
+
+            # d_deter_total already has d_deter_feat from split; add the rest
+            @always_inline
+            fn bptt_add_dd_post(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_add_dd_post, bptt_add_dd_post](
+                bptt_dd_1d, bptt_dd_post_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            @always_inline
+            fn bptt_add_dd_prior(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_add_dd_prior, bptt_add_dd_prior](
+                bptt_dd_1d, bptt_dd_prior_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            @always_inline
+            fn bptt_add_dd_rec(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_add_dd_rec, bptt_add_dd_rec](
+                bptt_dd_1d, bptt_dd_rec_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # GRU gate backward: d_deter_total -> d_gate_out, d_prev_deter_gru
+            var bptt_d_gate = LayoutTensor[
+                dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
+            ](gpu_state.d_gate_out_bwd_buf.unsafe_ptr())
+            var bptt_d_prev_deter_gru = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_prev_deter_gru_buf.unsafe_ptr())
+            var bptt_prev_deter = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.all_prev_deter_buf.unsafe_ptr() + t * B * DETER)
+            var bptt_gate_out = LayoutTensor[
+                dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
+            ](gpu_state.all_gate_out_buf.unsafe_ptr() + t * B * 3 * DETER)
+
+            @always_inline
+            fn bptt_gru_bwd(
+                dg: LayoutTensor[dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin],
+                dpd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                dnd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                pd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                go: LayoutTensor[dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin],
+            ):
+                gru_gate_backward_kernel[B, DETER](dg, dpd, dnd, pd, go)
+
+            comptime BPTT_GRU_BLOCKS = (B * DETER + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_gru_bwd, bptt_gru_bwd](
+                bptt_d_gate, bptt_d_prev_deter_gru, bptt_d_deter, bptt_prev_deter, bptt_gate_out,
+                grid_dim=(BPTT_GRU_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # GGNet backward: d_gate_out -> d_hidden_out
+            comptime BPTT_GG_CACHE = Self.StateType.RSSMType.GRUGateModel.CACHE_SIZE
+            var bptt_gg_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_GG_CACHE), MutAnyOrigin
+            ](gpu_state.all_gru_gates_cache_buf.unsafe_ptr() + t * B * BPTT_GG_CACHE)
+            var bptt_d_hidden = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_hidden_out_bwd_buf.unsafe_ptr())
+            var bptt_gg_grads = gpu_state.gru_gates.grads_view()
+            GGNet.backward_gpu[B](
+                ctx, bptt_d_gate, bptt_d_hidden,
+                gpu_state.gru_gates.params_view(), bptt_gg_cache, bptt_gg_grads,
+                gpu_state.ws_gru_gates,
+            )
+
+            # GHNet backward: d_hidden_out -> d_concat
+            comptime BPTT_GH_CACHE = Self.StateType.RSSMType.GRUHiddenModel.CACHE_SIZE
+            comptime GRU_IN = DETER + 3 * HID
+            var bptt_gh_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_GH_CACHE), MutAnyOrigin
+            ](gpu_state.all_gru_hidden_cache_buf.unsafe_ptr() + t * B * BPTT_GH_CACHE)
+            var bptt_d_concat = LayoutTensor[
+                dtype, Layout.row_major(B, GRU_IN), MutAnyOrigin
+            ](gpu_state.d_concat_bwd_buf.unsafe_ptr())
+            var bptt_gh_grads = gpu_state.gru_hidden.grads_view()
+            GHNet.backward_gpu[B](
+                ctx, bptt_d_hidden, bptt_d_concat,
+                gpu_state.gru_hidden.params_view(), bptt_gh_cache, bptt_gh_grads,
+                gpu_state.ws_gru_hidden,
+            )
+
+            # Split d_concat -> d_prev_deter_concat, d_proj_d, d_proj_s, d_proj_a
+            var bptt_d_prev_deter_concat = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_deter_from_post_buf.unsafe_ptr())  # reuse buffer
+            var bptt_d_proj_d = LayoutTensor[
+                dtype, Layout.row_major(B, HID), MutAnyOrigin
+            ](gpu_state.d_proj_d_bwd_buf.unsafe_ptr())
+            var bptt_d_proj_s = LayoutTensor[
+                dtype, Layout.row_major(B, HID), MutAnyOrigin
+            ](gpu_state.d_proj_s_bwd_buf.unsafe_ptr())
+            var bptt_d_proj_a = LayoutTensor[
+                dtype, Layout.row_major(B, HID), MutAnyOrigin
+            ](gpu_state.d_proj_a_bwd_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_split_concat(
+                dd: LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin],
+                dpd: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
+                dps: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
+                dpa: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
+                dc: LayoutTensor[dtype, Layout.row_major(B, GRU_IN), MutAnyOrigin],
+            ):
+                concat_gru_input_backward_kernel[B, DETER, HID](dd, dpd, dps, dpa, dc)
+
+            comptime BPTT_SPLIT_CONCAT_BLOCKS = (B * GRU_IN + TPB - 1) // TPB
+            ctx.enqueue_function[bptt_split_concat, bptt_split_concat](
+                bptt_d_prev_deter_concat, bptt_d_proj_d, bptt_d_proj_s, bptt_d_proj_a, bptt_d_concat,
+                grid_dim=(BPTT_SPLIT_CONCAT_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # DeterProj backward: d_proj_d -> d_prev_deter_dproj
+            comptime BPTT_DPROJ_CACHE = Self.StateType.RSSMType.DeterProj.CACHE_SIZE
+            var bptt_dproj_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_DPROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_dproj_cache_buf.unsafe_ptr() + t * B * BPTT_DPROJ_CACHE)
+            var bptt_d_prev_deter_dproj = LayoutTensor[
+                dtype, Layout.row_major(B, DETER), MutAnyOrigin
+            ](gpu_state.d_prev_deter_dproj_buf.unsafe_ptr())
+            var bptt_dproj_grads = gpu_state.deter_proj.grads_view()
+            DProjNet.backward_gpu[B](
+                ctx, bptt_d_proj_d, bptt_d_prev_deter_dproj,
+                gpu_state.deter_proj.params_view(), bptt_dproj_cache, bptt_dproj_grads,
+                gpu_state.ws_deter_proj,
+            )
+
+            # StochProj backward: d_proj_s -> d_prev_stoch
+            comptime BPTT_SPROJ_CACHE = Self.StateType.RSSMType.StochProj.CACHE_SIZE
+            var bptt_sproj_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_SPROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_sproj_cache_buf.unsafe_ptr() + t * B * BPTT_SPROJ_CACHE)
+            var bptt_d_prev_stoch = LayoutTensor[
+                dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+            ](gpu_state.d_prev_stoch_bwd_buf.unsafe_ptr())
+            var bptt_sproj_grads = gpu_state.stoch_proj.grads_view()
+            SProjNet.backward_gpu[B](
+                ctx, bptt_d_proj_s, bptt_d_prev_stoch,
+                gpu_state.stoch_proj.params_view(), bptt_sproj_cache, bptt_sproj_grads,
+                gpu_state.ws_stoch_proj,
+            )
+
+            # ActionProj backward: d_proj_a -> d_prev_action (discarded)
+            comptime BPTT_APROJ_CACHE = Self.StateType.RSSMType.ActionProj.CACHE_SIZE
+            var bptt_aproj_cache = LayoutTensor[
+                dtype, Layout.row_major(B, BPTT_APROJ_CACHE), MutAnyOrigin
+            ](gpu_state.all_aproj_cache_buf.unsafe_ptr() + t * B * BPTT_APROJ_CACHE)
+            var bptt_d_prev_action = LayoutTensor[
+                dtype, Layout.row_major(B, ACT), MutAnyOrigin
+            ](gpu_state.d_prev_action_bwd_buf.unsafe_ptr())
+            var bptt_aproj_grads = gpu_state.action_proj.grads_view()
+            AProjNet.backward_gpu[B](
+                ctx, bptt_d_proj_a, bptt_d_prev_action,
+                gpu_state.action_proj.params_view(), bptt_aproj_cache, bptt_aproj_grads,
+                gpu_state.ws_action_proj,
+            )
+
+            # Compute recurrent gradients for next iteration (t-1)
+            # d_recurrent_deter = d_prev_deter_gru + d_prev_deter_concat + d_prev_deter_dproj
+            var bptt_rec_deter = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_recurrent_deter_buf.unsafe_ptr())
+            var bptt_dpd_gru_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_prev_deter_gru_buf.unsafe_ptr())
+            var bptt_dpd_concat_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_deter_from_post_buf.unsafe_ptr())  # reused for concat split
+            var bptt_dpd_dproj_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin
+            ](gpu_state.d_prev_deter_dproj_buf.unsafe_ptr())
+
+            # Copy d_prev_deter_gru -> d_recurrent_deter
+            @always_inline
+            fn bptt_copy_rec_d(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                copy_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_copy_rec_d, bptt_copy_rec_d](
+                bptt_rec_deter, bptt_dpd_gru_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # + d_prev_deter_concat
+            @always_inline
+            fn bptt_add_concat_d(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_add_concat_d, bptt_add_concat_d](
+                bptt_rec_deter, bptt_dpd_concat_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # + d_prev_deter_dproj
+            @always_inline
+            fn bptt_add_dproj_d(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+            ):
+                accumulate_kernel[BPTT_DETER_FLAT](d, s)
+
+            ctx.enqueue_function[bptt_add_dproj_d, bptt_add_dproj_d](
+                bptt_rec_deter, bptt_dpd_dproj_1d,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # d_recurrent_stoch = d_prev_stoch (from StochProj backward)
+            var bptt_rec_stoch_dst = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.d_recurrent_stoch_buf.unsafe_ptr())
+            var bptt_dpstoch_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.d_prev_stoch_bwd_buf.unsafe_ptr())
+
+            @always_inline
+            fn bptt_copy_rec_s(
+                d: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+            ):
+                copy_kernel[BPTT_STOCH_SZ](d, s)
+
+            ctx.enqueue_function[bptt_copy_rec_s, bptt_copy_rec_s](
+                bptt_rec_stoch_dst, bptt_dpstoch_1d,
+                grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
+            )
 
         # ── 4. World model gradient clipping + optimizer step ──────────────
         var grad_norm_max = Scalar[dtype](self.max_grad_norm)

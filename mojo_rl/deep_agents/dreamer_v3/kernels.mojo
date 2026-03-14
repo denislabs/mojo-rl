@@ -153,6 +153,198 @@ fn gru_gate_kernel[
     new_deter[b, i] = update_val * cand_val + (one - update_val) * pd
 
 
+@always_inline
+fn gru_gate_backward_kernel[
+    BATCH: Int,
+    DETER: Int,
+](
+    d_gate_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 3 * DETER), MutAnyOrigin
+    ],
+    d_prev_deter: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+    ],
+    d_new_deter: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+    ],
+    prev_deter: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+    ],
+    gate_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 3 * DETER), MutAnyOrigin
+    ],
+):
+    """Backward through DreamerV3 GRU gating.
+
+    Recomputes forward activations from saved gate_out and prev_deter,
+    then computes gradients w.r.t. gate_out and prev_deter.
+
+    Forward:
+        reset = sigmoid(gate[0:D])
+        cand = tanh(reset * gate[D:2D])
+        update = sigmoid(gate[2D:3D] - 1)
+        new_deter = update * cand + (1 - update) * prev_deter
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * DETER:
+        return
+    var b = tid // DETER
+    var i = tid % DETER
+
+    var one = S(1.0)
+    var d_nd = _rd2[BATCH, DETER](d_new_deter, b, i)
+    var pd = _rd2[BATCH, DETER](prev_deter, b, i)
+
+    # Recompute forward activations (same clamping as forward kernel)
+    var reset_logit = _rd2[BATCH, 3 * DETER](gate_out, b, i)
+    if reset_logit > S(15.0):
+        reset_logit = S(15.0)
+    if reset_logit < S(-15.0):
+        reset_logit = S(-15.0)
+    var reset_val = one / (one + exp(-reset_logit))
+
+    var cand_logit = _rd2[BATCH, 3 * DETER](gate_out, b, DETER + i)
+    var rc = reset_val * cand_logit
+    if rc > S(15.0):
+        rc = S(15.0)
+    if rc < S(-15.0):
+        rc = S(-15.0)
+    var exp_rc = exp(rc)
+    var exp_neg_rc = exp(-rc)
+    var cand_val = (exp_rc - exp_neg_rc) / (exp_rc + exp_neg_rc)
+
+    var update_logit = _rd2[BATCH, 3 * DETER](gate_out, b, 2 * DETER + i)
+    var update_in = update_logit - one
+    if update_in > S(15.0):
+        update_in = S(15.0)
+    if update_in < S(-15.0):
+        update_in = S(-15.0)
+    var update_val = one / (one + exp(-update_in))
+
+    # Backward through: new_deter = update * cand + (1 - update) * prev_deter
+    var d_update = d_nd * (cand_val - pd)
+    var d_cand = d_nd * update_val
+    d_prev_deter[b, i] = d_nd * (one - update_val)
+
+    # Backward through update gate sigmoid: d_logit = d_output * sig * (1 - sig)
+    d_gate_out[b, 2 * DETER + i] = d_update * update_val * (one - update_val)
+
+    # Backward through tanh: d_rc = d_cand * (1 - cand^2)
+    var d_rc = d_cand * (one - cand_val * cand_val)
+
+    # Backward through rc = reset * cand_logit
+    var d_reset = d_rc * cand_logit
+    d_gate_out[b, DETER + i] = d_rc * reset_val
+
+    # Backward through reset sigmoid
+    d_gate_out[b, i] = d_reset * reset_val * (one - reset_val)
+
+
+# =============================================================================
+# Accumulate Kernel
+# =============================================================================
+
+
+@always_inline
+fn accumulate_kernel[
+    SIZE: Int,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+):
+    """Elementwise dst += src."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+    dst[i] = rebind[S](dst[i]) + rebind[S](src[i])
+
+
+# =============================================================================
+# Concat Backward Kernels
+# =============================================================================
+
+
+@always_inline
+fn concat_feat_backward_kernel[
+    BATCH: Int,
+    DETER: Int,
+    STOCH: Int,
+](
+    d_deter: LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin],
+    d_stoch: LayoutTensor[dtype, Layout.row_major(BATCH, STOCH), MutAnyOrigin],
+    d_feat: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER + STOCH), MutAnyOrigin
+    ],
+):
+    """Split d_feat gradient into d_deter and d_stoch (overwrite)."""
+    comptime FEAT = DETER + STOCH
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * FEAT:
+        return
+    var b = tid // FEAT
+    var j = tid % FEAT
+    if j < DETER:
+        d_deter[b, j] = _rd2[BATCH, FEAT](d_feat, b, j)
+    else:
+        d_stoch[b, j - DETER] = _rd2[BATCH, FEAT](d_feat, b, j)
+
+
+@always_inline
+fn concat_deter_embed_backward_kernel[
+    BATCH: Int,
+    DETER: Int,
+    STOCH: Int,
+](
+    d_deter: LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin],
+    d_embed: LayoutTensor[dtype, Layout.row_major(BATCH, STOCH), MutAnyOrigin],
+    d_concat: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER + STOCH), MutAnyOrigin
+    ],
+):
+    """Split d_concat gradient into d_deter and d_embed (overwrite)."""
+    comptime TOTAL = DETER + STOCH
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * TOTAL:
+        return
+    var b = tid // TOTAL
+    var j = tid % TOTAL
+    if j < DETER:
+        d_deter[b, j] = _rd2[BATCH, TOTAL](d_concat, b, j)
+    else:
+        d_embed[b, j - DETER] = _rd2[BATCH, TOTAL](d_concat, b, j)
+
+
+@always_inline
+fn concat_gru_input_backward_kernel[
+    BATCH: Int,
+    DETER: Int,
+    HIDDEN: Int,
+](
+    d_deter: LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin],
+    d_proj_d: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
+    d_proj_s: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
+    d_proj_a: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
+    d_concat: LayoutTensor[
+        dtype, Layout.row_major(BATCH, DETER + 3 * HIDDEN), MutAnyOrigin
+    ],
+):
+    """Split GRU input gradient into d_deter, d_proj_d, d_proj_s, d_proj_a (overwrite)."""
+    comptime TOTAL = DETER + 3 * HIDDEN
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * TOTAL:
+        return
+    var b = tid // TOTAL
+    var j = tid % TOTAL
+    if j < DETER:
+        d_deter[b, j] = _rd2[BATCH, TOTAL](d_concat, b, j)
+    elif j < DETER + HIDDEN:
+        d_proj_d[b, j - DETER] = _rd2[BATCH, TOTAL](d_concat, b, j)
+    elif j < DETER + 2 * HIDDEN:
+        d_proj_s[b, j - DETER - HIDDEN] = _rd2[BATCH, TOTAL](d_concat, b, j)
+    else:
+        d_proj_a[b, j - DETER - 2 * HIDDEN] = _rd2[BATCH, TOTAL](d_concat, b, j)
+
+
 # =============================================================================
 # Concatenation
 # =============================================================================

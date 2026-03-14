@@ -669,6 +669,44 @@ struct DreamerV3GPUState[
     var prior_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
     var prior_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * DETER]
 
+    # ── BPTT per-timestep caches (BL * B * CACHE_SIZE) ────────────────────
+    var all_enc_cache_buf: DeviceBuffer[dtype]
+    var all_dproj_cache_buf: DeviceBuffer[dtype]
+    var all_sproj_cache_buf: DeviceBuffer[dtype]
+    var all_aproj_cache_buf: DeviceBuffer[dtype]
+    var all_gru_hidden_cache_buf: DeviceBuffer[dtype]
+    var all_gru_gates_cache_buf: DeviceBuffer[dtype]
+    var all_post_cache_buf: DeviceBuffer[dtype]
+    var all_prior_cache_buf: DeviceBuffer[dtype]
+
+    # ── BPTT per-timestep saved activations ───────────────────────────────
+    var all_gate_out_buf: DeviceBuffer[dtype]  # [BL * B * 3*DETER]
+    var all_prev_deter_buf: DeviceBuffer[dtype]  # [BL * B * DETER]
+    var all_symlog_obs_buf: DeviceBuffer[dtype]  # [BL * B * OBS]
+    var all_norm_action_buf: DeviceBuffer[dtype]  # [BL * B * ACT]
+    var all_d_feat_buf: DeviceBuffer[dtype]  # [BL * B * FEAT]
+
+    # ── BPTT gradient scratch (reused across backward timesteps) ──────────
+    var d_feat_buf: DeviceBuffer[dtype]  # [B * FEAT]
+    var d_deter_total_buf: DeviceBuffer[dtype]  # [B * DETER]
+    var d_stoch_feat_buf: DeviceBuffer[dtype]  # [B * STOCH]
+    var d_gate_out_bwd_buf: DeviceBuffer[dtype]  # [B * 3*DETER]
+    var d_prev_deter_gru_buf: DeviceBuffer[dtype]  # [B * DETER]
+    var d_concat_bwd_buf: DeviceBuffer[dtype]  # [B * (DETER+3*HIDDEN)]
+    var d_proj_d_bwd_buf: DeviceBuffer[dtype]  # [B * HIDDEN]
+    var d_proj_s_bwd_buf: DeviceBuffer[dtype]  # [B * HIDDEN]
+    var d_proj_a_bwd_buf: DeviceBuffer[dtype]  # [B * HIDDEN]
+    var d_hidden_out_bwd_buf: DeviceBuffer[dtype]  # [B * DETER]
+    var d_embed_bwd_buf: DeviceBuffer[dtype]  # [B * STOCH]
+    var d_symlog_obs_bwd_buf: DeviceBuffer[dtype]  # [B * OBS]
+    var d_prev_deter_dproj_buf: DeviceBuffer[dtype]  # [B * DETER]
+    var d_prev_stoch_bwd_buf: DeviceBuffer[dtype]  # [B * STOCH]
+    var d_prev_action_bwd_buf: DeviceBuffer[dtype]  # [B * ACT]
+    var d_recurrent_deter_buf: DeviceBuffer[dtype]  # [B * DETER]
+    var d_recurrent_stoch_buf: DeviceBuffer[dtype]  # [B * STOCH]
+    var d_post_logits_total_buf: DeviceBuffer[dtype]  # [B * STOCH]
+    var d_deter_from_post_buf: DeviceBuffer[dtype]  # [B * DETER]
+
     # ── Network workspace buffers ────────────────────────────────────────
     # Sized for the maximum batch dimension (IB for imagination phase)
     var ws_encoder: DeviceBuffer[dtype]
@@ -845,6 +883,44 @@ struct DreamerV3GPUState[
         self.prior_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
         self.prior_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
 
+        # ── BPTT per-timestep caches ──────────────────────────────────────
+        self.all_enc_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.EncModel.CACHE_SIZE)
+        self.all_dproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.DeterProj.CACHE_SIZE)
+        self.all_sproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.StochProj.CACHE_SIZE)
+        self.all_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.ActionProj.CACHE_SIZE)
+        self.all_gru_hidden_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.GRUHiddenModel.CACHE_SIZE)
+        self.all_gru_gates_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.GRUGateModel.CACHE_SIZE)
+        self.all_post_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE)
+        self.all_prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE)
+
+        # ── BPTT per-timestep saved activations ──────────────────────────
+        self.all_gate_out_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * 3 * Self.DETER)
+        self.all_prev_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.DETER)
+        self.all_symlog_obs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.OBS)
+        self.all_norm_action_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.ACT)
+        self.all_d_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.FEAT)
+
+        # ── BPTT gradient scratch ─────────────────────────────────────────
+        self.d_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.d_deter_total_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_stoch_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.d_gate_out_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * 3 * Self.DETER)
+        self.d_prev_deter_gru_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_concat_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + 3 * Self.HIDDEN))
+        self.d_proj_d_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.d_proj_s_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.d_proj_a_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
+        self.d_hidden_out_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_embed_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.d_symlog_obs_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.d_prev_deter_dproj_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_prev_stoch_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.d_prev_action_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
+        self.d_recurrent_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_recurrent_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.d_post_logits_total_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.d_deter_from_post_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+
         # ── Network workspace buffers ────────────────────────────────────
         # Use IB (imag batch) as max batch size for workspace allocation
         comptime EncNet = Network[Self.RSSMType.EncModel, Self.WMOpt]
@@ -1019,6 +1095,38 @@ struct DreamerV3GPUState[
         self.prior_cache_buf = take.prior_cache_buf^
         self.prior_grad_out_buf = take.prior_grad_out_buf^
         self.prior_grad_in_buf = take.prior_grad_in_buf^
+        self.all_enc_cache_buf = take.all_enc_cache_buf^
+        self.all_dproj_cache_buf = take.all_dproj_cache_buf^
+        self.all_sproj_cache_buf = take.all_sproj_cache_buf^
+        self.all_aproj_cache_buf = take.all_aproj_cache_buf^
+        self.all_gru_hidden_cache_buf = take.all_gru_hidden_cache_buf^
+        self.all_gru_gates_cache_buf = take.all_gru_gates_cache_buf^
+        self.all_post_cache_buf = take.all_post_cache_buf^
+        self.all_prior_cache_buf = take.all_prior_cache_buf^
+        self.all_gate_out_buf = take.all_gate_out_buf^
+        self.all_prev_deter_buf = take.all_prev_deter_buf^
+        self.all_symlog_obs_buf = take.all_symlog_obs_buf^
+        self.all_norm_action_buf = take.all_norm_action_buf^
+        self.all_d_feat_buf = take.all_d_feat_buf^
+        self.d_feat_buf = take.d_feat_buf^
+        self.d_deter_total_buf = take.d_deter_total_buf^
+        self.d_stoch_feat_buf = take.d_stoch_feat_buf^
+        self.d_gate_out_bwd_buf = take.d_gate_out_bwd_buf^
+        self.d_prev_deter_gru_buf = take.d_prev_deter_gru_buf^
+        self.d_concat_bwd_buf = take.d_concat_bwd_buf^
+        self.d_proj_d_bwd_buf = take.d_proj_d_bwd_buf^
+        self.d_proj_s_bwd_buf = take.d_proj_s_bwd_buf^
+        self.d_proj_a_bwd_buf = take.d_proj_a_bwd_buf^
+        self.d_hidden_out_bwd_buf = take.d_hidden_out_bwd_buf^
+        self.d_embed_bwd_buf = take.d_embed_bwd_buf^
+        self.d_symlog_obs_bwd_buf = take.d_symlog_obs_bwd_buf^
+        self.d_prev_deter_dproj_buf = take.d_prev_deter_dproj_buf^
+        self.d_prev_stoch_bwd_buf = take.d_prev_stoch_bwd_buf^
+        self.d_prev_action_bwd_buf = take.d_prev_action_bwd_buf^
+        self.d_recurrent_deter_buf = take.d_recurrent_deter_buf^
+        self.d_recurrent_stoch_buf = take.d_recurrent_stoch_buf^
+        self.d_post_logits_total_buf = take.d_post_logits_total_buf^
+        self.d_deter_from_post_buf = take.d_deter_from_post_buf^
         self.ws_encoder = take.ws_encoder^
         self.ws_posterior = take.ws_posterior^
         self.ws_prior = take.ws_prior^
