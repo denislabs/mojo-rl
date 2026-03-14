@@ -3623,6 +3623,395 @@ struct DreamerV3Agent[
         ctx.synchronize()
         self.train_step_count += 1
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Training Loop (CPU)
+    # ══════════════════════════════════════════════════════════════════════
+
+    fn train[
+        E: BoxContinuousActionEnv,
+    ](
+        mut self,
+        mut env: E,
+        total_timesteps: Int = 1000000,
+        train_every: Int = 5,
+        seed_episodes: Int = 5,
+        print_every: Int = 10,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
+    ) -> TrainingMetrics:
+        """Train DreamerV3 on a continuous control environment (CPU).
+
+        Alternates between collecting environment data and training
+        the world model + actor-critic from replay.
+
+        Args:
+            env: Environment implementing BoxContinuousActionEnv.
+            total_timesteps: Total environment steps (default: 1M).
+            train_every: Steps between training updates (default: 5).
+            seed_episodes: Random exploration episodes before training.
+            print_every: Episodes between progress prints (default: 10).
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
+
+        Returns:
+            TrainingMetrics with episode rewards and statistics.
+        """
+        self.logger = logger
+        self.diag_every = diag_every
+        comptime ACT = Self.action_dim
+
+        var metrics = TrainingMetrics(algorithm_name="DreamerV3")
+        var episode_reward = Float64(0.0)
+        var episode_steps = 0
+        var episode_count = 0
+        var total_env_steps = 0
+
+        # ── Seed with random episodes ────────────────────────────────
+        _ = env.reset()
+        for _ in range(seed_episodes):
+            var done = False
+            while not done:
+                var obs = _to_dtype_list(env.get_obs_list())
+                var action = List[Scalar[dtype]](capacity=ACT)
+                for _ in range(ACT):
+                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
+                var result = env.step_continuous_vec[dtype](action)
+                var reward = result[1]
+                done = result[2]
+                self.observe(obs, action, Float64(reward), done)
+                total_env_steps += 1
+                if done:
+                    _ = env.reset()
+
+        # ── Main training loop ───────────────────────────────────────
+        _ = env.reset()
+        self.reset_episode()
+
+        for step in range(total_timesteps):
+            var obs = _to_dtype_list(env.get_obs_list())
+
+            # Select action
+            var action: List[Scalar[dtype]]
+            if total_env_steps < self.warmup_steps:
+                action = List[Scalar[dtype]](capacity=ACT)
+                for _ in range(ACT):
+                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
+            else:
+                action = self.select_action(obs, training=True)
+
+            # Environment step
+            var result = env.step_continuous_vec[dtype](action)
+            var reward = result[1]
+            var done = result[2]
+
+            self.observe(obs, action, Float64(reward), done)
+            episode_reward += Float64(reward)
+            episode_steps += 1
+            total_env_steps += 1
+            self.total_steps += 1
+
+            if done:
+                episode_count += 1
+                metrics.log_episode[dtype](
+                    episode_count,
+                    Scalar[dtype](episode_reward),
+                    episode_steps,
+                    0.0,
+                )
+
+                # Log episode metrics
+                if self.logger:
+                    try:
+                        _log(
+                            self.logger,
+                            "episode_reward",
+                            episode_reward,
+                            total_env_steps,
+                        )
+                        _log(
+                            self.logger,
+                            "episodes",
+                            Float64(episode_count),
+                            total_env_steps,
+                        )
+                        _log(
+                            self.logger,
+                            "train_steps",
+                            Float64(self.train_step_count),
+                            total_env_steps,
+                        )
+                    except:
+                        pass
+
+                if episode_count % print_every == 0:
+                    clear_progress_bar()
+                    print(
+                        "Episode "
+                        + String(episode_count)
+                        + " | Reward: "
+                        + (
+                            String("NaN")
+                            if episode_reward != episode_reward
+                            else String(Int(episode_reward))
+                        )
+                        + " | Steps: "
+                        + String(episode_steps)
+                        + " | Train updates: "
+                        + String(self.train_step_count)
+                        + " | Buffer: "
+                        + String(self.state.buffer.len())
+                    )
+
+                episode_reward = 0.0
+                episode_steps = 0
+                _ = env.reset()
+                self.reset_episode()
+
+            # Train
+            if step % train_every == 0 and self.state.is_ready():
+                var loss = self.update()
+
+            # Progress bar
+            if step % 100 == 0:
+                print_progress_bar(
+                    step,
+                    total_timesteps,
+                    self.train_step_count,
+                    "DreamerV3",
+                )
+
+        clear_progress_bar()
+        print(
+            "Training complete. Episodes: "
+            + String(episode_count)
+            + " | Total steps: "
+            + String(total_env_steps)
+            + " | Train updates: "
+            + String(self.train_step_count)
+        )
+        return metrics^
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Training Loop (GPU)
+    # ══════════════════════════════════════════════════════════════════════
+
+    fn train_gpu[
+        E: BoxContinuousActionEnv,
+    ](
+        mut self,
+        mut env: E,
+        ctx: DeviceContext,
+        total_timesteps: Int = 1000000,
+        train_every: Int = 5,
+        seed_episodes: Int = 5,
+        print_every: Int = 10,
+        sync_every: Int = 1000,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
+    ) raises -> TrainingMetrics:
+        """Train DreamerV3 with GPU-accelerated training steps.
+
+        Data collection runs on CPU (single env). Batch training runs on GPU.
+        Periodically syncs GPU weights back to CPU for action selection.
+
+        Args:
+            env: Environment implementing BoxContinuousActionEnv.
+            ctx: GPU device context.
+            total_timesteps: Total environment steps.
+            train_every: Steps between training updates.
+            seed_episodes: Random exploration episodes before training.
+            print_every: Episodes between progress prints.
+            sync_every: Training steps between GPU->CPU weight sync.
+            logger: Optional metrics logger pointer.
+            diag_every: Log diagnostics every N train steps (0 = every step).
+
+        Returns:
+            TrainingMetrics with episode rewards and statistics.
+        """
+        self.logger = logger
+        self.diag_every = diag_every
+        comptime BL = Self.batch_length
+        comptime B = Self.batch_size
+        comptime ACT = Self.action_dim
+        comptime OBS = Self.obs_dim
+
+        var metrics = TrainingMetrics(algorithm_name="DreamerV3-GPU")
+        var episode_reward = Float64(0.0)
+        var episode_steps = 0
+        var episode_count = 0
+        var total_env_steps = 0
+
+        # Allocate GPU state and upload initial weights
+        var gpu_state = self.make_gpu_state(ctx)
+        self.upload_to_gpu(gpu_state, ctx)
+        ctx.synchronize()
+
+        # ── Seed with random episodes ────────────────────────────────
+        _ = env.reset()
+        for _ in range(seed_episodes):
+            var done = False
+            while not done:
+                var obs = _to_dtype_list(env.get_obs_list())
+                var action = List[Scalar[dtype]](capacity=ACT)
+                for _ in range(ACT):
+                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
+                var result = env.step_continuous_vec[dtype](action)
+                var reward = result[1]
+                done = result[2]
+                self.observe(obs, action, Float64(reward), done)
+                total_env_steps += 1
+                if done:
+                    _ = env.reset()
+
+        # ── Main training loop ───────────────────────────────────────
+        _ = env.reset()
+        self.reset_episode()
+
+        for step in range(total_timesteps):
+            var obs = _to_dtype_list(env.get_obs_list())
+
+            # Select action (CPU, using CPU weights)
+            var action: List[Scalar[dtype]]
+            if total_env_steps < self.warmup_steps:
+                action = List[Scalar[dtype]](capacity=ACT)
+                for _ in range(ACT):
+                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
+            else:
+                action = self.select_action(obs, training=True)
+
+            # Environment step
+            var result = env.step_continuous_vec[dtype](action)
+            var reward = result[1]
+            var done = result[2]
+
+            self.observe(obs, action, Float64(reward), done)
+            episode_reward += Float64(reward)
+            episode_steps += 1
+            total_env_steps += 1
+
+            if done:
+                episode_count += 1
+                metrics.log_episode[dtype](
+                    episode_count,
+                    Scalar[dtype](episode_reward),
+                    episode_steps,
+                    0.0,
+                )
+
+                # Log episode metrics
+                if self.logger:
+                    try:
+                        _log(
+                            self.logger,
+                            "episode_reward",
+                            episode_reward,
+                            total_env_steps,
+                        )
+                        _log(
+                            self.logger,
+                            "episodes",
+                            Float64(episode_count),
+                            total_env_steps,
+                        )
+                        _log(
+                            self.logger,
+                            "train_steps",
+                            Float64(self.train_step_count),
+                            total_env_steps,
+                        )
+                    except:
+                        pass
+
+                if episode_count % print_every == 0:
+                    clear_progress_bar()
+                    print(
+                        "Episode "
+                        + String(episode_count)
+                        + " | Reward: "
+                        + (
+                            String("NaN")
+                            if episode_reward != episode_reward
+                            else String(Int(episode_reward))
+                        )
+                        + " | Steps: "
+                        + String(episode_steps)
+                        + " | Train updates: "
+                        + String(self.train_step_count)
+                        + " | Buffer: "
+                        + String(self.state.buffer.len())
+                    )
+
+                episode_reward = 0.0
+                episode_steps = 0
+                _ = env.reset()
+                self.reset_episode()
+
+            # Train on GPU
+            if step % train_every == 0 and self.state.is_ready():
+                # Sample batch on CPU
+                var batch_obs = List[Scalar[DType.float32]](
+                    capacity=B * (BL + 1) * OBS
+                )
+                var batch_actions = List[Scalar[DType.float32]](
+                    capacity=B * BL * ACT
+                )
+                var batch_rewards = List[Scalar[DType.float32]](
+                    capacity=B * BL
+                )
+                var batch_dones = List[Scalar[DType.float32]](
+                    capacity=B * BL
+                )
+                for _ in range(B * (BL + 1) * OBS):
+                    batch_obs.append(Scalar[DType.float32](0))
+                for _ in range(B * BL * ACT):
+                    batch_actions.append(Scalar[DType.float32](0))
+                for _ in range(B * BL):
+                    batch_rewards.append(Scalar[DType.float32](0))
+                    batch_dones.append(Scalar[DType.float32](0))
+
+                self.state.buffer.sample_sequences[B, BL](
+                    batch_obs, batch_actions, batch_rewards, batch_dones
+                )
+
+                # GPU training step
+                self.do_gpu_train_step(
+                    ctx,
+                    gpu_state,
+                    batch_obs,
+                    batch_actions,
+                    batch_rewards,
+                    batch_dones,
+                )
+
+                # Periodic GPU -> CPU sync for action selection
+                if self.train_step_count % sync_every == 0:
+                    self.download_from_gpu(gpu_state, ctx)
+                    ctx.synchronize()
+
+            # Progress bar
+            if step % 100 == 0:
+                print_progress_bar(
+                    step,
+                    total_timesteps,
+                    self.train_step_count,
+                    "DreamerV3-GPU",
+                )
+
+        # Final sync
+        self.download_from_gpu(gpu_state, ctx)
+        ctx.synchronize()
+
+        clear_progress_bar()
+        print(
+            "GPU Training complete. Episodes: "
+            + String(episode_count)
+            + " | Total steps: "
+            + String(total_env_steps)
+            + " | Train updates: "
+            + String(self.train_step_count)
+        )
+        return metrics^
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -3684,362 +4073,3 @@ fn _clip_grads_gpu[
     )
 
 
-# =============================================================================
-# Training Loop (CPU)
-# =============================================================================
-
-
-fn run_dreamer_v3_training[
-    E: BoxContinuousActionEnv,
-    obs_dim: Int,
-    action_dim: Int,
-    deter_dim: Int = 512,
-    hidden: Int = 128,
-    stoch_dim: Int = 8,
-    classes: Int = 8,
-    units: Int = 128,
-    num_bins: Int = 255,
-    blocks: Int = 4,
-    batch_size: Int = 16,
-    batch_length: Int = 64,
-    imagine_horizon: Int = 15,
-    buffer_capacity: Int = 1000000,
-](
-    mut env: E,
-    mut agent: DreamerV3Agent[
-        obs_dim,
-        action_dim,
-        deter_dim,
-        hidden,
-        stoch_dim,
-        classes,
-        units,
-        num_bins,
-        blocks,
-        batch_size,
-        batch_length,
-        imagine_horizon,
-        buffer_capacity,
-    ],
-    total_timesteps: Int = 1000000,
-    train_every: Int = 5,
-    seed_episodes: Int = 5,
-    print_every: Int = 10,
-):
-    """Train a DreamerV3 agent on a continuous control environment.
-
-    The training loop alternates between:
-    1. Collecting environment data (storing in replay buffer)
-    2. Training the world model + actor-critic from replay
-
-    Args:
-        env: Environment implementing BoxContinuousActionEnv.
-        agent: Pre-initialized DreamerV3Agent.
-        total_timesteps: Total environment steps (default: 1M).
-        train_every: Steps between training updates (default: 5).
-        seed_episodes: Random exploration episodes before training (default: 5).
-        print_every: Episodes between progress prints (default: 10).
-    """
-    var metrics = TrainingMetrics(algorithm_name="DreamerV3")
-    var episode_reward = Float64(0.0)
-    var episode_steps = 0
-    var episode_count = 0
-    var total_env_steps = 0
-
-    # ── Seed with random episodes ──────────────────────────────────────
-    _ = env.reset()
-    for _ in range(seed_episodes):
-        var done = False
-        while not done:
-            var obs = _to_dtype_list(env.get_obs_list())
-            var action = List[Scalar[dtype]](capacity=action_dim)
-            for _ in range(action_dim):
-                action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
-            var result = env.step_continuous_vec[dtype](action)
-            var reward = result[1]
-            done = result[2]
-            agent.observe(obs, action, Float64(reward), done)
-            total_env_steps += 1
-            if done:
-                _ = env.reset()
-
-    # ── Main training loop ─────────────────────────────────────────────
-    _ = env.reset()
-    agent.reset_episode()
-
-    for step in range(total_timesteps):
-        var obs = _to_dtype_list(env.get_obs_list())
-
-        # Select action
-        var action: List[Scalar[dtype]]
-        if total_env_steps < agent.warmup_steps:
-            action = List[Scalar[dtype]](capacity=action_dim)
-            for _ in range(action_dim):
-                action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
-        else:
-            action = agent.select_action(obs, training=True)
-
-        # Environment step
-        var result = env.step_continuous_vec[dtype](action)
-        var reward = result[1]
-        var done = result[2]
-
-        agent.observe(obs, action, Float64(reward), done)
-        episode_reward += Float64(reward)
-        episode_steps += 1
-        total_env_steps += 1
-        agent.total_steps += 1
-
-        if done:
-            episode_count += 1
-            metrics.log_episode[dtype](
-                episode_count,
-                Scalar[dtype](episode_reward),
-                episode_steps,
-                0.0,
-            )
-
-            if episode_count % print_every == 0:
-                clear_progress_bar()
-                print(
-                    "Episode "
-                    + String(episode_count)
-                    + " | Reward: "
-                    + (String("NaN") if episode_reward != episode_reward else String(Int(episode_reward)))
-                    + " | Steps: "
-                    + String(episode_steps)
-                    + " | Train updates: "
-                    + String(agent.train_step_count)
-                    + " | Buffer: "
-                    + String(agent.state.buffer.len())
-                )
-
-            episode_reward = 0.0
-            episode_steps = 0
-            _ = env.reset()
-            agent.reset_episode()
-
-        # Train
-        if step % train_every == 0 and agent.state.is_ready():
-            var loss = agent.update()
-
-        # Progress bar
-        if step % 100 == 0:
-            print_progress_bar(
-                step, total_timesteps, agent.train_step_count, "DreamerV3"
-            )
-
-    clear_progress_bar()
-    print(
-        "Training complete. Episodes: "
-        + String(episode_count)
-        + " | Total steps: "
-        + String(total_env_steps)
-        + " | Train updates: "
-        + String(agent.train_step_count)
-    )
-
-
-# =============================================================================
-# Training Loop (GPU)
-# =============================================================================
-
-
-fn run_dreamer_v3_training_gpu[
-    E: BoxContinuousActionEnv,
-    obs_dim: Int,
-    action_dim: Int,
-    deter_dim: Int = 512,
-    hidden: Int = 128,
-    stoch_dim: Int = 8,
-    classes: Int = 8,
-    units: Int = 128,
-    num_bins: Int = 255,
-    blocks: Int = 4,
-    batch_size: Int = 16,
-    batch_length: Int = 64,
-    imagine_horizon: Int = 15,
-    buffer_capacity: Int = 1000000,
-](
-    mut env: E,
-    mut agent: DreamerV3Agent[
-        obs_dim,
-        action_dim,
-        deter_dim,
-        hidden,
-        stoch_dim,
-        classes,
-        units,
-        num_bins,
-        blocks,
-        batch_size,
-        batch_length,
-        imagine_horizon,
-        buffer_capacity,
-    ],
-    ctx: DeviceContext,
-    total_timesteps: Int = 1000000,
-    train_every: Int = 5,
-    seed_episodes: Int = 5,
-    print_every: Int = 10,
-    sync_every: Int = 1000,
-) raises:
-    """Train a DreamerV3 agent with GPU-accelerated training steps.
-
-    Data collection runs on CPU (single env). Batch training runs on GPU.
-    Periodically syncs GPU weights back to CPU for action selection.
-
-    Args:
-        env: Environment implementing BoxContinuousActionEnv.
-        agent: Pre-initialized DreamerV3Agent.
-        ctx: GPU device context.
-        total_timesteps: Total environment steps.
-        train_every: Steps between training updates.
-        seed_episodes: Random exploration episodes before training.
-        print_every: Episodes between progress prints.
-        sync_every: Training steps between GPU->CPU weight sync.
-    """
-    comptime BL = batch_length
-    comptime B = batch_size
-    comptime ACT = action_dim
-
-    var metrics = TrainingMetrics(algorithm_name="DreamerV3-GPU")
-    var episode_reward = Float64(0.0)
-    var episode_steps = 0
-    var episode_count = 0
-    var total_env_steps = 0
-
-    # Allocate GPU state and upload initial weights
-    var gpu_state = agent.make_gpu_state(ctx)
-    agent.upload_to_gpu(gpu_state, ctx)
-    ctx.synchronize()
-
-    # ── Seed with random episodes ──────────────────────────────────────
-    _ = env.reset()
-    for _ in range(seed_episodes):
-        var done = False
-        while not done:
-            var obs = _to_dtype_list(env.get_obs_list())
-            var action = List[Scalar[dtype]](capacity=ACT)
-            for _ in range(ACT):
-                action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
-            var result = env.step_continuous_vec[dtype](action)
-            var reward = result[1]
-            done = result[2]
-            agent.observe(obs, action, Float64(reward), done)
-            total_env_steps += 1
-            if done:
-                _ = env.reset()
-
-    # ── Main training loop ─────────────────────────────────────────────
-    _ = env.reset()
-    agent.reset_episode()
-
-    for step in range(total_timesteps):
-        var obs = _to_dtype_list(env.get_obs_list())
-
-        # Select action (CPU, using CPU weights)
-        var action: List[Scalar[dtype]]
-        if total_env_steps < agent.warmup_steps:
-            action = List[Scalar[dtype]](capacity=ACT)
-            for _ in range(ACT):
-                action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
-        else:
-            action = agent.select_action(obs, training=True)
-
-        # Environment step
-        var result = env.step_continuous_vec[dtype](action)
-        var reward = result[1]
-        var done = result[2]
-
-        agent.observe(obs, action, Float64(reward), done)
-        episode_reward += Float64(reward)
-        episode_steps += 1
-        total_env_steps += 1
-
-        if done:
-            episode_count += 1
-            metrics.log_episode[dtype](
-                episode_count,
-                Scalar[dtype](episode_reward),
-                episode_steps,
-                0.0,
-            )
-
-            if episode_count % print_every == 0:
-                clear_progress_bar()
-                print(
-                    "Episode "
-                    + String(episode_count)
-                    + " | Reward: "
-                    + (String("NaN") if episode_reward != episode_reward else String(Int(episode_reward)))
-                    + " | Steps: "
-                    + String(episode_steps)
-                    + " | Train updates: "
-                    + String(agent.train_step_count)
-                    + " | Buffer: "
-                    + String(agent.state.buffer.len())
-                )
-
-            episode_reward = 0.0
-            episode_steps = 0
-            _ = env.reset()
-            agent.reset_episode()
-
-        # Train on GPU
-        if step % train_every == 0 and agent.state.is_ready():
-            # Sample batch on CPU (pre-fill with zeros like CPU path)
-            var batch_obs = List[Scalar[DType.float32]](
-                capacity=B * (BL + 1) * obs_dim
-            )
-            var batch_actions = List[Scalar[DType.float32]](
-                capacity=B * BL * ACT
-            )
-            var batch_rewards = List[Scalar[DType.float32]](
-                capacity=B * BL
-            )
-            var batch_dones = List[Scalar[DType.float32]](
-                capacity=B * BL
-            )
-            for _ in range(B * (BL + 1) * obs_dim):
-                batch_obs.append(Scalar[DType.float32](0))
-            for _ in range(B * BL * ACT):
-                batch_actions.append(Scalar[DType.float32](0))
-            for _ in range(B * BL):
-                batch_rewards.append(Scalar[DType.float32](0))
-                batch_dones.append(Scalar[DType.float32](0))
-
-            agent.state.buffer.sample_sequences[B, BL](
-                batch_obs, batch_actions, batch_rewards, batch_dones
-            )
-
-            # GPU training step
-            agent.do_gpu_train_step(
-                ctx, gpu_state,
-                batch_obs, batch_actions, batch_rewards, batch_dones,
-            )
-
-            # Periodic GPU -> CPU sync for action selection
-            if agent.train_step_count % sync_every == 0:
-                agent.download_from_gpu(gpu_state, ctx)
-                ctx.synchronize()
-
-        # Progress bar
-        if step % 100 == 0:
-            print_progress_bar(
-                step, total_timesteps, agent.train_step_count, "DreamerV3-GPU"
-            )
-
-    # Final sync
-    agent.download_from_gpu(gpu_state, ctx)
-    ctx.synchronize()
-
-    clear_progress_bar()
-    print(
-        "GPU Training complete. Episodes: "
-        + String(episode_count)
-        + " | Total steps: "
-        + String(total_env_steps)
-        + " | Train updates: "
-        + String(agent.train_step_count)
-    )

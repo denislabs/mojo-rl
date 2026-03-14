@@ -2454,6 +2454,31 @@ struct TDMPC2Agent[
                     completed_episodes += 1
                     recent_reward_sum += ep_r
                     recent_episode_count += 1
+
+                    # Log episode metrics
+                    if self.logger:
+                        try:
+                            _log(
+                                self.logger,
+                                "episode_reward",
+                                ep_r,
+                                total_steps,
+                            )
+                            _log(
+                                self.logger,
+                                "episodes",
+                                Float64(completed_episodes),
+                                total_steps,
+                            )
+                            _log(
+                                self.logger,
+                                "train_steps",
+                                Float64(self.train_step_count),
+                                total_steps,
+                            )
+                        except:
+                            pass
+
                     cpu_ep_rewards[env_idx] = 0.0
                     # Reset MPPI warm-start for this env
                     if use_mppi:

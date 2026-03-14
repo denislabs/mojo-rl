@@ -6,7 +6,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import MetricsLogger, LoggerPtr
 from mojo_rl.envs.pendulum import PendulumV2
-from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent, run_dreamer_v3_training_gpu
+from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 
 
 fn main() raises:
@@ -59,38 +59,20 @@ fn main() raises:
         batch_length = 16,
         imagine_horizon = 8,
         buffer_capacity = 50000,
-    ](
-        warmup_steps=500,
-        logger=UnsafePointer(to=logger),
-        diag_every=50,
-    )
+    ](warmup_steps=500)
 
     var ctx = DeviceContext()
 
-    run_dreamer_v3_training_gpu[
-        PendulumV2[dtype],
-        obs_dim = OBS,
-        action_dim = ACT,
-        deter_dim = 128,
-        hidden = 64,
-        stoch_dim = 8,
-        classes = 8,
-        units = 64,
-        num_bins = 65,
-        blocks = 2,
-        batch_size = 8,
-        batch_length = 16,
-        imagine_horizon = 8,
-        buffer_capacity = 50000,
-    ](
+    var metrics = agent.train_gpu[PendulumV2[dtype]](
         env,
-        agent,
         ctx,
-        total_timesteps = 20000,
-        train_every = 5,
-        seed_episodes = 3,
-        print_every = 10,
-        sync_every = 50,
+        total_timesteps=20000,
+        train_every=5,
+        seed_episodes=3,
+        print_every=10,
+        sync_every=50,
+        logger=UnsafePointer(to=logger),
+        diag_every=50,
     )
 
     logger.close()

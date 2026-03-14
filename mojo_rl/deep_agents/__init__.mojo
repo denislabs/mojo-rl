@@ -27,4 +27,4 @@ from .td3 import DeepTD3Agent
 from .sac import DeepSACAgent
 from .a2c import DeepA2CAgent
 from .ppo import DeepPPOAgent, DeepPPOContinuousAgent
-from .dreamer_v3 import DreamerV3Agent, run_dreamer_v3_training
+from .dreamer_v3 import DreamerV3Agent
