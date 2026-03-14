@@ -893,7 +893,7 @@ struct DQNAgent[
         if self.logger and self.diag_every > 0 and self.train_step_count > 0 and self.train_step_count % self.diag_every == 0:
             self._log_diagnostics_to_logger(ctx, gpu_state)
 
-        # ---- Phase 5: Gradient kernel (Huber loss grad, delta=1.0) ----
+        # ---- Phase 5: Gradient kernel (masked MSE grad) ----
         @always_inline
         fn grad_wrapper(
             grd: LayoutTensor[
@@ -911,15 +911,11 @@ struct DQNAgent[
             var action = Int(act[b])
             var q_pred = qv[b, action]
             var td_error = q_pred - tgt[b]
-            # Huber gradient: clip td_error to [-1, 1]
-            var clamped = td_error
-            if clamped > Scalar[dtype](1.0):
-                clamped = Scalar[dtype](1.0)
-            elif clamped < Scalar[dtype](-1.0):
-                clamped = Scalar[dtype](-1.0)
             for a in range(Self.ACTIONS):
                 if a == action:
-                    grd[b, a] = clamped / Scalar[dtype](BATCH)
+                    grd[b, a] = (
+                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
+                    )
                 else:
                     grd[b, a] = Scalar[dtype](0.0)
 
