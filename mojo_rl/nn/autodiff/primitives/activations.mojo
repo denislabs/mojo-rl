@@ -765,9 +765,15 @@ struct MishOp[dim: Int](DiffOp):
                 var val = rebind[Scalar[dtype]](input[b, i])
                 cache[b, i] = val
                 var x = Float64(val)
-                var sp = log(1.0 + exp(x))
-                var t = tanh(sp)
-                output[b, i] = Scalar[dtype](x * t)
+                # Clamp for numerical stability
+                if x > 20.0:
+                    output[b, i] = val  # mish(x) ≈ x
+                elif x < -20.0:
+                    output[b, i] = Scalar[dtype](0.0)
+                else:
+                    var sp = log(1.0 + exp(x))
+                    var t = tanh(sp)
+                    output[b, i] = Scalar[dtype](x * t)
 
     @staticmethod
     fn vjp[
@@ -792,13 +798,19 @@ struct MishOp[dim: Int](DiffOp):
         for b in range(BATCH):
             for i in range(Self.dim):
                 var x = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var sp = log(1.0 + exp(x))
-                var t = tanh(sp)
-                var sig = 1.0 / (1.0 + exp(-x))
-                # dy/dx = tanh(sp) + x * (1 - tanh(sp)^2) * sigmoid(x)
-                var deriv = t + x * (1.0 - t * t) * sig
                 var dy = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                grad_input[b, i] = Scalar[dtype](dy * deriv)
+                # Clamp for numerical stability
+                if x > 20.0:
+                    grad_input[b, i] = Scalar[dtype](dy)  # dmish ≈ 1
+                elif x < -20.0:
+                    grad_input[b, i] = Scalar[dtype](0.0)
+                else:
+                    var sp = log(1.0 + exp(x))
+                    var t = tanh(sp)
+                    var sig = 1.0 / (1.0 + exp(-x))
+                    # dy/dx = tanh(sp) + x * (1 - tanh(sp)^2) * sigmoid(x)
+                    var deriv = t + x * (1.0 - t * t) * sig
+                    grad_input[b, i] = Scalar[dtype](dy * deriv)
 
     # =========================================================================
     # GPU kernels
@@ -826,6 +838,13 @@ struct MishOp[dim: Int](DiffOp):
         var col = idx % Self.dim
         var val = rebind[Scalar[dtype]](input[row, col])
         cache[row, col] = val
+        # Clamp for numerical stability: tanh(softplus(x)) -> 1 for x>15, -> 0 for x<-15
+        if val > Scalar[dtype](15.0):
+            output[row, col] = val  # mish(x) ≈ x
+            return
+        if val < Scalar[dtype](-15.0):
+            output[row, col] = Scalar[dtype](0.0)
+            return
         var sp = log(Scalar[dtype](1.0) + exp(val))
         var t = tanh(sp)
         output[row, col] = val * t
@@ -851,12 +870,20 @@ struct MishOp[dim: Int](DiffOp):
         var row = idx // Self.dim
         var col = idx % Self.dim
         var x = rebind[Scalar[dtype]](cache[row, col])
+        var dy = rebind[Scalar[dtype]](grad_output[row, col])
+        # Clamp for numerical stability
+        if x > Scalar[dtype](15.0):
+            grad_input[row, col] = dy  # dmish ≈ 1
+            return
+        if x < Scalar[dtype](-15.0):
+            grad_input[row, col] = Scalar[dtype](0.0)
+            return
         var one = Scalar[dtype](1.0)
         var sp = log(one + exp(x))
         var t = tanh(sp)
         var sig = one / (one + exp(-x))
         var deriv = t + x * (one - t * t) * sig
-        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col]) * deriv
+        grad_input[row, col] = dy * deriv
 
     # =========================================================================
     # GPU launchers

@@ -331,7 +331,7 @@ struct MetricsLogger(Movable):
         payload["run_id"] = PythonObject(self.run_id)
         payload["metrics"] = metrics_list
 
-        var url = self.server_url + "/ingest"
+        var url = self.server_url.removesuffix("/") + "/ingest"
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
     fn _register_run(
@@ -351,7 +351,7 @@ struct MetricsLogger(Movable):
         payload["run_name"] = PythonObject(self.run_name)
         payload["config"] = config
 
-        var url = self.server_url + "/runs"
+        var url = self.server_url.removesuffix("/") + "/runs"
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
     # =========================================================================
@@ -432,11 +432,12 @@ fn _http_post(
             data=data,
         )
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "mojo-rl/1.0")
         if len(api_key) > 0:
             req.add_header(
                 "Authorization", "Bearer " + api_key
             )
         _ = urllib_request.urlopen(req, timeout=5)
-    except:
-        # Silently ignore network errors to not disrupt training
-        pass
+    except e:
+        # Log error but don't disrupt training
+        print("  [logger] POST", url, "failed:", String(e))

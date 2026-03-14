@@ -180,15 +180,23 @@ struct Mish[dim: Int](Model):
         var col = idx % Self.dim
         var x_val = rebind[Scalar[DType.float32]](input[row, col])
 
-        var sp: Scalar[DType.float32]
-        if x_val > 20.0:
-            sp = x_val
+        # Mish: x * tanh(softplus(x))
+        # For large x (>15), tanh(softplus(x)) ≈ 1, so Mish(x) ≈ x
+        # For very negative x (<-15), tanh(softplus(x)) ≈ 0, so Mish(x) ≈ 0
+        var tanh_sp: Scalar[DType.float32]
+        if x_val > Scalar[DType.float32](15.0):
+            tanh_sp = Scalar[DType.float32](1.0)
+        elif x_val < Scalar[DType.float32](-15.0):
+            tanh_sp = Scalar[DType.float32](0.0)
         else:
-            sp = log(1.0 + exp(x_val))
-
-        var exp_sp = exp(sp)
-        var exp_neg_sp = exp(-sp)
-        var tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
+            var sp: Scalar[DType.float32]
+            if x_val > 20.0:
+                sp = x_val
+            else:
+                sp = log(1.0 + exp(x_val))
+            var exp_sp = exp(sp)
+            var exp_neg_sp = exp(-sp)
+            tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
         var result = rebind[output.element_type](x_val * tanh_sp)
 
         cache[row, col] = rebind[cache.element_type](tanh_sp)
@@ -220,15 +228,20 @@ struct Mish[dim: Int](Model):
         var col = idx % Self.dim
         var x_val = rebind[Scalar[DType.float32]](input[row, col])
 
-        var sp: Scalar[DType.float32]
-        if x_val > 20.0:
-            sp = x_val
+        var tanh_sp: Scalar[DType.float32]
+        if x_val > Scalar[DType.float32](15.0):
+            tanh_sp = Scalar[DType.float32](1.0)
+        elif x_val < Scalar[DType.float32](-15.0):
+            tanh_sp = Scalar[DType.float32](0.0)
         else:
-            sp = log(1.0 + exp(x_val))
-
-        var exp_sp = exp(sp)
-        var exp_neg_sp = exp(-sp)
-        var tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
+            var sp: Scalar[DType.float32]
+            if x_val > 20.0:
+                sp = x_val
+            else:
+                sp = log(1.0 + exp(x_val))
+            var exp_sp = exp(sp)
+            var exp_neg_sp = exp(-sp)
+            tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
         output[row, col] = rebind[output.element_type](x_val * tanh_sp)
 
     @always_inline

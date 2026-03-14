@@ -148,6 +148,11 @@ struct MishActivation(Activation):
 
     @staticmethod
     fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        # Clamp for numerical stability: tanh(softplus(x)) -> 1 for x>15, -> 0 for x<-15
+        if pre_act > Scalar[dtype](15.0):
+            return pre_act  # tanh(sp) ≈ 1, so mish(x) ≈ x
+        if pre_act < Scalar[dtype](-15.0):
+            return Scalar[dtype](0.0)  # tanh(sp) ≈ 0
         var sp = log(1.0 + exp(pre_act))
         return pre_act * tanh(sp)
 
@@ -160,6 +165,11 @@ struct MishActivation(Activation):
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         var x = cache_val
+        # Clamp for numerical stability
+        if x > Scalar[dtype](15.0):
+            return grad_out  # dmish ≈ 1 for large x
+        if x < Scalar[dtype](-15.0):
+            return Scalar[dtype](0.0)  # dmish ≈ 0 for very negative x
         var sp = log(1.0 + exp(x))
         var tsp = tanh(sp)
         var sig = 1.0 / (1.0 + exp(-x))

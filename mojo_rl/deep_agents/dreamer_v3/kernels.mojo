@@ -115,20 +115,33 @@ fn gru_gate_kernel[
 
     var one = S(1.0)
 
-    # Reset gate
+    # Reset gate (clamp for numerical stability)
     var reset_logit = _rd2[BATCH, 3 * DETER](gate_out, b, i)
+    if reset_logit > S(15.0):
+        reset_logit = S(15.0)
+    if reset_logit < S(-15.0):
+        reset_logit = S(-15.0)
     var reset_val = one / (one + exp(-reset_logit))
 
-    # Candidate
+    # Candidate (clamp input to prevent exp overflow → NaN in tanh)
     var cand_logit = _rd2[BATCH, 3 * DETER](gate_out, b, DETER + i)
     var rc = reset_val * cand_logit
+    if rc > S(15.0):
+        rc = S(15.0)
+    if rc < S(-15.0):
+        rc = S(-15.0)
     var exp_rc = exp(rc)
     var exp_neg_rc = exp(-rc)
     var cand_val = (exp_rc - exp_neg_rc) / (exp_rc + exp_neg_rc)
 
-    # Update gate (biased toward keeping old state)
+    # Update gate (biased toward keeping old state, clamped)
     var update_logit = _rd2[BATCH, 3 * DETER](gate_out, b, 2 * DETER + i)
-    var update_val = one / (one + exp(-(update_logit - one)))
+    var update_in = update_logit - one
+    if update_in > S(15.0):
+        update_in = S(15.0)
+    if update_in < S(-15.0):
+        update_in = S(-15.0)
+    var update_val = one / (one + exp(-update_in))
 
     # New deterministic state
     var pd = _rd2[BATCH, DETER](prev_deter, b, i)
