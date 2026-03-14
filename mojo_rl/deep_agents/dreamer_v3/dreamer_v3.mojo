@@ -5180,7 +5180,20 @@ struct DreamerV3Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # ── 4. Reset RSSM state for done envs (on GPU) ──────────
+            # ── 4. Reset done envs (physics + RSSM) ──────────────────
+            # Reset physics state for done envs
+            E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                ctx,
+                states_buf,
+                done_buf,
+                UInt64(total_steps * 2654435761 + 1),
+                workspace_ptr=step_ws_buf.unsafe_ptr(),
+            )
+            # Re-extract obs (reset obs for done envs, next obs for others)
+            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, OBS](
+                ctx, states_buf, obs_buf
+            )
+            # Reset RSSM state for done envs
             ctx.enqueue_function[run_rssm_reset_done, run_rssm_reset_done](
                 deter_2d,
                 stoch_2d,
