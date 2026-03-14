@@ -67,6 +67,7 @@ from .state import (
     BatchedMPPIGPUBuffers,
 )
 from .world_model import WorldModel, decode_value_batch_scalar
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from .mppi import plan, plan_gpu, plan_gpu_batched
 from .kernels import (
     tdmpc2_random_actions_kernel,
@@ -248,6 +249,10 @@ struct TDMPC2Agent[
     # RunningScale: normalizes Q-values for policy loss (reference: 5th-95th percentile)
     var running_scale: Float64
 
+    # Diagnostics
+    var logger: LoggerPtr
+    var diag_every: Int
+
     # MPPI warm-start state
     var _prev_mean: List[Float64]
     var _episode_t0: Bool
@@ -272,6 +277,8 @@ struct TDMPC2Agent[
         discount_denom: Float64 = 5.0,
         discount_min: Float64 = 0.95,
         discount_max: Float64 = 0.995,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ):
         """Initialize TDMPC2 agent.
 
@@ -323,6 +330,8 @@ struct TDMPC2Agent[
         self.total_steps = 0
         self.train_step_count = 0
         self.running_scale = 1.0
+        self.logger = logger
+        self.diag_every = diag_every
         self._prev_mean = List[Float64]()
         self._episode_t0 = True
 
@@ -838,6 +847,26 @@ struct TDMPC2Agent[
         # Here we apply the Adam updates to all sub-networks.
         self.state.world_model.update_world_model_params()
 
+        # Log world model diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", total_loss, step)
+                _log(
+                    self.logger,
+                    "consistency_loss",
+                    total_consistency_loss,
+                    step,
+                )
+                _log(self.logger, "reward_loss", total_reward_loss, step)
+                _log(self.logger, "value_loss", total_value_loss, step)
+                _log(self.logger, "terminal_loss", total_terminal_loss, step)
+            except:
+                pass
+
         return total_loss
 
     fn _update_policy(mut self):
@@ -894,6 +923,11 @@ struct TDMPC2Agent[
 
         var policy_loss: Float64 = 0.0
         var rho_t: Float64 = 1.0
+        var total_q_sum: Float64 = 0.0
+        var total_q_count: Int = 0
+        var total_q_min: Float64 = 1e30
+        var total_q_max: Float64 = -1e30
+        var total_entropy: Float64 = 0.0
 
         for t in range(Self.H):
             # Sample action from policy (with cache for backprop) → _pi_out, _pi_cache
@@ -976,7 +1010,14 @@ struct TDMPC2Agent[
                 # Reference uses avg of 2 Q-networks for policy gradient
                 var avg_q = (v1 + v2) * 0.5
                 policy_loss -= rho_t * avg_q / Float64(Self.BATCH)
+                total_q_sum += avg_q
+                total_q_count += 1
+                if avg_q < total_q_min:
+                    total_q_min = avg_q
+                if avg_q > total_q_max:
+                    total_q_max = avg_q
 
+            total_entropy += entropy
             policy_loss -= rho_t * self.entropy_coef * entropy
 
             # Advance latent state with stop-gradient dynamics → _z_pred, then copy to _z_current
@@ -988,6 +1029,32 @@ struct TDMPC2Agent[
 
         # Apply policy gradient update
         self.state.world_model.update_policy_params()
+
+        # Log policy diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "policy_loss", policy_loss, step)
+                if total_q_count > 0:
+                    _log(
+                        self.logger,
+                        "q_mean",
+                        total_q_sum / Float64(total_q_count),
+                        step,
+                    )
+                    _log(self.logger, "q_min", total_q_min, step)
+                    _log(self.logger, "q_max", total_q_max, step)
+                _log(
+                    self.logger,
+                    "entropy",
+                    total_entropy / Float64(Self.H),
+                    step,
+                )
+            except:
+                pass
 
     # =========================================================================
     # GPU World-Model BPTT (separated for compilation)

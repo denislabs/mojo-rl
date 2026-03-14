@@ -46,6 +46,7 @@ from .imagination import (
     sample_tanh_normal,
     log_prob_tanh_normal,
 )
+from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
 from .kernels import (
     symlog_kernel,
     symexp_kernel,
@@ -178,6 +179,10 @@ struct DreamerV3Agent[
     var _current_stoch: UnsafePointer[Scalar[dtype], MutAnyOrigin]
     var _prev_action: UnsafePointer[Scalar[dtype], MutAnyOrigin]
 
+    # Diagnostics
+    var logger: LoggerPtr
+    var diag_every: Int
+
     # Step counters
     var total_steps: Int
     var train_step_count: Int
@@ -197,6 +202,8 @@ struct DreamerV3Agent[
         return_norm_rate: Float64 = 0.01,
         warmup_steps: Int = 1000,
         max_grad_norm: Float64 = 1000.0,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ):
         """Initialize DreamerV3 agent with all sub-networks and buffers.
 
@@ -218,6 +225,8 @@ struct DreamerV3Agent[
         self.slow_critic_tau = slow_critic_tau
         self.return_norm_rate = return_norm_rate
         self.max_grad_norm = max_grad_norm
+        self.logger = logger
+        self.diag_every = diag_every
         self.total_steps = 0
         self.train_step_count = 0
         self.warmup_steps = warmup_steps
@@ -240,6 +249,8 @@ struct DreamerV3Agent[
         self.slow_critic_tau = take.slow_critic_tau
         self.return_norm_rate = take.return_norm_rate
         self.max_grad_norm = take.max_grad_norm
+        self.logger = take.logger
+        self.diag_every = take.diag_every
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
         self.warmup_steps = take.warmup_steps
@@ -1270,6 +1281,63 @@ struct DreamerV3Agent[
         act_step_ptr.free()
 
         self.train_step_count += 1
+
+        # Log DreamerV3 diagnostics
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                # World model losses
+                _log(
+                    self.logger,
+                    "loss",
+                    total_wm_loss + actor_loss + critic_loss,
+                    step,
+                )
+                _log(self.logger, "obs_loss", obs_loss, step)
+                _log(self.logger, "reward_loss", rew_loss, step)
+                _log(self.logger, "continue_loss", cont_loss, step)
+                _log(self.logger, "dyn_kl", dyn_kl_total, step)
+                _log(self.logger, "rep_kl", rep_kl_total, step)
+                # Actor-critic
+                _log(self.logger, "policy_loss", actor_loss, step)
+                _log(self.logger, "value_loss", critic_loss, step)
+                # Return normalization
+                _log(
+                    self.logger,
+                    "return_scale",
+                    Float64(self.state.return_ema_hi)
+                    - Float64(self.state.return_ema_lo),
+                    step,
+                )
+                # Mean imagined reward
+                var imag_rew_sum: Float64 = 0.0
+                for i in range(HORIZON * IB):
+                    imag_rew_sum += Float64(
+                        (self.state._imag_rewards + i)[]
+                    )
+                _log(
+                    self.logger,
+                    "imagined_reward_mean",
+                    imag_rew_sum / Float64(HORIZON * IB),
+                    step,
+                )
+                # Entropy (mean negative log_prob across imagination)
+                var entropy_sum: Float64 = 0.0
+                for i in range((HORIZON - 1) * IB):
+                    entropy_sum -= Float64(
+                        (self.state._imag_log_probs + i)[]
+                    )
+                _log(
+                    self.logger,
+                    "entropy",
+                    entropy_sum / Float64((HORIZON - 1) * IB),
+                    step,
+                )
+            except:
+                pass
 
         return total_wm_loss + actor_loss + critic_loss
 

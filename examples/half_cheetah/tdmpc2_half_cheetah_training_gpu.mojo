@@ -24,9 +24,12 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import MetricsLogger, LoggerPtr
 from mojo_rl.deep_agents.tdmpc2 import TDMPC2Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -95,6 +98,33 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
+        # =====================================================================
+        # Setup logger
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = MetricsLogger(
+            server_url=url,
+            run_name="TD-MPC2 HalfCheetah GPU",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "TD-MPC2")
+        logger.set_config("env", "HalfCheetah")
+        logger.set_config("latent_dim", String(LATENT_DIM))
+        logger.set_config("mlp_dim", String(MLP_DIM))
+        logger.set_config("num_bins", String(NUM_BINS))
+        logger.set_config("num_q", String(NUM_Q))
+        logger.set_config("horizon", String(HORIZON))
+        logger.set_config("batch_size", String(BATCH_SIZE))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("wm_lr", "3e-4")
+        logger.set_config("pi_lr", "3e-4")
+        logger.set_config("gamma", "0.99")
+
         var agent = TDMPC2Agent[
             obs_dim=OBS_DIM,
             action_dim=ACTION_DIM,
@@ -126,6 +156,8 @@ fn main() raises:
             wm_lr=3e-4,
             enc_lr_scale=0.3,
             pi_lr=3e-4,
+            logger=UnsafePointer(to=logger),
+            diag_every=50,
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")
@@ -202,6 +234,8 @@ fn main() raises:
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()
