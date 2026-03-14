@@ -86,10 +86,10 @@ fn main() raises:
         env,
         agent,
         ctx,
-        total_timesteps = 60000,
+        total_timesteps = 20000,
         train_every = 5,
         seed_episodes = 3,
-        print_every = 25,
+        print_every = 10,
         sync_every = 50,
     )
 

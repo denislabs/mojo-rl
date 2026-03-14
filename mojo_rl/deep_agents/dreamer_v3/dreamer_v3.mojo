@@ -3389,14 +3389,15 @@ struct DreamerV3Agent[
         # Actually, we can reconstruct feat from the last deter/stoch
         # in the ping-pong buffer.
 
-        # Build feat from last imagination state
-        var last_read_off = ((HORIZON - 1) % 2) * IB
+        # Use initial imagination states (h=0) = observed states from world model
+        # These have returns[0] which contain full lambda-bootstrapped signal
+        var init_read_off = 0  # h=0 reads from offset 0
         var last_deter_2d = LayoutTensor[
             dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-        ](gpu_state.imag_deter_buf.unsafe_ptr() + last_read_off * DETER)
+        ](gpu_state.imag_deter_buf.unsafe_ptr() + init_read_off * DETER)
         var last_stoch_2d = LayoutTensor[
             dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-        ](gpu_state.imag_stoch_buf.unsafe_ptr() + last_read_off * STOCH)
+        ](gpu_state.imag_stoch_buf.unsafe_ptr() + init_read_off * STOCH)
         var last_feat_2d = LayoutTensor[
             dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
         ](gpu_state.imag_feat_buf.unsafe_ptr())
@@ -3429,17 +3430,14 @@ struct DreamerV3Agent[
         )
 
         # ── Compute two-hot targets from returns ───────────────────────
-        # Returns are in imag_returns_buf[h * IB ... (h+1) * IB]
-        # Use last horizon step returns (h = HORIZON - 2 is last useful)
-        # Actually, use returns from h=0 since we're simplifying to
-        # a single backward pass. Upload the mean returns.
-        # Better approach: use returns from the last step.
+        # Use h=0 returns (full lambda-bootstrapped signal from horizon)
+        # matching the h=0 feats used for critic/actor
         comptime LAST_H = HORIZON - 1
 
         # symlog(returns) for two-hot encoding
         var returns_1d = LayoutTensor[
             dtype, Layout.row_major(IB), MutAnyOrigin
-        ](gpu_state.imag_returns_buf.unsafe_ptr() + (LAST_H - 1) * IB)
+        ](gpu_state.imag_returns_buf.unsafe_ptr())  # h=0
         var symlog_ret_1d = LayoutTensor[
             dtype, Layout.row_major(IB), MutAnyOrigin
         ](gpu_state.symlog_returns_buf.unsafe_ptr())
@@ -3536,7 +3534,7 @@ struct DreamerV3Agent[
         ](gpu_state.imag_advantages_buf.unsafe_ptr())
         var values_last = LayoutTensor[
             dtype, Layout.row_major(IB), MutAnyOrigin
-        ](gpu_state.imag_values_buf.unsafe_ptr() + (LAST_H - 1) * IB)
+        ](gpu_state.imag_values_buf.unsafe_ptr())  # h=0
 
         # advantage = returns - values (elementwise)
         @always_inline
