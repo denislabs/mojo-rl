@@ -2790,7 +2790,7 @@ fn run_dreamer_v3_training[
                     "Episode "
                     + String(episode_count)
                     + " | Reward: "
-                    + String(Int(episode_reward))
+                    + (String("NaN") if episode_reward != episode_reward else String(Int(episode_reward)))
                     + " | Steps: "
                     + String(episode_steps)
                     + " | Train updates: "
@@ -2957,7 +2957,7 @@ fn run_dreamer_v3_training_gpu[
                     "Episode "
                     + String(episode_count)
                     + " | Reward: "
-                    + String(Int(episode_reward))
+                    + (String("NaN") if episode_reward != episode_reward else String(Int(episode_reward)))
                     + " | Steps: "
                     + String(episode_steps)
                     + " | Train updates: "

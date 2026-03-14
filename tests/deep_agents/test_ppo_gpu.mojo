@@ -133,6 +133,7 @@ fn main() raises:
             verbose=True,
             print_every=50,
             logger=UnsafePointer(to=logger),
+            diag_every=10,
         )
 
         var end_time = perf_counter_ns()

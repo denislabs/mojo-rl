@@ -73,6 +73,11 @@ fn symexp_kernel[
     if i >= SIZE:
         return
     var x = rebind[S](input[i])
+    # Clamp to prevent exp overflow (float32 max ~88)
+    if x > S(20.0):
+        x = S(20.0)
+    if x < S(-20.0):
+        x = S(-20.0)
     if x >= S(0.0):
         output[i] = exp(x) - S(1.0)
     else:
@@ -626,7 +631,11 @@ fn tanh_normal_sample_kernel[
 
         var pre_tanh = mean_val + std_val * z
 
-        # tanh
+        # tanh (clamp to prevent exp overflow)
+        if pre_tanh > S(15.0):
+            pre_tanh = S(15.0)
+        if pre_tanh < S(-15.0):
+            pre_tanh = S(-15.0)
         var ep = exp(pre_tanh)
         var en = exp(-pre_tanh)
         var action_val = (ep - en) / (ep + en)
@@ -753,6 +762,11 @@ fn decode_value_kernel[
         value_symlog += prob * rebind[S](bins[k])
 
     if apply_symexp:
+        # Clamp to prevent exp overflow (float32 max ~88)
+        if value_symlog > S(20.0):
+            value_symlog = S(20.0)
+        if value_symlog < S(-20.0):
+            value_symlog = S(-20.0)
         if value_symlog >= S(0.0):
             values[b] = exp(value_symlog) - one
         else:
@@ -837,6 +851,11 @@ fn sigmoid_kernel[
     if i >= SIZE:
         return
     var x = rebind[S](input[i])
+    # Clamp to prevent exp overflow
+    if x > S(20.0):
+        x = S(20.0)
+    if x < S(-20.0):
+        x = S(-20.0)
     output[i] = S(1.0) / (S(1.0) + exp(-x))
 
 

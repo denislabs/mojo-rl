@@ -880,17 +880,33 @@ struct DeepPPOAgent[
 
         # Log PPO diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
                 _log(self.logger, "loss", avg_loss, step)
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(
+                    self.logger,
+                    "policy_loss",
+                    Float64(total_policy_loss / n),
+                    step,
+                )
+                _log(
+                    self.logger,
+                    "value_loss",
+                    Float64(total_value_loss / n),
+                    step,
+                )
                 _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
-                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+                _log(
+                    self.logger,
+                    "clip_fraction",
+                    Float64(total_clip_frac / n),
+                    step,
+                )
+                _log(
+                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                )
             except:
                 pass
 
@@ -1285,17 +1301,33 @@ struct DeepPPOAgent[
         var avg_loss = Float64(total_loss / n)
 
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
                 _log(self.logger, "loss", avg_loss, step)
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(
+                    self.logger,
+                    "policy_loss",
+                    Float64(total_policy_loss / n),
+                    step,
+                )
+                _log(
+                    self.logger,
+                    "value_loss",
+                    Float64(total_value_loss / n),
+                    step,
+                )
                 _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
-                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+                _log(
+                    self.logger,
+                    "clip_fraction",
+                    Float64(total_clip_frac / n),
+                    step,
+                )
+                _log(
+                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                )
             except:
                 pass
 
@@ -1687,17 +1719,33 @@ struct DeepPPOAgent[
         var avg_loss = Float64(total_loss / n)
 
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
                 _log(self.logger, "loss", avg_loss, step)
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
+                _log(
+                    self.logger,
+                    "policy_loss",
+                    Float64(total_policy_loss / n),
+                    step,
+                )
+                _log(
+                    self.logger,
+                    "value_loss",
+                    Float64(total_value_loss / n),
+                    step,
+                )
                 _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
-                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+                _log(
+                    self.logger,
+                    "clip_fraction",
+                    Float64(total_clip_frac / n),
+                    step,
+                )
+                _log(
+                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                )
             except:
                 pass
 
@@ -2592,6 +2640,8 @@ struct DeepPPOAgent[
             num_updates: Number of rollout+update cycles.
             verbose: Whether to print progress.
             print_every: Print progress every N updates.
+            logger: Optional metrics logger for diagnostics.
+            diag_every: Log diagnostics every N steps (0 = every step).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
