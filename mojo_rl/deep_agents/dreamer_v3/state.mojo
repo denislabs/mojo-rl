@@ -648,6 +648,27 @@ struct DreamerV3GPUState[
     var cont_target_buf: DeviceBuffer[dtype]  # [BATCH * 1]
     var cont_grad_buf: DeviceBuffer[dtype]  # [BATCH * 1]
 
+    # ── Reward backward scratch ───────────────────────────────────────────
+    var rew_cache_buf: DeviceBuffer[dtype]  # [BATCH * RewModel.CACHE_SIZE]
+    var rew_target_buf: DeviceBuffer[dtype]  # [BATCH * NUM_BINS]
+    var rew_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * NUM_BINS]
+    var rew_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * FEAT]
+    var rew_symlog_buf: DeviceBuffer[dtype]  # [BATCH]
+
+    # ── Continue backward cache ───────────────────────────────────────────
+    var cont_cache_buf: DeviceBuffer[dtype]  # [BATCH * ContModel.CACHE_SIZE]
+    var cont_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * FEAT]
+
+    # ── Posterior backward scratch ────────────────────────────────────────
+    var post_cache_buf: DeviceBuffer[dtype]  # [BATCH * PostModel.CACHE_SIZE]
+    var post_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var post_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * (DETER + STOCH)]
+
+    # ── Prior backward scratch ────────────────────────────────────────────
+    var prior_cache_buf: DeviceBuffer[dtype]  # [BATCH * PriorModel.CACHE_SIZE]
+    var prior_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * STOCH]
+    var prior_grad_in_buf: DeviceBuffer[dtype]  # [BATCH * DETER]
+
     # ── Network workspace buffers ────────────────────────────────────────
     # Sized for the maximum batch dimension (IB for imagination phase)
     var ws_encoder: DeviceBuffer[dtype]
@@ -802,6 +823,27 @@ struct DreamerV3GPUState[
         # ── Continue backward scratch ────────────────────────────────────
         self.cont_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
         self.cont_grad_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+
+        # ── Reward backward scratch ──────────────────────────────────────
+        self.rew_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.RewModel.CACHE_SIZE)
+        self.rew_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BINS)
+        self.rew_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BINS)
+        self.rew_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.rew_symlog_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+
+        # ── Continue backward cache ──────────────────────────────────────
+        self.cont_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.ContModel.CACHE_SIZE)
+        self.cont_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+
+        # ── Posterior backward scratch ───────────────────────────────────
+        self.post_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE)
+        self.post_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.post_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + Self.STOCH))
+
+        # ── Prior backward scratch ───────────────────────────────────────
+        self.prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE)
+        self.prior_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.prior_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
 
         # ── Network workspace buffers ────────────────────────────────────
         # Use IB (imag batch) as max batch size for workspace allocation
@@ -964,6 +1006,19 @@ struct DreamerV3GPUState[
         self.dec_target_buf = take.dec_target_buf^
         self.cont_target_buf = take.cont_target_buf^
         self.cont_grad_buf = take.cont_grad_buf^
+        self.rew_cache_buf = take.rew_cache_buf^
+        self.rew_target_buf = take.rew_target_buf^
+        self.rew_grad_out_buf = take.rew_grad_out_buf^
+        self.rew_grad_in_buf = take.rew_grad_in_buf^
+        self.rew_symlog_buf = take.rew_symlog_buf^
+        self.cont_cache_buf = take.cont_cache_buf^
+        self.cont_grad_in_buf = take.cont_grad_in_buf^
+        self.post_cache_buf = take.post_cache_buf^
+        self.post_grad_out_buf = take.post_grad_out_buf^
+        self.post_grad_in_buf = take.post_grad_in_buf^
+        self.prior_cache_buf = take.prior_cache_buf^
+        self.prior_grad_out_buf = take.prior_grad_out_buf^
+        self.prior_grad_in_buf = take.prior_grad_in_buf^
         self.ws_encoder = take.ws_encoder^
         self.ws_posterior = take.ws_posterior^
         self.ws_prior = take.ws_prior^

@@ -403,6 +403,97 @@ fn kl_divergence_kernel[
     kl_out[b] = total
 
 
+@always_inline
+fn kl_categorical_gradient_kernel[
+    BATCH: Int,
+    STOCH_DIM: Int,
+    CLASSES: Int,
+](
+    grad_post_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    grad_prior_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    post_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    prior_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    kl_values: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    free_nats: Scalar[dtype],
+    dyn_scale: Scalar[dtype],
+    rep_scale: Scalar[dtype],
+    inv_batch: Scalar[dtype],
+):
+    """Gradient of KL divergence w.r.t. posterior and prior logits.
+
+    Uses dual KL balancing (DreamerV3):
+    - dyn_scale (0.5): gradient to prior (dynamics loss, stop-grad posterior)
+    - rep_scale (0.1): gradient to posterior (representation loss, stop-grad prior)
+    Free nats gating: zero gradient if KL < free_nats.
+
+    Gradient of KL w.r.t. softmax probs:
+      dKL/d(post_p_i) = log(post_p_i / prior_p_i) + 1 - sum_j(post_p_j) [=0 for probs]
+                       ≈ log(post_p_i) - log(prior_p_i) (since probs sum to 1)
+      For prior: dKL/d(prior_p_i) = -post_p_i / prior_p_i
+
+    Softmax Jacobian: d(softmax_i)/d(logit_j) = p_i * (delta_ij - p_j)
+    Combined: grad_logit_j = sum_i [dKL/dp_i * p_i * (delta_ij - p_j)]
+    For posterior: grad_logit_j = p_j * (log(p_j/q_j) + 1) - p_j * sum_i[p_i * (log(p_i/q_i) + 1)]
+                                = p_j * [(log(p_j/q_j) + 1) - sum_i p_i*(log(p_i/q_i) + 1)]
+                                = p_j * [log(p_j/q_j) - KL]  (since sum_i p_i*log(p_i/q_i) = KL)
+    For prior: grad_logit_j = q_j * (p_j/q_j) - q_j * sum_i[p_i]
+                             = p_j - q_j  (since sum_i p_i = 1)
+    So: prior grad = (post_p - prior_p), posterior grad = post_p * (log(post_p/prior_p) - KL)
+    """
+    comptime SC = STOCH_DIM * CLASSES
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * STOCH_DIM:
+        return
+    var b = tid // STOCH_DIM
+    var s = tid % STOCH_DIM
+    var base = s * CLASSES
+    var eps = S(1e-8)
+
+    var kl_val = rebind[S](kl_values[b])
+
+    if kl_val <= free_nats:
+        # Below free nats threshold — zero gradient
+        for c in range(CLASSES):
+            grad_post_logits[b, base + c] = S(0.0)
+            grad_prior_logits[b, base + c] = S(0.0)
+        return
+
+    # Compute per-category KL contribution for this stoch dim
+    # to get the mean KL across categories for centering
+    var kl_s = S(0.0)
+    for c in range(CLASSES):
+        var p = _rd2[BATCH, SC](post_probs, b, base + c)
+        var q = _rd2[BATCH, SC](prior_probs, b, base + c)
+        if p > eps:
+            kl_s += p * (log(p + eps) - log(q + eps))
+
+    for c in range(CLASSES):
+        var p = _rd2[BATCH, SC](post_probs, b, base + c)
+        var q = _rd2[BATCH, SC](prior_probs, b, base + c)
+
+        # Prior gradient (dynamics loss): push prior toward posterior
+        # d(KL)/d(prior_logit_j) = -(p_j - q_j) = q_j - p_j
+        # We want to minimize KL, so gradient is (q_j - p_j) but since
+        # we're computing loss gradient: prior_grad = (p - q) (for descent)
+        var prior_g = dyn_scale * (p - q) * inv_batch
+
+        # Posterior gradient (representation loss): push posterior toward prior
+        # d(KL)/d(post_logit_j) = p_j * (log(p_j/q_j) - KL_s)
+        var log_ratio = log(p + eps) - log(q + eps)
+        var post_g = rep_scale * p * (log_ratio - kl_s) * inv_batch
+
+        grad_prior_logits[b, base + c] = prior_g
+        grad_post_logits[b, base + c] = post_g
+
+
 # =============================================================================
 # Lambda Returns (Backward Scan)
 # =============================================================================
