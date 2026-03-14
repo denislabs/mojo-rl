@@ -259,6 +259,24 @@ fn accumulate_kernel[
     dst[i] = rebind[S](dst[i]) + rebind[S](src[i])
 
 
+@always_inline
+fn clamp_kernel[
+    SIZE: Int,
+](
+    buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    max_abs: Scalar[dtype],
+):
+    """Elementwise clamp to [-max_abs, max_abs]."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+    var v = rebind[S](buf[i])
+    if v > max_abs:
+        buf[i] = max_abs
+    elif v < -max_abs:
+        buf[i] = -max_abs
+
+
 # =============================================================================
 # Concat Backward Kernels
 # =============================================================================

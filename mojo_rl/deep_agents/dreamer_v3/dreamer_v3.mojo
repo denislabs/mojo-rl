@@ -62,6 +62,7 @@ from .kernels import (
     concat_feat_backward_kernel,
     concat_deter_embed_backward_kernel,
     concat_gru_input_backward_kernel,
+    clamp_kernel,
     lambda_returns_kernel,
     normalize_returns_elementwise_kernel,
     two_hot_ce_grad_kernel,
@@ -2842,6 +2843,33 @@ struct DreamerV3Agent[
 
             ctx.enqueue_function[bptt_copy_rec_s, bptt_copy_rec_s](
                 bptt_rec_stoch_dst, bptt_dpstoch_1d,
+                grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Clamp recurrent gradients to prevent explosion across timesteps
+            var bptt_clamp_max = Scalar[dtype](1.0)
+
+            @always_inline
+            fn bptt_clamp_rec_d(
+                b: LayoutTensor[dtype, Layout.row_major(BPTT_DETER_FLAT), MutAnyOrigin],
+                m: Scalar[dtype],
+            ):
+                clamp_kernel[BPTT_DETER_FLAT](b, m)
+
+            ctx.enqueue_function[bptt_clamp_rec_d, bptt_clamp_rec_d](
+                bptt_rec_deter, bptt_clamp_max,
+                grid_dim=(BPTT_DD_BLOCKS,), block_dim=(TPB,),
+            )
+
+            @always_inline
+            fn bptt_clamp_rec_s(
+                b: LayoutTensor[dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin],
+                m: Scalar[dtype],
+            ):
+                clamp_kernel[BPTT_STOCH_SZ](b, m)
+
+            ctx.enqueue_function[bptt_clamp_rec_s, bptt_clamp_rec_s](
+                bptt_rec_stoch_dst, bptt_clamp_max,
                 grid_dim=(BPTT_STOCH_BLOCKS,), block_dim=(TPB,),
             )
 
