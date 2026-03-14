@@ -50,32 +50,32 @@ fn main() raises:
     logger.set_config("n_envs", String(N_ENVS))
 
     var agent = DreamerV3Agent[
-        obs_dim = OBS,
-        action_dim = ACT,
-        deter_dim = 128,
-        hidden = 64,
-        stoch_dim = 8,
-        classes = 8,
-        units = 64,
-        num_bins = 65,
-        blocks = 2,
-        batch_size = 8,
-        batch_length = 16,
-        imagine_horizon = 8,
-        buffer_capacity = 50000,
+        obs_dim=OBS,
+        action_dim=ACT,
+        deter_dim=128,
+        hidden=64,
+        stoch_dim=8,
+        classes=8,
+        units=64,
+        num_bins=65,
+        blocks=2,
+        batch_size=8,
+        batch_length=16,
+        imagine_horizon=8,
+        buffer_capacity=50000,
     ](warmup_steps=500)
 
     var ctx = DeviceContext()
 
     var metrics = agent.train_gpu[PendulumV2[dtype], n_envs=N_ENVS](
         ctx,
-        num_episodes=200,
+        num_episodes=20_000,
         train_every=5,
-        sync_every=50,
+        sync_every=100,
         verbose=True,
         print_every=5000,
         logger=UnsafePointer(to=logger),
-        diag_every=50,
+        diag_every=100,
     )
 
     logger.close()
