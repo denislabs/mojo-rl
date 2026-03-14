@@ -9,6 +9,10 @@ from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 
 
+# Number of parallel GPU environments
+comptime N_ENVS = 8
+
+
 fn main() raises:
     print("=" * 60)
     print("DreamerV3 GPU Training — Pendulum")
@@ -43,8 +47,8 @@ fn main() raises:
     logger.set_config("batch_length", "16")
     logger.set_config("imagine_horizon", "8")
     logger.set_config("gamma", "0.997")
+    logger.set_config("n_envs", String(N_ENVS))
 
-    var env = PendulumV2[dtype]()
     var agent = DreamerV3Agent[
         obs_dim = OBS,
         action_dim = ACT,
@@ -63,14 +67,13 @@ fn main() raises:
 
     var ctx = DeviceContext()
 
-    var metrics = agent.train_gpu[PendulumV2[dtype]](
-        env,
+    var metrics = agent.train_gpu[PendulumV2[dtype], n_envs=N_ENVS](
         ctx,
-        total_timesteps=20000,
+        num_episodes=200,
         train_every=5,
-        seed_episodes=3,
-        print_every=10,
         sync_every=50,
+        verbose=True,
+        print_every=5000,
         logger=UnsafePointer(to=logger),
         diag_every=50,
     )

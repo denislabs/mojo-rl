@@ -19,6 +19,7 @@ from std.math import exp, log, sqrt
 from std.random import random_float64
 from std.time import perf_counter_ns
 from std.memory import alloc, memset
+from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -37,7 +38,10 @@ from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
 )
-from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv
+from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
+from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
+    SequenceReplayBuffer,
+)
 from .rssm import RSSM, categorical_sample, kl_divergence
 from .state import DreamerV3CPUState, DreamerV3GPUState
 from .imagination import (
@@ -3792,221 +3796,994 @@ struct DreamerV3Agent[
         return metrics^
 
     # ══════════════════════════════════════════════════════════════════════
-    # Training Loop (GPU)
+    # Training Loop (GPU environments + GPU training)
     # ══════════════════════════════════════════════════════════════════════
 
     fn train_gpu[
-        E: BoxContinuousActionEnv,
+        E: GPUContinuousEnv,
+        n_envs: Int = 32,
     ](
         mut self,
-        mut env: E,
         ctx: DeviceContext,
-        total_timesteps: Int = 1000000,
-        train_every: Int = 5,
-        seed_episodes: Int = 5,
-        print_every: Int = 10,
-        sync_every: Int = 1000,
+        num_episodes: Int = 1000,
+        train_every: Int = 1,
+        sync_every: Int = 50,
+        verbose: Bool = True,
+        print_every: Int = 50_000,
         logger: LoggerPtr = LoggerPtr(),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
-        """Train DreamerV3 with GPU-accelerated training steps.
+        """Train DreamerV3 with GPU environments and GPU training.
 
-        Data collection runs on CPU (single env). Batch training runs on GPU.
-        Periodically syncs GPU weights back to CPU for action selection.
+        N_ENVS parallel GPU environments for data collection. RSSM action
+        selection runs entirely on GPU (symlog → encoder → GRU → posterior
+        → actor → tanh-normal sample). World model + actor-critic training
+        on GPU. Transitions downloaded to CPU per-env replay buffers.
+
+        Parameters:
+            E: GPU environment type implementing GPUContinuousEnv.
+            n_envs: Number of parallel GPU environments (default: 32).
 
         Args:
-            env: Environment implementing BoxContinuousActionEnv.
             ctx: GPU device context.
-            total_timesteps: Total environment steps.
-            train_every: Steps between training updates.
-            seed_episodes: Random exploration episodes before training.
-            print_every: Episodes between progress prints.
-            sync_every: Training steps between GPU->CPU weight sync.
+            num_episodes: Target episodes to complete.
+            train_every: Train every N env collection steps.
+            sync_every: GPU->CPU weight sync interval (train steps).
+            verbose: Print progress.
+            print_every: Print interval in total env transitions.
             logger: Optional metrics logger pointer.
-            diag_every: Log diagnostics every N train steps (0 = every step).
+            diag_every: Log diagnostics every N train steps.
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
         """
         self.logger = logger
         self.diag_every = diag_every
+
+        # ── Comptime aliases ─────────────────────────────────────────
+        comptime OBS = Self.obs_dim
+        comptime ACT = Self.action_dim
+        comptime DETER = Self.deter_dim
+        comptime STOCH = Self.STOCH_FLAT
+        comptime FEAT = Self.FEAT_DIM
+        comptime HID = Self.hidden
         comptime BL = Self.batch_length
         comptime B = Self.batch_size
-        comptime ACT = Self.action_dim
-        comptime OBS = Self.obs_dim
+        comptime ACTOR_OUT_DIM = Self.StateType.ActorModel.OUT_DIM
+        comptime GRU_IN = DETER + 3 * HID
+        comptime POST_IN = DETER + STOCH
+        comptime ENV_BLOCKS = (n_envs + TPB - 1) // TPB
+        comptime PER_ENV_CAP = max(
+            B + BL + 2, Self.buffer_capacity // n_envs
+        )
 
-        var metrics = TrainingMetrics(algorithm_name="DreamerV3-GPU")
-        var episode_reward = Float64(0.0)
-        var episode_steps = 0
-        var episode_count = 0
-        var total_env_steps = 0
+        # ── Network type aliases ─────────────────────────────────────
+        comptime RSSMType = Self.StateType.RSSMType
+        comptime EncNet = RSSMType.EncNet
+        comptime PostNet = RSSMType.PostNet
+        comptime DProjNet = RSSMType.DeterProjNet
+        comptime SProjNet = RSSMType.StochProjNet
+        comptime AProjNet = RSSMType.ActionProjNet
+        comptime GHNet = RSSMType.GRUHiddenNet
+        comptime GGNet = RSSMType.GRUGateNet
 
-        # Allocate GPU state and upload initial weights
+        # ── Workspace for env step ───────────────────────────────────
+        comptime TOTAL_WS = (
+            E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
+        )
+        comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
+        var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
+        E.init_step_workspace_gpu[n_envs](ctx, step_ws_buf)
+
+        # ── GPU env buffers ──────────────────────────────────────────
+        var states_buf = ctx.enqueue_create_buffer[dtype](
+            n_envs * E.STATE_SIZE
+        )
+        var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * OBS)
+        var act_buf = ctx.enqueue_create_buffer[dtype](n_envs * ACT)
+        var rew_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var done_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+        # ── Host transfer buffers (for CPU replay buffer) ────────────
+        var obs_host = ctx.enqueue_create_host_buffer[dtype](
+            n_envs * OBS
+        )
+        var act_host = ctx.enqueue_create_host_buffer[dtype](
+            n_envs * ACT
+        )
+        var rew_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
+        var done_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
+
+        # ── GPU RSSM inference state (persistent across steps) ───────
+        var inf_deter = ctx.enqueue_create_buffer[dtype](n_envs * DETER)
+        var inf_stoch = ctx.enqueue_create_buffer[dtype](n_envs * STOCH)
+        var inf_prev_act = ctx.enqueue_create_buffer[dtype](
+            n_envs * ACT
+        )
+
+        # ── GPU RSSM inference scratch ───────────────────────────────
+        var inf_symlog = ctx.enqueue_create_buffer[dtype](n_envs * OBS)
+        var inf_embed = ctx.enqueue_create_buffer[dtype](n_envs * STOCH)
+        var inf_norm_act = ctx.enqueue_create_buffer[dtype](n_envs * ACT)
+        var inf_proj_d = ctx.enqueue_create_buffer[dtype](n_envs * HID)
+        var inf_proj_s = ctx.enqueue_create_buffer[dtype](n_envs * HID)
+        var inf_proj_a = ctx.enqueue_create_buffer[dtype](n_envs * HID)
+        var inf_gru_concat = ctx.enqueue_create_buffer[dtype](
+            n_envs * GRU_IN
+        )
+        var inf_hidden = ctx.enqueue_create_buffer[dtype](n_envs * DETER)
+        var inf_gate = ctx.enqueue_create_buffer[dtype](
+            n_envs * 3 * DETER
+        )
+        var inf_new_deter = ctx.enqueue_create_buffer[dtype](
+            n_envs * DETER
+        )
+        var inf_post_in = ctx.enqueue_create_buffer[dtype](
+            n_envs * POST_IN
+        )
+        var inf_post_logits = ctx.enqueue_create_buffer[dtype](
+            n_envs * STOCH
+        )
+        var inf_new_stoch = ctx.enqueue_create_buffer[dtype](
+            n_envs * STOCH
+        )
+        var inf_post_probs = ctx.enqueue_create_buffer[dtype](
+            n_envs * STOCH
+        )
+        var inf_feat = ctx.enqueue_create_buffer[dtype](n_envs * FEAT)
+        var inf_actor_out = ctx.enqueue_create_buffer[dtype](
+            n_envs * ACTOR_OUT_DIM
+        )
+        var inf_log_probs = ctx.enqueue_create_buffer[dtype](n_envs)
+
+        # ── GPU inference workspace (shared, sequential reuse) ───────
+        comptime ws1 = max(
+            RSSMType.EncModel.WORKSPACE_SIZE_PER_SAMPLE,
+            RSSMType.DeterProj.WORKSPACE_SIZE_PER_SAMPLE,
+        )
+        comptime ws2 = max(
+            ws1, RSSMType.StochProj.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime ws3 = max(
+            ws2, RSSMType.ActionProj.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime ws4 = max(
+            ws3, RSSMType.GRUHiddenModel.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime ws5 = max(
+            ws4, RSSMType.GRUGateModel.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime ws6 = max(
+            ws5, RSSMType.PostModel.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime MAX_INF_WS_PER = max(
+            ws6, Self.StateType.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        comptime INF_WS_SIZE = max(n_envs * MAX_INF_WS_PER, 1)
+        var inf_ws = ctx.enqueue_create_buffer[dtype](INF_WS_SIZE)
+
+        # ── Per-env replay buffers (CPU) ─────────────────────────────
+        comptime PerEnvBuf = SequenceReplayBuffer[
+            PER_ENV_CAP, OBS, ACT
+        ]
+        var env_bufs = List[PerEnvBuf](capacity=n_envs)
+        for _ in range(n_envs):
+            env_bufs.append(PerEnvBuf())
+
+        # ── GPU training state ───────────────────────────────────────
         var gpu_state = self.make_gpu_state(ctx)
         self.upload_to_gpu(gpu_state, ctx)
         ctx.synchronize()
 
-        # ── Seed with random episodes ────────────────────────────────
-        _ = env.reset()
-        for _ in range(seed_episodes):
-            var done = False
-            while not done:
-                var obs = _to_dtype_list(env.get_obs_list())
-                var action = List[Scalar[dtype]](capacity=ACT)
-                for _ in range(ACT):
-                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
-                var result = env.step_continuous_vec[dtype](action)
-                var reward = result[1]
-                done = result[2]
-                self.observe(obs, action, Float64(reward), done)
-                total_env_steps += 1
-                if done:
-                    _ = env.reset()
+        # ── Kernel wrappers ──────────────────────────────────────────
+        @always_inline
+        fn run_symlog(
+            o: LayoutTensor[
+                dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
+            ],
+            i: LayoutTensor[
+                dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
+            ],
+        ):
+            symlog_kernel[n_envs * OBS](o, i)
+
+        @always_inline
+        fn run_action_norm(
+            o: LayoutTensor[
+                dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+            ],
+            i: LayoutTensor[
+                dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+            ],
+        ):
+            action_normalize_kernel[n_envs, ACT](o, i)
+
+        @always_inline
+        fn run_concat_gru(
+            co: LayoutTensor[
+                dtype, Layout.row_major(n_envs, GRU_IN), MutAnyOrigin
+            ],
+            d: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            pd: LayoutTensor[
+                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+            ],
+            ps: LayoutTensor[
+                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+            ],
+            pa: LayoutTensor[
+                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+            ],
+        ):
+            concat_gru_input_kernel[n_envs, DETER, HID](
+                co, d, pd, ps, pa
+            )
+
+        @always_inline
+        fn run_gru_gate(
+            nd: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            pd: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            go: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs, 3 * DETER),
+                MutAnyOrigin,
+            ],
+        ):
+            gru_gate_kernel[n_envs, DETER](nd, pd, go)
+
+        @always_inline
+        fn run_concat_de(
+            co: LayoutTensor[
+                dtype, Layout.row_major(n_envs, POST_IN), MutAnyOrigin
+            ],
+            d: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            e: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+        ):
+            concat_deter_embed_kernel[n_envs, DETER, STOCH](co, d, e)
+
+        @always_inline
+        fn run_cat_sample(
+            o: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+            p: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+            l: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+            s: Scalar[DType.uint32],
+            tr: Scalar[DType.bool],
+        ):
+            categorical_sample_kernel[
+                n_envs, Self.stoch_dim, Self.classes, RSSMType.UNIMIX
+            ](o, p, l, s, tr)
+
+        @always_inline
+        fn run_concat_feat(
+            f: LayoutTensor[
+                dtype, Layout.row_major(n_envs, FEAT), MutAnyOrigin
+            ],
+            d: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            s: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+        ):
+            concat_feat_kernel[n_envs, DETER, STOCH](f, d, s)
+
+        @always_inline
+        fn run_sample_actions(
+            a: LayoutTensor[
+                dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+            ],
+            lp: LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ],
+            ao: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs, 2 * ACT),
+                MutAnyOrigin,
+            ],
+            s: Scalar[DType.uint32],
+        ):
+            tanh_normal_sample_kernel[n_envs, ACT](a, lp, ao, s)
+
+        @always_inline
+        fn run_copy_deter(
+            d: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * DETER),
+                MutAnyOrigin,
+            ],
+            s: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * DETER),
+                MutAnyOrigin,
+            ],
+        ):
+            copy_kernel[n_envs * DETER](d, s)
+
+        @always_inline
+        fn run_copy_stoch(
+            d: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * STOCH),
+                MutAnyOrigin,
+            ],
+            s: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * STOCH),
+                MutAnyOrigin,
+            ],
+        ):
+            copy_kernel[n_envs * STOCH](d, s)
+
+        @always_inline
+        fn run_copy_act(
+            d: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * ACT),
+                MutAnyOrigin,
+            ],
+            s: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * ACT),
+                MutAnyOrigin,
+            ],
+        ):
+            copy_kernel[n_envs * ACT](d, s)
+
+        @always_inline
+        fn run_rssm_reset_done(
+            det: LayoutTensor[
+                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+            ],
+            sto: LayoutTensor[
+                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+            ],
+            act: LayoutTensor[
+                dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_idx.x * block_dim.x + thread_idx.x)
+            if idx >= n_envs:
+                return
+            if dones[idx] > Scalar[dtype](0.5):
+                for i in range(DETER):
+                    det[idx, i] = Scalar[dtype](0)
+                for i in range(STOCH):
+                    sto[idx, i] = Scalar[dtype](0)
+                for i in range(ACT):
+                    act[idx, i] = Scalar[dtype](0)
+
+        # ── Pre-create LayoutTensor views ────────────────────────────
+        var obs_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var sym_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
+        ](inf_symlog.unsafe_ptr())
+        var sym_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, OBS), MutAnyOrigin
+        ](inf_symlog.unsafe_ptr())
+        var emb_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+        ](inf_embed.unsafe_ptr())
+        var deter_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+        ](inf_deter.unsafe_ptr())
+        var stoch_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+        ](inf_stoch.unsafe_ptr())
+        var prev_act_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+        ](inf_prev_act.unsafe_ptr())
+        var norm_act_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+        ](inf_norm_act.unsafe_ptr())
+        var proj_d_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+        ](inf_proj_d.unsafe_ptr())
+        var proj_s_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+        ](inf_proj_s.unsafe_ptr())
+        var proj_a_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
+        ](inf_proj_a.unsafe_ptr())
+        var concat_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, GRU_IN), MutAnyOrigin
+        ](inf_gru_concat.unsafe_ptr())
+        var hidden_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+        ](inf_hidden.unsafe_ptr())
+        var gate_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, 3 * DETER), MutAnyOrigin
+        ](inf_gate.unsafe_ptr())
+        var new_deter_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
+        ](inf_new_deter.unsafe_ptr())
+        var post_in_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, POST_IN), MutAnyOrigin
+        ](inf_post_in.unsafe_ptr())
+        var post_logits_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+        ](inf_post_logits.unsafe_ptr())
+        var new_stoch_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+        ](inf_new_stoch.unsafe_ptr())
+        var post_probs_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
+        ](inf_post_probs.unsafe_ptr())
+        var feat_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, FEAT), MutAnyOrigin
+        ](inf_feat.unsafe_ptr())
+        var actor_out_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, ACTOR_OUT_DIM), MutAnyOrigin
+        ](inf_actor_out.unsafe_ptr())
+        var act_2d = LayoutTensor[
+            dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin
+        ](act_buf.unsafe_ptr())
+        var log_probs_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](inf_log_probs.unsafe_ptr())
+        var done_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs), MutAnyOrigin
+        ](done_buf.unsafe_ptr())
+
+        # 1D views for copy kernels
+        var inf_deter_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * DETER), MutAnyOrigin
+        ](inf_deter.unsafe_ptr())
+        var inf_stoch_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * STOCH), MutAnyOrigin
+        ](inf_stoch.unsafe_ptr())
+        var inf_prev_act_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * ACT), MutAnyOrigin
+        ](inf_prev_act.unsafe_ptr())
+        var new_deter_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * DETER), MutAnyOrigin
+        ](inf_new_deter.unsafe_ptr())
+        var new_stoch_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * STOCH), MutAnyOrigin
+        ](inf_new_stoch.unsafe_ptr())
+        var act_1d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * ACT), MutAnyOrigin
+        ](act_buf.unsafe_ptr())
+
+        # ── Grid dimensions ──────────────────────────────────────────
+        comptime SYM_BLOCKS = (n_envs * OBS + TPB - 1) // TPB
+        comptime NORM_BLOCKS = (n_envs * ACT + TPB - 1) // TPB
+        comptime CONCAT_GRU_BLOCKS = (n_envs * GRU_IN + TPB - 1) // TPB
+        comptime GATE_BLOCKS = (n_envs * DETER + TPB - 1) // TPB
+        comptime DE_BLOCKS = (n_envs * POST_IN + TPB - 1) // TPB
+        comptime CAT_BLOCKS = (n_envs * Self.stoch_dim + TPB - 1) // TPB
+        comptime FEAT_BLOCKS = (n_envs * FEAT + TPB - 1) // TPB
+        comptime SAMPLE_BLOCKS = (n_envs + TPB - 1) // TPB
+        comptime COPY_D_BLOCKS = (n_envs * DETER + TPB - 1) // TPB
+        comptime COPY_S_BLOCKS = (n_envs * STOCH + TPB - 1) // TPB
+        comptime COPY_A_BLOCKS = (n_envs * ACT + TPB - 1) // TPB
+
+        # ── Tracking ─────────────────────────────────────────────────
+        var metrics = TrainingMetrics(algorithm_name="DreamerV3-GPU")
+        var cpu_ep_rewards = List[Float64](capacity=n_envs)
+        for _ in range(n_envs):
+            cpu_ep_rewards.append(0.0)
+        var completed_episodes = 0
+        var total_steps = 0
+        var recent_reward_sum: Float64 = 0.0
+        var recent_ep_count = 0
+        var next_print = print_every
+        var collection_step = 0
+
+        # ── Init: reset envs, zero RSSM state ───────────────────────
+        E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf)
+        E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, OBS](
+            ctx, states_buf, obs_buf
+        )
+        # Zero persistent RSSM state
+        var z_d = LayoutTensor[
+            dtype, Layout.row_major(n_envs * DETER), MutAnyOrigin
+        ](inf_deter.unsafe_ptr())
+        var z_s = LayoutTensor[
+            dtype, Layout.row_major(n_envs * STOCH), MutAnyOrigin
+        ](inf_stoch.unsafe_ptr())
+        var z_a = LayoutTensor[
+            dtype, Layout.row_major(n_envs * ACT), MutAnyOrigin
+        ](inf_prev_act.unsafe_ptr())
+
+        @always_inline
+        fn run_zero_d(
+            b: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * DETER),
+                MutAnyOrigin,
+            ],
+        ):
+            zero_kernel[n_envs * DETER](b)
+
+        @always_inline
+        fn run_zero_s(
+            b: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * STOCH),
+                MutAnyOrigin,
+            ],
+        ):
+            zero_kernel[n_envs * STOCH](b)
+
+        @always_inline
+        fn run_zero_a(
+            b: LayoutTensor[
+                dtype,
+                Layout.row_major(n_envs * ACT),
+                MutAnyOrigin,
+            ],
+        ):
+            zero_kernel[n_envs * ACT](b)
+
+        ctx.enqueue_function[run_zero_d, run_zero_d](
+            z_d, grid_dim=(COPY_D_BLOCKS,), block_dim=(TPB,)
+        )
+        ctx.enqueue_function[run_zero_s, run_zero_s](
+            z_s, grid_dim=(COPY_S_BLOCKS,), block_dim=(TPB,)
+        )
+        ctx.enqueue_function[run_zero_a, run_zero_a](
+            z_a, grid_dim=(COPY_A_BLOCKS,), block_dim=(TPB,)
+        )
+        ctx.synchronize()
 
         # ── Main training loop ───────────────────────────────────────
-        _ = env.reset()
-        self.reset_episode()
+        while completed_episodes < num_episodes:
+            # ── 1. Download current obs (for replay buffer) ──────────
+            ctx.enqueue_copy(obs_host, obs_buf)
 
-        for step in range(total_timesteps):
-            var obs = _to_dtype_list(env.get_obs_list())
-
-            # Select action (CPU, using CPU weights)
-            var action: List[Scalar[dtype]]
-            if total_env_steps < self.warmup_steps:
-                action = List[Scalar[dtype]](capacity=ACT)
-                for _ in range(ACT):
-                    action.append(Scalar[dtype](random_float64(-1.0, 1.0)))
+            # ── 2. Action selection (all on GPU) ─────────────────────
+            if total_steps < self.warmup_steps * n_envs:
+                # Warmup: random actions on CPU, upload
+                ctx.synchronize()  # wait for obs_host
+                for i in range(n_envs * ACT):
+                    act_host[i] = Scalar[dtype](
+                        random_float64(-1.0, 1.0)
+                    )
+                ctx.enqueue_copy(act_buf, act_host)
             else:
-                action = self.select_action(obs, training=True)
-
-            # Environment step
-            var result = env.step_continuous_vec[dtype](action)
-            var reward = result[1]
-            var done = result[2]
-
-            self.observe(obs, action, Float64(reward), done)
-            episode_reward += Float64(reward)
-            episode_steps += 1
-            total_env_steps += 1
-
-            if done:
-                episode_count += 1
-                metrics.log_episode[dtype](
-                    episode_count,
-                    Scalar[dtype](episode_reward),
-                    episode_steps,
-                    0.0,
+                # Full GPU RSSM observe + actor + sample
+                # 1. Symlog obs
+                ctx.enqueue_function[run_symlog, run_symlog](
+                    sym_1d,
+                    obs_1d,
+                    grid_dim=(SYM_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 2. Encoder forward
+                EncNet.forward_gpu[n_envs](
+                    ctx,
+                    sym_2d,
+                    emb_2d,
+                    gpu_state.encoder.params_view(),
+                    inf_ws,
+                )
+                # 3. Action normalize
+                ctx.enqueue_function[
+                    run_action_norm, run_action_norm
+                ](
+                    norm_act_2d,
+                    prev_act_2d,
+                    grid_dim=(NORM_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 4-6. Projections (sequential, shared workspace)
+                DProjNet.forward_gpu[n_envs](
+                    ctx,
+                    deter_2d,
+                    proj_d_2d,
+                    gpu_state.deter_proj.params_view(),
+                    inf_ws,
+                )
+                SProjNet.forward_gpu[n_envs](
+                    ctx,
+                    stoch_2d,
+                    proj_s_2d,
+                    gpu_state.stoch_proj.params_view(),
+                    inf_ws,
+                )
+                AProjNet.forward_gpu[n_envs](
+                    ctx,
+                    norm_act_2d,
+                    proj_a_2d,
+                    gpu_state.action_proj.params_view(),
+                    inf_ws,
+                )
+                # 7. Concat GRU input
+                ctx.enqueue_function[run_concat_gru, run_concat_gru](
+                    concat_2d,
+                    deter_2d,
+                    proj_d_2d,
+                    proj_s_2d,
+                    proj_a_2d,
+                    grid_dim=(CONCAT_GRU_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 8. GRU hidden forward
+                GHNet.forward_gpu[n_envs](
+                    ctx,
+                    concat_2d,
+                    hidden_2d,
+                    gpu_state.gru_hidden.params_view(),
+                    inf_ws,
+                )
+                # 9. GRU gate forward
+                GGNet.forward_gpu[n_envs](
+                    ctx,
+                    hidden_2d,
+                    gate_2d,
+                    gpu_state.gru_gates.params_view(),
+                    inf_ws,
+                )
+                # 10. GRU gate application → new_deter
+                ctx.enqueue_function[run_gru_gate, run_gru_gate](
+                    new_deter_2d,
+                    deter_2d,
+                    gate_2d,
+                    grid_dim=(GATE_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 11. Concat deter + embed → posterior input
+                ctx.enqueue_function[run_concat_de, run_concat_de](
+                    post_in_2d,
+                    new_deter_2d,
+                    emb_2d,
+                    grid_dim=(DE_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 12. Posterior forward
+                PostNet.forward_gpu[n_envs](
+                    ctx,
+                    post_in_2d,
+                    post_logits_2d,
+                    gpu_state.posterior.params_view(),
+                    inf_ws,
+                )
+                # 13. Categorical sample → new_stoch
+                var cat_seed = Scalar[DType.uint32](
+                    UInt32(total_steps + 1)
+                    * UInt32(n_envs * Self.stoch_dim * Self.classes + 1)
+                )
+                ctx.enqueue_function[run_cat_sample, run_cat_sample](
+                    new_stoch_2d,
+                    post_probs_2d,
+                    post_logits_2d,
+                    cat_seed,
+                    Scalar[DType.bool](True),
+                    grid_dim=(CAT_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 14. Concat feat
+                ctx.enqueue_function[
+                    run_concat_feat, run_concat_feat
+                ](
+                    feat_2d,
+                    new_deter_2d,
+                    new_stoch_2d,
+                    grid_dim=(FEAT_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 15. Actor forward
+                Self.ActorNet.forward_gpu[n_envs](
+                    ctx,
+                    feat_2d,
+                    actor_out_2d,
+                    gpu_state.actor.params_view(),
+                    inf_ws,
+                )
+                # 16. Sample tanh-normal actions → act_buf
+                var act_seed = Scalar[DType.uint32](
+                    UInt32(total_steps + 2) * UInt32(n_envs * ACT + 1)
+                )
+                ctx.enqueue_function[
+                    run_sample_actions, run_sample_actions
+                ](
+                    act_2d,
+                    log_probs_1d,
+                    actor_out_2d,
+                    act_seed,
+                    grid_dim=(SAMPLE_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                # 17. Update persistent RSSM state
+                ctx.enqueue_function[run_copy_deter, run_copy_deter](
+                    inf_deter_1d,
+                    new_deter_1d,
+                    grid_dim=(COPY_D_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[run_copy_stoch, run_copy_stoch](
+                    inf_stoch_1d,
+                    new_stoch_1d,
+                    grid_dim=(COPY_S_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[run_copy_act, run_copy_act](
+                    inf_prev_act_1d,
+                    act_1d,
+                    grid_dim=(COPY_A_BLOCKS,),
+                    block_dim=(TPB,),
                 )
 
-                # Log episode metrics
-                if self.logger:
-                    try:
-                        _log(
-                            self.logger,
-                            "episode_reward",
-                            episode_reward,
-                            total_env_steps,
-                        )
-                        _log(
-                            self.logger,
-                            "episodes",
-                            Float64(episode_count),
-                            total_env_steps,
-                        )
-                        _log(
-                            self.logger,
-                            "train_steps",
-                            Float64(self.train_step_count),
-                            total_env_steps,
-                        )
-                    except:
-                        pass
+            # ── 3. Step GPU envs ─────────────────────────────────────
+            comptime if TOTAL_WS > 0:
+                E.step_kernel_gpu[
+                    n_envs, E.STATE_SIZE, OBS, ACT
+                ](
+                    ctx,
+                    states_buf,
+                    act_buf,
+                    rew_buf,
+                    done_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(total_steps * 1103515245 + 12345),
+                    List[Scalar[dtype]](),
+                    step_ws_buf.unsafe_ptr(),
+                )
+            else:
+                E.step_kernel_gpu[
+                    n_envs, E.STATE_SIZE, OBS, ACT
+                ](
+                    ctx,
+                    states_buf,
+                    act_buf,
+                    rew_buf,
+                    done_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(total_steps * 1103515245 + 12345),
+                    List[Scalar[dtype]](),
+                )
 
-                if episode_count % print_every == 0:
+            # ── 4. Reset RSSM state for done envs (on GPU) ──────────
+            ctx.enqueue_function[
+                run_rssm_reset_done, run_rssm_reset_done
+            ](
+                deter_2d,
+                stoch_2d,
+                prev_act_2d,
+                done_1d,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # ── 5. Download transitions for replay buffer ────────────
+            ctx.enqueue_copy(act_host, act_buf)
+            ctx.enqueue_copy(rew_host, rew_buf)
+            ctx.enqueue_copy(done_host, done_buf)
+            ctx.synchronize()  # also completes obs_host from step 1
+
+            # ── 6. Process transitions (CPU) ─────────────────────────
+            for e in range(n_envs):
+                var rew_val = Scalar[DType.float32](rew_host[e])
+                var done_val = Float64(done_host[e]) > 0.5
+
+                cpu_ep_rewards[e] += Float64(rew_val)
+
+                var obs_arr = InlineArray[
+                    Scalar[DType.float32], OBS
+                ](fill=0)
+                var act_arr = InlineArray[
+                    Scalar[DType.float32], ACT
+                ](fill=0)
+                for k in range(OBS):
+                    obs_arr[k] = Scalar[DType.float32](
+                        obs_host[e * OBS + k]
+                    )
+                for k in range(ACT):
+                    act_arr[k] = Scalar[DType.float32](
+                        act_host[e * ACT + k]
+                    )
+                env_bufs[e].add(obs_arr, act_arr, rew_val, done_val)
+
+                if done_val:
+                    var ep_r = cpu_ep_rewards[e]
+                    completed_episodes += 1
+                    metrics.log_episode(
+                        completed_episodes, ep_r, 0, 0.0
+                    )
+                    recent_reward_sum += ep_r
+                    recent_ep_count += 1
+
+                    if self.logger:
+                        try:
+                            _log(
+                                self.logger,
+                                "episode_reward",
+                                ep_r,
+                                total_steps,
+                            )
+                            _log(
+                                self.logger,
+                                "episodes",
+                                Float64(completed_episodes),
+                                total_steps,
+                            )
+                            _log(
+                                self.logger,
+                                "train_steps",
+                                Float64(self.train_step_count),
+                                total_steps,
+                            )
+                        except:
+                            pass
+
+                    cpu_ep_rewards[e] = 0.0
+                    if completed_episodes >= num_episodes:
+                        break
+
+            total_steps += n_envs
+            collection_step += 1
+
+            # ── 7. Training ──────────────────────────────────────────
+            if total_steps >= self.warmup_steps * n_envs:
+                if collection_step % train_every == 0:
+                    comptime min_ready = B + BL + 1
+                    var ready = True
+                    for e in range(n_envs):
+                        if not env_bufs[e].is_ready[min_ready]():
+                            ready = False
+                            break
+
+                    if ready:
+                        var batch_obs = List[Scalar[DType.float32]](
+                            capacity=B * (BL + 1) * OBS
+                        )
+                        var batch_acts = List[Scalar[DType.float32]](
+                            capacity=B * BL * ACT
+                        )
+                        var batch_rews = List[Scalar[DType.float32]](
+                            capacity=B * BL
+                        )
+                        var batch_dones = List[
+                            Scalar[DType.float32]
+                        ](capacity=B * BL)
+                        for _ in range(B * (BL + 1) * OBS):
+                            batch_obs.append(Scalar[DType.float32](0))
+                        for _ in range(B * BL * ACT):
+                            batch_acts.append(
+                                Scalar[DType.float32](0)
+                            )
+                        for _ in range(B * BL):
+                            batch_rews.append(
+                                Scalar[DType.float32](0)
+                            )
+                            batch_dones.append(
+                                Scalar[DType.float32](0)
+                            )
+
+                        var b_per_env = B // n_envs
+                        var b_rem = B % n_envs
+                        var b_offset = 0
+                        for e in range(n_envs):
+                            var n_seqs = b_per_env + (
+                                1 if e < b_rem else 0
+                            )
+                            for _ in range(n_seqs):
+                                var s_obs = List[
+                                    Scalar[DType.float32]
+                                ](capacity=(BL + 1) * OBS)
+                                var s_act = List[
+                                    Scalar[DType.float32]
+                                ](capacity=BL * ACT)
+                                var s_rew = List[
+                                    Scalar[DType.float32]
+                                ](capacity=BL)
+                                var s_don = List[
+                                    Scalar[DType.float32]
+                                ](capacity=BL)
+                                for _ in range((BL + 1) * OBS):
+                                    s_obs.append(
+                                        Scalar[DType.float32](0)
+                                    )
+                                for _ in range(BL * ACT):
+                                    s_act.append(
+                                        Scalar[DType.float32](0)
+                                    )
+                                for _ in range(BL):
+                                    s_rew.append(
+                                        Scalar[DType.float32](0)
+                                    )
+                                    s_don.append(
+                                        Scalar[DType.float32](0)
+                                    )
+                                env_bufs[e].sample_sequences[
+                                    1, BL
+                                ](s_obs, s_act, s_rew, s_don)
+
+                                var b = b_offset
+                                for k in range((BL + 1) * OBS):
+                                    batch_obs[
+                                        b * (BL + 1) * OBS + k
+                                    ] = s_obs[k]
+                                for k in range(BL * ACT):
+                                    batch_acts[
+                                        b * BL * ACT + k
+                                    ] = s_act[k]
+                                for k in range(BL):
+                                    batch_rews[
+                                        b * BL + k
+                                    ] = s_rew[k]
+                                    batch_dones[
+                                        b * BL + k
+                                    ] = s_don[k]
+                                b_offset += 1
+
+                        self.do_gpu_train_step(
+                            ctx,
+                            gpu_state,
+                            batch_obs,
+                            batch_acts,
+                            batch_rews,
+                            batch_dones,
+                        )
+
+                        if self.train_step_count % sync_every == 0:
+                            self.download_from_gpu(
+                                gpu_state, ctx
+                            )
+                            ctx.synchronize()
+
+            # ── 8. Progress ──────────────────────────────────────────
+            if verbose and total_steps >= next_print:
+                if recent_ep_count > 0:
+                    var avg = recent_reward_sum / Float64(
+                        recent_ep_count
+                    )
                     clear_progress_bar()
                     print(
-                        "Episode "
-                        + String(episode_count)
-                        + " | Reward: "
-                        + (
-                            String("NaN")
-                            if episode_reward != episode_reward
-                            else String(Int(episode_reward))
-                        )
-                        + " | Steps: "
-                        + String(episode_steps)
-                        + " | Train updates: "
+                        "Steps: "
+                        + String(total_steps)
+                        + " | Episodes: "
+                        + String(completed_episodes)
+                        + " | Avg reward: "
+                        + String(avg)[:8]
+                        + " | Train: "
                         + String(self.train_step_count)
-                        + " | Buffer: "
-                        + String(self.state.buffer.len())
                     )
+                recent_reward_sum = 0.0
+                recent_ep_count = 0
+                next_print += print_every
 
-                episode_reward = 0.0
-                episode_steps = 0
-                _ = env.reset()
-                self.reset_episode()
-
-            # Train on GPU
-            if step % train_every == 0 and self.state.is_ready():
-                # Sample batch on CPU
-                var batch_obs = List[Scalar[DType.float32]](
-                    capacity=B * (BL + 1) * OBS
-                )
-                var batch_actions = List[Scalar[DType.float32]](
-                    capacity=B * BL * ACT
-                )
-                var batch_rewards = List[Scalar[DType.float32]](
-                    capacity=B * BL
-                )
-                var batch_dones = List[Scalar[DType.float32]](
-                    capacity=B * BL
-                )
-                for _ in range(B * (BL + 1) * OBS):
-                    batch_obs.append(Scalar[DType.float32](0))
-                for _ in range(B * BL * ACT):
-                    batch_actions.append(Scalar[DType.float32](0))
-                for _ in range(B * BL):
-                    batch_rewards.append(Scalar[DType.float32](0))
-                    batch_dones.append(Scalar[DType.float32](0))
-
-                self.state.buffer.sample_sequences[B, BL](
-                    batch_obs, batch_actions, batch_rewards, batch_dones
-                )
-
-                # GPU training step
-                self.do_gpu_train_step(
-                    ctx,
-                    gpu_state,
-                    batch_obs,
-                    batch_actions,
-                    batch_rewards,
-                    batch_dones,
-                )
-
-                # Periodic GPU -> CPU sync for action selection
-                if self.train_step_count % sync_every == 0:
-                    self.download_from_gpu(gpu_state, ctx)
-                    ctx.synchronize()
-
-            # Progress bar
-            if step % 100 == 0:
+            if verbose and total_steps % (n_envs * 100) == 0:
                 print_progress_bar(
-                    step,
-                    total_timesteps,
+                    completed_episodes,
+                    num_episodes,
                     self.train_step_count,
                     "DreamerV3-GPU",
                 )
 
-        # Final sync
+        # ── Final sync ───────────────────────────────────────────────
         self.download_from_gpu(gpu_state, ctx)
         ctx.synchronize()
 
         clear_progress_bar()
         print(
             "GPU Training complete. Episodes: "
-            + String(episode_count)
+            + String(completed_episodes)
             + " | Total steps: "
-            + String(total_env_steps)
+            + String(total_steps)
             + " | Train updates: "
             + String(self.train_step_count)
         )
