@@ -11,11 +11,14 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs.arcade_games.pong import PongEnv
+from mojo_rl.core.logger import MetricsLogger, LoggerPtr
 
 
 # =============================================================================
@@ -105,6 +108,29 @@ fn main() raises:
         print()
 
         # =====================================================================
+        # Setup logger — posts to RL Monitor
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = MetricsLogger(
+            server_url=url,
+            run_name="DQN Pong GPU",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "Double DQN")
+        logger.set_config("env", "Pong")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("lr", "5e-4")
+        logger.set_config("gamma", "0.99")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+
+        # =====================================================================
         # Train
         # =====================================================================
 
@@ -123,10 +149,13 @@ fn main() raises:
                 verbose=True,
                 print_every=100_000,
                 environment_name="Pong",
+                logger=UnsafePointer(to=logger),
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()

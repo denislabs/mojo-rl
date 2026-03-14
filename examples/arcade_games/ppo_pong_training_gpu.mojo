@@ -14,11 +14,14 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.ppo import DeepPPOAgent
 from mojo_rl.envs.arcade_games.pong import PongEnv
+from mojo_rl.core.logger import MetricsLogger, LoggerPtr
 
 
 # =============================================================================
@@ -127,6 +130,30 @@ fn main() raises:
         print()
 
         # =====================================================================
+        # Setup logger — posts to RL Monitor
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = MetricsLogger(
+            server_url=url,
+            run_name="PPO Pong GPU",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "PPO")
+        logger.set_config("env", "Pong")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("gamma", "0.99")
+        logger.set_config("rollout_len", String(ROLLOUT_LEN))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("minibatch_size", String(GPU_MINIBATCH_SIZE))
+
+        # =====================================================================
         # Train
         # =====================================================================
 
@@ -141,10 +168,13 @@ fn main() raises:
                 num_updates=NUM_UPDATES,
                 verbose=True,
                 print_every=100,
+                logger=UnsafePointer(to=logger),
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()
