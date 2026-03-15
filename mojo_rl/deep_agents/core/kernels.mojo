@@ -807,25 +807,27 @@ fn actor_grad_from_critic_kernel[
     BATCH: Int,
     OBS_DIM: Int,
     ACTION_DIM: Int,
+    CRITIC_IN: Int = OBS_DIM + ACTION_DIM,
 ](
     d_actor_out: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
     ],
     d_critic_in: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
     ],
 ):
     """Extract actor output gradients from critic input gradients (∂Q/∂a).
 
     After running critic backward with gradient [-1/BATCH, ...] (gradient ascent),
-    the critic's input gradient d_critic_in has shape [BATCH, OBS_DIM + ACTION_DIM].
+    the critic's input gradient d_critic_in has shape [BATCH, CRITIC_IN].
     The action portion (columns OBS_DIM:OBS_DIM+ACTION_DIM) is the policy gradient.
+    CRITIC_IN defaults to OBS_DIM + ACTION_DIM but can be passed explicitly.
 
     One thread per (batch, action_dim) element.
 
     Args:
         d_actor_out: Output actor gradient [BATCH, ACTION_DIM].
-        d_critic_in: Critic input gradient [BATCH, OBS_DIM + ACTION_DIM].
+        d_critic_in: Critic input gradient [BATCH, CRITIC_IN].
     """
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
     if tid >= BATCH * ACTION_DIM:
@@ -847,29 +849,31 @@ fn concat_obs_action_kernel[
     BATCH: Int,
     OBS_DIM: Int,
     ACTION_DIM: Int,
+    CONCAT_DIM: Int = OBS_DIM + ACTION_DIM,
 ](
     dst: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(BATCH, CONCAT_DIM), MutAnyOrigin
     ],
     obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     act: LayoutTensor[dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin],
 ):
-    """Concatenate [BATCH, OBS_DIM] and [BATCH, ACTION_DIM] → [BATCH, OBS+ACT].
+    """Concatenate [BATCH, OBS_DIM] and [BATCH, ACTION_DIM] → [BATCH, CONCAT_DIM].
 
     Used by DDPG/TD3/SAC to build critic inputs (obs ‖ action) on GPU.
-    One thread per output element.
+    One thread per output element. CONCAT_DIM defaults to OBS_DIM + ACTION_DIM
+    but can be passed explicitly to avoid type unification issues.
 
     Args:
-        dst: Output tensor [BATCH, OBS_DIM + ACTION_DIM].
+        dst: Output tensor [BATCH, CONCAT_DIM].
         obs: Observations [BATCH, OBS_DIM].
         act: Actions [BATCH, ACTION_DIM].
     """
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = BATCH * (OBS_DIM + ACTION_DIM)
+    var total = BATCH * CONCAT_DIM
     if tid >= total:
         return
-    var b = tid // (OBS_DIM + ACTION_DIM)
-    var c = tid % (OBS_DIM + ACTION_DIM)
+    var b = tid // CONCAT_DIM
+    var c = tid % CONCAT_DIM
     if c < OBS_DIM:
         dst[b, c] = obs[b, c]
     else:
@@ -1085,18 +1089,20 @@ fn _extract_obs_kernel[
 fn td_mse_grad_kernel[
     dtype: DType,
     BATCH: Int,
+    Q_DIM: Int = 1,
 ](
-    q_grad: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    q: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    q_grad: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    q: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
     targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
 ):
     """MSE loss backward for scalar TD critic: q_grad[i,0] = 2*(q-target)/BATCH.
 
-    One thread per batch element.
+    One thread per batch element. Q_DIM defaults to 1 but can be passed
+    explicitly to avoid type unification issues with generic agents.
 
     Args:
-        q_grad:  Output gradient [BATCH, 1] (written).
-        q:       Critic output Q-values [BATCH, 1].
+        q_grad:  Output gradient [BATCH, Q_DIM] (written).
+        q:       Critic output Q-values [BATCH, Q_DIM].
         targets: TD targets [BATCH].
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)

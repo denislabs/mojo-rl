@@ -12,7 +12,14 @@ Concrete configs (DDPGConfig, TD3Config, SACConfig) bundle:
 """
 
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import Model, Linear, LinearReLU, LinearTanh, Sequential
+from mojo_rl.nn.model import (
+    Model,
+    Linear,
+    LinearReLU,
+    LinearTanh,
+    Sequential,
+    Parallel,
+)
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import Network, NetworkState, NetworkPair
 from mojo_rl.nn.initializer import Kaiming, Xavier
@@ -117,3 +124,45 @@ struct TD3Config[
 
     comptime NUM_CRITICS: Int = 2
     comptime HAS_TARGET_ACTOR: Bool = True
+
+
+# =============================================================================
+# SACConfig
+# =============================================================================
+
+
+struct SACConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 256,
+    CAP: Int = 100000,
+    BS: Int = 64,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.0003,
+](OffPolicyConfig):
+    """SAC: stochastic actor (Parallel mean+log_std), twin critics, no target actor."""
+
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    # SAC actor: Parallel output [mean(ACTIONS), log_std(ACTIONS)]
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, Self.ACT],      # mean head
+            LinearTanh[Self.HIDDEN, Self.ACT],   # log_std head (tanh-clamped)
+        ],
+    ]
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime NUM_CRITICS: Int = 2
+    comptime HAS_TARGET_ACTOR: Bool = False
