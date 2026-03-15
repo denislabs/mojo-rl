@@ -516,8 +516,7 @@ struct DeepDDPGAgent[
 
         # Log DDPG diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
@@ -540,7 +539,12 @@ struct DeepDDPGAgent[
                 var tgt_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     tgt_sum += Float64(cpu_state._targets[i])
-                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+                _log(
+                    self.logger,
+                    "td_target_mean",
+                    tgt_sum / Float64(Self.BATCH),
+                    step,
+                )
 
                 _log(self.logger, "loss", critic_loss, step)
             except:
@@ -1197,6 +1201,8 @@ struct DeepDDPGAgent[
             verbose: Print progress (default: False).
             print_every: Print interval in transitions (default: 50000).
             environment_name: Name for metrics labeling.
+            logger: Optional metrics logger for diagnostics.
+            diag_every: Log DDPG diagnostics every N train steps (0 = every step).
 
         Returns:
             TrainingMetrics with episode-level statistics.

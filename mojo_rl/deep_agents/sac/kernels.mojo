@@ -116,10 +116,11 @@ fn sac_sample_actions_kernel[
     dtype: DType where dtype.is_floating_point(),
     N: Int,
     ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
 ](
     actions: LayoutTensor[dtype, Layout.row_major(N, ACTION_DIM), MutAnyOrigin],
     actor_out: LayoutTensor[
-        dtype, Layout.row_major(N, ACTION_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(N, ACTOR_OUT_DIM), MutAnyOrigin
     ],
     action_scale: Scalar[dtype],
     log_std_min: Scalar[dtype],
@@ -183,6 +184,7 @@ fn sac_rsample_with_cache_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
 ](
     actions: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
@@ -192,7 +194,7 @@ fn sac_rsample_with_cache_kernel[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
     ],
     actor_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH, ACTION_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
@@ -281,9 +283,10 @@ fn sac_rsample_bwd_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
 ](
     actor_grad: LayoutTensor[
-        dtype, Layout.row_major(BATCH, ACTION_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
     ],
     grad_act: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
@@ -296,7 +299,7 @@ fn sac_rsample_bwd_kernel[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
     ],
     actor_out: LayoutTensor[
-        dtype, Layout.row_major(BATCH, ACTION_DIM + ACTION_DIM), MutAnyOrigin
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
@@ -375,11 +378,12 @@ fn sac_rsample_bwd_kernel[
 fn min_q_dq_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
+    Q_DIM: Int = 1,
 ](
-    dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    dq2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    q1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    q2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    dq1: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    dq2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    q1: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    q2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
 ):
     """Create masked dq gradients based on min(Q1, Q2).
 
