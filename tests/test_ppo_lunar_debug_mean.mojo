@@ -12,7 +12,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
 from mojo_rl.nn import dtype
 
@@ -47,25 +47,21 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0003,
+            critic_lr=0.001,
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.001,
             entropy_coef=0.05,  # Higher entropy to prevent mean collapse
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.02,
             max_grad_norm=0.5,
-            anneal_lr=True,
-            anneal_entropy=False,
-            target_total_steps=0,
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=0,  # Disable auto-checkpoint
             checkpoint_path="",
-            normalize_rewards=True,  # CleanRL-style reward normalization (NEW FIX)
         )
 
         print("Reward normalization: ENABLED (CleanRL-style)")
@@ -81,7 +77,6 @@ fn main() raises:
                 ROLLOUT_LEN,
                 N_ENVS,
                 GPU_MINIBATCH_SIZE,
-                True,
             ]
         ) -> Tuple[Scalar[dtype], Scalar[dtype]]:
             """Get mean action for a typical initial observation."""
@@ -115,7 +110,7 @@ fn main() raises:
         # Train with periodic mean action checks
         var metrics = agent.train_gpu[LunarLander[dtype]](
             ctx,
-            num_episodes=NUM_EPISODES,
+            num_updates=NUM_EPISODES,
             verbose=True,
             print_every=5,  # Print every 5 rollouts
         )

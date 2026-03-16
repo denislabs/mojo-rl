@@ -17,7 +17,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOAgent
 from mojo_rl.envs.lunar_lander import LunarLander
 
 
@@ -66,21 +66,18 @@ fn main() raises:
             ROLLOUT_LEN,
             N_ENVS,
             GPU_MINIBATCH_SIZE,
+            actor_lr=0.0003,
+            critic_lr=0.0003,
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
             entropy_coef=0.01,
             value_loss_coef=0.5,
             num_epochs=10,
             # Advanced hyperparameters
             target_kl=0.02,
             max_grad_norm=0.5,
-            anneal_lr=True,
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate+
             clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
@@ -128,7 +125,7 @@ fn main() raises:
         try:
             var metrics = agent.train_gpu[LunarLander[dtype]](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
             )

@@ -1,4 +1,6 @@
-"""DQN Agent using the new trait-based deep learning architecture.
+"""DEPRECATED: Use GenericDQNAgent[DQNConfig] from mojo_rl.deep_agents.core.generic instead.
+
+DQN Agent using the new trait-based deep learning architecture.
 
 This DQN implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

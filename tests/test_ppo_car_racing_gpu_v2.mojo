@@ -17,7 +17,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.car_racing import CarRacing
 
 
@@ -59,16 +59,6 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        # Initialize action mean biases for CarRacing:
-        # - steering: 0 (centered)
-        # - gas: 0.5 (moderate forward bias, tanh(0.5) ≈ 0.46)
-        # - brake: -0.5 (moderate no-brake bias, tanh(-0.5) ≈ -0.46)
-        # Reduced from (0, 2, -2) to prevent too aggressive initial policy
-        var action_mean_biases = List[Float64]()
-        action_mean_biases.append(0.0)  # steering: centered
-        action_mean_biases.append(0.5)  # gas: slight forward bias
-        action_mean_biases.append(-0.5)  # brake: slight no-brake bias
-
         var agent = DeepPPOContinuousAgent[
             obs_dim=OBS_DIM,
             action_dim=NUM_ACTIONS,
@@ -76,27 +66,22 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.00005,  # Moderate LR
+            critic_lr=0.0005,  # Moderate for value learning
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.00005,  # Moderate LR
-            critic_lr=0.0005,  # Moderate for value learning
             entropy_coef=0.01,  # Standard entropy
             value_loss_coef=0.5,
             num_epochs=4,  # Fewer epochs to prevent overfitting on rollout
             # Advanced hyperparameters
             target_kl=0.0,  # Disabled - mean clamping prevents worst saturation
             max_grad_norm=0.5,
-            anneal_lr=True,  # Enable annealing
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_car_racing_gpu_v2.ckpt",
-            # Per-action mean biases for initialization
-            action_mean_biases=action_mean_biases^,
         )
 
         # agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
@@ -137,7 +122,7 @@ fn main() raises:
             # Use specialized CarRacing training with full track support
             var metrics = agent.train_gpu[CarRacing[dtype]](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
             )

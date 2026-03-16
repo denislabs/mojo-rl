@@ -1,4 +1,6 @@
-"""Deep PPO (Proximal Policy Optimization) Agent using the new trait-based architecture.
+"""DEPRECATED: Use GenericOnPolicyAgent[PPOConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep PPO (Proximal Policy Optimization) Agent using the new trait-based architecture.
 
 This PPO implementation uses:
 - Network wrapper from mojo_rl.nn.training for stateless model + params management

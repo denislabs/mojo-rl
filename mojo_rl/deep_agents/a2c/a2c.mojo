@@ -1,4 +1,6 @@
-"""Deep A2C (Advantage Actor-Critic) Agent using the new trait-based architecture.
+"""DEPRECATED: Use GenericOnPolicyAgent[A2CConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep A2C (Advantage Actor-Critic) Agent using the new trait-based architecture.
 
 This A2C implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

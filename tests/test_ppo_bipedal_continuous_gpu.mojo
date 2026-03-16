@@ -23,7 +23,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
 
 
@@ -73,29 +73,22 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0001,  # Standard learning rate
+            critic_lr=0.001,  # Higher critic LR for faster value learning
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0001,  # Standard learning rate
-            critic_lr=0.001,  # Higher critic LR for faster value learning
             entropy_coef=0.1,  # Higher entropy for exploration in hard task
             value_loss_coef=0.5,
             num_epochs=5,  # More epochs for BipedalWalker
             # Advanced hyperparameters
             target_kl=0.0,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=False,  # Disabled - causes late-training collapse
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
             checkpoint_path="ppo_bipedal_continuous_gpu.ckpt",
-            # Reward normalization (CleanRL-style)
-            normalize_rewards=True,
-            # Observation noise for robustness (domain randomization)
-            obs_noise_std=0.01,
         )
 
         # agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
@@ -156,7 +149,7 @@ fn main() raises:
         try:
             var metrics = agent.train_gpu[BipedalWalker[dtype]](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
             )

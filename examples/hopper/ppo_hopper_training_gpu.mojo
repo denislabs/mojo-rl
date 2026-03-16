@@ -22,7 +22,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.hopper import Hopper, HopperCurriculum, HopperConfig
 
 
@@ -72,8 +72,8 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
         ](
+            clip_value=True,
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping

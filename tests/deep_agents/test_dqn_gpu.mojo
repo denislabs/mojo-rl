@@ -25,7 +25,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent
 from mojo_rl.envs import CartPoleEnv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -83,7 +83,6 @@ fn main() raises:
             BATCH_SIZE,
             N_ENVS,
             lr=2.5e-4,
-            profile=3,
             L=RemoteLogger,
         ](
             gamma=0.99,

@@ -23,7 +23,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
 
 
@@ -73,30 +73,22 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0003,  # Standard learning rate
+            critic_lr=0.001,  # Higher critic LR for faster value learning
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # Standard learning rate
-            critic_lr=0.001,  # Higher critic LR for faster value learning
             entropy_coef=0.01,  # Higher entropy to prevent mean collapse
             value_loss_coef=0.5,
             num_epochs=10,  # More epochs for LunarLander
             # Advanced hyperparameters
             target_kl=0.1,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=False,  # Disabled - causes late-training collapse
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_lunar_continuous_gpu.ckpt",
-            # Reward normalization (CleanRL-style) - prevents fuel penalties from dominating
-            normalize_rewards=True,
-            # Observation noise for robustness (domain randomization)
-            # Helps policy generalize between GPU and CPU physics differences
-            obs_noise_std=0.05,
             # Action scaling: PPO outputs [-1, 1], we need [0, 1] for main and [-1, 1] for side
             # The environment handles this internally via step_continuous_vec
         )
@@ -153,7 +145,7 @@ fn main() raises:
         try:
             var metrics = agent.train_gpu[LunarLander[dtype]](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
             )

@@ -498,8 +498,8 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
@@ -646,8 +646,8 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
@@ -798,8 +798,8 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
@@ -950,8 +950,8 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).

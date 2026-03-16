@@ -13,7 +13,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent
 from mojo_rl.envs import CartPoleEnv
 
 
@@ -107,7 +107,7 @@ def main() raises:
     print("=" * 70)
     print()
     print("Total episodes: " + String(NUM_EPISODES))
-    print("Total train steps: " + String(agent.get_train_steps()))
+    print("Total train steps: " + String(agent.train_step_count))
     print("Training time: " + String(elapsed_s)[:6] + " seconds")
     print()
 
@@ -125,20 +125,14 @@ def main() raises:
 
     print("Evaluating greedy policy (10 episodes)...")
     var eval_avg = agent.evaluate(
-        env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=True
+        env, num_episodes=10, max_steps_per_episode=MAX_STEPS
     )
     print("Evaluation average: " + String(eval_avg)[:7])
 
     print()
-    print("Evaluating with current epsilon (10 episodes)...")
-    var eval_eps_avg = agent.evaluate(
-        env, num_episodes=10, max_steps_per_episode=MAX_STEPS, greedy=False
-    )
     print(
-        "Evaluation average (epsilon="
-        + String(agent.get_epsilon())[:5]
-        + "): "
-        + String(eval_eps_avg)[:7]
+        "Final epsilon: "
+        + String(agent.epsilon)[:5]
     )
 
     print()

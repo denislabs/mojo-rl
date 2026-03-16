@@ -1,4 +1,6 @@
-"""DQN Agent with Prioritized Experience Replay using the new trait-based architecture.
+"""DEPRECATED: Use GenericDQNPERAgent[DQNPERConfig] from mojo_rl.deep_agents.core.generic instead.
+
+DQN Agent with Prioritized Experience Replay using the new trait-based architecture.
 
 This DQN+PER implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

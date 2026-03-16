@@ -1,4 +1,6 @@
-"""Deep PPO (Proximal Policy Optimization) Agent for Continuous Action Spaces.
+"""DEPRECATED: Use GenericOnPolicyContinuousAgent[ContinuousPPOConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep PPO (Proximal Policy Optimization) Agent for Continuous Action Spaces.
 
 This PPO implementation supports continuous action spaces using a Gaussian policy:
 - Network wrapper from mojo_rl.nn.training for stateless model + params management

@@ -1,4 +1,6 @@
-"""Deep Dueling DQN Agent using the new trait-based deep learning architecture.
+"""DEPRECATED: Use GenericDQNAgent[DuelingDQNConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep Dueling DQN Agent using the new trait-based deep learning architecture.
 
 This Dueling DQN implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

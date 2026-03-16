@@ -10,7 +10,7 @@ Verifies the generic agent trains correctly by checking:
 from std.random import seed
 
 from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, DDPGConfig
-from mojo_rl.deep_agents.ddpg import DeepDDPGAgent
+from mojo_rl.deep_agents.core.generic import DeepDDPGAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

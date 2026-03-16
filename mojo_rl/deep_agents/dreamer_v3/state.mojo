@@ -16,7 +16,7 @@ Created once in DreamerV3Agent.__init__ / make_gpu_state.
 """
 
 from std.memory import alloc, memset
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel
@@ -637,6 +637,14 @@ struct DreamerV3GPUState[
     var critic_grad_in_buf: DeviceBuffer[dtype]  # [IB * FEAT]
     var two_hot_targets_buf: DeviceBuffer[dtype]  # [IB * BINS]
     var symlog_returns_buf: DeviceBuffer[dtype]  # [IB]
+    var returns_minmax_buf: DeviceBuffer[dtype]  # [2] (min, max)
+
+    # ── Per-timestep host buffers (pre-allocated for observe loop) ────────
+    var host_obs_step_buf: HostBuffer[dtype]  # [BATCH * OBS]
+    var host_act_step_buf: HostBuffer[dtype]  # [BATCH * ACT]
+    var host_target_buf: HostBuffer[dtype]  # [BATCH * OBS]
+    var host_rew_symlog_step_buf: HostBuffer[dtype]  # [BATCH]
+    var host_cont_target_step_buf: HostBuffer[dtype]  # [BATCH]
 
     # ── Decoder backward scratch ─────────────────────────────────────────
     var dec_cache_buf: DeviceBuffer[dtype]  # [BATCH * DecModel.CACHE_SIZE]
@@ -851,6 +859,14 @@ struct DreamerV3GPUState[
         self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
         self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
         self.symlog_returns_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+        self.returns_minmax_buf = ctx.enqueue_create_buffer[dtype](2)
+
+        # ── Pre-allocated host buffers for observe loop ──────────────────
+        self.host_obs_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
+        self.host_act_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.ACT)
+        self.host_target_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
+        self.host_rew_symlog_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+        self.host_cont_target_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
 
         # ── Decoder backward scratch ─────────────────────────────────────
         self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE)
@@ -1076,6 +1092,12 @@ struct DreamerV3GPUState[
         self.critic_grad_in_buf = take.critic_grad_in_buf^
         self.two_hot_targets_buf = take.two_hot_targets_buf^
         self.symlog_returns_buf = take.symlog_returns_buf^
+        self.returns_minmax_buf = take.returns_minmax_buf^
+        self.host_obs_step_buf = take.host_obs_step_buf^
+        self.host_act_step_buf = take.host_act_step_buf^
+        self.host_target_buf = take.host_target_buf^
+        self.host_rew_symlog_step_buf = take.host_rew_symlog_step_buf^
+        self.host_cont_target_step_buf = take.host_cont_target_step_buf^
         self.dec_cache_buf = take.dec_cache_buf^
         self.dec_grad_out_buf = take.dec_grad_out_buf^
         self.dec_grad_in_buf = take.dec_grad_in_buf^

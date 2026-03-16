@@ -11,7 +11,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.td3 import DeepTD3Agent
+from mojo_rl.deep_agents.core.generic import DeepTD3Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahModel,
@@ -60,7 +60,6 @@ fn main() raises:
         batch_size=BATCH_SIZE,
         actor_lr=0.0003,
         critic_lr=0.0003,
-        max_n_envs=MAX_N_ENVS,
     ](
         gamma=0.99,
         tau=0.005,

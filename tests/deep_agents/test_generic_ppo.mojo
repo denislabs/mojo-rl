@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.generic import (
     PPOConfig,
     A2CConfig,
 )
-from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOAgent
 from mojo_rl.envs import CartPoleEnv
 
 
@@ -41,7 +41,7 @@ fn main() raises:
     seed(42)
     var old_ppo = DeepPPOAgent[4, 2, 64, 128]()
     var env3 = CartPoleEnv[DType.float64]()
-    var m3 = old_ppo.train(env3, num_episodes=20)
+    var m3 = old_ppo.train(env3, num_updates=20)
     print(
         "   updates:", old_ppo.train_step_count,
     )

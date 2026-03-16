@@ -21,7 +21,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.pendulum import PendulumV2, PConstants
 
 
@@ -71,22 +71,19 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0003,  # Standard learning rate
+            critic_lr=0.001,  # Higher critic LR
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # Standard learning rate
-            critic_lr=0.001,  # Higher critic LR
             entropy_coef=0.01,  # Small entropy for exploration
             value_loss_coef=0.5,
             num_epochs=4,  # Standard epochs
             # Advanced hyperparameters
             target_kl=0.0,  # Disable KL early stopping (let all epochs run)
             max_grad_norm=0.5,
-            anneal_lr=True,  # Enable LR annealing
-            anneal_entropy=False,
-            target_total_steps=0,
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_pendulum_gpu.ckpt",
@@ -135,7 +132,7 @@ fn main() raises:
         try:
             var metrics = agent.train_gpu[PendulumV2[dtype]](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
             )

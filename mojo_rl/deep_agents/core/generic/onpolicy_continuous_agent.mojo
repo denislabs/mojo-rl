@@ -350,12 +350,12 @@ struct GenericOnPolicyContinuousAgent[
             cpu_state.buffer_rewards,
             cpu_state.buffer_values,
             cpu_state.buffer_dones,
+            next_value,
+            Self.ROLLOUT,
+            self.gamma,
+            self.gae_lambda,
             cpu_state._advantages,
             cpu_state._returns,
-            next_value,
-            Scalar[dtype](self.gamma),
-            Scalar[dtype](self.gae_lambda),
-            Self.ROLLOUT,
         )
 
         if self.normalize_advantages:

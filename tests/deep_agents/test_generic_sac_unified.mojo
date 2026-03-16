@@ -3,7 +3,7 @@
 from std.random import seed
 
 from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
-from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.deep_agents.core.generic import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
@@ -27,7 +27,7 @@ fn main() raises:
     print("\n2. DeepSACAgent (5 episodes)...")
     seed(42)
     var old_sac = DeepSACAgent[3, 1, 64, 1000, 32](
-        action_scale=2.0, target_entropy=-1.0
+        action_scale=2.0,
     )
     var env2 = PendulumEnv[DType.float64]()
     var m2 = old_sac.train(env2, num_episodes=5)

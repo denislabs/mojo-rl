@@ -1,4 +1,6 @@
-"""PPO CNN Agent — Proximal Policy Optimization with CNN for pixel observations.
+"""DEPRECATED: Use GenericOnPolicyAgent[PPOCNNConfig] from mojo_rl.deep_agents.core.generic instead.
+
+PPO CNN Agent — Proximal Policy Optimization with CNN for pixel observations.
 
 GPU-only PPO agent using the Nature DQN CNN architecture for processing
 pixel observations (4×84×84 stacked grayscale frames).

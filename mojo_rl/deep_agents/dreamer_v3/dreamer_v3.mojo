@@ -72,6 +72,7 @@ from .kernels import (
     concat_deter_embed_backward_kernel,
     concat_gru_input_backward_kernel,
     clamp_kernel,
+    min_max_reduce_kernel,
     lambda_returns_kernel,
     normalize_returns_elementwise_kernel,
     two_hot_ce_grad_kernel,
@@ -1596,8 +1597,8 @@ struct DreamerV3Agent[
             # Copy obs slice: batch_obs[b*(BL+1)*OBS + t*OBS : ... + (t+1)*OBS]
             # For simplicity, we do this on CPU and upload per timestep.
             # A more optimized version would use gather kernels.
-            var host_obs_step = ctx.enqueue_create_host_buffer[dtype](B * OBS)
-            var host_act_step = ctx.enqueue_create_host_buffer[dtype](B * ACT)
+            var host_obs_step = gpu_state.host_obs_step_buf
+            var host_act_step = gpu_state.host_act_step_buf
             for b in range(B):
                 for i in range(OBS):
                     host_obs_step[b * OBS + i] = Scalar[dtype](
@@ -2219,7 +2220,7 @@ struct DreamerV3Agent[
             )
 
             # Upload symlog(obs[t+1]) target to GPU
-            var host_target = ctx.enqueue_create_host_buffer[dtype](B * OBS)
+            var host_target = gpu_state.host_target_buf
             for b in range(B):
                 for i in range(OBS):
                     var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
@@ -2298,7 +2299,7 @@ struct DreamerV3Agent[
             )
 
             # Upload symlog(reward[t]) target
-            var host_rew_symlog = ctx.enqueue_create_host_buffer[dtype](B)
+            var host_rew_symlog = gpu_state.host_rew_symlog_step_buf
             for b in range(B):
                 var r = batch_rewards[b * BL + t]
                 host_rew_symlog[b] = Scalar[dtype](symlog(Float32(r)))
@@ -2414,7 +2415,7 @@ struct DreamerV3Agent[
             )
 
             # Upload 1.0 - done[t] as target
-            var host_cont_target = ctx.enqueue_create_host_buffer[dtype](B)
+            var host_cont_target = gpu_state.host_cont_target_step_buf
             for b in range(B):
                 host_cont_target[b] = Scalar[dtype](
                     1.0 - Float64(batch_dones[b * BL + t])
@@ -3922,67 +3923,89 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
 
-        # ── 6. Lambda returns ────────────────────────────────────────────
-        # Download imagination scalars to CPU for lambda return computation
+        # ── 6. Lambda returns (GPU) ─────────────────────────────────────
+        # Compute lambda returns entirely on GPU, only download 2 scalars
+        # for EMA normalization tracking.
+        var returns_2d = LayoutTensor[
+            dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+        ](gpu_state.imag_returns_buf.unsafe_ptr())
+        var rewards_2d = LayoutTensor[
+            dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+        ](gpu_state.imag_rewards_buf.unsafe_ptr())
+        var values_2d = LayoutTensor[
+            dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+        ](gpu_state.imag_values_buf.unsafe_ptr())
+        var continues_2d = LayoutTensor[
+            dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+        ](gpu_state.imag_continues_buf.unsafe_ptr())
+
+        @always_inline
+        fn run_lambda_returns(
+            ret: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
+            rew: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
+            val: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
+            cont: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
+            gamma: Scalar[dtype],
+            lambda_: Scalar[dtype],
+        ):
+            lambda_returns_kernel[HORIZON, IB](ret, rew, val, cont, gamma, lambda_)
+
+        comptime LAMBDA_BLOCKS = (IB + TPB - 1) // TPB
+        ctx.enqueue_function[run_lambda_returns, run_lambda_returns](
+            returns_2d, rewards_2d, values_2d, continues_2d,
+            Scalar[dtype](self.gamma), Scalar[dtype](self.lambda_),
+            grid_dim=(LAMBDA_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Min/max reduction on GPU for return normalization EMA
+        comptime RETURNS_SIZE = HORIZON * IB
+        var returns_flat = LayoutTensor[
+            dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
+        ](gpu_state.imag_returns_buf.unsafe_ptr())
+        var minmax_2 = LayoutTensor[
+            dtype, Layout.row_major(2), MutAnyOrigin
+        ](gpu_state.returns_minmax_buf.unsafe_ptr())
+
+        @always_inline
+        fn run_minmax(
+            r: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
+            d: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+        ):
+            min_max_reduce_kernel[RETURNS_SIZE, TPB](r, d)
+
+        ctx.enqueue_function[run_minmax, run_minmax](
+            minmax_2, returns_flat,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
+
+        # Download just 2 scalars for EMA update
+        var host_minmax = ctx.enqueue_create_host_buffer[dtype](2)
+        ctx.enqueue_copy(host_minmax, gpu_state.returns_minmax_buf)
         ctx.synchronize()
-        var host_rewards = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-        var host_values = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-        var host_continues = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-        ctx.enqueue_copy(host_rewards, gpu_state.imag_rewards_buf)
-        ctx.enqueue_copy(host_values, gpu_state.imag_values_buf)
-        ctx.enqueue_copy(host_continues, gpu_state.imag_continues_buf)
-        ctx.synchronize()
 
-        # Compute lambda returns on CPU
-        var returns_raw = alloc[Scalar[dtype]](HORIZON * IB)
-        var rewards_raw = alloc[Scalar[dtype]](HORIZON * IB)
-        var values_raw = alloc[Scalar[dtype]](HORIZON * IB)
-        var continues_raw = alloc[Scalar[dtype]](HORIZON * IB)
-        for i in range(HORIZON * IB):
-            rewards_raw[i] = host_rewards[i]
-            values_raw[i] = host_values[i]
-            continues_raw[i] = host_continues[i]
+        var lo = Float64(host_minmax[0])
+        var hi = Float64(host_minmax[1])
+        self.state.return_ema_lo = (1.0 - self.return_norm_rate) * self.state.return_ema_lo + self.return_norm_rate * lo
+        self.state.return_ema_hi = (1.0 - self.return_norm_rate) * self.state.return_ema_hi + self.return_norm_rate * hi
+        var scale = self.state.return_ema_hi - self.state.return_ema_lo
+        if scale < 1.0:
+            scale = 1.0
 
-        # Rebind to MutAnyOrigin for compute_lambda_returns signature
-        var returns_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            returns_raw
-        )
-        var rewards_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            rewards_raw
-        )
-        var values_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            values_raw
-        )
-        var continues_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            continues_raw
-        )
+        # Normalize returns on GPU in-place
+        @always_inline
+        fn run_norm_returns(
+            ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+            lo_val: Scalar[dtype],
+            inv_s: Scalar[dtype],
+        ):
+            normalize_returns_elementwise_kernel[RETURNS_SIZE](ret, lo_val, inv_s)
 
-        compute_lambda_returns[HORIZON, IB](
-            rewards_ptr,
-            values_ptr,
-            continues_ptr,
-            returns_ptr,
-            self.gamma,
-            self.lambda_,
+        ctx.enqueue_function[run_norm_returns, run_norm_returns](
+            returns_flat,
+            Scalar[dtype](self.state.return_ema_lo),
+            Scalar[dtype](1.0 / scale),
+            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,), block_dim=(TPB,),
         )
-
-        var scale = normalize_returns[HORIZON, IB](
-            returns_ptr,
-            self.state.return_ema_lo,
-            self.state.return_ema_hi,
-            self.return_norm_rate,
-        )
-
-        # Upload normalized returns and values back to GPU
-        var host_returns = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-        for i in range(HORIZON * IB):
-            host_returns[i] = returns_ptr[i]
-        ctx.enqueue_copy(gpu_state.imag_returns_buf, host_returns)
-
-        returns_raw.free()
-        rewards_raw.free()
-        values_raw.free()
-        continues_raw.free()
 
         # ── 7. Multi-step Critic + Actor training ──────────────────────
         # DreamerV3 trains actor/critic on ALL imagination steps (0..H-2).

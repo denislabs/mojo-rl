@@ -10,7 +10,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
@@ -55,7 +55,6 @@ fn main() raises:
         buffer_capacity=BUFFER_CAPACITY,
         batch_size=BATCH_SIZE,
         n_envs=N_ENVS,
-        double_dqn=True,
         lr=0.0005,
     ](
         gamma=0.99,

@@ -140,8 +140,8 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop: collect → advantages → update × num_updates.
@@ -236,8 +236,8 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop: collect → advantages → update × num_updates.
@@ -492,8 +492,8 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop with explicit state: collect → advantages → update.
@@ -588,8 +588,8 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+        L, MutAnyOrigin
     ](),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop with explicit state: collect → advantages → update.

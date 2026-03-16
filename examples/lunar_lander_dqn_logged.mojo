@@ -10,7 +10,7 @@ from std.random import seed
 from std.memory import UnsafePointer
 
 from mojo_rl.envs.lunar_lander import LunarLander
-from mojo_rl.deep_agents import DQNAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent
 from mojo_rl.core.logger import CsvLogger
 
 

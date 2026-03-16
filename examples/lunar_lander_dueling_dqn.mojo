@@ -33,7 +33,7 @@ LunarLander is solved when average reward > 200 over 100 episodes.
 from std.random import seed
 
 from mojo_rl.envs.lunar_lander import LunarLanderEnv
-from mojo_rl.deep_agents.dueling_dqn import DuelingDQNAgent
+from mojo_rl.deep_agents.core.generic import DuelingDQNAgent
 
 
 fn main() raises:
@@ -65,11 +65,10 @@ fn main() raises:
         stream_hidden_dim=64,  # Value/Advantage stream hidden
         buffer_capacity=20000,
         batch_size=64,
-        double_dqn=True,  # Use Double DQN (default)
+        lr=0.0005,  # Stable learning rate (5e-4)
     ](
         gamma=0.99,  # Standard discount
         tau=0.005,  # Standard target update
-        lr=0.0005,  # Stable learning rate (5e-4)
         epsilon=1.0,  # Start with full exploration
         epsilon_min=0.01,  # Low minimum
         epsilon_decay=0.997,  # Slow decay for exploration

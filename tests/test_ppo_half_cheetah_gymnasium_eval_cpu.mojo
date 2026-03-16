@@ -13,7 +13,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.gymnasium.gymnasium_mujoco import (
     GymMuJoCoEnv,
     make_half_cheetah,
@@ -61,19 +61,18 @@ fn main() raises:
         rollout_len=ROLLOUT_LEN,
         n_envs=N_ENVS,
         gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-        clip_value=True,
+        actor_lr=0.0003,
+        critic_lr=0.0003,
     ](
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
         entropy_coef=0.0,
         value_loss_coef=0.5,
         num_epochs=10,
         target_kl=0.0,
         max_grad_norm=0.5,
-        anneal_lr=False,
+        clip_value=True,
     )
 
     # =========================================================================

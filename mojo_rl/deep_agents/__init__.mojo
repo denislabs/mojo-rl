@@ -18,13 +18,17 @@ Available agents:
 - DreamerV3Agent: DreamerV3 world model-based agent
 """
 
-from .dqn import DQNAgent
-from .dqn_cnn import DQNCNNAgent
-from .dqn_per import DQNPERAgent
-from .dueling_dqn import DuelingDQNAgent
-from .ddpg import DeepDDPGAgent
-from .td3 import DeepTD3Agent
-from .sac import DeepSACAgent
-from .a2c import DeepA2CAgent
-from .ppo import DeepPPOAgent, DeepPPOContinuousAgent
+from .core.generic import (
+    DQNAgent,
+    DQNCNNAgent,
+    DQNPERAgent,
+    DuelingDQNAgent,
+    DeepDDPGAgent,
+    DeepTD3Agent,
+    DeepSACAgent,
+    DeepA2CAgent,
+    DeepPPOAgent,
+    DeepPPOContinuousAgent,
+    DeepPPOCNNAgent,
+)
 from .dreamer_v3 import DreamerV3Agent

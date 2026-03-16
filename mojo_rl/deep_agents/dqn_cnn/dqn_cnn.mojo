@@ -1,4 +1,6 @@
-"""DQN CNN Agent — Deep Q-Network with convolutional image processing.
+"""DEPRECATED: Use GenericDQNAgent[DQNCNNConfig] from mojo_rl.deep_agents.core.generic instead.
+
+DQN CNN Agent — Deep Q-Network with convolutional image processing.
 
 Uses the Nature DQN architecture (Mnih et al., 2015) for pixel observations:
   Conv2D[4, 32, 8, 4] → ReLU → Conv2D[32, 64, 4, 2] → ReLU →

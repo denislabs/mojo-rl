@@ -13,7 +13,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo_cnn import DeepPPOCNNAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOCNNAgent
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 # Pong: 3 discrete actions, pixel observations (4×84×84)

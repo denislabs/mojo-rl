@@ -38,3 +38,18 @@ from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig,
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
+
+# Convenience aliases matching old agent names
+from .aliases import (
+    DQNAgent,
+    DQNPERAgent,
+    DuelingDQNAgent,
+    DQNCNNAgent,
+    DeepDDPGAgent,
+    DeepTD3Agent,
+    DeepSACAgent,
+    DeepA2CAgent,
+    DeepPPOAgent,
+    DeepPPOContinuousAgent,
+    DeepPPOCNNAgent,
+)

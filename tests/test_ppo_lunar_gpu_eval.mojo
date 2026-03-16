@@ -14,7 +14,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOAgent
 from mojo_rl.envs.lunar_lander import LunarLanderEnv, LunarLander
 from mojo_rl.render import Renderer2D
 
@@ -119,20 +119,17 @@ fn main() raises:
             ROLLOUT_LEN,
             N_ENVS,
             GPU_MINIBATCH_SIZE,
+            actor_lr=0.0003,
+            critic_lr=0.0003,
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
             entropy_coef=0.01,
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.02,
             max_grad_norm=0.5,
-            anneal_lr=True,
-            anneal_entropy=False,
-            target_total_steps=0,
             clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,

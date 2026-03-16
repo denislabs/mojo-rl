@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.generic import (
     DDPGConfig,
     TD3Config,
 )
-from mojo_rl.deep_agents.td3 import DeepTD3Agent
+from mojo_rl.deep_agents.core.generic import DeepTD3Agent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

@@ -20,7 +20,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.deep_agents.core.generic import DeepSACAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -83,7 +83,6 @@ fn main() raises:
         alpha=0.2,
         auto_alpha=True,
         alpha_lr=0.0003,
-        target_entropy=-Float64(ACTION_DIM),
     )
 
     print("Environment: HalfCheetah Continuous (CPU)")

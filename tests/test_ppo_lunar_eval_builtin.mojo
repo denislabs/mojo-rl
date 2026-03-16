@@ -11,7 +11,7 @@ from std.random import seed
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
 from mojo_rl.nn import dtype as gpu_dtype
 
@@ -49,21 +49,18 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0003,
+            critic_lr=0.001,
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.001,
             entropy_coef=0.01,
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.02,
             max_grad_norm=0.5,
-            anneal_lr=True,
-            anneal_entropy=False,
-            target_total_steps=0,
+            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_lunar_continuous_gpu.ckpt",

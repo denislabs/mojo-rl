@@ -13,7 +13,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahModel,
@@ -63,10 +63,10 @@ fn main() raises:
         rollout_len=ROLLOUT_LEN,
         n_envs=N_ENVS,
         gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-        clip_value=True,
         actor_lr=0.0003,
         critic_lr=0.0003,
     ](
+        clip_value=True,
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,

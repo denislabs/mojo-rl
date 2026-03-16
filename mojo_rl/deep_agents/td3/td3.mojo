@@ -1,4 +1,6 @@
-"""Deep TD3 Agent using the new trait-based deep learning architecture.
+"""DEPRECATED: Use GenericOffPolicyAgent[TD3Config] from mojo_rl.deep_agents.core.generic instead.
+
+Deep TD3 Agent using the new trait-based deep learning architecture.
 
 This TD3 (Twin Delayed Deep Deterministic Policy Gradient) implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

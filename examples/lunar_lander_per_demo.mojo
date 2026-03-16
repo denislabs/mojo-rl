@@ -15,8 +15,7 @@ Expected results:
 """
 
 from mojo_rl.envs import LunarLanderEnv
-from mojo_rl.deep_agents.dqn import DQNAgent
-from mojo_rl.deep_agents.dqn_per import DQNPERAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent, DQNPERAgent
 
 
 fn main() raises:
@@ -65,10 +64,10 @@ fn main() raises:
         hidden_dim=128,
         buffer_capacity=20000,
         batch_size=64,
+        lr=lr,
     ](
         gamma=gamma,
         tau=tau,
-        lr=lr,
         epsilon=epsilon,
         epsilon_min=epsilon_min,
         epsilon_decay=epsilon_decay,
@@ -104,15 +103,15 @@ fn main() raises:
         hidden_dim=128,
         buffer_capacity=20000,
         batch_size=64,
+        lr=lr,
     ](
         gamma=gamma,
         tau=tau,
-        lr=lr,
         epsilon=epsilon,
         epsilon_min=epsilon_min,
         epsilon_decay=epsilon_decay,
         alpha=alpha,
-        beta_start=beta_start,
+        beta=beta_start,
         beta_frames=num_episodes * max_steps,
     )
 

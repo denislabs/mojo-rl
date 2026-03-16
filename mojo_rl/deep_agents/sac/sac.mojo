@@ -1,4 +1,6 @@
-"""Deep SAC Agent using the new trait-based deep learning architecture.
+"""DEPRECATED: Use GenericOffPolicyAgent[SACConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep SAC Agent using the new trait-based deep learning architecture.
 
 This SAC (Soft Actor-Critic) implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state

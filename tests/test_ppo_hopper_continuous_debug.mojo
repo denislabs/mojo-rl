@@ -32,18 +32,17 @@ fn main() raises:
         n_envs=N_ENVS,
         gpu_minibatch_size=GPU_MINIBATCH_SIZE,
         clip_value=True,
+        actor_lr=0.0003,
+        critic_lr=0.0003,
     ](
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
         entropy_coef=0.0,
         value_loss_coef=0.5,
         num_epochs=10,
         target_kl=0.0,
         max_grad_norm=0.5,
-        anneal_lr=False,
     )
 
     # Load checkpoint

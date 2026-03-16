@@ -16,7 +16,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.core.generic import DQNAgent
 from mojo_rl.envs.arcade_games.pong import PongEnv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -68,7 +68,6 @@ fn main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             n_envs=N_ENVS,
-            double_dqn=True,
             lr=0.0005,
             L=RemoteLogger,
         ](

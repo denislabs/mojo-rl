@@ -16,7 +16,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.pendulum import PendulumV2, PConstants
 
 
@@ -64,16 +64,16 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            clip_value=True,
+            actor_lr=0.0003,
+            critic_lr=0.001,
         ](
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.001,
             entropy_coef=0.01,
             value_loss_coef=0.5,
             num_epochs=4,
+            clip_value=True,
         )
 
         # Load checkpoint

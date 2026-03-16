@@ -8,7 +8,7 @@ Run with:
     pixi run mojo run -I . examples/deep_sac_demo.mojo
 """
 
-from mojo_rl.deep_agents import DeepSACAgent
+from mojo_rl.deep_agents.core.generic import DeepSACAgent
 from mojo_rl.envs import PendulumEnv
 
 
@@ -36,12 +36,7 @@ fn main() raises:
         action_scale=2.0,  # Pendulum actions in [-2, 2]
         alpha=0.2,  # Entropy coefficient
         auto_alpha=True,  # Automatically tune alpha
-        target_entropy=-1.0,  # Target entropy (-action_dim)
     )
-
-    # Print agent info
-    agent.print_info()
-    print("-" * 60)
 
     # Train the agent
     print("\nTraining Deep SAC agent...")

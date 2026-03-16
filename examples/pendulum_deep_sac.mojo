@@ -26,7 +26,7 @@ Requirements:
 """
 
 from mojo_rl.envs import PendulumEnv
-from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.deep_agents.core.generic import DeepSACAgent
 
 
 fn main() raises:
@@ -60,7 +60,6 @@ fn main() raises:
         alpha=0.1,  # Initial entropy coefficient
         auto_alpha=False,  # Disable auto tuning for stability
         alpha_lr=0.0001,
-        target_entropy=-1.0,  # Target entropy (approx -dim(action_space))
     )
 
     # Training parameters
@@ -92,7 +91,7 @@ fn main() raises:
     var eval_reward = agent.evaluate(
         env,
         num_episodes=10,
-        max_steps=200,
+        max_steps_per_episode=200,
     )
     print("Evaluation average reward:", String(eval_reward)[:8])
 

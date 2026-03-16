@@ -24,7 +24,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.sac import DeepSACAgent
+from mojo_rl.deep_agents.core.generic import DeepSACAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -79,7 +79,6 @@ fn main() raises:
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
             critic_lr=0.001,  # CleanRL default: q_lr=1e-3 (higher than actor)
-            max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
@@ -87,7 +86,6 @@ fn main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,  # CleanRL uses q_lr for alpha too
-            target_entropy=-Float64(ACTION_DIM),
             checkpoint_every=100_000,
             checkpoint_path="sac_half_cheetah.ckpt",
         )

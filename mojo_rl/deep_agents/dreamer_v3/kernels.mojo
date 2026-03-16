@@ -260,6 +260,62 @@ fn accumulate_kernel[
 
 
 @always_inline
+fn min_max_reduce_kernel[
+    SIZE: Int,
+    BLOCK_SIZE: Int,
+](
+    result: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
+    data: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+):
+    """Reduce to find min and max of data. result[0]=min, result[1]=max.
+    Single block kernel — launch with grid_dim=(1,), block_dim=(BLOCK_SIZE,).
+    """
+    var tid = Int(thread_idx.x)
+
+    var shared_min = LayoutTensor[
+        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var shared_max = LayoutTensor[
+        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Each thread reduces a strided portion
+    var local_min = S(1e30)
+    var local_max = S(-1e30)
+    var idx = tid
+    while idx < SIZE:
+        var v = rebind[S](data[idx])
+        if v < local_min:
+            local_min = v
+        if v > local_max:
+            local_max = v
+        idx += BLOCK_SIZE
+    shared_min[tid] = local_min
+    shared_max[tid] = local_max
+
+    barrier()
+
+    # Tree reduction
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if tid < stride:
+            var sm = rebind[S](shared_min[tid + stride])
+            if sm < rebind[S](shared_min[tid]):
+                shared_min[tid] = sm
+            var sx = rebind[S](shared_max[tid + stride])
+            if sx > rebind[S](shared_max[tid]):
+                shared_max[tid] = sx
+        barrier()
+        stride = stride // 2
+
+    if tid == 0:
+        result[0] = shared_min[0]
+        result[1] = shared_max[0]
+
+
+@always_inline
 fn clamp_kernel[
     SIZE: Int,
 ](

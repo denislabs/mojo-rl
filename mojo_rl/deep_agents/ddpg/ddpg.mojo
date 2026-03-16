@@ -1,4 +1,6 @@
-"""Deep DDPG Agent using the new trait-based deep learning architecture.
+"""DEPRECATED: Use GenericOffPolicyAgent[DDPGConfig] from mojo_rl.deep_agents.core.generic instead.
+
+Deep DDPG Agent using the new trait-based deep learning architecture.
 
 This DDPG (Deep Deterministic Policy Gradient) implementation uses:
 - NetworkState for heap-allocated params + grads + optimizer state
