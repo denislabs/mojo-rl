@@ -31,7 +31,6 @@ from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
-    HalfCheetahCurriculum,
 )
 from mojo_rl.core.logger import RemoteLogger
 
@@ -95,14 +94,9 @@ fn main() raises:
             num_epochs=10,  # CleanRL default
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
-            anneal_lr=True,  # CleanRL uses LR annealing
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=10,
             checkpoint_path="ppo_half_cheetah.ckpt",
-            normalize_rewards=True,
-            obs_noise_std=0.0,
         )
 
         # agent.load_checkpoint("ppo_half_cheetah.ckpt")
@@ -188,7 +182,7 @@ fn main() raises:
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_EPISODES,
                 verbose=True,
                 print_every=10,
                 logger=UnsafePointer(to=logger),

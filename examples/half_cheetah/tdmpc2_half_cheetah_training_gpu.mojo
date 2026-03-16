@@ -157,9 +157,9 @@ fn main() raises:
             wm_lr=3e-4,
             enc_lr_scale=0.3,
             pi_lr=3e-4,
-            logger=UnsafePointer(to=logger),
             diag_every=50,
         )
+        agent.logger = UnsafePointer(to=logger)
 
         print("Environment: HalfCheetah Continuous (GPU)")
         print("Agent: TD-MPC2 (GPU)")
