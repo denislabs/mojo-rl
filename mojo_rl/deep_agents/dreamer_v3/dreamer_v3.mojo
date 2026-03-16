@@ -4405,6 +4405,7 @@ struct DreamerV3Agent[
         ctx: DeviceContext,
         num_episodes: Int = 1000,
         train_every: Int = 1,
+        train_ratio: Int = 0,
         sync_every: Int = 50,
         verbose: Bool = True,
         print_every: Int = 50_000,
@@ -4428,6 +4429,7 @@ struct DreamerV3Agent[
             ctx: GPU device context.
             num_episodes: Target episodes to complete.
             train_every: Train every N env collection steps.
+            train_ratio: Training updates per collection step (0 = n_envs for 1:1 ratio).
             sync_every: GPU->CPU weight sync interval (train steps).
             verbose: Print progress.
             print_every: Print interval in total env transitions.
@@ -4439,6 +4441,8 @@ struct DreamerV3Agent[
         """
         self.logger = logger
         self.diag_every = diag_every
+        # Default train_ratio: n_envs for ~1:1 step:train ratio
+        var actual_train_ratio = train_ratio if train_ratio > 0 else n_envs
 
         # ── Comptime aliases ─────────────────────────────────────────
         comptime OBS = Self.obs_dim
@@ -5174,7 +5178,7 @@ struct DreamerV3Agent[
             total_steps += n_envs
             collection_step += 1
 
-            # ── 7. Training ──────────────────────────────────────────
+            # ── 7. Training (train_ratio updates per collection step) ──
             if total_steps >= self.warmup_steps * n_envs:
                 if collection_step % train_every == 0:
                     comptime min_ready = B + BL + 1
@@ -5185,6 +5189,7 @@ struct DreamerV3Agent[
                             break
 
                     if ready:
+                      for _tr in range(actual_train_ratio):
                         var batch_obs = List[Scalar[DType.float32]](
                             capacity=B * (BL + 1) * OBS
                         )
