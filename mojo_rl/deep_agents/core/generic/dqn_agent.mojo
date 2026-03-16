@@ -45,7 +45,7 @@ from mojo_rl.deep_agents.core import (
     Checkpointable,
 )
 from mojo_rl.deep_agents.core.utils import obs_to_inline
-from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer, PrioritizedReplayBuffer
 from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.eval import (
@@ -1399,6 +1399,848 @@ struct GenericDQNAgent[
             ctx,
             num_steps,
             timer,
+            warmup_steps=warmup_steps,
+            gradient_steps=gradient_steps,
+            sync_every=sync_every,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=algo_name,
+            logger=logger,
+        )
+
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        return metrics^
+
+
+# =============================================================================
+# DQN + PER Config
+# =============================================================================
+
+
+struct DQNPERConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 128,
+    HIDDEN2: Int = 128,
+    CAP: Int = 20000,
+    BS: Int = 64,
+    lr: Float64 = 0.0005,
+](DiscreteOffPolicyConfig):
+    """DQN + Prioritized Experience Replay config (Double DQN).
+
+    PER is CPU-only; GPU path uses uniform replay.
+    """
+
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN2],
+        Linear[Self.HIDDEN2, Self.ACT],
+    ]
+    comptime QOpt = Adam[Self.lr]
+    comptime QTargetStrat = DoubleQTarget
+    comptime QOutputStrat = DirectQ
+
+
+# =============================================================================
+# DQN PER CPU State (uses PrioritizedReplayBuffer)
+# =============================================================================
+
+
+struct DQNPERCPUStateGeneric[
+    QModel: Model,
+    QOpt: Optimizer,
+    buffer_capacity: Int,
+    obs_dim: Int,
+    batch_size: Int,
+](Movable, OffPolicyDiscreteState):
+    """CPU state for DQN+PER: online + target Q-networks + prioritized replay buffer."""
+
+    comptime BUFFER_DTYPE = dtype
+
+    var online: NetworkState[Self.QModel, Self.QOpt]
+    var target: NetworkState[Self.QModel, Self.QOpt]
+    var buffer: PrioritizedReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, 1, dtype
+    ]
+
+    fn __init__(out self, alpha: Float64 = 0.6, beta: Float64 = 0.4):
+        self.online = NetworkState[Self.QModel, Self.QOpt]()
+        self.online.initialize[Xavier[]]()
+        self.target = NetworkState[Self.QModel, Self.QOpt]()
+        self.target.initialize[Xavier[]]()
+        self.target.copy_params_from(self.online)
+        self.buffer = PrioritizedReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, 1, dtype
+        ](
+            alpha=Scalar[dtype](alpha),
+            beta=Scalar[dtype](beta),
+        )
+
+    fn store[
+        d: DType
+    ](
+        mut self,
+        obs: List[Scalar[d]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[d]],
+        done: Bool,
+    ) -> None:
+        var obs_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        var next_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], Self.obs_dim](
+            uninitialized=True
+        )
+        for i in range(Self.obs_dim):
+            obs_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(obs[i]))
+            next_arr[i] = Scalar[Self.BUFFER_DTYPE](Float64(next_obs[i]))
+        var act_arr = InlineArray[Scalar[Self.BUFFER_DTYPE], 1](
+            uninitialized=True
+        )
+        act_arr[0] = Scalar[Self.BUFFER_DTYPE](action)
+        self.buffer.add(
+            obs_arr,
+            act_arr,
+            Scalar[Self.BUFFER_DTYPE](reward),
+            next_arr,
+            done,
+        )
+
+    fn is_ready(self) -> Bool:
+        return self.buffer.is_ready[Self.batch_size]()
+
+
+# =============================================================================
+# GenericDQNPERAgent
+# =============================================================================
+
+
+struct GenericDQNPERAgent[
+    Config: DiscreteOffPolicyConfig,
+    n_envs: Int = 1024,
+    L: Logger = NoOpLogger,
+](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
+    """Generic DQN + Prioritized Experience Replay agent.
+
+    CPU path uses PrioritizedReplayBuffer with importance sampling weights
+    and priority updates. GPU path uses uniform replay (PER sum-tree is
+    inherently serial).
+
+    Parameters:
+        Config: DQN config (DQNPERConfig or any DiscreteOffPolicyConfig).
+        n_envs: Number of parallel environments for GPU training (default: 1024).
+        L: Logger type for diagnostic logging (default: NoOpLogger).
+    """
+
+    comptime OBS: Int = Self.Config.QModel.IN_DIM
+    comptime RAW_OUT: Int = Self.Config.QModel.OUT_DIM
+    comptime ACTIONS: Int = Self.Config.num_actions
+    comptime BATCH: Int = Self.Config.batch_size
+    comptime Q_CS: Int = Self.Config.QModel.CACHE_SIZE
+    comptime QNet = Network[Self.Config.QModel, Self.Config.QOpt]
+
+    # CPU state uses PrioritizedReplayBuffer
+    comptime CPUStateType = DQNPERCPUStateGeneric[
+        Self.Config.QModel,
+        Self.Config.QOpt,
+        Self.Config.buffer_capacity,
+        Self.Config.QModel.IN_DIM,
+        Self.Config.batch_size,
+    ]
+
+    # GPU state uses uniform replay (same as standard DQN)
+    comptime OBS_DIM: Int = Self.OBS
+    comptime ACTION_DIM: Int = 1
+    comptime BUFFER_CAPACITY: Int = Self.Config.buffer_capacity
+    comptime MAX_N_ENVS: Int = Self.n_envs
+    comptime GPUStateType = DQNGPUStateGeneric[
+        Self.Config.QModel,
+        Self.Config.QOpt,
+        Self.Config.buffer_capacity,
+        Self.Config.QModel.IN_DIM,
+        Self.Config.num_actions,
+        Self.Config.batch_size,
+        Self.n_envs,
+    ]
+
+    # Persistent CPU state
+    var state: Self.CPUStateType
+
+    var gamma: Float64
+    var tau: Float64
+    var epsilon: Float64
+    var epsilon_min: Float64
+    var epsilon_decay: Float64
+    var target_update_freq: Int
+    var train_step_count: Int
+    var _target_update_ctr: Int
+    var checkpoint_every: Int
+    var checkpoint_path: String
+
+    # PER-specific
+    var beta: Float64
+    var beta_start: Float64
+    var beta_frames: Int
+
+    # Logger
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var diag_every: Int
+
+    fn __init__(
+        out self,
+        gamma: Float64 = 0.99,
+        tau: Float64 = 0.005,
+        epsilon: Float64 = 1.0,
+        epsilon_min: Float64 = 0.01,
+        epsilon_decay: Float64 = 0.995,
+        target_update_freq: Int = 500,
+        alpha: Float64 = 0.6,
+        beta: Float64 = 0.4,
+        beta_frames: Int = 100000,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
+    ):
+        self.state = Self.CPUStateType(alpha=alpha, beta=beta)
+        self.gamma = gamma
+        self.tau = tau
+        self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.target_update_freq = target_update_freq
+        self.train_step_count = 0
+        self._target_update_ctr = 0
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
+        self.beta = beta
+        self.beta_start = beta
+        self.beta_frames = beta_frames
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.diag_every = 0
+
+    fn make_cpu_state(self) -> Self.CPUStateType:
+        return Self.CPUStateType()
+
+    fn select_action[
+        d: DType
+    ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[d]]) -> Int:
+        if random_float64() < self.epsilon:
+            return Int(random_float64() * Float64(Self.ACTIONS))
+
+        var obs_arr = obs_to_inline[Self.OBS, d](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var raw_arr = InlineArray[Scalar[dtype], Self.RAW_OUT](
+            uninitialized=True
+        )
+        var raw_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
+        ](raw_arr.unsafe_ptr())
+        var p = cpu_state.online.params_view()
+        Self.QNet.forward[1](obs_t, raw_t, p)
+
+        var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        Self.Config.QOutputStrat.combine_cpu[1, Self.ACTIONS, Self.RAW_OUT](
+            raw_arr, q_arr
+        )
+
+        var best = 0
+        var best_q = q_arr[0]
+        for a in range(1, Self.ACTIONS):
+            if q_arr[a] > best_q:
+                best_q = q_arr[a]
+                best = a
+        return best
+
+    fn store_transition[
+        d: DType
+    ](
+        mut self,
+        mut cpu_state: Self.CPUStateType,
+        obs: List[Scalar[d]],
+        action: Int,
+        reward: Float64,
+        next_obs: List[Scalar[d]],
+        done: Bool,
+    ) -> None:
+        cpu_state.store[d](obs, action, reward, next_obs, done)
+
+    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+        """One DQN+PER training step: sample with IS weights, update priorities."""
+        if not cpu_state.buffer.is_ready[Self.BATCH]():
+            return 0.0
+
+        # Anneal beta
+        self.beta = self.beta_start + (1.0 - self.beta_start) * min(
+            1.0, Float64(self.train_step_count) / Float64(self.beta_frames)
+        )
+        cpu_state.buffer.beta = Scalar[dtype](self.beta)
+
+        # Sample with IS weights and indices
+        var b_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var b_act1 = InlineArray[Scalar[dtype], Self.BATCH * 1](
+            uninitialized=True
+        )
+        var b_rew = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var b_next = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var b_done = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var b_weights = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var b_indices = InlineArray[Int, Self.BATCH](uninitialized=True)
+
+        cpu_state.buffer.sample[Self.BATCH](
+            b_obs, b_act1, b_rew, b_next, b_done, b_weights, b_indices
+        )
+
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](b_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](b_next.unsafe_ptr())
+
+        # Online forward with cache
+        var raw_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.RAW_OUT](
+            uninitialized=True
+        )
+        var raw_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
+        ](raw_arr.unsafe_ptr())
+        var cache_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.Q_CS](
+            uninitialized=True
+        )
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.Q_CS), MutAnyOrigin
+        ](cache_arr.unsafe_ptr())
+        var p_online = cpu_state.online.params_view()
+        Self.QNet.forward_with_cache[Self.BATCH](
+            obs_t, raw_t, p_online, cache_t
+        )
+
+        # Combine raw → Q-values
+        var q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
+        Self.Config.QOutputStrat.combine_cpu[
+            Self.BATCH, Self.ACTIONS, Self.RAW_OUT
+        ](raw_arr, q_arr)
+
+        # Target forward → combine
+        var next_raw_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.RAW_OUT
+        ](uninitialized=True)
+        var next_raw_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
+        ](next_raw_arr.unsafe_ptr())
+        var p_target = cpu_state.target.params_view()
+        Self.QNet.forward[Self.BATCH](next_obs_t, next_raw_t, p_target)
+        var next_q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
+        Self.Config.QOutputStrat.combine_cpu[
+            Self.BATCH, Self.ACTIONS, Self.RAW_OUT
+        ](next_raw_arr, next_q_arr)
+
+        # Online next (for Double DQN strategy)
+        var online_next_raw = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.RAW_OUT
+        ](uninitialized=True)
+        var online_next_raw_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
+        ](online_next_raw.unsafe_ptr())
+        Self.QNet.forward[Self.BATCH](
+            next_obs_t, online_next_raw_t, p_online
+        )
+        var online_next_q = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        Self.Config.QOutputStrat.combine_cpu[
+            Self.BATCH, Self.ACTIONS, Self.RAW_OUT
+        ](online_next_raw, online_next_q)
+
+        # TD targets via strategy
+        var targets = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        Self.Config.QTargetStrat.compute_targets_cpu[Self.BATCH, Self.ACTIONS](
+            online_next_q, next_q_arr, b_rew, b_done, targets, self.gamma
+        )
+
+        # Weighted gradient (PER importance sampling)
+        var grad_q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            fill=Scalar[dtype](0.0)
+        )
+        var td_errors = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var total_loss: Float64 = 0.0
+
+        for b in range(Self.BATCH):
+            var action = Int(b_act1[b])
+            var q_pred = q_arr[b * Self.ACTIONS + action]
+            var td_error = q_pred - targets[b]
+            td_errors[b] = td_error
+
+            var weight = b_weights[b]
+            var weighted_error = weight * td_error
+            total_loss += Float64(weighted_error * weighted_error)
+
+            grad_q_arr[b * Self.ACTIONS + action] = (
+                Scalar[dtype](2.0) * weighted_error / Scalar[dtype](Self.BATCH)
+            )
+        total_loss /= Float64(Self.BATCH)
+
+        # Transform grad Q-space → raw output space
+        var grad_raw_arr = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.RAW_OUT
+        ](uninitialized=True)
+        Self.Config.QOutputStrat.grad_transform_cpu[
+            Self.BATCH, Self.ACTIONS, Self.RAW_OUT
+        ](grad_q_arr, grad_raw_arr)
+
+        # Backward + optimizer step
+        var grad_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
+        ](grad_raw_arr.unsafe_ptr())
+        var d_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var d_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ](d_obs.unsafe_ptr())
+        var g = cpu_state.online.grads_view()
+        cpu_state.online.zero_grads()
+        Self.QNet.backward[Self.BATCH](grad_t, d_obs_t, p_online, cache_t, g)
+        cpu_state.online.optimizer_step()
+
+        # Update priorities
+        cpu_state.buffer.update_priorities[Self.BATCH](b_indices, td_errors)
+
+        # Target update
+        self.train_step_count += 1
+        if (
+            self.train_step_count - self._target_update_ctr
+            >= self.target_update_freq
+        ):
+            self._target_update_ctr = self.train_step_count
+            if self.tau >= 1.0:
+                cpu_state.target.copy_params_from(cpu_state.online)
+            else:
+                cpu_state.target.soft_update_from(cpu_state.online, self.tau)
+
+        return total_loss
+
+    fn decay_explore(mut self) -> None:
+        self.epsilon *= self.epsilon_decay
+        if self.epsilon < self.epsilon_min:
+            self.epsilon = self.epsilon_min
+
+    fn get_explore_rate(self) -> Float64:
+        return self.epsilon
+
+    fn random_action(self) -> Int:
+        return Int(random_float64() * Float64(Self.ACTIONS))
+
+    fn select_greedy_action(
+        self, cpu_state: Self.CPUStateType, obs: List[Float64]
+    ) -> Int:
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+        var raw_arr = InlineArray[Scalar[dtype], Self.RAW_OUT](
+            uninitialized=True
+        )
+        var raw_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
+        ](raw_arr.unsafe_ptr())
+        var p = cpu_state.online.params_view()
+        Self.QNet.forward[1](obs_t, raw_t, p)
+
+        var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        Self.Config.QOutputStrat.combine_cpu[1, Self.ACTIONS, Self.RAW_OUT](
+            raw_arr, q_arr
+        )
+
+        var best = 0
+        var best_q = q_arr[0]
+        for a in range(1, Self.ACTIONS):
+            if q_arr[a] > best_q:
+                best_q = q_arr[a]
+                best = a
+        return best
+
+    # Checkpointable
+    fn save_checkpoint(self, path: String) raises -> None:
+        comptime PARAM_SIZE = Self.QNet.PARAM_SIZE
+        comptime STATE_SIZE = PARAM_SIZE * Self.Config.QOpt.STATE_PER_PARAM
+
+        var content = write_checkpoint_header(
+            "generic_dqn_per_agent", PARAM_SIZE, STATE_SIZE
+        )
+        content += self.state.online.write_sections("online_")
+        content += self.state.target.write_sections("target_")
+
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("epsilon=" + String(self.epsilon))
+        metadata.append("epsilon_min=" + String(self.epsilon_min))
+        metadata.append("beta=" + String(self.beta))
+        metadata.append("beta_start=" + String(self.beta_start))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
+
+        save_checkpoint_file(path, content)
+
+    fn load_checkpoint(mut self, path: String) raises -> None:
+        var content = read_checkpoint_file(path)
+        _ = parse_checkpoint_header(content)
+        self.state.online.read_sections(content, "online_")
+        self.state.target.read_sections(content, "target_")
+
+        var metadata = read_metadata_section(content)
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
+        var tau_str = get_metadata_value(metadata, "tau")
+        if len(tau_str) > 0:
+            self.tau = atof(tau_str)
+        var eps_str = get_metadata_value(metadata, "epsilon")
+        if len(eps_str) > 0:
+            self.epsilon = atof(eps_str)
+        var beta_str = get_metadata_value(metadata, "beta")
+        if len(beta_str) > 0:
+            self.beta = atof(beta_str)
+        var step_str = get_metadata_value(metadata, "train_step_count")
+        if len(step_str) > 0:
+            self.train_step_count = Int(atol(step_str))
+
+    # =========================================================================
+    # CPU Training
+    # =========================================================================
+
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 300,
+        max_steps_per_episode: Int = 1000,
+        warmup_steps: Int = 1000,
+        train_every: Int = 1,
+        verbose: Bool = False,
+        print_every: Int = 10,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 0,
+    ) raises -> TrainingMetrics:
+        """Train with PER on CPU."""
+        from mojo_rl.deep_agents.core.offpolicy_train import (
+            run_offpolicy_discrete_train,
+        )
+
+        self.logger = logger
+        self.diag_every = diag_every
+        var cpu_state = Self.CPUStateType()
+        var ckpt_path = String(self.checkpoint_path)
+        var algo_name = String("GenericDQN+PER")
+        var metrics = run_offpolicy_discrete_train[E, Self, Self.L](
+            self,
+            cpu_state,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
+            checkpoint_every=self.checkpoint_every,
+            checkpoint_path=ckpt_path,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=algo_name,
+            logger=logger,
+        )
+        self.state = cpu_state^
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        return metrics
+
+    fn evaluate[
+        E: BoxDiscreteActionEnv & RenderableEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 1000,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate using greedy policy."""
+        var metrics = run_offpolicy_discrete_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps_per_episode,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
+
+    # =========================================================================
+    # GPUOffPolicyAgent trait (uniform replay — no PER on GPU)
+    # =========================================================================
+
+    fn get_action_scale(self) -> Float64:
+        return 1.0
+
+    fn get_total_steps(self) -> Int:
+        return self.train_step_count
+
+    fn set_total_steps(mut self, steps: Int):
+        self.train_step_count = steps
+
+    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+        return Self.GPUStateType(ctx)
+
+    fn upload_to_gpu(
+        self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        gpu_state.online.upload_from(self.state.online, ctx)
+        gpu_state.target.upload_from(self.state.target, ctx)
+
+    fn download_from_gpu(
+        mut self,
+        mut gpu_state: Self.GPUStateType,
+        ctx: DeviceContext,
+    ) raises -> None:
+        gpu_state.online.download_to(self.state.online, ctx)
+        gpu_state.target.download_to(self.state.target, ctx)
+
+    fn select_actions_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """Forward Q-network on GPU + epsilon-greedy (same as standard DQN)."""
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var raw_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
+        ](gpu_state.env_raw_buf.unsafe_ptr())
+        var p = gpu_state.online.params_view()
+        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+
+        var q_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.env_q_buf.unsafe_ptr())
+        Self.Config.QOutputStrat.combine_gpu[
+            N_ENVS, Self.ACTIONS, Self.RAW_OUT
+        ](ctx, raw_t, q_t)
+
+        var actions_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var epsilon_s = Scalar[dtype](self.epsilon)
+        var seed_val = Scalar[DType.uint64](
+            UInt64(self.get_total_steps()) * UInt64(2654435761)
+        )
+
+        @always_inline
+        fn argmax_wrapper(
+            eps: Scalar[dtype],
+            q_vals: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            acts: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            base_seed: Scalar[DType.uint64],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= N_ENVS:
+                return
+            var rng = PhiloxRandom(
+                seed=UInt64(base_seed) + UInt64(b), offset=0
+            )
+            var rand_vals = rng.step_uniform()
+            if Scalar[dtype](rand_vals[0]) < eps:
+                acts[b] = Scalar[dtype](
+                    Int(Scalar[dtype](rand_vals[1]) * Scalar[dtype](Self.ACTIONS))
+                    % Self.ACTIONS
+                )
+                return
+            var best_q = q_vals[b, 0]
+            var best_action = 0
+            for a in range(1, Self.ACTIONS):
+                var qv = q_vals[b, a]
+                if qv > best_q:
+                    best_q = qv
+                    best_action = a
+            acts[b] = Scalar[dtype](best_action)
+
+        ctx.enqueue_function[argmax_wrapper, argmax_wrapper](
+            epsilon_s, q_t, actions_t, seed_val,
+            grid_dim=((N_ENVS + TPB - 1) // TPB,),
+            block_dim=(TPB,),
+        )
+
+    fn do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """GPU train step with UNIFORM replay (no PER on GPU)."""
+        comptime BATCH = Self.BATCH
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+
+        gpu_state.buffer.sample[BATCH](
+            ctx,
+            UInt32(self.train_step_count * (BATCH + 1)),
+            gpu_state.s_obs, gpu_state.s_act, gpu_state.s_rew,
+            gpu_state.s_nobs, gpu_state.s_done, gpu_state.s_idx,
+        )
+
+        var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.s_obs.unsafe_ptr())
+        var next_obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.s_nobs.unsafe_ptr())
+        var actions_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_act.unsafe_ptr())
+        var rewards_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_rew.unsafe_ptr())
+        var dones_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_done.unsafe_ptr())
+        var targets_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.targets.unsafe_ptr())
+        var q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.q_raw.unsafe_ptr())
+        var next_q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.next_q_raw.unsafe_ptr())
+        var online_next_q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.online_next_q_raw.unsafe_ptr())
+        var q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.q_values.unsafe_ptr())
+        var next_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.next_q_values.unsafe_ptr())
+        var online_next_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.online_next_q.unsafe_ptr())
+        var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Q_CS), MutAnyOrigin](gpu_state.cache.unsafe_ptr())
+        var grad_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.grad_q.unsafe_ptr())
+        var grad_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.grad_raw.unsafe_ptr())
+        var grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.grad_input.unsafe_ptr())
+
+        var p_online = gpu_state.online.params_view()
+        var p_target = gpu_state.target.params_view()
+
+        # Online forward + combine
+        Self.QNet.forward_gpu_with_cache[BATCH](ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.train_ws)
+        Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, q_raw_t, q_t)
+
+        # Target forward + combine
+        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.train_ws)
+        Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, next_q_raw_t, next_q_t)
+
+        # Online next forward + combine (for Double DQN)
+        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.train_ws)
+        Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, online_next_q_raw_t, online_next_q_t)
+
+        # TD targets
+        Self.Config.QTargetStrat.compute_targets_gpu[BATCH, Self.ACTIONS](
+            ctx, targets_t, online_next_q_t, next_q_t, rewards_t, dones_t, self.gamma
+        )
+
+        # Gradient kernel
+        @always_inline
+        fn grad_wrapper(
+            grd: LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin],
+            qv: LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin],
+            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            act: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= BATCH:
+                return
+            var action = Int(act[b])
+            var td_error = qv[b, action] - tgt[b]
+            for a in range(Self.ACTIONS):
+                if a == action:
+                    grd[b, a] = Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
+                else:
+                    grd[b, a] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[grad_wrapper, grad_wrapper](
+            grad_q_t, q_t, targets_t, actions_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Grad transform + backward
+        Self.Config.QOutputStrat.grad_transform_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, grad_q_t, grad_raw_t)
+        var g = gpu_state.online.grads_view()
+        gpu_state.online.zero_grads(ctx)
+        Self.QNet.backward_gpu[BATCH](ctx, grad_raw_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws)
+        gpu_state.online.optimizer_step(ctx)
+
+        self.train_step_count += 1
+
+    fn soft_update_targets_gpu(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        if self.train_step_count - self._target_update_ctr >= self.target_update_freq:
+            gpu_state.target.soft_update_from_gpu(gpu_state.online, self.tau, ctx)
+            self._target_update_ctr = self.train_step_count
+
+    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+        var duration = Float64(num_steps) * 0.5
+        var slope = (self.epsilon_min - 1.0) / duration
+        self.epsilon = max(self.epsilon_min, slope * Float64(total_steps) + 1.0)
+
+    # =========================================================================
+    # GPU Training convenience
+    # =========================================================================
+
+    fn train_gpu[
+        E: GPUDiscreteEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        gradient_steps: Int = 0,
+        sync_every: Int = 5000,
+        verbose: Bool = False,
+        print_every: Int = 50_000,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 100,
+    ) raises -> TrainingMetrics:
+        """Train on GPU (uniform replay, no PER)."""
+        self.logger = logger
+        self.diag_every = diag_every
+        var algo_name = String("GenericDQN+PER (GPU, uniform)")
+        var timer = PerfTimer[False]()
+        _ = timer.add_slot("copy_prev_obs")
+        _ = timer.add_slot("select_actions")
+        _ = timer.add_slot("env_step")
+        _ = timer.add_slot("buffer_store")
+        _ = timer.add_slot("episode_tracking")
+        _ = timer.add_slot("reset")
+        _ = timer.add_slot("train_step")
+        _ = timer.add_slot("gpu_cpu_sync")
+
+        var metrics = run_offpolicy_discrete_train_gpu[E, Self, 0, Self.L](
+            self, ctx, num_steps, timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,

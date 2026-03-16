@@ -37,4 +37,4 @@ from .offpolicy_agent import GenericOffPolicyAgent
 from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
-from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, GenericDQNAgent, DQNGPUStateGeneric
+from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
