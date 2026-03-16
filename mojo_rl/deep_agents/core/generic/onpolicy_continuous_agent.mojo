@@ -1248,6 +1248,7 @@ struct GenericOnPolicyContinuousAgent[
                     mb_actions_t,
                     Scalar[dtype](self.clip_epsilon),
                     Scalar[dtype](self.entropy_coef),
+                    MINIBATCH,
                     grid_dim=(MINIBATCH_BLOCKS,),
                     block_dim=(TPB,),
                 )
