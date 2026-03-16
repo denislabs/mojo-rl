@@ -316,6 +316,75 @@ fn min_max_reduce_kernel[
 
 
 @always_inline
+fn normalize_advantages_kernel[
+    SIZE: Int,
+    BLOCK_SIZE: Int,
+](
+    adv: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+):
+    """Normalize advantages in-place: (adv - mean) / max(std, 1.0).
+
+    Single block kernel. Computes mean/std via shared memory reduction,
+    then normalizes all elements.
+    """
+    var tid = Int(thread_idx.x)
+
+    var shared_sum = LayoutTensor[
+        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var shared_sq = LayoutTensor[
+        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Phase 1: compute sum and sum of squares
+    var local_sum = S(0.0)
+    var local_sq = S(0.0)
+    var idx = tid
+    while idx < SIZE:
+        var v = rebind[S](adv[idx])
+        local_sum += v
+        local_sq += v * v
+        idx += BLOCK_SIZE
+    shared_sum[tid] = local_sum
+    shared_sq[tid] = local_sq
+
+    barrier()
+
+    # Tree reduction
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if tid < stride:
+            shared_sum[tid] = rebind[S](shared_sum[tid]) + rebind[S](shared_sum[tid + stride])
+            shared_sq[tid] = rebind[S](shared_sq[tid]) + rebind[S](shared_sq[tid + stride])
+        barrier()
+        stride = stride // 2
+
+    # Phase 2: compute mean and std, then normalize
+    # Thread 0 computes mean/std and stores in shared memory for all threads
+    if tid == 0:
+        var mean = rebind[S](shared_sum[0]) / S(Float64(SIZE))
+        var var_ = rebind[S](shared_sq[0]) / S(Float64(SIZE)) - mean * mean
+        if var_ < S(0.0):
+            var_ = S(0.0)
+        var std_ = exp(S(0.5) * log(var_ + S(1e-8)))
+        if std_ < S(1.0):
+            std_ = S(1.0)
+        shared_sum[0] = mean
+        shared_sq[0] = S(1.0) / std_
+
+    barrier()
+
+    var mean_val = rebind[S](shared_sum[0])
+    var inv_std = rebind[S](shared_sq[0])
+    idx = tid
+    while idx < SIZE:
+        adv[idx] = (rebind[S](adv[idx]) - mean_val) * inv_std
+        idx += BLOCK_SIZE
+
+
+@always_inline
 fn clamp_kernel[
     SIZE: Int,
 ](
@@ -1074,9 +1143,11 @@ fn reinforce_grad_kernel[
         var grad_mean = z / std_val
         var grad_log_std = z * z - one
 
-        var weight = (-advantage + entropy_coef) * inv_batch
-        grad_out[b, a] = weight * grad_mean
-        grad_out[b, ACTION_DIM + a] = weight * grad_log_std
+        # Policy gradient: -advantage * d(log_prob)/d(params)
+        var policy_weight = -advantage * inv_batch
+        grad_out[b, a] = policy_weight * grad_mean
+        # Entropy bonus only affects log_std: d(entropy)/d(log_std) = 1
+        grad_out[b, ACTION_DIM + a] = policy_weight * grad_log_std - entropy_coef * inv_batch
 
 
 # =============================================================================

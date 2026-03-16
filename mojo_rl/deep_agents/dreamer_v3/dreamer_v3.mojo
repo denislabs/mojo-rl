@@ -73,6 +73,7 @@ from .kernels import (
     concat_gru_input_backward_kernel,
     clamp_kernel,
     min_max_reduce_kernel,
+    normalize_advantages_kernel,
     lambda_returns_kernel,
     normalize_returns_elementwise_kernel,
     two_hot_ce_grad_kernel,
@@ -4044,8 +4045,6 @@ struct DreamerV3Agent[
 
         # ── 7. Multi-step Critic + Actor training ──────────────────────
         # DreamerV3 trains actor/critic on ALL imagination steps (0..H-2).
-        # For each step h: reconstruct feat from ping-pong buffers,
-        # run critic/actor forward+backward, accumulate gradients.
         ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
         ctx.enqueue_memset(gpu_state.critic.grads_buf, 0)
 
@@ -4060,6 +4059,45 @@ struct DreamerV3Agent[
         var bins_1d_ac = LayoutTensor[
             dtype, Layout.row_major(BINS), MutAnyOrigin
         ](gpu_state.bins_buf.unsafe_ptr())
+
+        # Pre-compute all advantages: adv[h] = returns[h] - values[h]
+        # Store in imag_rewards_buf (no longer needed after lambda returns)
+        comptime ADV_TOTAL = (HORIZON - 1) * IB
+        for h in range(HORIZON - 1):
+            var ret_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_returns_buf.unsafe_ptr() + h * IB)
+            var val_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
+            var adv_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
+
+            @always_inline
+            fn run_adv_precompute(
+                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+            ):
+                advantage_kernel[IB](adv, ret, val)
+
+            ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
+                adv_h, ret_h, val_h,
+                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+            )
+
+        # Normalize all advantages across all (HORIZON-1)*IB elements
+        var all_adv = LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin](
+            gpu_state.imag_rewards_buf.unsafe_ptr())
+
+        @always_inline
+        fn run_norm_adv(
+            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
+        ):
+            normalize_advantages_kernel[ADV_TOTAL, TPB](a)
+
+        ctx.enqueue_function[run_norm_adv, run_norm_adv](
+            all_adv,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
 
         for h in range(HORIZON - 1):
             # Read saved deter/stoch for imagination step h
@@ -4180,23 +4218,11 @@ struct DreamerV3Agent[
                 gpu_state.actor.params_view(), actor_cache_h, gpu_state.ws_actor,
             )
 
-            # Advantage = returns[h] - values[h]
+            # Read pre-computed normalized advantages for step h
+            # (stored in imag_rewards_buf, reused since rewards no longer needed)
             var adv_h = LayoutTensor[
                 dtype, Layout.row_major(IB), MutAnyOrigin
-            ](gpu_state.imag_advantages_buf.unsafe_ptr())
-
-            @always_inline
-            fn run_adv_h(
-                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ):
-                advantage_kernel[IB](adv, ret, val)
-
-            ctx.enqueue_function[run_adv_h, run_adv_h](
-                adv_h, returns_h, values_h,
-                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
-            )
+            ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
 
             # Sample actions from actor
             var actions_h = LayoutTensor[
