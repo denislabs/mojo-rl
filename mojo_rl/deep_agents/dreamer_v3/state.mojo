@@ -626,6 +626,10 @@ struct DreamerV3GPUState[
     var imag_log_probs_buf: DeviceBuffer[dtype]  # [IB]
     var imag_advantages_buf: DeviceBuffer[dtype]  # [IB]
 
+    # Per-horizon deter/stoch (for multi-step actor-critic training)
+    var imag_all_deter_buf: DeviceBuffer[dtype]  # [HORIZON * IB * DETER]
+    var imag_all_stoch_buf: DeviceBuffer[dtype]  # [HORIZON * IB * STOCH]
+
     # ── Actor/Critic GPU scratch (IB-sized for imagination) ──────────────
     var actor_out_buf: DeviceBuffer[dtype]  # [IB * 2*ACT]
     var actor_cache_buf: DeviceBuffer[dtype]  # [IB * ActorModel.CACHE_SIZE]
@@ -846,6 +850,8 @@ struct DreamerV3GPUState[
         self.imag_actions_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ACT)
         self.imag_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
         self.imag_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+        self.imag_all_deter_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.DETER)
+        self.imag_all_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.STOCH)
 
         # ── Actor/Critic scratch ─────────────────────────────────────────
         comptime ACTOR_OUT_DIM = Self.ActorModel.OUT_DIM
@@ -1082,6 +1088,8 @@ struct DreamerV3GPUState[
         self.imag_actions_buf = take.imag_actions_buf^
         self.imag_log_probs_buf = take.imag_log_probs_buf^
         self.imag_advantages_buf = take.imag_advantages_buf^
+        self.imag_all_deter_buf = take.imag_all_deter_buf^
+        self.imag_all_stoch_buf = take.imag_all_stoch_buf^
         self.actor_out_buf = take.actor_out_buf^
         self.actor_cache_buf = take.actor_cache_buf^
         self.actor_grad_buf = take.actor_grad_buf^

@@ -3546,6 +3546,41 @@ struct DreamerV3Agent[
             ):
                 concat_feat_kernel[IB, DETER, STOCH](f, d, s)
 
+            # Save deter/stoch for multi-step actor-critic
+            comptime IMAG_D_SLICE = IB * DETER
+            comptime IMAG_S_SLICE = IB * STOCH
+            var save_d = LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin](
+                gpu_state.imag_all_deter_buf.unsafe_ptr() + h * IMAG_D_SLICE)
+            var save_s = LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin](
+                gpu_state.imag_all_stoch_buf.unsafe_ptr() + h * IMAG_S_SLICE)
+            var src_d = LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin](
+                gpu_state.imag_deter_buf.unsafe_ptr() + read_off * DETER)
+            var src_s = LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin](
+                gpu_state.imag_stoch_buf.unsafe_ptr() + read_off * STOCH)
+
+            @always_inline
+            fn copy_imag_d(
+                d: LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[IMAG_D_SLICE](d, s)
+
+            @always_inline
+            fn copy_imag_s(
+                d: LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[IMAG_S_SLICE](d, s)
+
+            comptime COPY_ID_BLOCKS = (IMAG_D_SLICE + TPB - 1) // TPB
+            comptime COPY_IS_BLOCKS = (IMAG_S_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_imag_d, copy_imag_d](
+                save_d, src_d, grid_dim=(COPY_ID_BLOCKS,), block_dim=(TPB,),
+            )
+            ctx.enqueue_function[copy_imag_s, copy_imag_s](
+                save_s, src_s, grid_dim=(COPY_IS_BLOCKS,), block_dim=(TPB,),
+            )
+
             comptime IB_FEAT_BLOCKS = (IB * FEAT + TPB - 1) // TPB
             ctx.enqueue_function[run_concat_imag_feat, run_concat_imag_feat](
                 imag_feat_2d,
@@ -4027,14 +4062,13 @@ struct DreamerV3Agent[
         ](gpu_state.bins_buf.unsafe_ptr())
 
         for h in range(HORIZON - 1):
-            # Reconstruct feat from ping-pong deter/stoch at step h
-            var h_read_off = (h % 2) * IB
+            # Read saved deter/stoch for imagination step h
             var h_deter_2d = LayoutTensor[
                 dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-            ](gpu_state.imag_deter_buf.unsafe_ptr() + h_read_off * DETER)
+            ](gpu_state.imag_all_deter_buf.unsafe_ptr() + h * IB * DETER)
             var h_stoch_2d = LayoutTensor[
                 dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-            ](gpu_state.imag_stoch_buf.unsafe_ptr() + h_read_off * STOCH)
+            ](gpu_state.imag_all_stoch_buf.unsafe_ptr() + h * IB * STOCH)
             var h_feat_2d = LayoutTensor[
                 dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
             ](gpu_state.imag_feat_buf.unsafe_ptr())
