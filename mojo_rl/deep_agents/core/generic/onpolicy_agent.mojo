@@ -1,9 +1,9 @@
 """Generic on-policy agent parameterized by OnPolicyConfig.
 
 Supports PPO (clipped surrogate, multi-epoch) and A2C (vanilla PG, single pass)
-via comptime if branching on Config.IS_PPO.
+via strategy trait dispatch on Config.PolicyGrad and Config.EpochSched.
 
-GPU support: when Config.IS_PPO is True, GenericOnPolicyAgent also conforms to
+GPU support: GenericOnPolicyAgent also conforms to
 GPUOnPolicyDiscreteAgent, enabling GPU-accelerated parallel-env training via
 run_onpolicy_discrete_train_gpu.
 """
@@ -42,7 +42,6 @@ from mojo_rl.core.utils.softmax import (
 )
 from mojo_rl.deep_agents.ppo.kernels import (
     ppo_gather_minibatch_kernel,
-    ppo_actor_grad_with_kl_kernel,
     ppo_critic_grad_kernel,
     ppo_critic_grad_clipped_kernel,
     normalize_advantages_kernel,
@@ -591,7 +590,7 @@ struct GenericOnPolicyAgent[
     n_envs: Int = 1024,
     gpu_minibatch_size: Int = 256,
 ](OnPolicyDiscreteAgent & GPUOnPolicyDiscreteAgent & Checkpointable):
-    """Generic on-policy agent. PPO vs A2C via Config.IS_PPO.
+    """Generic on-policy agent. PPO vs A2C via Config.PolicyGrad + Config.EpochSched.
 
     Also conforms to GPUOnPolicyDiscreteAgent for GPU-accelerated training.
 
@@ -845,18 +844,15 @@ struct GenericOnPolicyAgent[
             return 0.0
 
         # Determine number of epochs and minibatch size
-        var n_epochs = 1
-        var mb_size = buf_len  # A2C: single pass, full rollout
-        comptime if Self.Config.IS_PPO:
-            n_epochs = self.num_epochs
-            mb_size = self.minibatch_size
+        var n_epochs = Self.Config.EpochSched.get_num_epochs(self.num_epochs)
+        var mb_size = Self.Config.EpochSched.get_minibatch_size(self.minibatch_size, buf_len)
 
         var total_loss: Float64 = 0.0
         var sample_count = 0
 
         for epoch in range(n_epochs):
-            # PPO: shuffle indices each epoch
-            comptime if Self.Config.IS_PPO:
+            # Shuffle indices each epoch (PPO)
+            comptime if Self.Config.EpochSched.USES_SHUFFLE:
                 fisher_yates_shuffle(cpu_state._indices, buf_len)
 
             var batch_start = 0
@@ -867,9 +863,8 @@ struct GenericOnPolicyAgent[
                 var this_mb = batch_end - batch_start
 
                 # Per-minibatch advantage normalization (PPO)
-                comptime if Self.Config.IS_PPO:
+                comptime if Self.Config.EpochSched.SUPPORTS_MINIBATCH_NORM:
                     if self.norm_adv_per_minibatch and this_mb > 1:
-                        # Gather and normalize
                         var mb_adv = List[Scalar[dtype]](capacity=this_mb)
                         for b in range(batch_start, batch_end):
                             var t = cpu_state._indices[b]
@@ -882,7 +877,7 @@ struct GenericOnPolicyAgent[
                 # Process each sample in the minibatch
                 for b_idx in range(batch_start, batch_end):
                     var t = b_idx
-                    comptime if Self.Config.IS_PPO:
+                    comptime if Self.Config.EpochSched.USES_SHUFFLE:
                         t = cpu_state._indices[b_idx]
 
                     var old_log_prob = cpu_state.buffer_log_probs[t]
@@ -934,69 +929,16 @@ struct GenericOnPolicyAgent[
                         uninitialized=True
                     )
 
-                    comptime if Self.Config.IS_PPO:
-                        # PPO: clipped surrogate
-                        var ratio = exp(new_log_prob - old_log_prob)
-                        var surr1 = ratio * advantage
-                        var clipped_ratio: Scalar[dtype]
-                        if advantage >= Scalar[dtype](0.0):
-                            clipped_ratio = min(
-                                ratio,
-                                Scalar[dtype](1.0 + self.clip_epsilon),
-                            )
-                        else:
-                            clipped_ratio = max(
-                                ratio,
-                                Scalar[dtype](1.0 - self.clip_epsilon),
-                            )
-                        var surr2 = clipped_ratio * advantage
-                        var use_surr1 = surr1 < surr2
-
-                        var is_clipped = (
-                            ratio
-                            < Scalar[dtype](1.0 - self.clip_epsilon)
-                        ) or (
-                            ratio
-                            > Scalar[dtype](1.0 + self.clip_epsilon)
-                        )
-
-                        for a in range(Self.ACTIONS):
-                            var d_lp = Scalar[dtype](0.0)
-                            if a == action:
-                                d_lp = Scalar[dtype](1.0) - probs[a]
-                            else:
-                                d_lp = -probs[a]
-                            var d_ent = -probs[a] * (
-                                Scalar[dtype](1.0)
-                                + log(probs[a] + Scalar[dtype](1e-8))
-                            )
-                            if is_clipped:
-                                d_logits[a] = -Scalar[dtype](self.entropy_coef) * d_ent
-                            else:
-                                var effective_adv = advantage
-                                if not use_surr1:
-                                    effective_adv = advantage
-                                d_logits[a] = (
-                                    -effective_adv * ratio * d_lp
-                                    - Scalar[dtype](self.entropy_coef) * d_ent
-                                )
-
-                    comptime if not Self.Config.IS_PPO:
-                        # A2C: vanilla policy gradient
-                        for a in range(Self.ACTIONS):
-                            var d_lp = Scalar[dtype](0.0)
-                            if a == action:
-                                d_lp = Scalar[dtype](1.0) - probs[a]
-                            else:
-                                d_lp = -probs[a]
-                            var d_ent = -probs[a] * (
-                                Scalar[dtype](1.0)
-                                + log(probs[a] + Scalar[dtype](1e-8))
-                            )
-                            d_logits[a] = (
-                                -advantage * d_lp
-                                - Scalar[dtype](self.entropy_coef) * d_ent
-                            )
+                    Self.Config.PolicyGrad.compute_d_logits[Self.ACTIONS](
+                        probs,
+                        action,
+                        new_log_prob,
+                        old_log_prob,
+                        advantage,
+                        self.clip_epsilon,
+                        self.entropy_coef,
+                        d_logits,
+                    )
 
                     # Actor backward
                     var d_logits_t = LayoutTensor[
@@ -1337,7 +1279,7 @@ struct GenericOnPolicyAgent[
         mut gpu_state: Self.GPUStateType,
         update_idx: Int,
     ) raises -> None:
-        """Run PPO multi-epoch minibatch updates on GPU."""
+        """Run on-policy update epochs on GPU (PPO or A2C via strategy dispatch)."""
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
         comptime MINIBATCH = Self.GPU_MINIBATCH
         comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
@@ -1453,9 +1395,6 @@ struct GenericOnPolicyAgent[
         comptime gather_wrapper = ppo_gather_minibatch_kernel[
             dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
         ]
-        comptime actor_grad_with_kl_wrapper = ppo_actor_grad_with_kl_kernel[
-            dtype, MINIBATCH, Self.ACTIONS
-        ]
         comptime critic_grad_wrapper = ppo_critic_grad_kernel[dtype, MINIBATCH]
         comptime critic_grad_clipped_wrapper = ppo_critic_grad_clipped_kernel[
             dtype, MINIBATCH
@@ -1483,21 +1422,23 @@ struct GenericOnPolicyAgent[
         ]
 
         var kl_early_stop = False
+        var n_epochs = Self.Config.EpochSched.get_num_epochs(self.num_epochs)
         var num_minibatches = ROLLOUT_TOTAL // MINIBATCH
 
-        for epoch in range(self.num_epochs):
+        for epoch in range(n_epochs):
             if kl_early_stop:
                 break
 
-            # Fisher-Yates shuffle on CPU
+            # Fisher-Yates shuffle on CPU (PPO)
             var indices_list = List[Int]()
             for i in range(ROLLOUT_TOTAL):
                 indices_list.append(i)
-            for i in range(ROLLOUT_TOTAL - 1, 0, -1):
-                var j = Int(random_float64() * Float64(i + 1))
-                var temp = indices_list[i]
-                indices_list[i] = indices_list[j]
-                indices_list[j] = temp
+            comptime if Self.Config.EpochSched.USES_SHUFFLE:
+                for i in range(ROLLOUT_TOTAL - 1, 0, -1):
+                    var j = Int(random_float64() * Float64(i + 1))
+                    var temp = indices_list[i]
+                    indices_list[i] = indices_list[j]
+                    indices_list[j] = temp
 
             for mb_idx in range(num_minibatches):
                 if kl_early_stop:
@@ -1533,36 +1474,37 @@ struct GenericOnPolicyAgent[
                 )
                 ctx.synchronize()
 
-                # Per-minibatch advantage normalization
-                if self.norm_adv_per_minibatch:
-                    ctx.enqueue_copy(
-                        gpu_state.mb_advantages_host,
-                        gpu_state.mb_advantages_buf,
-                    )
-                    ctx.synchronize()
-                    var adv_mean = Scalar[dtype](0.0)
-                    for i in range(MINIBATCH):
-                        adv_mean += gpu_state.mb_advantages_host[i]
-                    adv_mean /= Scalar[dtype](MINIBATCH)
-                    var adv_var = Scalar[dtype](0.0)
-                    for i in range(MINIBATCH):
-                        var diff = gpu_state.mb_advantages_host[i] - adv_mean
-                        adv_var += diff * diff
-                    var adv_std = sqrt(
-                        adv_var / Scalar[dtype](MINIBATCH) + Scalar[dtype](1e-8)
-                    )
-                    ctx.enqueue_function[
-                        normalize_advantages_wrapper,
-                        normalize_advantages_wrapper,
-                    ](
-                        mb_advantages_t,
-                        adv_mean,
-                        adv_std,
-                        MINIBATCH,
-                        grid_dim=(MINIBATCH_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
-                    ctx.synchronize()
+                # Per-minibatch advantage normalization (PPO)
+                comptime if Self.Config.EpochSched.SUPPORTS_MINIBATCH_NORM:
+                    if self.norm_adv_per_minibatch:
+                        ctx.enqueue_copy(
+                            gpu_state.mb_advantages_host,
+                            gpu_state.mb_advantages_buf,
+                        )
+                        ctx.synchronize()
+                        var adv_mean = Scalar[dtype](0.0)
+                        for i in range(MINIBATCH):
+                            adv_mean += gpu_state.mb_advantages_host[i]
+                        adv_mean /= Scalar[dtype](MINIBATCH)
+                        var adv_var = Scalar[dtype](0.0)
+                        for i in range(MINIBATCH):
+                            var diff = gpu_state.mb_advantages_host[i] - adv_mean
+                            adv_var += diff * diff
+                        var adv_std = sqrt(
+                            adv_var / Scalar[dtype](MINIBATCH) + Scalar[dtype](1e-8)
+                        )
+                        ctx.enqueue_function[
+                            normalize_advantages_wrapper,
+                            normalize_advantages_wrapper,
+                        ](
+                            mb_advantages_t,
+                            adv_mean,
+                            adv_std,
+                            MINIBATCH,
+                            grid_dim=(MINIBATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        ctx.synchronize()
 
                 # ---- Train actor ----
                 gpu_state.gpu_actor.zero_grads(ctx)
@@ -1576,9 +1518,11 @@ struct GenericOnPolicyAgent[
                 )
                 ctx.synchronize()
 
-                ctx.enqueue_function[
-                    actor_grad_with_kl_wrapper, actor_grad_with_kl_wrapper
+                # Policy gradient via strategy dispatch
+                Self.Config.PolicyGrad.compute_d_logits_gpu[
+                    MINIBATCH, Self.ACTIONS
                 ](
+                    ctx,
                     actor_grad_output_t,
                     kl_divergences_t,
                     diag_entropy_t,
@@ -1587,27 +1531,25 @@ struct GenericOnPolicyAgent[
                     mb_old_log_probs_t,
                     mb_advantages_t,
                     mb_actions_t,
-                    Scalar[dtype](self.clip_epsilon),
-                    Scalar[dtype](self.entropy_coef),
-                    MINIBATCH,
-                    grid_dim=(MINIBATCH_BLOCKS,),
-                    block_dim=(TPB,),
+                    self.clip_epsilon,
+                    self.entropy_coef,
                 )
                 ctx.synchronize()
 
-                # KL early stopping
-                if self.target_kl > 0.0:
-                    ctx.enqueue_copy(
-                        gpu_state.kl_divergences_host,
-                        gpu_state.kl_divergences_buf,
-                    )
-                    ctx.synchronize()
-                    var kl_sum = Scalar[dtype](0.0)
-                    for i in range(MINIBATCH):
-                        kl_sum += gpu_state.kl_divergences_host[i]
-                    if Float64(kl_sum) / Float64(MINIBATCH) > self.target_kl:
-                        kl_early_stop = True
-                        break
+                # KL early stopping (PPO)
+                comptime if Self.Config.EpochSched.USES_KL_EARLY_STOP:
+                    if self.target_kl > 0.0:
+                        ctx.enqueue_copy(
+                            gpu_state.kl_divergences_host,
+                            gpu_state.kl_divergences_buf,
+                        )
+                        ctx.synchronize()
+                        var kl_sum = Scalar[dtype](0.0)
+                        for i in range(MINIBATCH):
+                            kl_sum += gpu_state.kl_divergences_host[i]
+                        if Float64(kl_sum) / Float64(MINIBATCH) > self.target_kl:
+                            kl_early_stop = True
+                            break
 
                 Self.ActorModel.backward_gpu[MINIBATCH](
                     ctx,
@@ -1753,19 +1695,7 @@ struct GenericOnPolicyAgent[
         verbose: Bool = False,
         print_every: Int = 10,
     ) raises -> TrainingMetrics:
-        """Train PPO on GPU with parallel environments.
-
-        Delegates to the shared GPU on-policy training loop.
-
-        Args:
-            ctx: GPU device context.
-            num_updates: Number of rollout+update cycles.
-            verbose: Whether to print progress.
-            print_every: Print progress every N updates.
-
-        Returns:
-            TrainingMetrics with episode rewards and statistics.
-        """
+        """Train on GPU with parallel environments (PPO or A2C via strategy)."""
         var timer = PerfTimer[False]()
         return run_onpolicy_discrete_train_gpu[EnvType, Self, 0](
             self,

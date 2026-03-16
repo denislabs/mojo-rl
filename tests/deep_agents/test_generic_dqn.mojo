@@ -2,7 +2,7 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import GenericDQNAgent, DQNConfig
+from mojo_rl.deep_agents.core.generic import GenericDQNAgent, DQNConfig, DoubleDQNConfig
 from mojo_rl.envs import CartPoleEnv
 
 
@@ -18,9 +18,9 @@ fn main() raises:
     print("   steps:", dqn.train_step_count, " epsilon:", dqn.epsilon)
 
     # Test 2: Double DQN
-    print("\n2. GenericDQNAgent[DQNConfig double=True] (10 episodes)...")
+    print("\n2. GenericDQNAgent[DoubleDQNConfig] (10 episodes)...")
     seed(42)
-    var ddqn = GenericDQNAgent[DQNConfig[4, 2, 120, 84, 1000, 32, double=True]]()
+    var ddqn = GenericDQNAgent[DoubleDQNConfig[4, 2, 120, 84, 1000, 32]]()
     var env2 = CartPoleEnv[DType.float64]()
     var m2 = ddqn.train(env2, num_episodes=10)
     print("   steps:", ddqn.train_step_count, " epsilon:", ddqn.epsilon)

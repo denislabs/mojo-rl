@@ -3,6 +3,10 @@
 The OnPolicyConfig trait defines the compile-time interface for on-policy
 algorithms (PPO, A2C). The generic GenericOnPolicyAgent is parameterized
 by a Config conforming to this trait.
+
+Algorithm behavior is controlled by two strategy types:
+  - PolicyGrad: policy gradient computation (VanillaPG or ClippedSurrogate)
+  - EpochSched: epoch/minibatch schedule (SinglePass or MultiEpochMinibatch)
 """
 
 from mojo_rl.nn.model import (
@@ -13,6 +17,8 @@ from mojo_rl.nn.model import (
     Sequential,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam
+from .policy_gradient import PolicyGradient, VanillaPG, ClippedSurrogate
+from .epoch_schedule import EpochSchedule, SinglePass, MultiEpochMinibatch
 
 
 # =============================================================================
@@ -30,7 +36,8 @@ trait OnPolicyConfig:
     comptime CriticModel: Model
     comptime ActorOpt: Optimizer
     comptime CriticOpt: Optimizer
-    comptime IS_PPO: Bool  # PPO vs A2C flag (controls clipping, multi-epoch, etc.)
+    comptime PolicyGrad: PolicyGradient
+    comptime EpochSched: EpochSchedule
 
 
 # =============================================================================
@@ -65,7 +72,8 @@ struct PPOConfig[
     comptime ActorOpt = Adam[Self.actor_lr]
     comptime CriticOpt = Adam[Self.critic_lr]
 
-    comptime IS_PPO: Bool = True
+    comptime PolicyGrad = ClippedSurrogate
+    comptime EpochSched = MultiEpochMinibatch
 
 
 # =============================================================================
@@ -100,4 +108,5 @@ struct A2CConfig[
     comptime ActorOpt = Adam[Self.actor_lr]
     comptime CriticOpt = Adam[Self.critic_lr]
 
-    comptime IS_PPO: Bool = False
+    comptime PolicyGrad = VanillaPG
+    comptime EpochSched = SinglePass
