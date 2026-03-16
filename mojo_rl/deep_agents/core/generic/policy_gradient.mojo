@@ -31,22 +31,14 @@ fn _vanilla_pg_actor_grad_kernel[
     grad_logits: LayoutTensor[
         d, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
     ],
-    kl_divergences: LayoutTensor[
-        d, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    entropies: LayoutTensor[
-        d, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
-    clip_flags: LayoutTensor[
-        d, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
+    kl_divergences: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    entropies: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_flags: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     # Inputs
     logits: LayoutTensor[
         d, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
     ],
-    old_log_probs: LayoutTensor[
-        d, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ],
+    old_log_probs: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     advantages: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     actions: LayoutTensor[d, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     clip_epsilon: Scalar[d],
@@ -203,18 +195,16 @@ struct VanillaPG(PolicyGradient):
     ) -> None:
         """Compute vanilla policy gradient d_logits."""
         for a in range(ACTIONS):
-            var d_lp = Scalar[dtype](0.0)
+            var d_lp: Scalar[dtype]
             if a == action:
                 d_lp = Scalar[dtype](1.0) - probs[a]
             else:
                 d_lp = -probs[a]
             var d_ent = -probs[a] * (
-                Scalar[dtype](1.0)
-                + log(probs[a] + Scalar[dtype](1e-8))
+                Scalar[dtype](1.0) + log(probs[a] + Scalar[dtype](1e-8))
             )
             d_logits[a] = (
-                -advantage * d_lp
-                - Scalar[dtype](entropy_coef) * d_ent
+                -advantage * d_lp - Scalar[dtype](entropy_coef) * d_ent
             )
 
     @staticmethod
@@ -302,23 +292,18 @@ struct ClippedSurrogate(PolicyGradient):
         """Compute PPO clipped surrogate d_logits."""
         var ratio = exp(new_log_prob - old_log_prob)
 
-        var is_clipped = (
-            ratio
-            < Scalar[dtype](1.0 - clip_eps)
-        ) or (
-            ratio
-            > Scalar[dtype](1.0 + clip_eps)
+        var is_clipped = (ratio < Scalar[dtype](1.0 - clip_eps)) or (
+            ratio > Scalar[dtype](1.0 + clip_eps)
         )
 
         for a in range(ACTIONS):
-            var d_lp = Scalar[dtype](0.0)
+            var d_lp: Scalar[dtype]
             if a == action:
                 d_lp = Scalar[dtype](1.0) - probs[a]
             else:
                 d_lp = -probs[a]
             var d_ent = -probs[a] * (
-                Scalar[dtype](1.0)
-                + log(probs[a] + Scalar[dtype](1e-8))
+                Scalar[dtype](1.0) + log(probs[a] + Scalar[dtype](1e-8))
             )
             if is_clipped:
                 # Clipped: only entropy gradient flows
