@@ -5180,8 +5180,23 @@ struct DreamerV3Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # ── 4. Reset done envs (physics + RSSM) ──────────────────
-            # Reset physics state for done envs
+            # ── 4. Download transitions BEFORE reset clears done flags ──
+            ctx.enqueue_copy(act_host, act_buf)
+            ctx.enqueue_copy(rew_host, rew_buf)
+            ctx.enqueue_copy(done_host, done_buf)
+            ctx.synchronize()  # also completes obs_host from step 1
+
+            # ── 5. Reset done envs (physics + RSSM) ──────────────────
+            # Reset RSSM state for done envs (before done_buf is cleared)
+            ctx.enqueue_function[run_rssm_reset_done, run_rssm_reset_done](
+                deter_2d,
+                stoch_2d,
+                prev_act_2d,
+                done_1d,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            # Reset physics state for done envs (clears done_buf to 0)
             E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                 ctx,
                 states_buf,
@@ -5193,23 +5208,8 @@ struct DreamerV3Agent[
             E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, OBS](
                 ctx, states_buf, obs_buf
             )
-            # Reset RSSM state for done envs
-            ctx.enqueue_function[run_rssm_reset_done, run_rssm_reset_done](
-                deter_2d,
-                stoch_2d,
-                prev_act_2d,
-                done_1d,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
 
-            # ── 5. Download transitions for replay buffer ────────────
-            ctx.enqueue_copy(act_host, act_buf)
-            ctx.enqueue_copy(rew_host, rew_buf)
-            ctx.enqueue_copy(done_host, done_buf)
-            ctx.synchronize()  # also completes obs_host from step 1
-
-            # ── 6. Process transitions (CPU) ─────────────────────────
+            # ── 6. Process transitions (CPU, done_host already downloaded) ─
             for e in range(n_envs):
                 var rew_val = Scalar[DType.float32](rew_host[e])
                 var done_val = Float64(done_host[e]) > 0.5
