@@ -42,7 +42,6 @@ from mojo_rl.deep_agents.core import (
     GPUOffPolicyState,
     GPUOffPolicyAgent,
     run_offpolicy_continuous_train,
-    run_offpolicy_continuous_eval,
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
 )
@@ -64,12 +63,14 @@ from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
+    RenderableEnv,
 )
 
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 # PerfTimerPtr not used (L3 profiling requires concrete Model types)
 from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.deep_agents.core.eval import run_offpolicy_continuous_eval
 
 from .offpolicy_config import OffPolicyConfig
 from .exploration import GaussianNoise
@@ -667,6 +668,9 @@ struct GenericOffPolicyAgent[
         Self._TA_WS_SIZE,
     ]
 
+    # Persistent CPU state (for evaluate() after train/train_gpu)
+    var state: Self.CPUStateType
+
     # Hyperparameters
     var gamma: Float64
     var tau: Float64
@@ -724,6 +728,7 @@ struct GenericOffPolicyAgent[
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
+        self.state = Self.CPUStateType()
         self.gamma = gamma
         self.tau = tau
         self.action_scale = action_scale
@@ -1269,20 +1274,22 @@ struct GenericOffPolicyAgent[
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
-        # Create fresh CPU state with initialized weights, upload to GPU
-        var cpu = self.make_cpu_state()
-        gpu_state.actor.upload_from(cpu.actor, ctx)
-        gpu_state.critic.upload_from(cpu.critic, ctx)
+        """Upload CPU network weights to GPU."""
+        gpu_state.actor.upload_from(self.state.actor, ctx)
+        gpu_state.critic.upload_from(self.state.critic, ctx)
         comptime if Self.Config.NUM_CRITICS == 2:
-            gpu_state.critic2.upload_from(cpu.critic2, ctx)
+            gpu_state.critic2.upload_from(self.state.critic2, ctx)
 
     fn download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
-        # Download into a temporary CPU state — we don't hold persistent state
-        pass
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.actor.download_to(self.state.actor, ctx)
+        gpu_state.critic.download_to(self.state.critic, ctx)
+        comptime if Self.Config.NUM_CRITICS == 2:
+            gpu_state.critic2.download_to(self.state.critic2, ctx)
 
     fn select_actions_gpu[
         N_ENVS: Int
@@ -1739,28 +1746,111 @@ struct GenericOffPolicyAgent[
         comptime if Self.Config.NUM_CRITICS == 2:
             cpu_state.critic2.read_sections(content, "critic2_")
 
-    # Convenience
+    # =========================================================================
+    # CPU Convenience training
+    # =========================================================================
+
     fn train[
         E: BoxContinuousActionEnv
     ](
         mut self,
         mut env: E,
         num_episodes: Int = 300,
+        max_steps_per_episode: Int = 1000,
+        warmup_steps: Int = 1000,
+        train_every: Int = 1,
+        verbose: Bool = False,
+        print_every: Int = 10,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
+        """Train the agent on a continuous-action environment.
+
+        Args:
+            env: Environment implementing BoxContinuousActionEnv.
+            num_episodes: Number of training episodes.
+            max_steps_per_episode: Maximum steps per episode (default: 1000).
+            warmup_steps: Random steps to fill replay buffer (default: 1000).
+            train_every: Train every N steps (default: 1).
+            verbose: Print progress (default: False).
+            print_every: Print every N episodes if verbose (default: 10).
+            environment_name: Name for metrics labeling.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps. 0 = every step
+                when logger is set (default: 0).
+
+        Returns:
+            TrainingMetrics with episode rewards and statistics.
+        """
+        self.logger = logger
         self.diag_every = diag_every
-        var cpu_state = self.make_cpu_state()
+        var cpu_state = Self.CPUStateType()
         var ckpt_path = String(self.checkpoint_path)
         var metrics = run_offpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
             num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
             checkpoint_every=self.checkpoint_every,
             checkpoint_path=ckpt_path,
-            logger=self.logger,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            logger=logger,
         )
+        self.state = cpu_state^
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
+
+    # =========================================================================
+    # Evaluation
+    # =========================================================================
+
+    fn evaluate[
+        E: BoxContinuousActionEnv & RenderableEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 1000,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: Environment to evaluate on.
+            num_episodes: Number of evaluation episodes (default: 10).
+            max_steps_per_episode: Maximum steps per episode (default: 1000).
+            verbose: Print per-episode results (default: False).
+            render: Render the environment (default: False).
+            frame_delay_ms: Delay between frames in ms (default: 16).
+
+        Returns:
+            Average reward across episodes.
+        """
+        var metrics = run_offpolicy_continuous_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps_per_episode,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
+
+    # =========================================================================
+    # GPU Training
+    # =========================================================================
 
     fn train_gpu[
         E: GPUContinuousEnv,
@@ -1769,10 +1859,33 @@ struct GenericOffPolicyAgent[
         ctx: DeviceContext,
         num_steps: Int,
         warmup_steps: Int = 1000,
+        verbose: Bool = False,
+        print_every: Int = 50_000,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
-        """Train using GPU-accelerated training loop."""
+        """Train using GPU-accelerated training loop.
 
+        After training, CPU state holds the trained weights so evaluate()
+        works immediately.
+
+        Args:
+            ctx: GPU device context.
+            num_steps: Total env transitions across all parallel envs.
+            warmup_steps: Transitions before training starts (default: 1000).
+            verbose: Print progress (default: False).
+            print_every: Print interval in transitions (default: 50000).
+            environment_name: Name for metrics labeling.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps (default: 0).
+
+        Returns:
+            TrainingMetrics with episode-level statistics.
+        """
+        self.logger = logger
         self.diag_every = diag_every
         var timer = PerfTimer[Self.profile >= 1]()
         comptime if Self.profile >= 1:
@@ -1791,7 +1904,10 @@ struct GenericOffPolicyAgent[
             num_steps,
             timer,
             warmup_steps=warmup_steps,
-            logger=self.logger,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            logger=logger,
         )
 
         comptime if Self.profile >= 2:
@@ -1799,4 +1915,5 @@ struct GenericOffPolicyAgent[
         comptime if Self.profile >= 1:
             timer.print_report("GenericOffPolicy GPU Profile")
 
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^

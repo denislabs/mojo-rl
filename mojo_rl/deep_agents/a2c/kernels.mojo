@@ -134,11 +134,12 @@ fn a2c_softmax_sample_kernel[
 
     # Step 3: sample from Categorical via inverse CDF
     from std.random.philox import Random as PhiloxRandom
+
     var rng = PhiloxRandom(
         seed=UInt64(seed) * UInt64(N_ENVS) + UInt64(env), offset=0
     )
     var rand_vals = rng.step_uniform()
-    var u = Scalar[dtype](rand_vals[0])
+    var u: logits.element_type = Scalar[dtype](rand_vals[0])
 
     var cum: logits.element_type = 0.0
     var sampled_action = N_ACTIONS - 1  # fallback

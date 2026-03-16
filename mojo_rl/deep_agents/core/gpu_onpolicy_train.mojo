@@ -405,9 +405,7 @@ fn run_onpolicy_discrete_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action on-policy agents (PPO).
 
@@ -424,6 +422,7 @@ fn run_onpolicy_discrete_train_gpu[
         E: GPU environment type implementing GPUDiscreteEnv.
         A: Agent type implementing GPUOnPolicyDiscreteAgent.
         PROFILE: Whether to profile the training loop.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
@@ -437,6 +436,7 @@ fn run_onpolicy_discrete_train_gpu[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with episode-level statistics.
@@ -845,9 +845,7 @@ fn run_onpolicy_continuous_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action on-policy agents (PPO).
 
@@ -859,6 +857,7 @@ fn run_onpolicy_continuous_train_gpu[
         A: Agent type implementing GPUOnPolicyContinuousAgent.
         CurriculumType: Curriculum scheduler type (default: NoCurriculumScheduler).
         PROFILE: Whether to profile the training loop.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
@@ -874,6 +873,7 @@ fn run_onpolicy_continuous_train_gpu[
         print_every: Print every N updates if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with episode-level statistics.

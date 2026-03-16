@@ -18,7 +18,7 @@ from mojo_rl.deep_agents.core import (
     PerfTimer,
 )
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel
+from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel, Conv2DReLU, FlattenLayer
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import (
     Network,
@@ -27,6 +27,15 @@ from mojo_rl.nn.training import (
     GPUNetworkState,
 )
 from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.checkpoint import (
+    write_checkpoint_header,
+    write_metadata_section,
+    parse_checkpoint_header,
+    read_checkpoint_file,
+    read_metadata_section,
+    get_metadata_value,
+    save_checkpoint_file,
+)
 
 from mojo_rl.deep_agents.core import (
     OffPolicyDiscreteState,
@@ -37,7 +46,11 @@ from mojo_rl.deep_agents.core import (
 )
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
-from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv
+from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.deep_agents.core.eval import (
+    run_offpolicy_discrete_eval,
+)
 
 from .q_target import QTarget, StandardQTarget, DoubleQTarget
 from .q_output import QOutput, DirectQ, DuelingQ
@@ -150,6 +163,43 @@ struct DuelingDQNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DuelingQ
+
+
+# =============================================================================
+# DQN CNN Config (Nature DQN architecture for pixel observations)
+# =============================================================================
+
+
+struct DQNCNNConfig[
+    ACT: Int,
+    CAP: Int = 10000,
+    BS: Int = 32,
+    lr: Float64 = 0.00025,
+](DiscreteOffPolicyConfig):
+    """DQN with Nature CNN for 4x84x84 pixel observations (Double DQN).
+
+    Architecture: Conv2DReLU(8,4) -> Conv2DReLU(4,2) -> Conv2DReLU(3,1)
+                  -> Flatten(3136) -> LinearReLU(512) -> Linear(num_actions)
+
+    Matches the Nature DQN (Mnih et al., 2015) and CleanRL's DQN Atari.
+    """
+
+    comptime obs_dim: Int = 4 * 84 * 84  # 28224 (4 stacked 84x84 frames)
+    comptime num_actions: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        Conv2DReLU[4, 32, 8, 4, 0, 84, 84],
+        Conv2DReLU[32, 64, 4, 2, 0, 20, 20],
+        Conv2DReLU[64, 64, 3, 1, 0, 9, 9],
+        FlattenLayer[64 * 7 * 7],
+        LinearReLU[64 * 7 * 7, 512],
+        Linear[512, Self.ACT],
+    ]
+    comptime QOpt = Adam[Self.lr]
+    comptime QTargetStrat = DoubleQTarget
+    comptime QOutputStrat = DirectQ
 
 
 # =============================================================================
@@ -384,10 +434,16 @@ struct DQNGPUStateGeneric[
 struct GenericDQNAgent[
     Config: DiscreteOffPolicyConfig,
     n_envs: Int = 1024,
+    L: Logger = NoOpLogger,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Generic DQN agent. Supports standard, double, and dueling DQN via Config.
 
     CPU + GPU unified. GPU support via GPUOffPolicyAgent trait.
+
+    Parameters:
+        Config: Compile-time config (DQNConfig, DoubleDQNConfig, DuelingDQNConfig).
+        n_envs: Number of parallel environments for GPU training (default: 1024).
+        L: Logger type for diagnostic logging (default: NoOpLogger).
     """
 
     comptime OBS: Int = Self.Config.QModel.IN_DIM
@@ -420,6 +476,9 @@ struct GenericDQNAgent[
         Self.n_envs,
     ]
 
+    # Persistent CPU state (for evaluate() after train/train_gpu)
+    var state: Self.CPUStateType
+
     var gamma: Float64
     var tau: Float64
     var epsilon: Float64
@@ -430,6 +489,10 @@ struct GenericDQNAgent[
     var _target_update_ctr: Int
     var checkpoint_every: Int
     var checkpoint_path: String
+
+    # Logger
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var diag_every: Int
 
     fn __init__(
         out self,
@@ -442,6 +505,7 @@ struct GenericDQNAgent[
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
+        self.state = Self.CPUStateType()
         self.gamma = gamma
         self.tau = tau
         self.epsilon = epsilon
@@ -452,6 +516,8 @@ struct GenericDQNAgent[
         self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.diag_every = 0
 
     fn make_cpu_state(self) -> Self.CPUStateType:
         return Self.CPUStateType()
@@ -620,6 +686,64 @@ struct GenericDQNAgent[
                     grad_q_arr[b * Self.ACTIONS + a] = Scalar[dtype](0.0)
         total_loss /= Float64(Self.BATCH)
 
+        # Log DQN diagnostics
+        if self.logger and (
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+
+                # Q-value stats
+                var q_min = Float64(q_arr[0])
+                var q_max = Float64(q_arr[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH * Self.ACTIONS):
+                    var v = Float64(q_arr[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean",
+                    q_sum / Float64(Self.BATCH * Self.ACTIONS),
+                    step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # TD target stats
+                var tgt_sum: Float64 = 0.0
+                for i in range(Self.BATCH):
+                    tgt_sum += Float64(targets[i])
+                self.logger[].log_scalar(
+                    "td_target_mean",
+                    tgt_sum / Float64(Self.BATCH),
+                    step,
+                )
+
+                # TD error stats
+                var td_err_abs_sum: Float64 = 0.0
+                var td_err_max_abs: Float64 = 0.0
+                for b2 in range(Self.BATCH):
+                    var act2 = Int(b_act1[b2])
+                    var td_err2 = Float64(
+                        q_arr[b2 * Self.ACTIONS + act2]
+                    ) - Float64(targets[b2])
+                    var abs_err = td_err2 if td_err2 >= 0 else -td_err2
+                    td_err_abs_sum += abs_err
+                    if abs_err > td_err_max_abs:
+                        td_err_max_abs = abs_err
+                self.logger[].log_scalar(
+                    "td_error_abs_mean",
+                    td_err_abs_sum / Float64(Self.BATCH),
+                    step,
+                )
+                self.logger[].log_scalar("td_error_max", td_err_max_abs, step)
+                self.logger[].log_scalar("loss", total_loss, step)
+            except:
+                pass
+
         # Transform gradient from Q-space to raw output space
         var grad_raw_arr = InlineArray[
             Scalar[dtype], Self.BATCH * Self.RAW_OUT
@@ -699,10 +823,64 @@ struct GenericDQNAgent[
 
     # Checkpointable
     fn save_checkpoint(self, path: String) raises -> None:
-        pass
+        """Save DQN agent state to a checkpoint file.
+
+        Saves online and target network params + optimizer states,
+        plus epsilon and training counters. Replay buffer is NOT saved.
+        """
+        comptime PARAM_SIZE = Self.QNet.PARAM_SIZE
+        comptime STATE_SIZE = PARAM_SIZE * Self.Config.QOpt.STATE_PER_PARAM
+
+        var content = write_checkpoint_header(
+            "generic_dqn_agent", PARAM_SIZE, STATE_SIZE
+        )
+        content += self.state.online.write_sections("online_")
+        content += self.state.target.write_sections("target_")
+
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("epsilon=" + String(self.epsilon))
+        metadata.append("epsilon_min=" + String(self.epsilon_min))
+        metadata.append("epsilon_decay=" + String(self.epsilon_decay))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
+
+        save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises -> None:
-        pass
+        """Load DQN agent state from a checkpoint file."""
+        var content = read_checkpoint_file(path)
+        _ = parse_checkpoint_header(content)
+
+        self.state.online.read_sections(content, "online_")
+        self.state.target.read_sections(content, "target_")
+
+        var metadata = read_metadata_section(content)
+
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
+
+        var tau_str = get_metadata_value(metadata, "tau")
+        if len(tau_str) > 0:
+            self.tau = atof(tau_str)
+
+        var epsilon_str = get_metadata_value(metadata, "epsilon")
+        if len(epsilon_str) > 0:
+            self.epsilon = atof(epsilon_str)
+
+        var epsilon_min_str = get_metadata_value(metadata, "epsilon_min")
+        if len(epsilon_min_str) > 0:
+            self.epsilon_min = atof(epsilon_min_str)
+
+        var epsilon_decay_str = get_metadata_value(metadata, "epsilon_decay")
+        if len(epsilon_decay_str) > 0:
+            self.epsilon_decay = atof(epsilon_decay_str)
+
+        var train_step_str = get_metadata_value(metadata, "train_step_count")
+        if len(train_step_str) > 0:
+            self.train_step_count = Int(atol(train_step_str))
 
     # =========================================================================
     # CPU Convenience training
@@ -710,21 +888,107 @@ struct GenericDQNAgent[
 
     fn train[
         E: BoxDiscreteActionEnv
-    ](mut self, mut env: E, num_episodes: Int = 300) raises -> TrainingMetrics:
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 300,
+        max_steps_per_episode: Int = 500,
+        warmup_steps: Int = 1000,
+        train_every: Int = 4,
+        verbose: Bool = False,
+        print_every: Int = 10,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 0,
+    ) raises -> TrainingMetrics:
+        """Train the DQN agent on a discrete-action environment.
+
+        Args:
+            env: Environment implementing BoxDiscreteActionEnv.
+            num_episodes: Number of training episodes.
+            max_steps_per_episode: Maximum steps per episode (default: 500).
+            warmup_steps: Random steps to fill replay buffer (default: 1000).
+            train_every: Train every N steps (default: 4).
+            verbose: Print progress (default: False).
+            print_every: Print every N episodes if verbose (default: 10).
+            environment_name: Name for metrics labeling.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps. 0 = every step
+                when logger is set (default: 0).
+
+        Returns:
+            TrainingMetrics with episode rewards and statistics.
+        """
         from mojo_rl.deep_agents.core.offpolicy_train import (
             run_offpolicy_discrete_train,
         )
 
-        var cpu_state = self.make_cpu_state()
+        self.logger = logger
+        self.diag_every = diag_every
+        var cpu_state = Self.CPUStateType()
         var ckpt_path = String(self.checkpoint_path)
-        return run_offpolicy_discrete_train(
+        var algo_name = String("GenericDQN")
+        var metrics = run_offpolicy_discrete_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
             num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_steps=warmup_steps,
+            train_every=train_every,
             checkpoint_every=self.checkpoint_every,
             checkpoint_path=ckpt_path,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=algo_name,
+            logger=logger,
         )
+        self.state = cpu_state^
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        return metrics
+
+    # =========================================================================
+    # Evaluation
+    # =========================================================================
+
+    fn evaluate[
+        E: BoxDiscreteActionEnv & RenderableEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: Environment to evaluate on.
+            num_episodes: Number of evaluation episodes (default: 10).
+            max_steps_per_episode: Maximum steps per episode (default: 500).
+            verbose: Print per-episode results (default: False).
+            render: Render the environment (default: False).
+            frame_delay_ms: Delay between frames in ms (default: 16).
+
+        Returns:
+            Average reward across episodes.
+        """
+        var metrics = run_offpolicy_discrete_eval(
+            self,
+            self.state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps_per_episode,
+            verbose=verbose,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )
+        return metrics.mean_reward()
 
     # =========================================================================
     # GPUOffPolicyAgent trait conformance
@@ -749,18 +1013,17 @@ struct GenericDQNAgent[
         ctx: DeviceContext,
     ) raises -> None:
         """Upload CPU network weights to GPU online and target networks."""
-        var cpu = self.make_cpu_state()
-        gpu_state.online.upload_from(cpu.online, ctx)
-        gpu_state.target.upload_from(cpu.target, ctx)
+        gpu_state.online.upload_from(self.state.online, ctx)
+        gpu_state.target.upload_from(self.state.target, ctx)
 
     fn download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
-        """Download trained GPU weights back to CPU (no-op, no persistent CPU state).
-        """
-        pass
+        """Download trained GPU weights back to CPU network states."""
+        gpu_state.online.download_to(self.state.online, ctx)
+        gpu_state.target.download_to(self.state.target, ctx)
 
     fn select_actions_gpu[
         N_ENVS: Int
@@ -1089,11 +1352,15 @@ struct GenericDQNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
 
-        GPU state (networks, replay buffer, scratch buffers) is created
-        locally for the duration of training and freed when the method returns.
+        GPU state is created locally. After training, CPU state holds the
+        trained weights so evaluate() works immediately.
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
@@ -1108,11 +1375,14 @@ struct GenericDQNAgent[
             verbose: Print progress (default: False).
             print_every: Print interval in transitions (default: 50000).
             environment_name: Name for metrics labeling.
+            logger: Optional metrics logger.
+            diag_every: Log diagnostics every N train steps (default: 100).
 
         Returns:
             TrainingMetrics with episode-level statistics.
         """
-
+        self.logger = logger
+        self.diag_every = diag_every
         var algo_name = String("GenericDQN (GPU)")
         var timer = PerfTimer[False]()
         _ = timer.add_slot("copy_prev_obs")
@@ -1124,7 +1394,7 @@ struct GenericDQNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, 0](
+        var metrics = run_offpolicy_discrete_train_gpu[E, Self, 0, Self.L](
             self,
             ctx,
             num_steps,
@@ -1136,6 +1406,8 @@ struct GenericDQNAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
+            logger=logger,
         )
 
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^

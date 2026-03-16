@@ -1052,31 +1052,161 @@ struct GenericOnPolicyAgent[
 
     # Checkpointable
     fn save_checkpoint(self, path: String) raises -> None:
-        pass
+        """Save agent state to a checkpoint file.
+
+        Saves actor and critic network params + optimizer states,
+        plus hyperparameters. Rollout buffer is NOT saved.
+        """
+        from mojo_rl.nn.checkpoint import (
+            write_checkpoint_header,
+            write_metadata_section,
+            save_checkpoint_file,
+        )
+
+        var content = write_checkpoint_header(
+            "generic_onpolicy_agent",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE,
+            0,
+        )
+        content += self.cpu_state.actor.write_sections("actor_")
+        content += self.cpu_state.critic.write_sections("critic_")
+
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("gae_lambda=" + String(self.gae_lambda))
+        metadata.append("entropy_coef=" + String(self.entropy_coef))
+        metadata.append("clip_epsilon=" + String(self.clip_epsilon))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        content += write_metadata_section(metadata)
+
+        save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises -> None:
-        pass
+        """Load agent state from a checkpoint file."""
+        from mojo_rl.nn.checkpoint import (
+            read_checkpoint_file,
+            parse_checkpoint_header,
+            read_metadata_section,
+            get_metadata_value,
+        )
 
-    # Convenience: CPU training
+        var content = read_checkpoint_file(path)
+        _ = parse_checkpoint_header(content)
+
+        self.cpu_state.actor.read_sections(content, "actor_")
+        self.cpu_state.critic.read_sections(content, "critic_")
+
+        var metadata = read_metadata_section(content)
+
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
+
+        var gae_str = get_metadata_value(metadata, "gae_lambda")
+        if len(gae_str) > 0:
+            self.gae_lambda = atof(gae_str)
+
+        var entropy_str = get_metadata_value(metadata, "entropy_coef")
+        if len(entropy_str) > 0:
+            self.entropy_coef = atof(entropy_str)
+
+        var clip_str = get_metadata_value(metadata, "clip_epsilon")
+        if len(clip_str) > 0:
+            self.clip_epsilon = atof(clip_str)
+
+        var step_str = get_metadata_value(metadata, "train_step_count")
+        if len(step_str) > 0:
+            self.train_step_count = Int(atol(step_str))
+
+    # =========================================================================
+    # CPU Convenience training
+    # =========================================================================
+
     fn train[
         E: BoxDiscreteActionEnv
     ](
-        mut self, mut env: E, num_updates: Int = 1000
+        mut self,
+        mut env: E,
+        num_updates: Int = 1000,
+        verbose: Bool = False,
+        print_every: Int = 10,
+        environment_name: String = "Environment",
     ) raises -> TrainingMetrics:
+        """Train the on-policy agent.
+
+        Args:
+            env: Environment implementing BoxDiscreteActionEnv.
+            num_updates: Number of rollout-update cycles.
+            verbose: Print progress (default: False).
+            print_every: Print every N updates if verbose (default: 10).
+            environment_name: Name for metrics labeling.
+
+        Returns:
+            TrainingMetrics with episode rewards and statistics.
+        """
         from mojo_rl.deep_agents.core.onpolicy_train import (
             run_onpolicy_discrete_train,
         )
 
         var cpu_state = self.make_cpu_state()
         var ckpt_path = String(self.checkpoint_path)
-        return run_onpolicy_discrete_train(
+        var algo_name = String("GenericOnPolicy")
+        var metrics = run_onpolicy_discrete_train(
             self,
             cpu_state,
             env,
             num_updates,
             checkpoint_every=self.checkpoint_every,
             checkpoint_path=ckpt_path,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=algo_name,
         )
+        self.cpu_state = cpu_state^
+        return metrics
+
+    # =========================================================================
+    # Evaluation
+    # =========================================================================
+
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: Environment to evaluate on.
+            num_episodes: Number of evaluation episodes (default: 10).
+            max_steps_per_episode: Maximum steps per episode (default: 500).
+            verbose: Print per-episode results (default: False).
+
+        Returns:
+            Average reward across episodes.
+        """
+        from mojo_rl.deep_agents.core.eval import run_onpolicy_discrete_eval
+
+        # Use a separate cpu_state reference to avoid aliasing self + self.cpu_state
+        var eval_state = self.make_cpu_state()
+        # Copy trained weights
+        eval_state.actor.copy_params_from(self.cpu_state.actor)
+        eval_state.critic.copy_params_from(self.cpu_state.critic)
+        var metrics = run_onpolicy_discrete_eval(
+            self,
+            eval_state,
+            env,
+            num_episodes=num_episodes,
+            max_steps=max_steps_per_episode,
+            verbose=verbose,
+        )
+        return metrics.mean_reward()
 
     # =========================================================================
     # GPUOnPolicyDiscreteAgent trait conformance

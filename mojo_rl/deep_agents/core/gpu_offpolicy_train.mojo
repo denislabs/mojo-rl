@@ -287,9 +287,7 @@ fn run_offpolicy_continuous_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -752,9 +750,7 @@ fn run_offpolicy_discrete_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
-    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-        Self.L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,

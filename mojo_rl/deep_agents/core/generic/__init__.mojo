@@ -14,8 +14,9 @@ Strategy building blocks (stateless, compile-time parameterized):
 Configs and agents:
   - offpolicy_config: OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
   - offpolicy_agent: GenericOffPolicyAgent (handles DDPG, TD3, SAC)
-  - onpolicy_config: OnPolicyConfig, PPOConfig, A2CConfig
-  - onpolicy_agent: GenericOnPolicyAgent
+  - onpolicy_config: OnPolicyConfig, PPOConfig, A2CConfig, ContinuousPPOConfig
+  - onpolicy_agent: GenericOnPolicyAgent (discrete PPO, A2C)
+  - onpolicy_continuous_agent: GenericOnPolicyContinuousAgent (continuous PPO)
   - dqn_agent: DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, GenericDQNAgent
 """
 
@@ -33,6 +34,7 @@ from .q_output import QOutput, DirectQ, DuelingQ
 # Configs and agents
 from .offpolicy_config import OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
 from .offpolicy_agent import GenericOffPolicyAgent
-from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig
+from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
-from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, GenericDQNAgent, DQNGPUStateGeneric
+from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
+from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, GenericDQNAgent, DQNGPUStateGeneric
