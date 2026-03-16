@@ -47,6 +47,21 @@ trait ActorLoss:
     comptime HAS_ALPHA: Bool
 
     @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+    ]() -> Int:
+        """Offset of log_probs in GPU strat_ws (for alpha auto-tuning).
+
+        Returns 0 for strategies without alpha (DPGLoss).
+        The agent reads BATCH floats from strat_ws at this offset
+        after synchronizing, to compute mean_lp for alpha update.
+        """
+        ...
+
+    @staticmethod
     fn ws_size[
         BATCH: Int,
         OBS: Int,
@@ -151,6 +166,13 @@ struct DPGLoss(ActorLoss):
     """
 
     comptime HAS_ALPHA: Bool = False
+
+    @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int, ACTOR_CS: Int,
+    ]() -> Int:
+        """No log_probs for DPG."""
+        return 0
 
     @staticmethod
     fn ws_size[
@@ -408,9 +430,7 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
 
-        # Zero critic grads, then backward (grads discarded, we need d_ci)
-        for i in range(CriticModel.PARAM_SIZE):
-            critic_grads.ptr[i] = Scalar[dtype](0)
+        # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
             ctx, dq_t, d_ci_t, critic_params, critic_cache_t,
             critic_grads, critic_ws
@@ -441,13 +461,10 @@ struct DPGLoss(ActorLoss):
             block_dim=(TPB,),
         )
 
-        # 6. Actor backward
+        # 6. Actor backward (grads pre-zeroed by agent)
         var d_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DOBS)
-        # Zero actor grads before accumulation
-        for i in range(ActorModel.PARAM_SIZE):
-            actor_grads.ptr[i] = Scalar[dtype](0)
         Network[ActorModel, ActorOpt].backward_gpu[BATCH](
             ctx, d_act_t, d_obs_t, actor_params, actor_cache_t,
             actor_grads, actor_ws
@@ -480,6 +497,13 @@ struct MaxEntLoss[
     """
 
     comptime HAS_ALPHA: Bool = True
+
+    @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int, ACTOR_CS: Int,
+    ]() -> Int:
+        """Offset of log_probs [BATCH] in GPU strat_ws."""
+        return BATCH * ACTOR_OUT + BATCH * ACTOR_CS + BATCH * ACTIONS
 
     @staticmethod
     fn ws_size[
@@ -907,9 +931,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
 
-        # Zero critic grads (discarded, we need d_ci only)
-        for i in range(CriticModel.PARAM_SIZE):
-            critic_grads.ptr[i] = Scalar[dtype](0)
+        # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
             ctx, dq_t, d_ci_t, critic_params, critic_cache_t,
             critic_grads, critic_ws
@@ -992,9 +1014,7 @@ struct MaxEntLoss[
         var d_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DOBS)
-        # Zero actor grads before accumulation
-        for i in range(ActorModel.PARAM_SIZE):
-            actor_grads.ptr[i] = Scalar[dtype](0)
+        # Actor backward (grads pre-zeroed by agent)
         Network[ActorModel, ActorOpt].backward_gpu[BATCH](
             ctx, actor_grad_t, d_obs_t, actor_params, actor_cache_t,
             actor_grads, actor_ws
