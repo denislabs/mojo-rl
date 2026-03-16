@@ -336,6 +336,7 @@ fn run_offpolicy_continuous_train_gpu[
         print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger for diagnostics.
 
     Returns:
         TrainingMetrics with episode-level statistics.
@@ -776,6 +777,7 @@ fn run_offpolicy_discrete_train_gpu[
         print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger for diagnostics.
 
     Returns:
         TrainingMetrics with episode-level statistics.

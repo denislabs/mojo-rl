@@ -1,11 +1,14 @@
 """Generic off-policy agent parameterized by OffPolicyConfig.
 
-Supports DDPG (single critic) and TD3 (twin critics) via comptime if
-branching on Config.NUM_CRITICS. Follows the ModelDef pattern: components
-as trait-bounded type params, all dims derived from Self.Config.*.
+Supports DDPG, TD3, and SAC via strategy delegation from Config.
+Follows the ModelDef pattern: components as trait-bounded type params,
+all dims derived from Self.Config.*. Algorithm-specific behavior is
+delegated to Config.Explore, Config.Schedule, Config.TargetAction,
+Config.TargetValue, and Config.ActorLoss strategy types.
 """
 
 from std.random import random_float64
+from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer
 
@@ -16,6 +19,10 @@ from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.training import Network, NetworkState, NetworkPair, GPUNetworkPair
 from mojo_rl.nn.initializer import Kaiming, Xavier
 from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.nn.model.stochastic_actor import (
+    rsample,
+    get_deterministic_action,
+)
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.deep_agents.core import (
@@ -38,11 +45,12 @@ from mojo_rl.deep_agents.core.kernels import (
     td_target_continuous_kernel,
     td_target_min_twin_kernel,
 )
+from mojo_rl.deep_agents.sac.kernels import sac_sample_actions_kernel
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 
 from .offpolicy_config import OffPolicyConfig
 from .exploration import GaussianNoise
-from .update_schedule import EveryStep, DelayedActorAndTargets
+from .update_schedule import EveryStep, DelayedAll
 
 
 # =============================================================================
@@ -60,8 +68,11 @@ struct GenericCPUState[
     action_dim: Int,
     batch_size: Int,
     num_critics: Int = 1,
+    has_target_actor: Bool = True,
+    actor_loss_ws: Int = 0,
+    target_action_ws: Int = 0,
 ](Movable, OffPolicyState):
-    """CPU state supporting single (DDPG) and twin (TD3) critics."""
+    """CPU state supporting single (DDPG), twin (TD3), and SAC critics."""
 
     comptime BUFFER_DTYPE = dtype
 
@@ -90,41 +101,40 @@ struct GenericCPUState[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()
 
-        # Workspace size — includes twin critic regions when num_critics==2
+        # Workspace size: 3 regions
         comptime CO = Self.CriticModel.OUT_DIM
-        comptime ACT = Self.ActorModel.OUT_DIM
+        comptime ACT = Self.action_dim  # ACTIONS (not ActorModel.OUT_DIM for SAC)
+        comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
         comptime BS = Self.batch_size
         comptime CI = Self.CriticModel.IN_DIM
-        comptime ACS = Self.ActorModel.CACHE_SIZE
         comptime CCS = Self.CriticModel.CACHE_SIZE
         comptime OBS = Self.ActorModel.IN_DIM
-        # Base regions (shared by DDPG and TD3)
-        comptime BASE_SIZE = (
-            BS * ACT       # next_act
-            + BS * CI      # next_ci
-            + BS * CO      # next_q (critic 1)
-            + BS * CO      # targets
-            + BS * CI      # ci
-            + BS * CO      # q_out (critic 1)
-            + BS * CCS     # q_cache (critic 1)
-            + BS * CO      # q_grad
-            + BS * CI      # d_ci
-            + BS * ACT     # actor_act
-            + BS * ACS     # actor_cache
-            + BS * CI      # new_ci
-            + BS * CO      # new_q
-            + BS * CO      # dq
-            + BS * CI      # d_new_ci
-            + BS * ACT     # d_act
-            + BS * OBS     # d_obs
+
+        # Region 1: target computation
+        comptime R1_SIZE = (
+            BS * ACT        # next_act
+            + BS            # next_lp (log probs, used by SAC)
+            + BS * CI       # next_ci
+            + BS * CO       # next_q1
+            + BS * CO       # next_q2 (only used when num_critics==2)
+            + BS * CO       # targets
         )
-        # Twin critic extra regions (q2_out, q2_cache, nq2)
-        comptime TWIN_EXTRA = (
-            BS * CO        # nq2 (critic 2 target output)
-            + BS * CO      # q2_out (critic 2 online output)
-            + BS * CCS     # q2_cache (critic 2 cache)
-        ) if Self.num_critics == 2 else 0
-        comptime WS_SIZE = BASE_SIZE + TWIN_EXTRA
+
+        # Region 2: critic update
+        comptime R2_SIZE = (
+            BS * CI         # ci
+            + BS * CO       # q1_out
+            + BS * CCS      # q1_cache
+            + BS * CO       # q2_out (only used when num_critics==2)
+            + BS * CCS      # q2_cache (only used when num_critics==2)
+            + BS * CO       # q_grad
+            + BS * CI       # d_ci
+        )
+
+        # Region 3: strategy workspaces (max of ActorLoss and TargetAction ws)
+        comptime R3_SIZE = Self.actor_loss_ws if Self.actor_loss_ws > Self.target_action_ws else Self.target_action_ws
+
+        comptime WS_SIZE = R1_SIZE + R2_SIZE + R3_SIZE
 
         self.ws = List[Scalar[dtype]](capacity=WS_SIZE)
         for _ in range(WS_SIZE):
@@ -200,11 +210,18 @@ struct GenericGPUState[
     batch_size: Int,
     max_n_envs: Int,
     num_critics: Int = 1,
+    strat_ws_size: Int = 0,
+    target_strat_ws_size: Int = 0,
 ](GPUOffPolicyState):
-    """GPU state for off-policy agents (DDPG/TD3)."""
+    """GPU state for off-policy agents (DDPG/TD3/SAC).
+
+    Strategy workspaces replace individual actor-update buffers.
+    The strategy types manage their own internal workspace layout.
+    """
 
     comptime OBS = Self.ActorModel.IN_DIM
-    comptime ACTIONS = Self.ActorModel.OUT_DIM
+    comptime ACTIONS = Self.action_dim
+    comptime ACTOR_OUT = Self.ActorModel.OUT_DIM
     comptime CRITIC_IN = Self.CriticModel.IN_DIM
     comptime CRITIC_OUT = Self.CriticModel.OUT_DIM
     comptime ACTOR_CS = Self.ActorModel.CACHE_SIZE
@@ -236,6 +253,7 @@ struct GenericGPUState[
 
     # TD targets
     var next_act: DeviceBuffer[dtype]
+    var next_lp: DeviceBuffer[dtype]
     var next_ci: DeviceBuffer[dtype]
     var next_q: DeviceBuffer[dtype]
     var targets: DeviceBuffer[dtype]
@@ -248,17 +266,12 @@ struct GenericGPUState[
     var q_grad: DeviceBuffer[dtype]
     var d_ci: DeviceBuffer[dtype]
 
-    # Actor update
-    var actor_act: DeviceBuffer[dtype]
-    var new_ci: DeviceBuffer[dtype]
-    var new_q: DeviceBuffer[dtype]
-    var new_q_cache: DeviceBuffer[dtype]
-    var actor_cache: DeviceBuffer[dtype]
+    # Network workspaces (passed to strategies)
     var actor_ws: DeviceBuffer[dtype]
-    var dq: DeviceBuffer[dtype]
-    var d_new_ci: DeviceBuffer[dtype]
-    var d_act: DeviceBuffer[dtype]
-    var d_obs: DeviceBuffer[dtype]
+
+    # Strategy workspaces
+    var strat_ws: DeviceBuffer[dtype]
+    var target_strat_ws: DeviceBuffer[dtype]
 
     # Twin critic extra (only used when num_critics==2)
     var nq2: DeviceBuffer[dtype]
@@ -278,7 +291,7 @@ struct GenericGPUState[
         comptime MNE = Self.max_n_envs
 
         # Exploration
-        self.raw_act = ctx.enqueue_create_buffer[dtype](MNE * Self.ACTIONS)
+        self.raw_act = ctx.enqueue_create_buffer[dtype](MNE * Self.ACTOR_OUT)
         self.inf_ws = ctx.enqueue_create_buffer[dtype](
             max(1, MNE * Self.ACTOR_WS)
         )
@@ -293,6 +306,7 @@ struct GenericGPUState[
 
         # TD targets
         self.next_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
+        self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.next_q = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
@@ -307,19 +321,18 @@ struct GenericGPUState[
         self.q_grad = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
-        # Actor
-        self.actor_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
-        self.new_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
-        self.new_q = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
-        self.new_q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
-        self.actor_cache = ctx.enqueue_create_buffer[dtype](BS * Self.ACTOR_CS)
+        # Network workspaces
         self.actor_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.ACTOR_WS)
         )
-        self.dq = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
-        self.d_new_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
-        self.d_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
-        self.d_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
+
+        # Strategy workspaces
+        self.strat_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.strat_ws_size)
+        )
+        self.target_strat_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.target_strat_ws_size)
+        )
 
         # Twin critic extra
         self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
@@ -328,13 +341,6 @@ struct GenericGPUState[
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
-
-        # Pre-fill dq with -1/batch_size
-        ctx.synchronize()
-        var dq_host = ctx.enqueue_create_host_buffer[dtype](BS * Self.CRITIC_OUT)
-        for i in range(BS * Self.CRITIC_OUT):
-            dq_host[i] = Scalar[dtype](-1.0 / Float64(BS))
-        ctx.enqueue_copy(self.dq, dq_host)
 
     # GPUOffPolicyState trait
     fn gpu_store[
@@ -364,11 +370,12 @@ struct GenericGPUState[
 struct GenericOffPolicyAgent[
     Config: OffPolicyConfig,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
-    """Generic off-policy agent. Supports DDPG and TD3 via Config."""
+    """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies."""
 
     # Dimensions from Config's Model types
     comptime OBS: Int = Self.Config.ActorModel.IN_DIM
-    comptime ACTIONS: Int = Self.Config.ActorModel.OUT_DIM
+    comptime ACTIONS: Int = Self.Config.action_dim
+    comptime ACTOR_OUT: Int = Self.Config.ActorModel.OUT_DIM
     comptime BATCH: Int = Self.Config.batch_size
     comptime CRITIC_IN: Int = Self.Config.CriticModel.IN_DIM
     comptime CRITIC_OUT: Int = Self.Config.CriticModel.OUT_DIM
@@ -377,30 +384,34 @@ struct GenericOffPolicyAgent[
     comptime ActorNet = Network[Self.Config.ActorModel, Self.Config.ActorOpt]
     comptime CriticNet = Network[Self.Config.CriticModel, Self.Config.CriticOpt]
 
-    # Workspace offsets (base regions — always present)
-    comptime _O_NEXT_ACT: Int = 0
-    comptime _O_NEXT_CI: Int = Self._O_NEXT_ACT + Self.BATCH * Self.ACTIONS
-    comptime _O_NEXT_Q: Int = Self._O_NEXT_CI + Self.BATCH * Self.CRITIC_IN
-    comptime _O_TARGETS: Int = Self._O_NEXT_Q + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_CI: Int = Self._O_TARGETS + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_Q_OUT: Int = Self._O_CI + Self.BATCH * Self.CRITIC_IN
-    comptime _O_Q_CACHE: Int = Self._O_Q_OUT + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_Q_GRAD: Int = Self._O_Q_CACHE + Self.BATCH * Self.CRITIC_CS
-    comptime _O_D_CI: Int = Self._O_Q_GRAD + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_ACTOR_ACT: Int = Self._O_D_CI + Self.BATCH * Self.CRITIC_IN
-    comptime _O_ACTOR_CACHE: Int = Self._O_ACTOR_ACT + Self.BATCH * Self.ACTIONS
-    comptime _O_NEW_CI: Int = Self._O_ACTOR_CACHE + Self.BATCH * Self.ACTOR_CS
-    comptime _O_NEW_Q: Int = Self._O_NEW_CI + Self.BATCH * Self.CRITIC_IN
-    comptime _O_DQ: Int = Self._O_NEW_Q + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_D_NEW_CI: Int = Self._O_DQ + Self.BATCH * Self.CRITIC_OUT
-    comptime _O_D_ACT: Int = Self._O_D_NEW_CI + Self.BATCH * Self.CRITIC_IN
-    comptime _O_D_OBS: Int = Self._O_D_ACT + Self.BATCH * Self.ACTIONS
-    comptime _O_BASE_END: Int = Self._O_D_OBS + Self.BATCH * Self.OBS
+    # Strategy workspace sizes
+    comptime _AL_WS: Int = Self.Config.ActorLoss.ws_size[
+        Self.BATCH, Self.OBS, Self.ACTIONS, Self.ACTOR_OUT,
+        Self.ACTOR_CS, Self.CRITIC_IN, Self.CRITIC_OUT, Self.CRITIC_CS,
+    ]()
+    comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
+        Self.BATCH, Self.ACTIONS, Self.ACTOR_OUT,
+    ]()
 
-    # Twin critic extra offsets (only valid when NUM_CRITICS==2)
-    comptime _O_NQ2: Int = Self._O_BASE_END
-    comptime _O_Q2_OUT: Int = Self._O_NQ2 + Self.BATCH * Self.CRITIC_OUT
+    # Workspace offsets — Region 1: target computation
+    comptime _O_NEXT_ACT: Int = 0
+    comptime _O_NEXT_LP: Int = Self._O_NEXT_ACT + Self.BATCH * Self.ACTIONS
+    comptime _O_NEXT_CI: Int = Self._O_NEXT_LP + Self.BATCH
+    comptime _O_NEXT_Q1: Int = Self._O_NEXT_CI + Self.BATCH * Self.CRITIC_IN
+    comptime _O_NEXT_Q2: Int = Self._O_NEXT_Q1 + Self.BATCH * Self.CRITIC_OUT
+    comptime _O_TARGETS: Int = Self._O_NEXT_Q2 + Self.BATCH * Self.CRITIC_OUT
+
+    # Region 2: critic update
+    comptime _O_CI: Int = Self._O_TARGETS + Self.BATCH * Self.CRITIC_OUT
+    comptime _O_Q1_OUT: Int = Self._O_CI + Self.BATCH * Self.CRITIC_IN
+    comptime _O_Q1_CACHE: Int = Self._O_Q1_OUT + Self.BATCH * Self.CRITIC_OUT
+    comptime _O_Q2_OUT: Int = Self._O_Q1_CACHE + Self.BATCH * Self.CRITIC_CS
     comptime _O_Q2_CACHE: Int = Self._O_Q2_OUT + Self.BATCH * Self.CRITIC_OUT
+    comptime _O_Q_GRAD: Int = Self._O_Q2_CACHE + Self.BATCH * Self.CRITIC_CS
+    comptime _O_D_CI: Int = Self._O_Q_GRAD + Self.BATCH * Self.CRITIC_OUT
+
+    # Region 3: strategy workspace (shared between ActorLoss and TargetAction)
+    comptime _O_STRAT_WS: Int = Self._O_D_CI + Self.BATCH * Self.CRITIC_IN
 
     # CPU state type
     comptime CPUStateType = GenericCPUState[
@@ -410,9 +421,12 @@ struct GenericOffPolicyAgent[
         Self.Config.CriticOpt,
         Self.Config.buffer_capacity,
         Self.Config.ActorModel.IN_DIM,
-        Self.Config.ActorModel.OUT_DIM,
+        Self.Config.action_dim,
         Self.Config.batch_size,
         Self.Config.NUM_CRITICS,
+        Self.Config.HAS_TARGET_ACTOR,
+        Self._AL_WS,
+        Self._TA_WS,
     ]
 
     # GPUOffPolicyAgent required comptime constants
@@ -420,6 +434,13 @@ struct GenericOffPolicyAgent[
     comptime ACTION_DIM: Int = Self.ACTIONS
     comptime BUFFER_CAPACITY: Int = Self.Config.buffer_capacity
     comptime MAX_N_ENVS: Int = 64  # default, can be overridden via Config
+    comptime _AL_WS_SIZE: Int = Self.Config.ActorLoss.ws_size[
+        Self.BATCH, Self.OBS, Self.ACTIONS, Self.ACTOR_OUT,
+        Self.ACTOR_CS, Self.CRITIC_IN, Self.CRITIC_OUT, Self.CRITIC_CS,
+    ]()
+    comptime _TA_WS_SIZE: Int = Self.Config.TargetAction.ws_size[
+        Self.BATCH, Self.ACTIONS, Self.ACTOR_OUT,
+    ]()
     comptime GPUStateType = GenericGPUState[
         Self.Config.ActorModel,
         Self.Config.ActorOpt,
@@ -427,23 +448,37 @@ struct GenericOffPolicyAgent[
         Self.Config.CriticOpt,
         Self.Config.buffer_capacity,
         Self.Config.ActorModel.IN_DIM,
-        Self.Config.ActorModel.OUT_DIM,
+        Self.Config.action_dim,
         Self.Config.batch_size,
         64,  # max_n_envs
         Self.Config.NUM_CRITICS,
+        Self._AL_WS_SIZE,
+        Self._TA_WS_SIZE,
     ]
 
     # Hyperparameters
     var gamma: Float64
     var tau: Float64
     var action_scale: Float64
-    var explore: GaussianNoise
+    var noise_std: Float64
 
-    # TD3-specific
+    # Schedule
     var policy_delay: Int
+    var update_count: Int
+
+    # TD3-specific (kept for GPU path)
     var target_noise_std: Float64
     var target_noise_clip: Float64
-    var update_count: Int
+
+    # SAC-specific (always allocated, only used when Config.ActorLoss.HAS_ALPHA)
+    var alpha: Float64
+    var log_alpha: Float64
+    var target_entropy: Float64
+    var auto_alpha: Bool
+    var alpha_lr: Float64
+    var alpha_adam_m: Float64
+    var alpha_adam_v: Float64
+    var alpha_adam_t: Int
 
     # Training state
     var total_steps: Int
@@ -456,23 +491,39 @@ struct GenericOffPolicyAgent[
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
         action_scale: Float64 = 1.0,
-        noise_std: Float64 = 0.1,
+        noise_std: Float64 = -1.0,
         noise_std_min: Float64 = 0.01,
         noise_decay: Float64 = 0.995,
-        policy_delay: Int = 2,
+        policy_delay: Int = -1,
         target_noise_std: Float64 = 0.2,
         target_noise_clip: Float64 = 0.5,
+        auto_alpha: Bool = True,
+        alpha: Float64 = 0.2,
+        alpha_lr: Float64 = 0.0003,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
         self.gamma = gamma
         self.tau = tau
         self.action_scale = action_scale
-        self.explore = GaussianNoise(noise_std, noise_std_min, noise_decay)
-        self.policy_delay = policy_delay
+        # Use Config.Explore.INITIAL_STD if noise_std not explicitly set
+        self.noise_std = Self.Config.Explore.INITIAL_STD if noise_std < 0.0 else noise_std
+        # Use Config.Schedule.DEFAULT_POLICY_DELAY if policy_delay not explicitly set
+        self.policy_delay = Self.Config.Schedule.DEFAULT_POLICY_DELAY if policy_delay < 0 else policy_delay
         self.target_noise_std = target_noise_std
         self.target_noise_clip = target_noise_clip
         self.update_count = 0
+
+        # SAC alpha fields
+        self.auto_alpha = auto_alpha
+        self.alpha = alpha
+        self.log_alpha = log(alpha)
+        self.target_entropy = -Float64(Self.ACTIONS)
+        self.alpha_lr = alpha_lr
+        self.alpha_adam_m = 0.0
+        self.alpha_adam_v = 0.0
+        self.alpha_adam_t = 0
+
         self.total_steps = 0
         self.train_step_count = 0
         self.checkpoint_every = checkpoint_every
@@ -494,18 +545,87 @@ struct GenericOffPolicyAgent[
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
         ](obs_arr.unsafe_ptr())
-        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
-        )
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-        ](act_arr.unsafe_ptr())
-        var p = cpu_state.actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, act_t, p)
-        var raw = List[Scalar[d]](capacity=Self.ACTIONS)
-        for i in range(Self.ACTIONS):
-            raw.append(Scalar[d](Float64(act_arr[i]) * self.action_scale))
-        return self.explore.explore[d](raw, self.action_scale)
+
+        comptime if Self.Config.Explore.IS_STOCHASTIC:
+            # SAC: stochastic sampling via reparameterization
+            var out_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                uninitialized=True
+            )
+            var out_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+            ](out_arr.unsafe_ptr())
+            var p = cpu_state.actor.online.params_view()
+            Self.ActorNet.forward[1](obs_t, out_t, p)
+
+            # Extract mean + log_std
+            var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            var ls_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            for a in range(Self.ACTIONS):
+                var m = Float64(out_arr[a])
+                var raw_ls = Float64(out_arr[Self.ACTIONS + a])
+                if m != m:
+                    m = 0.0
+                if raw_ls != raw_ls:
+                    raw_ls = 0.0
+                var ls = -5.0 + 0.5 * 7.0 * (raw_ls + 1.0)
+                mean_arr[a] = Scalar[dtype](m)
+                ls_arr[a] = Scalar[dtype](ls)
+
+            # Sample action
+            var noise_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            for i in range(Self.ACTIONS):
+                noise_arr[i] = Scalar[dtype](gaussian_noise())
+
+            var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            var lp_arr = InlineArray[Scalar[dtype], 1](uninitialized=True)
+            var mean_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](mean_arr.unsafe_ptr())
+            var ls_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](ls_arr.unsafe_ptr())
+            var noise_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](noise_arr.unsafe_ptr())
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](act_arr.unsafe_ptr())
+            var lp_t = LayoutTensor[
+                dtype, Layout.row_major(1, 1), MutAnyOrigin
+            ](lp_arr.unsafe_ptr())
+            rsample[1, Self.ACTIONS](mean_t, ls_t, noise_t, act_t, lp_t)
+
+            var result = List[Scalar[d]](capacity=Self.ACTIONS)
+            for i in range(Self.ACTIONS):
+                var a = Float64(act_arr[i]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                result.append(Scalar[d](a))
+            return result^
+        else:
+            # DDPG/TD3: deterministic actor + Gaussian noise
+            var act_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                uninitialized=True
+            )
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+            ](act_arr.unsafe_ptr())
+            var p = cpu_state.actor.online.params_view()
+            Self.ActorNet.forward[1](obs_t, act_t, p)
+            var raw = List[Scalar[d]](capacity=Self.ACTIONS)
+            for i in range(Self.ACTIONS):
+                raw.append(Scalar[d](Float64(act_arr[i]) * self.action_scale))
+            return Self.Config.Explore.explore[d](raw, self.action_scale, self.noise_std)
 
     fn store_transition[
         d: DType
@@ -554,43 +674,42 @@ struct GenericOffPolicyAgent[
             b_obs, b_act, b_rew, b_next, b_done
         )
 
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ](b_obs.unsafe_ptr())
+        var ws = cpu_state.ws.unsafe_ptr()
+
+        # Phase 2: Target actions — delegate to Config.TargetAction
+        # Select correct actor params: target if HAS_TARGET_ACTOR, else online
+        # Select target or online actor params for target action computation
+        # SAC uses online (no target actor), DDPG/TD3 use target
         var next_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
         ](b_next.unsafe_ptr())
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-        ](b_act.unsafe_ptr())
-
-        var ws = cpu_state.ws.unsafe_ptr()
-
-        # Phase 2: TD targets
         var next_act_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
         ](ws + Self._O_NEXT_ACT)
-        var p_at = cpu_state.actor.target.params_view()
-        Self.ActorNet.forward[Self.BATCH](next_obs_t, next_act_t, p_at)
+        comptime if Self.Config.HAS_TARGET_ACTOR:
+            Self.Config.TargetAction.compute_cpu[
+                Self.BATCH, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+            ](
+                next_obs_t,
+                next_act_t,
+                ws + Self._O_NEXT_LP,
+                cpu_state.actor.target.params_view(),
+                ws + Self._O_STRAT_WS,
+            )
+        else:
+            Self.Config.TargetAction.compute_cpu[
+                Self.BATCH, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+            ](
+                next_obs_t,
+                next_act_t,
+                ws + Self._O_NEXT_LP,
+                cpu_state.actor.online.params_view(),
+                ws + Self._O_STRAT_WS,
+            )
 
-        # TD3: target policy smoothing (add clipped noise to target actions)
-        comptime if Self.Config.NUM_CRITICS == 2:
-            for b in range(Self.BATCH):
-                for i in range(Self.ACTIONS):
-                    var idx = b * Self.ACTIONS + i
-                    var noise = gaussian_noise() * self.target_noise_std
-                    if noise > self.target_noise_clip:
-                        noise = self.target_noise_clip
-                    elif noise < -self.target_noise_clip:
-                        noise = -self.target_noise_clip
-                    var noisy_a = Float64((ws + Self._O_NEXT_ACT)[idx]) + noise
-                    if noisy_a > 1.0:
-                        noisy_a = 1.0
-                    elif noisy_a < -1.0:
-                        noisy_a = -1.0
-                    (ws + Self._O_NEXT_ACT)[idx] = Scalar[dtype](noisy_a)
-
-        # Concat next_obs + next_act → next_ci
+        # Phase 2b: Concat next_obs + next_act → next_ci
         _concat_obs_act[Self.BATCH, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](
             ws + Self._O_NEXT_CI, b_next.unsafe_ptr(), ws + Self._O_NEXT_ACT
         )
@@ -598,58 +717,32 @@ struct GenericOffPolicyAgent[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](ws + Self._O_NEXT_CI)
 
-        # Forward critic target(s)
-        var next_q_t = LayoutTensor[
+        # Forward critic1 target
+        var next_q1_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
-        ](ws + Self._O_NEXT_Q)
+        ](ws + Self._O_NEXT_Q1)
         var p_ct = cpu_state.critic.target.params_view()
-        Self.CriticNet.forward[Self.BATCH](next_ci_t, next_q_t, p_ct)
+        Self.CriticNet.forward[Self.BATCH](next_ci_t, next_q1_t, p_ct)
 
-        var tgt_p = ws + Self._O_TARGETS
-        var nq_p = ws + Self._O_NEXT_Q
-
-        # DDPG: single Q target
-        comptime if Self.Config.NUM_CRITICS == 1:
-            for b in range(Self.BATCH):
-                var q = Float64(nq_p[b])
-                if q != q:
-                    q = 0.0
-                var dm = 1.0 - Float64(b_done[b])
-                var tgt = Float64(b_rew[b]) + self.gamma * q * dm
-                if tgt != tgt:
-                    tgt = 0.0
-                elif tgt > 1000.0:
-                    tgt = 1000.0
-                elif tgt < -1000.0:
-                    tgt = -1000.0
-                tgt_p[b] = Scalar[dtype](tgt)
-
-        # TD3: min(Q1, Q2) target
+        # Forward critic2 target (only when twin critics)
         comptime if Self.Config.NUM_CRITICS == 2:
-            var nq2_t = LayoutTensor[
+            var next_q2_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
-            ](ws + Self._O_NQ2)
+            ](ws + Self._O_NEXT_Q2)
             var p_c2t = cpu_state.critic2.target.params_view()
-            Self.CriticNet.forward[Self.BATCH](next_ci_t, nq2_t, p_c2t)
+            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_q2_t, p_c2t)
 
-            var nq2_p = ws + Self._O_NQ2
-            for b in range(Self.BATCH):
-                var q1 = Float64(nq_p[b])
-                var q2 = Float64(nq2_p[b])
-                if q1 != q1:
-                    q1 = 0.0
-                if q2 != q2:
-                    q2 = 0.0
-                var min_q = q1 if q1 < q2 else q2
-                var dm = 1.0 - Float64(b_done[b])
-                var tgt = Float64(b_rew[b]) + self.gamma * min_q * dm
-                if tgt != tgt:
-                    tgt = 0.0
-                elif tgt > 1000.0:
-                    tgt = 1000.0
-                elif tgt < -1000.0:
-                    tgt = -1000.0
-                tgt_p[b] = Scalar[dtype](tgt)
+        # Phase 2c: TD targets — delegate to Config.TargetValue
+        var q1_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](ws + Self._O_NEXT_Q1)
+        var q2_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](ws + Self._O_NEXT_Q2)
+        var lp_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](ws + Self._O_NEXT_LP)
+        var rew_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](b_rew.unsafe_ptr())
+        var done_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](b_done.unsafe_ptr())
+        var tgt_tv = LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](ws + Self._O_TARGETS)
+        Self.Config.TargetValue.compute_cpu[Self.BATCH](
+            q1_tv, q2_tv, lp_tv, rew_tv, done_tv, tgt_tv,
+            self.gamma, self.alpha,
+        )
 
         # Phase 3: Critic update
         _concat_obs_act[Self.BATCH, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](
@@ -658,27 +751,28 @@ struct GenericOffPolicyAgent[
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
         ](ws + Self._O_CI)
+        var tgt_p = ws + Self._O_TARGETS
 
         # --- Critic 1 update ---
-        var q_t = LayoutTensor[
+        var q1_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
-        ](ws + Self._O_Q_OUT)
-        var q_cache_t = LayoutTensor[
+        ](ws + Self._O_Q1_OUT)
+        var q1_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_CS), MutAnyOrigin
-        ](ws + Self._O_Q_CACHE)
+        ](ws + Self._O_Q1_CACHE)
         var p_c = cpu_state.critic.params_view()
         Self.CriticNet.forward_with_cache[Self.BATCH](
-            ci_t, q_t, p_c, q_cache_t
+            ci_t, q1_t, p_c, q1_cache_t
         )
 
         var q_grad_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
         ](ws + Self._O_Q_GRAD)
-        var qo_p = ws + Self._O_Q_OUT
+        var q1o_p = ws + Self._O_Q1_OUT
         var qg_p = ws + Self._O_Q_GRAD
         var critic_loss: Float64 = 0.0
         for b in range(Self.BATCH):
-            var td_err = qo_p[b] - tgt_p[b]
+            var td_err = q1o_p[b] - tgt_p[b]
             critic_loss += Float64(td_err * td_err)
             qg_p[b] = Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
         critic_loss /= Float64(Self.BATCH)
@@ -689,11 +783,11 @@ struct GenericOffPolicyAgent[
         var g_c = cpu_state.critic.grads_view()
         cpu_state.critic.zero_grads()
         Self.CriticNet.backward[Self.BATCH](
-            q_grad_t, d_ci_t, p_c, q_cache_t, g_c
+            q_grad_t, d_ci_t, p_c, q1_cache_t, g_c
         )
         cpu_state.critic.optimizer_step()
 
-        # --- Critic 2 update (TD3 only) ---
+        # --- Critic 2 update (twin critics only) ---
         comptime if Self.Config.NUM_CRITICS == 2:
             var q2_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
@@ -723,95 +817,62 @@ struct GenericOffPolicyAgent[
             cpu_state.critic2.optimizer_step()
             critic_loss = (critic_loss + critic2_loss) / 2.0
 
-        # Phase 4: Actor update
-        # DDPG: every step; TD3: every policy_delay steps
-        var do_actor_update = True
-        comptime if Self.Config.NUM_CRITICS == 2:
-            do_actor_update = self.update_count % self.policy_delay == 0
-
-        if do_actor_update:
-            var aa_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-            ](ws + Self._O_ACTOR_ACT)
-            var ac_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.ACTOR_CS), MutAnyOrigin
-            ](ws + Self._O_ACTOR_CACHE)
-            var p_a = cpu_state.actor.params_view()
-            Self.ActorNet.forward_with_cache[Self.BATCH](
-                obs_t, aa_t, p_a, ac_t
-            )
-
-            # Concat obs + actor_act → new_ci
-            _concat_obs_act[Self.BATCH, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](
-                ws + Self._O_NEW_CI, b_obs.unsafe_ptr(), ws + Self._O_ACTOR_ACT
-            )
-            var nci_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-            ](ws + Self._O_NEW_CI)
-
-            var nq_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
-            ](ws + Self._O_NEW_Q)
-            var nc_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_CS), MutAnyOrigin
-            ](ws + Self._O_Q_CACHE)  # reuse q_cache
-            # Always use critic1 for policy gradient (both DDPG and TD3)
-            Self.CriticNet.forward_with_cache[Self.BATCH](
-                nci_t, nq_t, p_c, nc_t
-            )
-
-            var dq_p = ws + Self._O_DQ
-            for b in range(Self.BATCH):
-                dq_p[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
-            var dq_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_OUT), MutAnyOrigin
-            ](dq_p)
-
-            var dnci_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.CRITIC_IN), MutAnyOrigin
-            ](ws + Self._O_D_NEW_CI)
-            cpu_state.critic.zero_grads()
-            Self.CriticNet.backward[Self.BATCH](dq_t, dnci_t, p_c, nc_t, g_c)
-
-            var da_p = ws + Self._O_D_ACT
-            var dnci_p = ws + Self._O_D_NEW_CI
-            for b in range(Self.BATCH):
-                for i in range(Self.ACTIONS):
-                    da_p[b * Self.ACTIONS + i] = dnci_p[
-                        b * Self.CRITIC_IN + Self.OBS + i
-                    ]
-
-            var da_t = LayoutTensor[
-                dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
-            ](da_p)
-            var do_t = LayoutTensor[
+        # Phase 4: Actor update — delegate to Config.ActorLoss
+        if Self.Config.Schedule.should_update_actor(self.update_count, self.policy_delay):
+            var obs_t = LayoutTensor[
                 dtype, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-            ](ws + Self._O_D_OBS)
-            var g_a = cpu_state.actor.grads_view()
-            cpu_state.actor.zero_grads()
-            Self.ActorNet.backward[Self.BATCH](da_t, do_t, p_a, ac_t, g_a)
+            ](b_obs.unsafe_ptr())
+            var a_grads = cpu_state.actor.online.grads_view()
+            var c_grads = cpu_state.critic.online.grads_view()
+            var mean_lp = Self.Config.ActorLoss.update_actor_cpu[
+                Self.BATCH, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+                Self.Config.CriticModel, Self.Config.CriticOpt,
+            ](
+                obs_t,
+                cpu_state.actor.online.params_view(),
+                a_grads,
+                cpu_state.critic.online.params_view(),
+                c_grads,
+                ws + Self._O_STRAT_WS,
+                self.alpha,
+            )
             cpu_state.actor.optimizer_step()
 
-        # Phase 5: Soft update targets
-        comptime if Self.Config.NUM_CRITICS == 1:
-            # DDPG: update every step
-            cpu_state.actor.soft_update(self.tau)
-            cpu_state.critic.soft_update(self.tau)
-        comptime if Self.Config.NUM_CRITICS == 2:
-            # TD3: only on delayed steps
-            if self.update_count % self.policy_delay == 0:
+            # Alpha update (SAC only)
+            comptime if Self.Config.ActorLoss.HAS_ALPHA:
+                if self.auto_alpha:
+                    var grad = -self.alpha * (mean_lp + self.target_entropy)
+                    self.alpha_adam_t += 1
+                    var beta1: Float64 = 0.9
+                    var beta2: Float64 = 0.999
+                    var eps: Float64 = 1e-8
+                    self.alpha_adam_m = beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
+                    self.alpha_adam_v = beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
+                    var m_hat = self.alpha_adam_m / (1.0 - beta1 ** Float64(self.alpha_adam_t))
+                    var v_hat = self.alpha_adam_v / (1.0 - beta2 ** Float64(self.alpha_adam_t))
+                    self.log_alpha -= self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
+                    self.alpha = exp(self.log_alpha)
+
+        # Phase 5: Soft update targets — delegate to Config.Schedule
+        if Self.Config.Schedule.should_update_targets(self.update_count, self.policy_delay):
+            comptime if Self.Config.HAS_TARGET_ACTOR:
                 cpu_state.actor.soft_update(self.tau)
-                cpu_state.critic.soft_update(self.tau)
+            cpu_state.critic.soft_update(self.tau)
+            comptime if Self.Config.NUM_CRITICS == 2:
                 cpu_state.critic2.soft_update(self.tau)
 
         self.train_step_count += 1
         return critic_loss
 
     fn decay_explore(mut self) -> None:
-        self.explore.decay()
+        Self.Config.Explore.decay(self.noise_std)
 
     fn get_explore_rate(self) -> Float64:
-        return self.explore.get_rate()
+        comptime if Self.Config.Explore.IS_STOCHASTIC:
+            return self.alpha
+        else:
+            return Self.Config.Explore.get_rate(self.noise_std)
 
     fn random_action[d: DType](self) -> List[Scalar[d]]:
         var result = List[Scalar[d]](capacity=Self.ACTIONS)
@@ -828,23 +889,63 @@ struct GenericOffPolicyAgent[
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
         ](obs_arr.unsafe_ptr())
-        var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
-            uninitialized=True
-        )
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
-        ](act_arr.unsafe_ptr())
-        var p = cpu_state.actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, act_t, p)
-        var result = List[Float64](capacity=Self.ACTIONS)
-        for i in range(Self.ACTIONS):
-            var a = Float64(act_arr[i]) * self.action_scale
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            result.append(a)
-        return result^
+
+        comptime if Self.Config.Explore.IS_STOCHASTIC:
+            # SAC: deterministic action = tanh(mean)
+            var out_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                uninitialized=True
+            )
+            var out_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+            ](out_arr.unsafe_ptr())
+            var p = cpu_state.actor.online.params_view()
+            Self.ActorNet.forward[1](obs_t, out_t, p)
+
+            # Extract mean and apply tanh
+            var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            var mean_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](mean_arr.unsafe_ptr())
+            for i in range(Self.ACTIONS):
+                mean_arr[i] = out_arr[i]
+            var act_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](act_arr.unsafe_ptr())
+            get_deterministic_action[1, Self.ACTIONS](mean_t, act_t)
+
+            var result = List[Float64](capacity=Self.ACTIONS)
+            for i in range(Self.ACTIONS):
+                var a = Float64(act_arr[i]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                result.append(a)
+            return result^
+        else:
+            # DDPG/TD3: deterministic actor output
+            var act_arr = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                uninitialized=True
+            )
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+            ](act_arr.unsafe_ptr())
+            var p = cpu_state.actor.online.params_view()
+            Self.ActorNet.forward[1](obs_t, act_t, p)
+            var result = List[Float64](capacity=Self.ACTIONS)
+            for i in range(Self.ACTIONS):
+                var a = Float64(act_arr[i]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                result.append(a)
+            return result^
 
     # =========================================================================
     # GPUOffPolicyAgent trait
@@ -892,60 +993,100 @@ struct GenericOffPolicyAgent[
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
         """Forward actor on GPU + exploration noise."""
-        comptime BLOCKS = (N_ENVS * Self.ACTIONS + TPB - 1) // TPB
-
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
         var raw_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.raw_act.unsafe_ptr())
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
-
         var p = gpu_state.actor.online.params_view()
-        Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, obs_t, raw_t, p, gpu_state.inf_ws
-        )
 
-        var noise_std_s = Scalar[dtype](self.explore.noise_std)
-        var scale_s = Scalar[dtype](self.action_scale)
-        var rng_seed_s = Scalar[DType.uint32](
-            UInt32(self.total_steps) * UInt32(Self.ACTIONS)
-        )
+        comptime if Self.Config.Explore.IS_STOCHASTIC:
+            # SAC: forward actor -> stochastic sample via sac_sample_actions_kernel
+            comptime BLOCKS = (N_ENVS + TPB - 1) // TPB
 
-        @always_inline
-        fn exploration_wrapper(
-            out_t: LayoutTensor[
-                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-            ],
-            raw_in: LayoutTensor[
-                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-            ],
-            ns: Scalar[dtype],
-            sc: Scalar[dtype],
-            rng_seed: Scalar[DType.uint32],
-        ):
-            ddpg_exploration_kernel[dtype, N_ENVS, Self.ACTIONS](
-                out_t, raw_in, ns, sc, rng_seed
+            Self.ActorNet.forward_gpu[N_ENVS](
+                ctx, obs_t, raw_t, p, gpu_state.inf_ws
             )
 
-        ctx.enqueue_function[exploration_wrapper, exploration_wrapper](
-            act_t, raw_t, noise_std_s, scale_s, rng_seed_s,
-            grid_dim=(BLOCKS,), block_dim=(TPB,),
-        )
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var scale_s = Scalar[dtype](self.action_scale)
+            var log_std_min_s = Scalar[dtype](-5.0)
+            var log_std_max_s = Scalar[dtype](2.0)
+            var rng_seed_s = Scalar[DType.uint32](
+                UInt32(self.total_steps) * UInt32(Self.ACTIONS)
+            )
+
+            @always_inline
+            fn sac_explore_wrapper(
+                acts: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+                ],
+                ao: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
+                ],
+                sc: Scalar[dtype],
+                lsmin: Scalar[dtype],
+                lsmax: Scalar[dtype],
+                seed: Scalar[DType.uint32],
+            ):
+                sac_sample_actions_kernel[dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT](
+                    acts, ao, sc, lsmin, lsmax, seed
+                )
+
+            ctx.enqueue_function[sac_explore_wrapper, sac_explore_wrapper](
+                act_t, raw_t, scale_s, log_std_min_s, log_std_max_s, rng_seed_s,
+                grid_dim=(BLOCKS,), block_dim=(TPB,),
+            )
+        else:
+            # DDPG/TD3: deterministic actor + Gaussian noise
+            comptime BLOCKS = (N_ENVS * Self.ACTIONS + TPB - 1) // TPB
+
+            Self.ActorNet.forward_gpu[N_ENVS](
+                ctx, obs_t, raw_t, p, gpu_state.inf_ws
+            )
+
+            var act_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var noise_std_s = Scalar[dtype](self.noise_std)
+            var scale_s = Scalar[dtype](self.action_scale)
+            var rng_seed_s = Scalar[DType.uint32](
+                UInt32(self.total_steps) * UInt32(Self.ACTIONS)
+            )
+
+            @always_inline
+            fn exploration_wrapper(
+                out_t: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+                ],
+                raw_in: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+                ],
+                ns: Scalar[dtype],
+                sc: Scalar[dtype],
+                rng_seed: Scalar[DType.uint32],
+            ):
+                ddpg_exploration_kernel[dtype, N_ENVS, Self.ACTIONS](
+                    out_t, raw_in, ns, sc, rng_seed
+                )
+
+            ctx.enqueue_function[exploration_wrapper, exploration_wrapper](
+                act_t, raw_t, noise_std_s, scale_s, rng_seed_s,
+                grid_dim=(BLOCKS,), block_dim=(TPB,),
+            )
 
     fn do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """DDPG GPU training step: sample → TD targets → critic → actor."""
+        """GPU training step delegating to strategies: sample -> target -> critic -> actor."""
         comptime BS = Self.BATCH
         comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
         comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
-        comptime ACT_BLOCKS = (BS * Self.ACTIONS + TPB - 1) // TPB
 
         # Phase 1: Sample batch
         gpu_state.buffer.sample[BS](
@@ -975,58 +1116,42 @@ struct GenericOffPolicyAgent[
             dtype, Layout.row_major(BS), MutAnyOrigin
         ](gpu_state.s_done.unsafe_ptr())
 
-        # Phase 2: TD targets
-        var next_act_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.next_act.unsafe_ptr())
-        var next_ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.next_ci.unsafe_ptr())
-        var next_q_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
-        ](gpu_state.next_q.unsafe_ptr())
-        var targets_t = LayoutTensor[
-            dtype, Layout.row_major(BS), MutAnyOrigin
-        ](gpu_state.targets.unsafe_ptr())
-
         var p_actor_t = gpu_state.actor.target.params_view()
         var p_critic_t = gpu_state.critic.target.params_view()
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critic.online.params_view()
 
-        Self.ActorNet.forward_gpu[BS](
-            ctx, nobs_t, next_act_t, p_actor_t, gpu_state.actor_ws
-        )
+        var rng_seed = UInt32(self.total_steps) * UInt32(BS * Self.ACTIONS + 7)
 
-        # TD3: target policy smoothing (add clipped noise to target actions)
-        comptime if Self.Config.NUM_CRITICS == 2:
-            from mojo_rl.deep_agents.td3.kernels import add_gaussian_noise_kernel
+        # Phase 2: Target actions — delegate to Config.TargetAction
+        var next_act_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
+        ](gpu_state.next_act.unsafe_ptr())
+        var next_lp_t = LayoutTensor[
+            dtype, Layout.row_major(BS), MutAnyOrigin
+        ](gpu_state.next_lp.unsafe_ptr())
 
-            var tn_std = Scalar[dtype](self.target_noise_std)
-            var tn_clip = Scalar[dtype](self.target_noise_clip)
-            var a_min = Scalar[dtype](-1.0)
-            var a_max = Scalar[dtype](1.0)
-            var noise_seed = Scalar[DType.uint32](
-                UInt32(self.total_steps) * UInt32(BS * Self.ACTIONS + 7)
+        comptime if Self.Config.HAS_TARGET_ACTOR:
+            Self.Config.TargetAction.compute_gpu[
+                BS, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+            ](
+                ctx, nobs_t, next_act_t, next_lp_t,
+                p_actor_t, gpu_state.actor_ws, gpu_state.target_strat_ws, rng_seed
+            )
+        else:
+            Self.Config.TargetAction.compute_gpu[
+                BS, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+            ](
+                ctx, nobs_t, next_act_t, next_lp_t,
+                p_actor, gpu_state.actor_ws, gpu_state.target_strat_ws, rng_seed
             )
 
-            @always_inline
-            fn noise_k(
-                out_t: LayoutTensor[dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin],
-                in_t: LayoutTensor[dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin],
-                ns: Scalar[dtype], nc: Scalar[dtype],
-                amin: Scalar[dtype], amax: Scalar[dtype],
-                seed_v: Scalar[DType.uint32],
-            ):
-                add_gaussian_noise_kernel[dtype, BS, Self.ACTIONS](
-                    out_t, in_t, ns, nc, amin, amax, seed_v
-                )
-
-            # Write noisy actions back into next_act buffer
-            ctx.enqueue_function[noise_k, noise_k](
-                next_act_t, next_act_t, tn_std, tn_clip, a_min, a_max, noise_seed,
-                grid_dim=(ACT_BLOCKS,), block_dim=(TPB,),
-            )
+        # Phase 2b: Concat next_obs + next_act -> next_ci
+        var next_ci_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
+        ](gpu_state.next_ci.unsafe_ptr())
 
         @always_inline
         fn concat_next_k(
@@ -1041,75 +1166,39 @@ struct GenericOffPolicyAgent[
             grid_dim=(ELEM_BLOCKS,), block_dim=(TPB,),
         )
 
-        var gamma_s = Scalar[dtype](self.gamma)
+        # Forward critic1 target
+        var next_q_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
+        ](gpu_state.next_q.unsafe_ptr())
+        Self.CriticNet.forward_gpu[BS](
+            ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
+        )
 
-        # DDPG: single critic target
-        comptime if Self.Config.NUM_CRITICS == 1:
-            Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
-            )
-            var nq_flat_t = LayoutTensor[
-                dtype, Layout.row_major(BS), MutAnyOrigin
-            ](gpu_state.next_q.unsafe_ptr())
-
-            @always_inline
-            fn compute_targets_single(
-                tgt: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                r: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                nq: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                d: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                g: Scalar[dtype],
-            ):
-                td_target_continuous_kernel[dtype, BS](tgt, r, nq, d, g)
-
-            ctx.enqueue_function[compute_targets_single, compute_targets_single](
-                targets_t, rew_t, nq_flat_t, done_t, gamma_s,
-                grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
-            )
-
-        # TD3: twin critic targets with min(Q1, Q2)
+        # Forward critic2 target (only when twin critics)
+        var nq2_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
+        ](gpu_state.nq2.unsafe_ptr())
         comptime if Self.Config.NUM_CRITICS == 2:
-            Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
-            )
-            var nq2_t = LayoutTensor[
-                dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
-            ](gpu_state.nq2.unsafe_ptr())
             var p_c2t = gpu_state.critic2.target.params_view()
             Self.CriticNet.forward_gpu[BS](
                 ctx, next_ci_t, nq2_t, p_c2t, gpu_state.critic2_ws
             )
 
-            var nq1_flat = LayoutTensor[
-                dtype, Layout.row_major(BS), MutAnyOrigin
-            ](gpu_state.next_q.unsafe_ptr())
-            var nq2_flat = LayoutTensor[
-                dtype, Layout.row_major(BS), MutAnyOrigin
-            ](gpu_state.nq2.unsafe_ptr())
-            # Dummy log_probs (unused for TD3, use_entropy=False)
-            var dummy_lp = nq1_flat  # won't be read
-            var zero_alpha = Scalar[dtype](0.0)
+        # Phase 2c: TD targets — delegate to Config.TargetValue
+        var nq1_flat = LayoutTensor[
+            dtype, Layout.row_major(BS), MutAnyOrigin
+        ](gpu_state.next_q.unsafe_ptr())
+        var nq2_flat = LayoutTensor[
+            dtype, Layout.row_major(BS), MutAnyOrigin
+        ](gpu_state.nq2.unsafe_ptr())
+        var targets_t = LayoutTensor[
+            dtype, Layout.row_major(BS), MutAnyOrigin
+        ](gpu_state.targets.unsafe_ptr())
 
-            @always_inline
-            fn compute_targets_twin(
-                tgt: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                r: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                q1: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                q2: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                d: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                lp: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                g: Scalar[dtype],
-                a: Scalar[dtype],
-            ):
-                td_target_min_twin_kernel[dtype, BS, False](
-                    tgt, r, q1, q2, d, lp, g, a
-                )
-
-            ctx.enqueue_function[compute_targets_twin, compute_targets_twin](
-                targets_t, rew_t, nq1_flat, nq2_flat, done_t,
-                dummy_lp, gamma_s, zero_alpha,
-                grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
-            )
+        Self.Config.TargetValue.compute_gpu[BS](
+            ctx, nq1_flat, nq2_flat, next_lp_t, rew_t, done_t, targets_t,
+            self.gamma, self.alpha,
+        )
 
         # Phase 3: Critic update
         var ci_t = LayoutTensor[
@@ -1166,7 +1255,7 @@ struct GenericOffPolicyAgent[
         )
         gpu_state.critic.online.optimizer_step(ctx)
 
-        # TD3: update critic2
+        # Critic2 update (twin critics only)
         comptime if Self.Config.NUM_CRITICS == 2:
             var q2_out_t = LayoutTensor[
                 dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -1179,7 +1268,6 @@ struct GenericOffPolicyAgent[
                 ctx, ci_t, q2_out_t, p_c2, q2_cache_t, gpu_state.critic2_ws
             )
 
-            # Reuse q_grad for critic2 MSE
             @always_inline
             fn mse_grad_c2(
                 qg: LayoutTensor[dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin],
@@ -1201,109 +1289,33 @@ struct GenericOffPolicyAgent[
             )
             gpu_state.critic2.online.optimizer_step(ctx)
 
-        # Phase 4: Actor update
-        # TD3: only update every policy_delay steps
-        var do_actor_update = True
-        comptime if Self.Config.NUM_CRITICS == 2:
-            self.update_count += 1
-            do_actor_update = self.update_count % self.policy_delay == 0
-
-        if not do_actor_update:
-            self.train_step_count += 1
-            return
-
-        # Phase 4 (cont): Actor update
-        var actor_act_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.actor_act.unsafe_ptr())
-        var new_ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.new_ci.unsafe_ptr())
-        var new_q_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
-        ](gpu_state.new_q.unsafe_ptr())
-        var new_q_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_CS), MutAnyOrigin
-        ](gpu_state.new_q_cache.unsafe_ptr())
-        var actor_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.ACTOR_CS), MutAnyOrigin
-        ](gpu_state.actor_cache.unsafe_ptr())
-        var dq_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
-        ](gpu_state.dq.unsafe_ptr())
-        var d_new_ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.d_new_ci.unsafe_ptr())
-        var d_act_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.d_act.unsafe_ptr())
-        var d_obs_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
-        ](gpu_state.d_obs.unsafe_ptr())
-
-        Self.ActorNet.forward_gpu_with_cache[BS](
-            ctx, obs_t, actor_act_t, p_actor, actor_cache_t,
-            gpu_state.actor_ws
-        )
-
-        @always_inline
-        fn concat_new_k(
-            d: LayoutTensor[dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin],
-            o: LayoutTensor[dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin],
-            a: LayoutTensor[dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin],
-        ):
-            concat_obs_action_kernel[dtype, BS, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](d, o, a)
-
-        ctx.enqueue_function[concat_new_k, concat_new_k](
-            new_ci_t, obs_t, actor_act_t,
-            grid_dim=(ELEM_BLOCKS,), block_dim=(TPB,),
-        )
-
-        Self.CriticNet.forward_gpu_with_cache[BS](
-            ctx, new_ci_t, new_q_t, p_critic, new_q_cache_t,
-            gpu_state.critic_ws
-        )
-
-        var g_critic2 = gpu_state.critic.online.grads_view()
-        gpu_state.critic.online.zero_grads(ctx)
-        Self.CriticNet.backward_gpu[BS](
-            ctx, dq_t, d_new_ci_t, p_critic, new_q_cache_t,
-            g_critic2, gpu_state.critic_ws
-        )
-
-        @always_inline
-        fn extract_grad_k(
-            da: LayoutTensor[dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin],
-            dnc: LayoutTensor[dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin],
-        ):
-            actor_grad_from_critic_kernel[dtype, BS, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](da, dnc)
-
-        ctx.enqueue_function[extract_grad_k, extract_grad_k](
-            d_act_t, d_new_ci_t,
-            grid_dim=(ACT_BLOCKS,), block_dim=(TPB,),
-        )
-
-        var g_actor = gpu_state.actor.online.grads_view()
-        gpu_state.actor.online.zero_grads(ctx)
-        Self.ActorNet.backward_gpu[BS](
-            ctx, d_act_t, d_obs_t, p_actor, actor_cache_t,
-            g_actor, gpu_state.actor_ws
-        )
-        gpu_state.actor.online.optimizer_step(ctx)
+        # Phase 4: Actor update — delegate to Config.ActorLoss
+        self.update_count += 1
+        if Self.Config.Schedule.should_update_actor(self.update_count, self.policy_delay):
+            var a_grads = gpu_state.actor.online.grads_view()
+            var c_grads = gpu_state.critic.online.grads_view()
+            _ = Self.Config.ActorLoss.update_actor_gpu[
+                BS, Self.ACTIONS,
+                Self.Config.ActorModel, Self.Config.ActorOpt,
+                Self.Config.CriticModel, Self.Config.CriticOpt,
+            ](
+                ctx, obs_t, p_actor, a_grads, p_critic, c_grads,
+                gpu_state.actor_ws, gpu_state.critic_ws, gpu_state.strat_ws,
+                self.alpha, UInt32(self.total_steps),
+            )
+            gpu_state.actor.online.optimizer_step(ctx)
 
     fn soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        comptime if Self.Config.NUM_CRITICS == 1:
-            gpu_state.actor.soft_update(self.tau, ctx)
+        if Self.Config.Schedule.should_update_targets(self.update_count, self.policy_delay):
+            comptime if Self.Config.HAS_TARGET_ACTOR:
+                gpu_state.actor.soft_update(self.tau, ctx)
             gpu_state.critic.soft_update(self.tau, ctx)
-        comptime if Self.Config.NUM_CRITICS == 2:
-            # TD3: soft update only on delayed steps (already checked in train_step)
-            gpu_state.actor.soft_update(self.tau, ctx)
-            gpu_state.critic.soft_update(self.tau, ctx)
-            gpu_state.critic2.soft_update(self.tau, ctx)
+            comptime if Self.Config.NUM_CRITICS == 2:
+                gpu_state.critic2.soft_update(self.tau, ctx)
 
     fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """No-op for DDPG/TD3 (Gaussian noise decay is per-episode, not per-step)."""

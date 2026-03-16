@@ -86,7 +86,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         pass
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -431,14 +433,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         # Compute mean = input @ W_mean + b_mean
@@ -526,14 +528,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         # Compute mean = input @ W_mean + b_mean
@@ -744,14 +746,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var W_T_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         # dx = dy_mean @ W_mean.T
@@ -807,14 +809,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var dy_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: dW_mean.element_type = 0
@@ -1607,11 +1609,11 @@ fn rsample_backward_kernel_impl[
     var batch = idx // action_dim
     var j = idx % action_dim
 
-    var ga = Float64(rebind[Scalar[dtype]](grad_action[batch, j]))
-    var glp = Float64(rebind[Scalar[dtype]](grad_log_prob[batch, 0]))
-    var a = Float64(rebind[Scalar[dtype]](action[batch, j]))
-    var ls = Float64(rebind[Scalar[dtype]](log_std[batch, j]))
-    var n = Float64(rebind[Scalar[dtype]](noise[batch, j]))
+    var ga = rebind[Scalar[dtype]](grad_action[batch, j])
+    var glp = rebind[Scalar[dtype]](grad_log_prob[batch, 0])
+    var a = rebind[Scalar[dtype]](action[batch, j])
+    var ls = rebind[Scalar[dtype]](log_std[batch, j])
+    var n = rebind[Scalar[dtype]](noise[batch, j])
 
     var std = exp(ls)
 
@@ -1619,7 +1621,7 @@ fn rsample_backward_kernel_impl[
     var dtanh_dz = 1.0 - a * a
 
     # Gradient of log_prob w.r.t. z
-    var dlogprob_dz = 2.0 * a * dtanh_dz / (1.0 - a * a + EPS)
+    var dlogprob_dz = 2.0 * a * dtanh_dz / (1.0 - a * a + Scalar[dtype](EPS))
 
     # Total gradient of z
     var grad_z = ga * dtanh_dz + glp * dlogprob_dz

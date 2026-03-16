@@ -8,6 +8,7 @@ Concrete configs (DDPGConfig, TD3Config, SACConfig) bundle:
   - Network architectures (ActorModel, CriticModel)
   - Optimizer types (ActorOpt, CriticOpt)
   - Algorithm flags (NUM_CRITICS, HAS_TARGET_ACTOR)
+  - Strategy types (Explore, Schedule, TargetAction, TargetValue, ActorLoss)
   - Dimension constants (obs_dim, action_dim, batch_size, buffer_capacity)
 """
 
@@ -24,6 +25,22 @@ from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import Network, NetworkState, NetworkPair
 from mojo_rl.nn.initializer import Kaiming, Xavier
 
+from .exploration import Explore, GaussianNoise, StochasticSample
+from .update_schedule import Schedule, EveryStep, DelayedAll, DelayedActorOnly
+from .target_value import (
+    TargetValue,
+    SingleQTarget,
+    TwinQTarget,
+    EntropicTwinQTarget,
+)
+from .target_action import (
+    TargetAction,
+    DeterministicTarget,
+    SmoothedTarget,
+    ReparamTarget,
+)
+from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss
+
 
 # =============================================================================
 # OffPolicyConfig trait
@@ -34,20 +51,32 @@ trait OffPolicyConfig:
     """Compile-time configuration for off-policy agents.
 
     Every off-policy algorithm (DDPG, TD3, SAC) implements this trait
-    by providing network types, optimizer types, and algorithm flags.
-    The generic OffPolicyAgent uses Self.Config.* to access these.
+    by providing network types, optimizer types, algorithm flags, and
+    composable strategy types.
     """
 
+    # Dimensions
     comptime obs_dim: Int
     comptime action_dim: Int
     comptime batch_size: Int
     comptime buffer_capacity: Int
+
+    # Network architectures and optimizers
     comptime ActorModel: Model
     comptime CriticModel: Model
     comptime ActorOpt: Optimizer
     comptime CriticOpt: Optimizer
+
+    # Algorithm flags
     comptime NUM_CRITICS: Int
     comptime HAS_TARGET_ACTOR: Bool
+
+    # Composable strategies
+    comptime Explore: Explore
+    comptime Schedule: Schedule
+    comptime TargetAction: TargetAction
+    comptime TargetValue: TargetValue
+    comptime ActorLoss: ActorLoss
 
 
 # =============================================================================
@@ -87,6 +116,13 @@ struct DDPGConfig[
     comptime NUM_CRITICS: Int = 1
     comptime HAS_TARGET_ACTOR: Bool = True
 
+    # Strategies
+    comptime Explore = GaussianNoise[]
+    comptime Schedule = EveryStep
+    comptime TargetAction = DeterministicTarget
+    comptime TargetValue = SingleQTarget
+    comptime ActorLoss = DPGLoss
+
 
 # =============================================================================
 # TD3Config
@@ -124,6 +160,13 @@ struct TD3Config[
 
     comptime NUM_CRITICS: Int = 2
     comptime HAS_TARGET_ACTOR: Bool = True
+
+    # Strategies
+    comptime Explore = GaussianNoise[]
+    comptime Schedule = DelayedAll
+    comptime TargetAction = SmoothedTarget[]
+    comptime TargetValue = TwinQTarget
+    comptime ActorLoss = DPGLoss
 
 
 # =============================================================================
@@ -166,3 +209,10 @@ struct SACConfig[
 
     comptime NUM_CRITICS: Int = 2
     comptime HAS_TARGET_ACTOR: Bool = False
+
+    # Strategies
+    comptime Explore = StochasticSample
+    comptime Schedule = DelayedActorOnly
+    comptime TargetAction = ReparamTarget
+    comptime TargetValue = EntropicTwinQTarget
+    comptime ActorLoss = MaxEntLoss[]
