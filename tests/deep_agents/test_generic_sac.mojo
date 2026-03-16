@@ -1,8 +1,8 @@
-"""Test: GenericSACAgent with SACConfig trains on PendulumEnv."""
+"""Test: GenericOffPolicyAgent[SACConfig] trains on PendulumEnv."""
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import GenericSACAgent, SACConfig
+from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
 from mojo_rl.deep_agents.sac import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -10,11 +10,11 @@ from mojo_rl.envs.pendulum import PendulumEnv
 fn main() raises:
     print("=== Generic SAC Test ===\n")
 
-    # Test 1: Generic SAC
-    print("1. GenericSACAgent[SACConfig] (5 episodes)...")
+    # Test 1: Unified SAC agent
+    print("1. GenericOffPolicyAgent[SACConfig] (5 episodes)...")
     seed(42)
-    var sac = GenericSACAgent[SACConfig[3, 1, 64, 1000, 32]](
-        action_scale=2.0, target_entropy=-1.0
+    var sac = GenericOffPolicyAgent[SACConfig[3, 1, 64, 1000, 32]](
+        action_scale=2.0
     )
     var env1 = PendulumEnv[DType.float64]()
     var m1 = sac.train(env1, num_episodes=5)

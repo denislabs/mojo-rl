@@ -11,7 +11,12 @@ from std.random import random_float64
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer
-
+from mojo_rl.nn.checkpoint import (
+    write_checkpoint_header,
+    write_metadata_section,
+    save_checkpoint_file,
+    read_checkpoint_file,
+)
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import Model, Sequential
 from mojo_rl.nn.optimizer import Optimizer, Adam
@@ -60,6 +65,10 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
 )
+
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+# PerfTimerPtr not used (L3 profiling requires concrete Model types)
+from mojo_rl.core.logger import LoggerPtr, _log
 
 from .offpolicy_config import OffPolicyConfig
 from .exploration import GaussianNoise
@@ -551,6 +560,7 @@ struct GenericGPUState[
 
 struct GenericOffPolicyAgent[
     Config: OffPolicyConfig,
+    profile: Int = 0,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
     """
@@ -685,6 +695,16 @@ struct GenericOffPolicyAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Profiling (compile-time gated)
+    var train_timer: PerfTimer[Self.profile >= 1]
+
+    # Note: L3 per-layer profiling slots not available through trait-bounded Config.
+    # Old per-algorithm agents support L3 via concrete Model.register_forward_slots().
+
+    # Diagnostic logging
+    var logger: LoggerPtr
+    var diag_every: Int
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -732,6 +752,26 @@ struct GenericOffPolicyAgent[
         self.train_step_count = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+
+        # Profiling
+        self.train_timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 2:
+            _ = self.train_timer.add_slot("sample_batch")       # 0
+            _ = self.train_timer.add_slot("target_actions")     # 1
+            _ = self.train_timer.add_slot("td_targets")         # 2
+            _ = self.train_timer.add_slot("critic_update")      # 3
+            comptime if Self.Config.NUM_CRITICS == 2:
+                _ = self.train_timer.add_slot("critic2_update") # 4
+            _ = self.train_timer.add_slot("actor_update")       # 4 or 5
+
+        # Note: L3 per-layer profiling (profile >= 3) requires concrete Model types
+        # with register_forward/backward_slots methods (on Sequential, not on Model trait).
+        # This is available when using the old per-algorithm agents.
+        # The generic agent supports L1 + L2 profiling.
+
+        # Logging
+        self.logger = LoggerPtr()
+        self.diag_every = 0
 
     # =========================================================================
     # OffPolicyContinuousAgent trait
@@ -1043,6 +1083,20 @@ struct GenericOffPolicyAgent[
             cpu_state.critic2.optimizer_step()
             critic_loss = (critic_loss + critic2_loss) / 2.0
 
+        # Diagnostic logging
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+                _log(self.logger, "loss", critic_loss, step)
+                _log(self.logger, "explore_rate", self.get_explore_rate(), step)
+                comptime if Self.Config.ActorLoss.HAS_ALPHA:
+                    _log(self.logger, "alpha", self.alpha, step)
+            except:
+                pass
+
         # Phase 4: Actor update — delegate to Config.ActorLoss
         if Self.Config.Schedule.should_update_actor(
             self.update_count, self.policy_delay
@@ -1313,6 +1367,9 @@ struct GenericOffPolicyAgent[
             indices=gpu_state.s_idx,
         )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_mark(ctx)
+
         var obs_t = gpu_state.obs_view[BS]()
         var nobs_t = gpu_state.nobs_view[BS]()
         var act_t = gpu_state.act_view[BS]()
@@ -1323,6 +1380,10 @@ struct GenericOffPolicyAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critic.online.params_view()
         var rng_seed = UInt32(self.total_steps) * UInt32(BS * Self.ACTIONS + 7)
+
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(0, ctx)
+            self.train_timer.mark()
 
         # Phase 2: Target actions — delegate to Config.TargetAction
         var next_act_t = gpu_state.next_act_view[BS]()
@@ -1381,6 +1442,10 @@ struct GenericOffPolicyAgent[
                 ctx, next_ci_t, nq2_t, p_c2t, gpu_state.critic2_ws
             )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(1, ctx)
+            self.train_timer.mark()
+
         # Phase 2c: TD targets — delegate to Config.TargetValue
         var nq1_flat = LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             gpu_state.next_q.unsafe_ptr()
@@ -1401,6 +1466,10 @@ struct GenericOffPolicyAgent[
             self.alpha,
         )
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(2, ctx)
+            self.train_timer.mark()
+
         # Phase 3: Critic update
         var ci_t = gpu_state.ci_view[BS]()
         var q_t = gpu_state.q_out_view[BS]()
@@ -1416,7 +1485,7 @@ struct GenericOffPolicyAgent[
             block_dim=(TPB,),
         )
         Self.CriticNet.forward_gpu_with_cache[BS](
-            ctx, ci_t, q_t, p_critic, q_cache_t, gpu_state.critic_ws
+            ctx, ci_t, q_t, p_critic, q_cache_t, gpu_state.critic_ws,
         )
         ctx.enqueue_function[mse_grad_k, mse_grad_k](
             q_grad_t,
@@ -1438,13 +1507,17 @@ struct GenericOffPolicyAgent[
         )
         gpu_state.critic.online.optimizer_step(ctx)
 
+        comptime if Self.profile >= 2:
+            self.train_timer.sync_and_accumulate(3, ctx)
+            self.train_timer.mark()
+
         # Critic2 update (twin critics only)
         comptime if Self.Config.NUM_CRITICS == 2:
             var q2_out_t = gpu_state.q2_out_view[BS]()
             var q2_cache_t = gpu_state.q2_cache_view[BS]()
             var p_c2 = gpu_state.critic2.online.params_view()
             Self.CriticNet.forward_gpu_with_cache[BS](
-                ctx, ci_t, q2_out_t, p_c2, q2_cache_t, gpu_state.critic2_ws
+                ctx, ci_t, q2_out_t, p_c2, q2_cache_t, gpu_state.critic2_ws,
             )
             ctx.enqueue_function[mse_grad_k, mse_grad_k](
                 q_grad_t,
@@ -1465,6 +1538,10 @@ struct GenericOffPolicyAgent[
                 gpu_state.critic2_ws,
             )
             gpu_state.critic2.online.optimizer_step(ctx)
+
+            comptime if Self.profile >= 2:
+                self.train_timer.sync_and_accumulate(4, ctx)
+                self.train_timer.mark()
 
         # Phase 4: Actor update — delegate to Config.ActorLoss
         self.update_count += 1
@@ -1501,7 +1578,10 @@ struct GenericOffPolicyAgent[
             comptime if Self.Config.ActorLoss.HAS_ALPHA:
                 if self.auto_alpha:
                     comptime LP_OFF = Self.Config.ActorLoss.gpu_lp_offset[
-                        BS, Self.ACTIONS, Self.ACTOR_OUT, Self.ACTOR_CS,
+                        BS,
+                        Self.ACTIONS,
+                        Self.ACTOR_OUT,
+                        Self.ACTOR_CS,
                     ]()
                     # Copy log_probs from strat_ws[LP_OFF] → curr_lp via kernel
                     var src_lp = LayoutTensor[
@@ -1513,16 +1593,22 @@ struct GenericOffPolicyAgent[
 
                     @always_inline
                     fn copy_lp(
-                        d: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
-                        s: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
+                        d: LayoutTensor[
+                            dtype, Layout.row_major(BS), MutAnyOrigin
+                        ],
+                        s: LayoutTensor[
+                            dtype, Layout.row_major(BS), MutAnyOrigin
+                        ],
                     ):
                         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if i < BS:
                             d.ptr[i] = s.ptr[i]
 
                     ctx.enqueue_function[copy_lp, copy_lp](
-                        dst_lp, src_lp,
-                        grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+                        dst_lp,
+                        src_lp,
+                        grid_dim=(BATCH_BLOCKS,),
+                        block_dim=(TPB,),
                     )
 
                     # GPU → CPU copy
@@ -1544,8 +1630,7 @@ struct GenericOffPolicyAgent[
                         beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
                     )
                     self.alpha_adam_v = (
-                        beta2 * self.alpha_adam_v
-                        + (1.0 - beta2) * grad * grad
+                        beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
                     )
                     var m_hat = self.alpha_adam_m / (
                         1.0 - beta1 ** Float64(self.alpha_adam_t)
@@ -1557,6 +1642,10 @@ struct GenericOffPolicyAgent[
                         self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                     )
                     self.alpha = exp(self.log_alpha)
+
+            comptime if Self.profile >= 2:
+                comptime ACTOR_SLOT = 4 if Self.Config.NUM_CRITICS == 1 else 5
+                self.train_timer.sync_and_accumulate(ACTOR_SLOT, ctx)
 
     fn soft_update_targets_gpu(
         mut self,
@@ -1577,20 +1666,78 @@ struct GenericOffPolicyAgent[
         """
         pass
 
-    # Checkpointable
+    # Checkpointable — saves agent hyperparameters and training state.
+    # Network weights require save_cpu_state(cpu_state, path) separately
+    # because the Checkpointable trait doesn't include state access.
     fn save_checkpoint(self, path: String) raises -> None:
-        pass
+        from mojo_rl.nn.checkpoint import (
+            write_checkpoint_header,
+            write_metadata_section,
+            save_checkpoint_file,
+        )
+
+        var content = write_checkpoint_header("generic_offpolicy", 0, 0)
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("action_scale=" + String(self.action_scale))
+        metadata.append("noise_std=" + String(self.noise_std))
+        metadata.append("policy_delay=" + String(self.policy_delay))
+        metadata.append("update_count=" + String(self.update_count))
+        metadata.append("total_steps=" + String(self.total_steps))
+        metadata.append("train_step_count=" + String(self.train_step_count))
+        metadata.append("alpha=" + String(self.alpha))
+        metadata.append("log_alpha=" + String(self.log_alpha))
+        metadata.append("alpha_adam_t=" + String(self.alpha_adam_t))
+        content += write_metadata_section(metadata)
+        save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises -> None:
         pass
 
+    fn save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
+        """Save network weights and optimizer state from cpu_state.
+
+        Saves actor (online+target) and critic(s) (online+target)
+        params and optimizer states. The replay buffer is NOT saved.
+        """
+
+        var content = write_checkpoint_header(
+            "generic_offpolicy_state",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE * Self.Config.NUM_CRITICS,
+            0,
+        )
+        content += cpu_state.actor.write_sections("actor_")
+        content += cpu_state.critic.write_sections("critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            content += cpu_state.critic2.write_sections("critic2_")
+        save_checkpoint_file(path, content)
+
+    fn load_cpu_state(
+        self, mut cpu_state: Self.CPUStateType, path: String
+    ) raises:
+        """Load network weights and optimizer state into cpu_state."""
+
+        var content = read_checkpoint_file(path)
+        cpu_state.actor.read_sections(content, "actor_")
+        cpu_state.critic.read_sections(content, "critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            cpu_state.critic2.read_sections(content, "critic2_")
+
     # Convenience
-    fn train[
-        E: BoxContinuousActionEnv
-    ](mut self, mut env: E, num_episodes: Int = 300) raises -> TrainingMetrics:
+    fn train[E: BoxContinuousActionEnv](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 300,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
+    ) raises -> TrainingMetrics:
+        self.logger = logger
+        self.diag_every = diag_every
         var cpu_state = self.make_cpu_state()
         var ckpt_path = String(self.checkpoint_path)
-        return run_offpolicy_continuous_train(
+        var metrics = run_offpolicy_continuous_train(
             self,
             cpu_state,
             env,
@@ -1598,6 +1745,8 @@ struct GenericOffPolicyAgent[
             checkpoint_every=self.checkpoint_every,
             checkpoint_path=ckpt_path,
         )
+        self.logger = LoggerPtr()
+        return metrics^
 
     fn train_gpu[
         E: GPUContinuousEnv,
@@ -1606,15 +1755,33 @@ struct GenericOffPolicyAgent[
         ctx: DeviceContext,
         num_steps: Int,
         warmup_steps: Int = 1000,
+        logger: LoggerPtr = LoggerPtr(),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop."""
-        from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+        self.logger = logger
+        self.diag_every = diag_every
+        var timer = PerfTimer[Self.profile >= 1]()
+        comptime if Self.profile >= 1:
+            _ = timer.add_slot("copy_prev_obs")
+            _ = timer.add_slot("select_actions")
+            _ = timer.add_slot("env_step")
+            _ = timer.add_slot("buffer_store")
+            _ = timer.add_slot("episode_tracking")
+            _ = timer.add_slot("reset")
+            _ = timer.add_slot("train_step")
+            _ = timer.add_slot("gpu_cpu_sync")
 
-        var timer = PerfTimer[False]()
-        return run_offpolicy_continuous_train_gpu[E, Self, 0](
-            self,
-            ctx,
-            num_steps,
-            timer,
+        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
+            self, ctx, num_steps, timer,
             warmup_steps=warmup_steps,
+            logger=logger,
         )
+
+        comptime if Self.profile >= 2:
+            timer.merge_children(6, self.train_timer)
+        comptime if Self.profile >= 1:
+            timer.print_report("GenericOffPolicy GPU Profile")
+
+        self.logger = LoggerPtr()
+        return metrics^

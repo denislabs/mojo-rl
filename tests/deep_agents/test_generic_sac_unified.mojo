@@ -1,24 +1,16 @@
-"""Test: SAC through the unified GenericOffPolicyAgent (not GenericSACAgent).
-
-Validates that the composable strategy approach works for SAC —
-the same GenericOffPolicyAgent that handles DDPG/TD3 now also handles SAC
-via Config strategies (ReparamTarget, EntropicTwinQTarget, MaxEntLoss, etc.)
-"""
+"""Test: SAC through GenericOffPolicyAgent with strategy composition."""
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import (
-    GenericOffPolicyAgent,
-    GenericSACAgent,
-    SACConfig,
-)
+from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
+from mojo_rl.deep_agents.sac import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
 fn main() raises:
-    print("=== Unified SAC via GenericOffPolicyAgent[SACConfig] ===\n")
+    print("=== Unified SAC vs Old SAC Comparison ===\n")
 
-    # 1. Unified agent (new path — GenericOffPolicyAgent with SACConfig)
+    # 1. Unified agent
     print("1. GenericOffPolicyAgent[SACConfig] (5 episodes)...")
     seed(42)
     var unified = GenericOffPolicyAgent[SACConfig[3, 1, 64, 1000, 32]](
@@ -31,10 +23,10 @@ fn main() raises:
         " alpha:", unified.alpha,
     )
 
-    # 2. Old GenericSACAgent for comparison
-    print("\n2. GenericSACAgent[SACConfig] (5 episodes)...")
+    # 2. Old DeepSACAgent for comparison
+    print("\n2. DeepSACAgent (5 episodes)...")
     seed(42)
-    var old_sac = GenericSACAgent[SACConfig[3, 1, 64, 1000, 32]](
+    var old_sac = DeepSACAgent[3, 1, 64, 1000, 32](
         action_scale=2.0, target_entropy=-1.0
     )
     var env2 = PendulumEnv[DType.float64]()

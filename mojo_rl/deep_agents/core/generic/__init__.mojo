@@ -9,8 +9,7 @@ Strategy building blocks (stateless, compile-time parameterized):
 
 Configs and agents:
   - offpolicy_config: OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
-  - offpolicy_agent: GenericOffPolicyAgent
-  - sac_agent: GenericSACAgent
+  - offpolicy_agent: GenericOffPolicyAgent (handles DDPG, TD3, SAC)
   - onpolicy_config: OnPolicyConfig, PPOConfig, A2CConfig
   - onpolicy_agent: GenericOnPolicyAgent
   - dqn_agent: DiscreteOffPolicyConfig, DQNConfig, GenericDQNAgent
@@ -26,7 +25,6 @@ from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss
 # Configs and agents
 from .offpolicy_config import OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
 from .offpolicy_agent import GenericOffPolicyAgent
-from .sac_agent import GenericSACAgent
 from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, GenericDQNAgent

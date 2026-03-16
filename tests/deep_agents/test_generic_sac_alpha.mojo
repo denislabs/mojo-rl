@@ -1,9 +1,9 @@
-"""Test: SAC alpha auto-tuning produces valid entropy coefficients."""
+"""Test: SAC alpha auto-tuning via unified GenericOffPolicyAgent."""
 
 from std.random import seed
 from std.math import abs
 
-from mojo_rl.deep_agents.core.generic import GenericSACAgent, SACConfig
+from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
@@ -11,11 +11,10 @@ fn main() raises:
     print("=== SAC Alpha Auto-Tuning Test ===\n")
 
     seed(42)
-    var agent = GenericSACAgent[SACConfig[3, 1, 64, 1000, 32]](
+    var agent = GenericOffPolicyAgent[SACConfig[3, 1, 64, 1000, 32]](
         action_scale=2.0,
         alpha=0.2,
         auto_alpha=True,
-        target_entropy=-1.0,
     )
 
     var initial_alpha = agent.alpha
