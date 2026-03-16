@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs.arcade_games.pong import PongEnv
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -70,6 +70,7 @@ fn main() raises:
             n_envs=N_ENVS,
             double_dqn=True,
             lr=0.0005,
+            L=RemoteLogger,
         ](
             gamma=0.99,
             tau=0.005,
@@ -115,7 +116,7 @@ fn main() raises:
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
-        var logger = MetricsLogger(
+        var logger = RemoteLogger(
             server_url=url,
             run_name="DQN Pong GPU",
             buffer_size=64,

@@ -56,7 +56,7 @@ Usage:
 from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
 from mojo_rl.core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
-from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
@@ -281,11 +281,15 @@ fn run_offpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
+    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+        Self.L, MutAnyOrigin
+    ](),
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -295,7 +299,6 @@ fn run_offpolicy_continuous_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
-    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action off-policy agents.
 
@@ -320,11 +323,13 @@ fn run_offpolicy_continuous_train_gpu[
         E: GPU environment type implementing GPUContinuousEnv.
         A: Agent type implementing GPUOffPolicyAgent.
         PROFILE: Whether to profile the training loop.
+        L: Logger for diagnostics.
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_steps: Total env transitions across all parallel envs.
+        logger: Logger for diagnostics.
         timer: PerfTimer to add slots to.
         warmup_steps: Transitions before training starts (default: 1000).
         gradient_steps: Training steps per env collection iteration.
@@ -630,7 +635,9 @@ fn run_offpolicy_continuous_train_gpu[
         # ------------------------------------------------------------------
         # Collect episode stats + print/log at print boundaries
         # ------------------------------------------------------------------
-        if (verbose or logger) and total_steps >= next_print:
+        if (
+            verbose or (logger and logger[].is_active())
+        ) and total_steps >= next_print:
             # Download GPU-side episode stats (only sync point for tracking)
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -653,14 +660,14 @@ fn run_offpolicy_continuous_train_gpu[
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
-            _log(logger, "avg_reward", last_avg_reward, total_steps)
-            _log(logger, "episodes", Float64(completed_episodes), total_steps)
-            _log(
-                logger,
-                "train_steps",
-                Float64(total_train_steps),
-                total_steps,
-            )
+            if logger:
+                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger[].log_scalar(
+                    "train_steps", Float64(total_train_steps), total_steps
+                )
 
             # Clear progress bar, then full stats line
             if verbose:
@@ -700,10 +707,15 @@ fn run_offpolicy_continuous_train_gpu[
         timer.accumulate(7)
 
     # Final logger flush + print
-    _log(logger, "avg_reward", last_avg_reward, total_steps)
-    _log(logger, "episodes", Float64(completed_episodes), total_steps)
-    _log(logger, "train_steps", Float64(total_train_steps), total_steps)
-    _log_flush(logger)
+    if logger and logger[].is_active():
+        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger[].log_scalar(
+            "train_steps", Float64(total_train_steps), total_steps
+        )
+        logger[].flush()
 
     if verbose:
         clear_progress_bar()
@@ -734,11 +746,15 @@ fn run_offpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
+    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+        Self.L, MutAnyOrigin
+    ](),
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -748,7 +764,6 @@ fn run_offpolicy_discrete_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
-    logger: LoggerPtr = LoggerPtr(),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action off-policy agents (DQN etc.).
 
@@ -1053,7 +1068,9 @@ fn run_offpolicy_discrete_train_gpu[
             )
             next_progress += progress_interval
 
-        if (verbose or logger) and total_steps >= next_print:
+        if (
+            verbose or (logger and logger[].is_active())
+        ) and total_steps >= next_print:
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
@@ -1073,14 +1090,14 @@ fn run_offpolicy_discrete_train_gpu[
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
-            _log(logger, "avg_reward", last_avg_reward, total_steps)
-            _log(logger, "episodes", Float64(completed_episodes), total_steps)
-            _log(
-                logger,
-                "train_steps",
-                Float64(total_train_steps),
-                total_steps,
-            )
+            if logger:
+                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger[].log_scalar(
+                    "train_steps", Float64(total_train_steps), total_steps
+                )
 
             if verbose:
                 clear_progress_bar()
@@ -1120,10 +1137,15 @@ fn run_offpolicy_discrete_train_gpu[
         timer.accumulate(7)
 
     # Final logger flush + print
-    _log(logger, "avg_reward", last_avg_reward, total_steps)
-    _log(logger, "episodes", Float64(completed_episodes), total_steps)
-    _log(logger, "train_steps", Float64(total_train_steps), total_steps)
-    _log_flush(logger)
+    if logger:
+        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger[].log_scalar(
+            "train_steps", Float64(total_train_steps), total_steps
+        )
+        logger[].flush()
 
     if verbose:
         clear_progress_bar()

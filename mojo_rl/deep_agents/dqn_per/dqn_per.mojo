@@ -80,7 +80,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .state import DQNPERGPUState
 from mojo_rl.deep_agents.dqn.kernels import (
     dqn_td_target_kernel,
@@ -187,6 +187,7 @@ struct DQNPERAgent[
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """DQN Agent with Prioritized Experience Replay using NetworkState architecture.
 
@@ -283,7 +284,7 @@ struct DQNPERAgent[
     var checkpoint_path: String
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -352,7 +353,7 @@ struct DQNPERAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -572,13 +573,12 @@ struct DQNPERAgent[
 
         # Log DQN+PER diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", loss, step)
-                _log(self.logger, "beta", self.beta, step)
+                self.logger[].log_scalar("loss", loss, step)
+                self.logger[].log_scalar("beta", self.beta, step)
 
                 # Q-value stats
                 var q_min = Float64(q_arr[0])
@@ -591,16 +591,20 @@ struct DQNPERAgent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                _log(self.logger, "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step)
-                _log(self.logger, "q_min", q_min, step)
-                _log(self.logger, "q_max", q_max, step)
+                self.logger[].log_scalar(
+                    "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
 
                 # TD error stats
                 var td_abs_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     var td = Float64(td_errors[i])
                     td_abs_sum += td if td >= 0 else -td
-                _log(self.logger, "td_error_abs_mean", td_abs_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "td_error_abs_mean", td_abs_sum / Float64(Self.BATCH), step
+                )
             except:
                 pass
 
@@ -742,6 +746,7 @@ struct DQNPERAgent[
                 return
 
             from std.random.philox import Random as PhiloxRandom
+
             var rng = PhiloxRandom(
                 seed=UInt64(base_seed) * UInt64(N_ENVS) + UInt64(b), offset=0
             )
@@ -751,7 +756,10 @@ struct DQNPERAgent[
             if rand_val < eps:
                 var rand_vals2 = rng.step_uniform()
                 acts[b] = Scalar[dtype](
-                    Int(Scalar[dtype](rand_vals2[0]) * Scalar[dtype](Self.ACTIONS))
+                    Int(
+                        Scalar[dtype](rand_vals2[0])
+                        * Scalar[dtype](Self.ACTIONS)
+                    )
                 )
                 return
 
@@ -1053,7 +1061,9 @@ struct DQNPERAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
@@ -1101,7 +1111,9 @@ struct DQNPERAgent[
         _ = timer.add_slot("reset")
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, Self.profile, L
+        ](
             self,
             ctx,
             num_steps,
@@ -1122,7 +1134,7 @@ struct DQNPERAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report(algo_name + " Profile")
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================
@@ -1141,7 +1153,9 @@ struct DQNPERAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the DQN+PER agent on a discrete action environment.
@@ -1155,7 +1169,7 @@ struct DQNPERAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N episodes if verbose.
             environment_name: Name of environment for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -1166,7 +1180,7 @@ struct DQNPERAgent[
         var cpu_state = Self.CPUStateType(alpha=0.6, beta=self.beta_start)
         var checkpoint_every = self.checkpoint_every
         var checkpoint_path = self.checkpoint_path
-        var metrics = run_offpolicy_discrete_train(
+        var metrics = run_offpolicy_discrete_train[E, Self, L](
             self,
             cpu_state,
             env,
@@ -1183,7 +1197,7 @@ struct DQNPERAgent[
             logger,
         )
         self.state = cpu_state^
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     fn evaluate[

@@ -67,8 +67,9 @@ from mojo_rl.core import (
 )
 
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
+
 # PerfTimerPtr not used (L3 profiling requires concrete Model types)
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 
 from .offpolicy_config import OffPolicyConfig
 from .exploration import GaussianNoise
@@ -561,6 +562,7 @@ struct GenericGPUState[
 struct GenericOffPolicyAgent[
     Config: OffPolicyConfig,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
     """
@@ -702,7 +704,7 @@ struct GenericOffPolicyAgent[
     # Old per-algorithm agents support L3 via concrete Model.register_forward_slots().
 
     # Diagnostic logging
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -756,13 +758,13 @@ struct GenericOffPolicyAgent[
         # Profiling
         self.train_timer = PerfTimer[Self.profile >= 1]()
         comptime if Self.profile >= 2:
-            _ = self.train_timer.add_slot("sample_batch")       # 0
-            _ = self.train_timer.add_slot("target_actions")     # 1
-            _ = self.train_timer.add_slot("td_targets")         # 2
-            _ = self.train_timer.add_slot("critic_update")      # 3
+            _ = self.train_timer.add_slot("sample_batch")  # 0
+            _ = self.train_timer.add_slot("target_actions")  # 1
+            _ = self.train_timer.add_slot("td_targets")  # 2
+            _ = self.train_timer.add_slot("critic_update")  # 3
             comptime if Self.Config.NUM_CRITICS == 2:
-                _ = self.train_timer.add_slot("critic2_update") # 4
-            _ = self.train_timer.add_slot("actor_update")       # 4 or 5
+                _ = self.train_timer.add_slot("critic2_update")  # 4
+            _ = self.train_timer.add_slot("actor_update")  # 4 or 5
 
         # Note: L3 per-layer profiling (profile >= 3) requires concrete Model types
         # with register_forward/backward_slots methods (on Sequential, not on Model trait).
@@ -770,7 +772,7 @@ struct GenericOffPolicyAgent[
         # The generic agent supports L1 + L2 profiling.
 
         # Logging
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     # =========================================================================
@@ -1090,10 +1092,12 @@ struct GenericOffPolicyAgent[
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", critic_loss, step)
-                _log(self.logger, "explore_rate", self.get_explore_rate(), step)
+                self.logger[].log_scalar("loss", critic_loss, step)
+                self.logger[].log_scalar(
+                    "explore_rate", self.get_explore_rate(), step
+                )
                 comptime if Self.Config.ActorLoss.HAS_ALPHA:
-                    _log(self.logger, "alpha", self.alpha, step)
+                    self.logger[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -1485,7 +1489,12 @@ struct GenericOffPolicyAgent[
             block_dim=(TPB,),
         )
         Self.CriticNet.forward_gpu_with_cache[BS](
-            ctx, ci_t, q_t, p_critic, q_cache_t, gpu_state.critic_ws,
+            ctx,
+            ci_t,
+            q_t,
+            p_critic,
+            q_cache_t,
+            gpu_state.critic_ws,
         )
         ctx.enqueue_function[mse_grad_k, mse_grad_k](
             q_grad_t,
@@ -1517,7 +1526,12 @@ struct GenericOffPolicyAgent[
             var q2_cache_t = gpu_state.q2_cache_view[BS]()
             var p_c2 = gpu_state.critic2.online.params_view()
             Self.CriticNet.forward_gpu_with_cache[BS](
-                ctx, ci_t, q2_out_t, p_c2, q2_cache_t, gpu_state.critic2_ws,
+                ctx,
+                ci_t,
+                q2_out_t,
+                p_c2,
+                q2_cache_t,
+                gpu_state.critic2_ws,
             )
             ctx.enqueue_function[mse_grad_k, mse_grad_k](
                 q_grad_t,
@@ -1726,26 +1740,26 @@ struct GenericOffPolicyAgent[
             cpu_state.critic2.read_sections(content, "critic2_")
 
     # Convenience
-    fn train[E: BoxContinuousActionEnv](
+    fn train[
+        E: BoxContinuousActionEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int = 300,
-        logger: LoggerPtr = LoggerPtr(),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
-        self.logger = logger
         self.diag_every = diag_every
         var cpu_state = self.make_cpu_state()
         var ckpt_path = String(self.checkpoint_path)
-        var metrics = run_offpolicy_continuous_train(
+        var metrics = run_offpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
             num_episodes,
             checkpoint_every=self.checkpoint_every,
             checkpoint_path=ckpt_path,
+            logger=self.logger,
         )
-        self.logger = LoggerPtr()
         return metrics^
 
     fn train_gpu[
@@ -1755,11 +1769,10 @@ struct GenericOffPolicyAgent[
         ctx: DeviceContext,
         num_steps: Int,
         warmup_steps: Int = 1000,
-        logger: LoggerPtr = LoggerPtr(),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop."""
-        self.logger = logger
+
         self.diag_every = diag_every
         var timer = PerfTimer[Self.profile >= 1]()
         comptime if Self.profile >= 1:
@@ -1772,10 +1785,13 @@ struct GenericOffPolicyAgent[
             _ = timer.add_slot("train_step")
             _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
-            self, ctx, num_steps, timer,
+        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile, Self.L](
+            self,
+            ctx,
+            num_steps,
+            timer,
             warmup_steps=warmup_steps,
-            logger=logger,
+            logger=self.logger,
         )
 
         comptime if Self.profile >= 2:
@@ -1783,5 +1799,4 @@ struct GenericOffPolicyAgent[
         comptime if Self.profile >= 1:
             timer.print_report("GenericOffPolicy GPU Profile")
 
-        self.logger = LoggerPtr()
         return metrics^

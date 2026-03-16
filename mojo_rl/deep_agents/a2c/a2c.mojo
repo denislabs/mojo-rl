@@ -68,7 +68,7 @@ from mojo_rl.core.utils.softmax import (
     argmax_probs_inline,
 )
 from mojo_rl.core.utils.normalization import normalize_inline
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 
 
 # =============================================================================
@@ -83,6 +83,7 @@ struct DeepA2CAgent[
     rollout_len: Int = 128,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
+    L: Logger = NoOpLogger,
 ](OnPolicyAgent & Checkpointable):
     """Deep Advantage Actor-Critic Agent using the new stateless architecture.
 
@@ -160,7 +161,7 @@ struct DeepA2CAgent[
     var checkpoint_path: String
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -220,7 +221,7 @@ struct DeepA2CAgent[
         # Checkpointing
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn select_action(
@@ -516,15 +517,20 @@ struct DeepA2CAgent[
 
         # Log A2C diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
-                _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(self.logger, "loss", Float64(total_loss), step)
+                self.logger[].log_scalar(
+                    "policy_loss", Float64(total_policy_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "value_loss", Float64(total_value_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "entropy", Float64(total_entropy / n), step
+                )
+                self.logger[].log_scalar("loss", Float64(total_loss), step)
             except:
                 pass
 
@@ -832,7 +838,9 @@ struct DeepA2CAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the A2C agent on a discrete action environment.
@@ -844,7 +852,7 @@ struct DeepA2CAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -854,7 +862,7 @@ struct DeepA2CAgent[
         self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_onpolicy_discrete_train(
+        var metrics = run_onpolicy_discrete_train[E, Self, L](
             self,
             env,
             num_updates,
@@ -866,7 +874,7 @@ struct DeepA2CAgent[
             "Deep A2C",
             logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     fn save_checkpoint(self, path: String) raises:

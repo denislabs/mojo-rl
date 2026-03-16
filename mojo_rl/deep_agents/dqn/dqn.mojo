@@ -77,7 +77,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .state import DQNGPUState, DQNCPUState
 from .kernels import dqn_td_target_kernel, dqn_double_td_target_kernel
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
@@ -100,6 +100,7 @@ struct DQNAgent[
     double_dqn: Bool = False,
     lr: Float64 = 2.5e-4,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Q-Network agent — unified CPU + GPU.
 
@@ -191,7 +192,7 @@ struct DQNAgent[
     var checkpoint_path: String
 
     # Optional metrics logger (set by train/train_gpu, null otherwise)
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int  # log DQN diagnostics every N train steps
 
     fn __init__(
@@ -234,7 +235,7 @@ struct DQNAgent[
         self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
         self.train_timer = PerfTimer[Self.profile >= 1]()
         self.online_fwd_base = 0
@@ -464,8 +465,7 @@ struct DQNAgent[
 
         # Log DQN diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
@@ -481,21 +481,19 @@ struct DQNAgent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "q_mean",
                     q_sum / Float64(Self.batch_size * Self.ACTIONS),
                     step,
                 )
-                _log(self.logger, "q_min", q_min, step)
-                _log(self.logger, "q_max", q_max, step)
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
                 for i in range(Self.batch_size):
                     tgt_sum += Float64(targets[i])
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "td_target_mean",
                     tgt_sum / Float64(Self.batch_size),
                     step,
@@ -513,14 +511,13 @@ struct DQNAgent[
                     td_err_abs_sum += abs_err
                     if abs_err > td_err_max_abs:
                         td_err_max_abs = abs_err
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "td_error_abs_mean",
                     td_err_abs_sum / Float64(Self.batch_size),
                     step,
                 )
-                _log(self.logger, "td_error_max", td_err_max_abs, step)
-                _log(self.logger, "loss", total_loss, step)
+                self.logger[].log_scalar("td_error_max", td_err_max_abs, step)
+                self.logger[].log_scalar("loss", total_loss, step)
             except:
                 pass
 
@@ -890,7 +887,12 @@ struct DQNAgent[
             self.train_timer.mark()
 
         # ---- Diagnostic logging ----
-        if self.logger and self.diag_every > 0 and self.train_step_count > 0 and self.train_step_count % self.diag_every == 0:
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
             self._log_diagnostics_to_logger(ctx, gpu_state)
 
         # ---- Phase 5: Gradient kernel (masked MSE grad) ----
@@ -1243,7 +1245,7 @@ struct DQNAgent[
         ctx: DeviceContext,
         gpu_state: Self.GPUStateType,
     ) raises:
-        """Download key training tensors from GPU and log to MetricsLogger."""
+        """Download key training tensors from GPU and log diagnostics."""
         comptime BATCH = Self.batch_size
         var step = self.train_step_count
 
@@ -1273,9 +1275,11 @@ struct DQNAgent[
                 q_min = v
             if v > q_max:
                 q_max = v
-        _log(self.logger, "q_mean", q_sum / Float64(BATCH * Self.ACTIONS), step)
-        _log(self.logger, "q_min", q_min, step)
-        _log(self.logger, "q_max", q_max, step)
+        self.logger[].log_scalar(
+            "q_mean", q_sum / Float64(BATCH * Self.ACTIONS), step
+        )
+        self.logger[].log_scalar("q_min", q_min, step)
+        self.logger[].log_scalar("q_max", q_max, step)
 
         # Next-Q (target network) stats
         var nq_min = Float64(h_nq[0])
@@ -1288,7 +1292,9 @@ struct DQNAgent[
                 nq_min = v
             if v > nq_max:
                 nq_max = v
-        _log(self.logger, "next_q_mean", nq_sum / Float64(BATCH * Self.ACTIONS), step)
+        self.logger[].log_scalar(
+            "next_q_mean", nq_sum / Float64(BATCH * Self.ACTIONS), step
+        )
 
         # TD target stats
         var tgt_min = Float64(h_tgt[0])
@@ -1301,7 +1307,9 @@ struct DQNAgent[
                 tgt_min = v
             if v > tgt_max:
                 tgt_max = v
-        _log(self.logger, "td_target_mean", tgt_sum / Float64(BATCH), step)
+        self.logger[].log_scalar(
+            "td_target_mean", tgt_sum / Float64(BATCH), step
+        )
 
         # TD error stats
         var td_err_abs_sum: Float64 = 0.0
@@ -1316,9 +1324,11 @@ struct DQNAgent[
             if abs_err > td_err_max_abs:
                 td_err_max_abs = abs_err
             loss_sum += td_err * td_err
-        _log(self.logger, "td_error_abs_mean", td_err_abs_sum / Float64(BATCH), step)
-        _log(self.logger, "td_error_max", td_err_max_abs, step)
-        _log(self.logger, "loss", loss_sum / Float64(BATCH), step)
+        self.logger[].log_scalar(
+            "td_error_abs_mean", td_err_abs_sum / Float64(BATCH), step
+        )
+        self.logger[].log_scalar("td_error_max", td_err_max_abs, step)
+        self.logger[].log_scalar("loss", loss_sum / Float64(BATCH), step)
 
     fn get_action_scale(self) -> Float64:
         return 1.0  # Discrete actions don't use action_scale
@@ -1371,7 +1381,9 @@ struct DQNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the DQN agent on a continuous-state environment.
@@ -1385,7 +1397,7 @@ struct DQNAgent[
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log DQN diagnostics (Q-values, TD errors) every N
                 train steps. 0 = every step when logger is set (default: 0).
 
@@ -1400,7 +1412,7 @@ struct DQNAgent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_every = self.checkpoint_every
         var checkpoint_path = self.checkpoint_path
-        var metrics = run_offpolicy_discrete_train(
+        var metrics = run_offpolicy_discrete_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
@@ -1417,7 +1429,7 @@ struct DQNAgent[
             logger,
         )
         self.state = cpu_state^
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     fn evaluate[
@@ -1474,7 +1486,9 @@ struct DQNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
@@ -1500,7 +1514,7 @@ struct DQNAgent[
             verbose: Print progress (default: False).
             print_every: Print interval in transitions (default: 50000).
             environment_name: Name for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log DQN diagnostics every N train steps (default: 100).
                 Requires GPU→CPU sync, so don't set too low.
 
@@ -1524,7 +1538,9 @@ struct DQNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, Self.profile, Self.L
+        ](
             self,
             ctx,
             num_steps,
@@ -1546,7 +1562,7 @@ struct DQNAgent[
         comptime if Self.profile >= 1:
             timer.print_report(algo_name + " Profile")
 
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================

@@ -29,7 +29,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.tdmpc2 import TDMPC2Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -106,7 +106,7 @@ fn main() raises:
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
-        var logger = MetricsLogger(
+        var logger = RemoteLogger(
             server_url=url,
             run_name="TD-MPC2 HalfCheetah GPU",
             buffer_size=64,
@@ -141,6 +141,7 @@ fn main() raises:
             num_iterations=NUM_ITERATIONS,
             v_min=V_MIN,
             v_max=V_MAX,
+            L=RemoteLogger,
         ](
             gamma=0.99,
             rho=0.5,

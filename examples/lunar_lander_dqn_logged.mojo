@@ -1,4 +1,4 @@
-"""Train DQN on LunarLander with MetricsLogger.
+"""Train DQN on LunarLander with CsvLogger.
 
 Run with: pixi run mojo run -I . examples/lunar_lander_dqn_logged.mojo
 
@@ -11,12 +11,12 @@ from std.memory import UnsafePointer
 
 from mojo_rl.envs.lunar_lander import LunarLander
 from mojo_rl.deep_agents import DQNAgent
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import CsvLogger
 
 
 fn main() raises:
     print("=" * 60)
-    print("Deep DQN on LunarLander (with MetricsLogger)")
+    print("Deep DQN on LunarLander (with CsvLogger)")
     print("=" * 60)
     print()
 
@@ -31,6 +31,7 @@ fn main() raises:
         buffer_capacity=20000,
         batch_size=64,
         lr=0.0005,
+        L=CsvLogger,
     ](
         gamma=0.99,
         tau=0.005,
@@ -40,7 +41,7 @@ fn main() raises:
     )
 
     # Create a logger that writes to CSV
-    var logger = MetricsLogger(file_path="logs/dqn_lunar_lander.csv")
+    var logger = CsvLogger("logs/dqn_lunar_lander.csv")
     logger.set_config("agent", "DQN")
     logger.set_config("env", "LunarLander")
     logger.set_config("hidden_dim", "128")

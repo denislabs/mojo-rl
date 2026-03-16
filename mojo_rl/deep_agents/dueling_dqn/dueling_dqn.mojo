@@ -73,7 +73,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .state import DuelingDQNGPUState
 from .kernels import (
     dueling_combine_kernel,
@@ -181,6 +181,7 @@ struct DuelingDQNAgent[
     double_dqn: Bool = True,
     lr: Float64 = 0.0005,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Dueling DQN Agent using NetworkState architecture.
 
@@ -284,7 +285,7 @@ struct DuelingDQNAgent[
     var checkpoint_path: String
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -331,7 +332,7 @@ struct DuelingDQNAgent[
             self.online_bwd_base = Self.DuelingModel.register_backward_slots(
                 self.train_timer, parent=6
             )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -600,12 +601,11 @@ struct DuelingDQNAgent[
 
         # Log Dueling DQN diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", loss, step)
+                self.logger[].log_scalar("loss", loss, step)
 
                 # Q-value stats
                 var q_min = Float64(q_arr[0])
@@ -618,15 +618,19 @@ struct DuelingDQNAgent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                _log(self.logger, "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step)
-                _log(self.logger, "q_min", q_min, step)
-                _log(self.logger, "q_max", q_max, step)
+                self.logger[].log_scalar(
+                    "q_mean", q_sum / Float64(Self.BATCH * Self.ACTIONS), step
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     tgt_sum += Float64(targets[i])
-                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "td_target_mean", tgt_sum / Float64(Self.BATCH), step
+                )
             except:
                 pass
 
@@ -798,6 +802,7 @@ struct DuelingDQNAgent[
                 return
 
             from std.random.philox import Random as PhiloxRandom
+
             var rng = PhiloxRandom(
                 seed=UInt64(base_seed) * UInt64(N_ENVS) + UInt64(b), offset=0
             )
@@ -807,7 +812,10 @@ struct DuelingDQNAgent[
             if rand_val < eps:
                 var rand_vals2 = rng.step_uniform()
                 acts[b] = Scalar[dtype](
-                    Int(Scalar[dtype](rand_vals2[0]) * Scalar[dtype](Self.ACTIONS))
+                    Int(
+                        Scalar[dtype](rand_vals2[0])
+                        * Scalar[dtype](Self.ACTIONS)
+                    )
                 )
                 return
 
@@ -1224,7 +1232,9 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         self.logger = logger
@@ -1232,7 +1242,7 @@ struct DuelingDQNAgent[
         var cpu_state = Self.CPUStateType()
         var ckpt_every = self.checkpoint_every
         var ckpt_path = self.checkpoint_path
-        var metrics = run_offpolicy_discrete_train(
+        var metrics = run_offpolicy_discrete_train[E, Self, L](
             self,
             cpu_state,
             env,
@@ -1249,7 +1259,7 @@ struct DuelingDQNAgent[
             logger,
         )
         self.state = cpu_state^
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     fn evaluate[
@@ -1292,7 +1302,9 @@ struct DuelingDQNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy discrete GPU loop.
@@ -1339,7 +1351,9 @@ struct DuelingDQNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, Self.profile, L
+        ](
             self,
             ctx,
             num_steps,
@@ -1361,7 +1375,7 @@ struct DuelingDQNAgent[
         comptime if Self.profile >= 1:
             timer.print_report(algo_name + " Profile")
 
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================

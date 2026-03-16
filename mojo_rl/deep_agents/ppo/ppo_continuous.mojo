@@ -70,7 +70,7 @@ from mojo_rl.render import Renderer2D
 from std.memory import UnsafePointer
 from mojo_rl.core.utils.gae import compute_gae_inline
 from mojo_rl.core.utils.normalization import normalize_inline, RunningMeanStd
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.core.utils.shuffle import shuffle_indices_inline
 from .kernels import (
     _sample_continuous_actions_kernel,
@@ -128,6 +128,7 @@ struct DeepPPOContinuousAgent[
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     Checkpointable,
     GPUOnPolicyContinuousAgent,
@@ -273,7 +274,7 @@ struct DeepPPOContinuousAgent[
 
     # Training state
     var train_step_count: Int
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     # Auto-checkpoint settings
@@ -413,7 +414,7 @@ struct DeepPPOContinuousAgent[
         self.action_bias = action_bias
 
         self.train_step_count = 0
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
         self.checkpoint_every = checkpoint_every
@@ -971,16 +972,23 @@ struct DeepPPOContinuousAgent[
         var avg_loss = Float64(total_loss / n)
 
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_loss, step)
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
-                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
-                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+                self.logger[].log_scalar("loss", avg_loss, step)
+                self.logger[].log_scalar(
+                    "policy_loss", Float64(total_policy_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "value_loss", Float64(total_value_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "clip_fraction", Float64(total_clip_frac / n), step
+                )
+                self.logger[].log_scalar(
+                    "approx_kl", Float64(total_approx_kl / n), step
+                )
             except:
                 pass
 
@@ -1022,7 +1030,9 @@ struct DeepPPOContinuousAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the PPO continuous agent on a continuous action environment.
@@ -1046,7 +1056,7 @@ struct DeepPPOContinuousAgent[
         self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_onpolicy_continuous_train(
+        var metrics = run_onpolicy_continuous_train[E, Self, L](
             self,
             env,
             num_episodes,
@@ -1058,7 +1068,7 @@ struct DeepPPOContinuousAgent[
             "PPO Continuous (GPU)",
             logger=logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================
@@ -1419,16 +1429,23 @@ struct DeepPPOContinuousAgent[
         var avg_loss = Float64(total_loss / n)
 
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_loss, step)
-                _log(self.logger, "policy_loss", Float64(total_policy_loss / n), step)
-                _log(self.logger, "value_loss", Float64(total_value_loss / n), step)
-                _log(self.logger, "clip_fraction", Float64(total_clip_frac / n), step)
-                _log(self.logger, "approx_kl", Float64(total_approx_kl / n), step)
+                self.logger[].log_scalar("loss", avg_loss, step)
+                self.logger[].log_scalar(
+                    "policy_loss", Float64(total_policy_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "value_loss", Float64(total_value_loss / n), step
+                )
+                self.logger[].log_scalar(
+                    "clip_fraction", Float64(total_clip_frac / n), step
+                )
+                self.logger[].log_scalar(
+                    "approx_kl", Float64(total_approx_kl / n), step
+                )
             except:
                 pass
 
@@ -2549,9 +2566,7 @@ struct DeepPPOContinuousAgent[
                         diag_entropy_sum += Float64(
                             gpu_state.diag_entropy_host[i]
                         )
-                        diag_clip_sum += Float64(
-                            gpu_state.diag_clip_host[i]
-                        )
+                        diag_clip_sum += Float64(gpu_state.diag_clip_host[i])
                     diag_sample_count += MINIBATCH
 
                 comptime if Self.profile >= 2:
@@ -2724,10 +2739,10 @@ struct DeepPPOContinuousAgent[
                 var avg_entropy = diag_entropy_sum / n
                 var avg_clip = diag_clip_sum / n
                 var avg_value_loss = diag_value_loss_sum / n
-                _log(self.logger, "approx_kl", avg_kl, step)
-                _log(self.logger, "entropy", avg_entropy, step)
-                _log(self.logger, "clip_fraction", avg_clip, step)
-                _log(self.logger, "value_loss", avg_value_loss, step)
+                self.logger[].log_scalar("approx_kl", avg_kl, step)
+                self.logger[].log_scalar("entropy", avg_entropy, step)
+                self.logger[].log_scalar("clip_fraction", avg_clip, step)
+                self.logger[].log_scalar("value_loss", avg_value_loss, step)
             except:
                 pass
 
@@ -2744,7 +2759,9 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int,
         verbose: Bool = False,
         print_every: Int = 10,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO on GPU with GPU-native continuous action environments.
@@ -2778,7 +2795,7 @@ struct DeepPPOContinuousAgent[
         _ = timer.add_slot("update_epochs")
         _ = timer.add_slot("gpu_cpu_sync")
         var metrics = run_onpolicy_continuous_train_gpu[
-            EnvType, Self, CurriculumType, Self.profile
+            EnvType, Self, CurriculumType, Self.profile, L
         ](
             self,
             ctx,
@@ -2794,7 +2811,7 @@ struct DeepPPOContinuousAgent[
             print_every=print_every,
             logger=logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
 
         comptime if Self.profile >= 2:
             timer.merge_subtree_range(0, self.train_timer, 0, 3)

@@ -110,7 +110,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 
 
 # =============================================================================
@@ -128,6 +128,7 @@ struct DeepSACAgent[
     critic_lr: Float64 = 0.0003,
     max_n_envs: Int = 64,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Soft Actor-Critic agent using the new trait-based architecture.
 
@@ -274,7 +275,7 @@ struct DeepSACAgent[
     var checkpoint_path: String
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -389,7 +390,7 @@ struct DeepSACAgent[
             self.actor_bwd_base = Self.ActorModel.register_backward_slots(
                 self.train_timer, parent=5
             )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -872,29 +873,32 @@ struct DeepSACAgent[
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_critic_loss, step)
-                _log(self.logger, "critic1_loss", critic1_loss, step)
-                _log(self.logger, "critic2_loss", critic2_loss, step)
-                _log(self.logger, "alpha", self.alpha, step)
+                self.logger[].log_scalar("loss", avg_critic_loss, step)
+                self.logger[].log_scalar("critic1_loss", critic1_loss, step)
+                self.logger[].log_scalar("critic2_loss", critic2_loss, step)
+                self.logger[].log_scalar("alpha", self.alpha, step)
 
                 # Q1 stats
                 var q1_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     q1_sum += Float64(cpu_state._q1_out[i])
-                _log(self.logger, "q1_mean", q1_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "q1_mean", q1_sum / Float64(Self.BATCH), step
+                )
 
                 # Q2 stats
                 var q2_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     q2_sum += Float64(cpu_state._q2_out[i])
-                _log(self.logger, "q2_mean", q2_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "q2_mean", q2_sum / Float64(Self.BATCH), step
+                )
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     tgt_sum += Float64(cpu_state._targets[i])
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "td_target_mean",
                     tgt_sum / Float64(Self.BATCH),
                     step,
@@ -904,8 +908,7 @@ struct DeepSACAgent[
                 var lp_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     lp_sum += Float64(cpu_state._curr_log_pi[i])
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "entropy",
                     -(lp_sum / Float64(Self.BATCH)),
                     step,
@@ -2050,7 +2053,9 @@ struct DeepSACAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
@@ -2095,7 +2100,9 @@ struct DeepSACAgent[
         _ = timer.add_slot("reset")
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
-        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_continuous_train_gpu[
+            E, Self, Self.profile, L
+        ](
             self,
             ctx,
             num_steps,
@@ -2117,7 +2124,7 @@ struct DeepSACAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report("SAC (GPU) Profile")
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================
@@ -2136,7 +2143,9 @@ struct DeepSACAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the SAC agent on a continuous action environment.
@@ -2150,7 +2159,7 @@ struct DeepSACAgent[
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -2161,7 +2170,7 @@ struct DeepSACAgent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_offpolicy_continuous_train(
+        var metrics = run_offpolicy_continuous_train[E, Self, L](
             self,
             cpu_state,
             env,
@@ -2178,7 +2187,7 @@ struct DeepSACAgent[
             logger=logger,
         )
         self.state = cpu_state^
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     # =========================================================================

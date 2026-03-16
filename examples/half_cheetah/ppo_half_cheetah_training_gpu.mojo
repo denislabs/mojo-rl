@@ -33,7 +33,7 @@ from mojo_rl.envs.half_cheetah import (
     HalfCheetahConfig,
     HalfCheetahCurriculum,
 )
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -85,6 +85,7 @@ fn main() raises:
             clip_value=True,
             actor_lr=0.0003,  # CleanRL: 3e-4
             critic_lr=0.0003,  # CleanRL: 3e-4
+            L=RemoteLogger,
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
@@ -157,7 +158,7 @@ fn main() raises:
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
-        var logger = MetricsLogger(
+        var logger = RemoteLogger(
             server_url=url,
             run_name="PPO HalfCheetah GPU",
             buffer_size=64,

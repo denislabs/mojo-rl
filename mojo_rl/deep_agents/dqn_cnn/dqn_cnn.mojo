@@ -72,7 +72,7 @@ from mojo_rl.deep_agents.dqn.kernels import (
     dqn_td_target_kernel,
     dqn_double_td_target_kernel,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 
 
 # =============================================================================
@@ -115,6 +115,7 @@ struct DQNCNNAgent[
     double_dqn: Bool = True,
     lr: Float64 = 0.00025,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyDiscreteAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Q-Network agent with CNN for pixel observations.
 
@@ -197,7 +198,7 @@ struct DQNCNNAgent[
     var checkpoint_path: String
 
     # Diagnostics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -242,7 +243,7 @@ struct DQNCNNAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -434,8 +435,7 @@ struct DQNCNNAgent[
 
         # Log DQN CNN diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
@@ -458,12 +458,16 @@ struct DQNCNNAgent[
                         td_err = -td_err
                     td_err_sum += td_err
                 var bs = Float64(Self.batch_size)
-                _log(self.logger, "loss", total_loss, step)
-                _log(self.logger, "q_mean", Float64(q_sum) / bs, step)
-                _log(self.logger, "q_min", Float64(q_min_v), step)
-                _log(self.logger, "q_max", Float64(q_max_v), step)
-                _log(self.logger, "td_target_mean", Float64(td_sum) / bs, step)
-                _log(self.logger, "td_error_abs_mean", Float64(td_err_sum) / bs, step)
+                self.logger[].log_scalar("loss", total_loss, step)
+                self.logger[].log_scalar("q_mean", Float64(q_sum) / bs, step)
+                self.logger[].log_scalar("q_min", Float64(q_min_v), step)
+                self.logger[].log_scalar("q_max", Float64(q_max_v), step)
+                self.logger[].log_scalar(
+                    "td_target_mean", Float64(td_sum) / bs, step
+                )
+                self.logger[].log_scalar(
+                    "td_error_abs_mean", Float64(td_err_sum) / bs, step
+                )
             except:
                 pass
 
@@ -609,6 +613,7 @@ struct DQNCNNAgent[
                 return
 
             from std.random.philox import Random as PhiloxRandom
+
             var rng = PhiloxRandom(
                 seed=UInt64(base_seed) * UInt64(N_ENVS) + UInt64(b), offset=0
             )
@@ -618,7 +623,10 @@ struct DQNCNNAgent[
             if rand_val < eps:
                 var rand_vals2 = rng.step_uniform()
                 acts[b] = Scalar[dtype](
-                    Int(Scalar[dtype](rand_vals2[0]) * Scalar[dtype](Self.ACTIONS))
+                    Int(
+                        Scalar[dtype](rand_vals2[0])
+                        * Scalar[dtype](Self.ACTIONS)
+                    )
                 )
                 return
 
@@ -901,7 +909,9 @@ struct DQNCNNAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         var algo_name = String("DQN CNN")
@@ -912,7 +922,7 @@ struct DQNCNNAgent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_every = self.checkpoint_every
         var checkpoint_path = self.checkpoint_path
-        var metrics = run_offpolicy_discrete_train(
+        var metrics = run_offpolicy_discrete_train[E, Self, L](
             self,
             cpu_state,
             env,
@@ -928,7 +938,7 @@ struct DQNCNNAgent[
             algo_name,
             logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.state = cpu_state^
         return metrics
 
@@ -968,7 +978,9 @@ struct DQNCNNAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         self.logger = logger
@@ -988,7 +1000,9 @@ struct DQNCNNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, Self.profile, L
+        ](
             self,
             ctx,
             num_steps,
@@ -1003,7 +1017,7 @@ struct DQNCNNAgent[
             logger=logger,
         )
 
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
 
         # Merge L2 sub-phases as children of train_step (slot 6)
         comptime if Self.profile >= 2:

@@ -67,7 +67,7 @@ from .state import (
     BatchedMPPIGPUBuffers,
 )
 from .world_model import WorldModel, decode_value_batch_scalar
-from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .mppi import plan, plan_gpu, plan_gpu_batched
 from .kernels import (
     tdmpc2_random_actions_kernel,
@@ -120,6 +120,7 @@ struct TDMPC2Agent[
     num_iterations: Int = 6,
     v_min: Float64 = -10.0,
     v_max: Float64 = 10.0,
+    L: Logger = NoOpLogger,
 ]:
     """TD-MPC2 agent for continuous control.
 
@@ -250,7 +251,7 @@ struct TDMPC2Agent[
     var running_scale: Float64
 
     # Diagnostics
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     # MPPI warm-start state
@@ -277,7 +278,6 @@ struct TDMPC2Agent[
         discount_denom: Float64 = 5.0,
         discount_min: Float64 = 0.95,
         discount_max: Float64 = 0.995,
-        logger: LoggerPtr = LoggerPtr(),
         diag_every: Int = 0,
     ):
         """Initialize TDMPC2 agent.
@@ -330,7 +330,7 @@ struct TDMPC2Agent[
         self.total_steps = 0
         self.train_step_count = 0
         self.running_scale = 1.0
-        self.logger = logger
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = diag_every
         self._prev_mean = List[Float64]()
         self._episode_t0 = True
@@ -849,21 +849,21 @@ struct TDMPC2Agent[
 
         # Log world model diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", total_loss, step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar("loss", total_loss, step)
+                self.logger[].log_scalar(
                     "consistency_loss",
                     total_consistency_loss,
                     step,
                 )
-                _log(self.logger, "reward_loss", total_reward_loss, step)
-                _log(self.logger, "value_loss", total_value_loss, step)
-                _log(self.logger, "terminal_loss", total_terminal_loss, step)
+                self.logger[].log_scalar("reward_loss", total_reward_loss, step)
+                self.logger[].log_scalar("value_loss", total_value_loss, step)
+                self.logger[].log_scalar(
+                    "terminal_loss", total_terminal_loss, step
+                )
             except:
                 pass
 
@@ -1032,23 +1032,20 @@ struct TDMPC2Agent[
 
         # Log policy diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "policy_loss", policy_loss, step)
+                self.logger[].log_scalar("policy_loss", policy_loss, step)
                 if total_q_count > 0:
-                    _log(
-                        self.logger,
+                    self.logger[].log_scalar(
                         "q_mean",
                         total_q_sum / Float64(total_q_count),
                         step,
                     )
-                    _log(self.logger, "q_min", total_q_min, step)
-                    _log(self.logger, "q_max", total_q_max, step)
-                _log(
-                    self.logger,
+                    self.logger[].log_scalar("q_min", total_q_min, step)
+                    self.logger[].log_scalar("q_max", total_q_max, step)
+                self.logger[].log_scalar(
                     "entropy",
                     total_entropy / Float64(Self.H),
                     step,
@@ -2458,20 +2455,17 @@ struct TDMPC2Agent[
                     # Log episode metrics
                     if self.logger:
                         try:
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "episode_reward",
                                 ep_r,
                                 total_steps,
                             )
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "episodes",
                                 Float64(completed_episodes),
                                 total_steps,
                             )
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "train_steps",
                                 Float64(self.train_step_count),
                                 total_steps,

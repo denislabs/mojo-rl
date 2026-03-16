@@ -1,28 +1,33 @@
-"""Training metrics logger with file and remote backends.
+"""Trait-based training metrics logger with pluggable backends.
 
-Collects named scalar time series during training and flushes them
-periodically to a local CSV file and/or a remote HTTP server.
+Logger trait defines the interface. Concrete implementations:
+  - NoOpLogger: does nothing (zero overhead, default)
+  - CsvLogger: appends CSV rows to a local file
+  - RemoteLogger: POSTs JSON batches to an HTTP server
+  - CompositeLogger[A, B]: fans out to two loggers
 
 Collection is pure Mojo with near-zero overhead. The remote backend
 uses Python `urllib` via Mojo's Python interop (only during flush).
 
 Usage:
-    var logger = MetricsLogger(
-        file_path="logs/run_001.csv",     # local CSV (empty = disabled)
-        server_url="http://host:3000/api", # remote POST (empty = disabled)
+    # CSV only
+    var logger = CsvLogger("logs/run_001.csv")
+
+    # Remote only
+    var logger = RemoteLogger(
+        server_url="http://host:3000/api",
         run_name="ppo_halfcheetah_v3",
-        buffer_size=200,                   # flush every 200 entries
     )
+
+    # Both (fan-out)
+    var logger = CompositeLogger(
+        CsvLogger("logs/run_001.csv"),
+        RemoteLogger(server_url="http://host:3000/api"),
+    )
+
     logger.set_config("algorithm", "PPO")
-    logger.set_config("environment", "HalfCheetah")
-    logger.set_config("lr", "3e-4")
-
-    # In training loop:
     logger.log_scalar("reward", avg_reward, step)
-    logger.log_scalar("loss", loss_val, step)
-
-    # At end:
-    logger.close()  # final flush
+    logger.close()
 """
 
 from std.time import perf_counter_ns
@@ -68,221 +73,149 @@ struct MetricEntry(Copyable, Movable):
 
 
 # =============================================================================
-# MetricsLogger
+# Logger Trait
 # =============================================================================
 
 
-struct MetricsLogger(Movable):
-    """Buffered metrics logger with file and remote backends.
+trait Logger(Copyable, Movable):
+    """Interface for training metrics loggers.
 
-    Accumulates MetricEntry objects in memory and flushes them when the
-    buffer reaches `buffer_size` entries, or when `flush()` / `close()`
-    is called explicitly.
-
-    Backends (both optional, set via constructor args):
-      - **File**: Appends CSV rows to `file_path`. Format:
-            step,wall_time_ms,name,value
-      - **Remote**: POSTs JSON batches to `server_url/ingest`.
-            Run registration POSTed to `server_url/runs` on first flush.
-
-    The remote backend requires Python (urllib) but is only invoked
-    during flush — the hot logging path is pure Mojo.
+    All deep RL training loops and agent structs are parameterized on
+    `L: Logger = NoOpLogger`.  When L = NoOpLogger every method is a no-op
+    and `is_active()` returns False, giving zero overhead identical to the
+    old null-pointer pattern.
     """
 
-    var run_id: String
-    var run_name: String
+    comptime ENABLED: Bool = True
 
-    # Backends
+    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        ...
+
+    fn log_scalars(
+        mut self, names: List[String], values: List[Float64], step: Int
+    ) raises:
+        ...
+
+    fn flush(mut self) raises:
+        ...
+
+    fn close(mut self) raises:
+        ...
+
+    fn set_config(mut self, key: String, value: String):
+        ...
+
+    fn is_active(self) -> Bool:
+        ...
+
+
+# =============================================================================
+# NoOpLogger — zero-overhead default
+# =============================================================================
+
+
+struct NoOpLogger(Logger):
+    """Logger that does nothing. Default for all training loops and agents."""
+
+    comptime ENABLED: Bool = False
+
+    fn __init__(out self):
+        pass
+
+    fn __init__(out self, *, deinit take: Self):
+        pass
+
+    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        pass
+
+    fn log_scalars(
+        mut self, names: List[String], values: List[Float64], step: Int
+    ) raises:
+        pass
+
+    fn flush(mut self) raises:
+        pass
+
+    fn close(mut self) raises:
+        pass
+
+    fn set_config(mut self, key: String, value: String):
+        pass
+
+    fn is_active(self) -> Bool:
+        return False
+
+
+# =============================================================================
+# CsvLogger — local CSV file backend
+# =============================================================================
+
+
+struct CsvLogger(Logger):
+    """Buffered CSV file logger.
+
+    Accumulates MetricEntry objects and appends them to a CSV file when
+    the buffer reaches `buffer_size` or on flush()/close().
+
+    CSV format: step,wall_time_ms,name,value
+    """
+
     var file_path: String
-    var server_url: String
-    var api_key: String
-
-    # Buffer
     var entries: List[MetricEntry]
     var buffer_size: Int
-
-    # Timing
     var _start_ns: UInt
-
-    # Run config (algorithm, env, hyperparams, etc.)
-    var _config_keys: List[String]
-    var _config_vals: List[String]
-
-    # State
-    var _run_registered: Bool
     var _file_header_written: Bool
     var _total_logged: Int
 
     fn __init__(
         out self,
-        run_name: String = "",
-        file_path: String = "",
-        server_url: String = "",
-        run_id: String = "",
+        file_path: String,
         buffer_size: Int = 200,
-        api_key: String = "",
     ):
-        """Initialize the metrics logger.
-
-        Args:
-            run_name: Human-readable name for this run.
-            file_path: Path to CSV log file (empty to disable file logging).
-            server_url: Base URL of the dashboard server (empty to disable).
-            run_id: Unique run identifier. Auto-generated from timestamp if empty.
-            buffer_size: Number of entries to buffer before auto-flushing.
-            api_key: Bearer token for remote server auth (empty to disable).
-        """
-        self._start_ns = perf_counter_ns()
-
-        if len(run_id) > 0:
-            self.run_id = run_id
-        else:
-            # Generate run_id from timestamp (nanosecond counter as hex)
-            self.run_id = "run_" + String(self._start_ns)
-
-        self.run_name = run_name if len(run_name) > 0 else self.run_id
         self.file_path = file_path
-        self.server_url = server_url
-        self.api_key = api_key
         self.entries = List[MetricEntry]()
         self.buffer_size = buffer_size
-        self._config_keys = List[String]()
-        self._config_vals = List[String]()
-        self._run_registered = False
+        self._start_ns = perf_counter_ns()
         self._file_header_written = False
         self._total_logged = 0
 
     fn __init__(out self, *, deinit take: Self):
-        self.run_id = take.run_id^
-        self.run_name = take.run_name^
         self.file_path = take.file_path^
-        self.server_url = take.server_url^
-        self.api_key = take.api_key^
         self.entries = take.entries^
         self.buffer_size = take.buffer_size
         self._start_ns = take._start_ns
-        self._config_keys = take._config_keys^
-        self._config_vals = take._config_vals^
-        self._run_registered = take._run_registered
         self._file_header_written = take._file_header_written
         self._total_logged = take._total_logged
 
-    # =========================================================================
-    # Configuration
-    # =========================================================================
-
-    fn set_config(mut self, key: String, value: String):
-        """Attach a config key-value pair to this run.
-
-        Config is sent to the remote server on run registration.
-        Common keys: "algorithm", "environment", "lr", "gamma", "batch_size".
-
-        Args:
-            key: Config parameter name.
-            value: Config parameter value (as string).
-        """
-        # Update existing key if present
-        for i in range(len(self._config_keys)):
-            if self._config_keys[i] == key:
-                self._config_vals[i] = value
-                return
-        self._config_keys.append(key)
-        self._config_vals.append(value)
-
-    # =========================================================================
-    # Logging
-    # =========================================================================
-
     fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
-        """Log a single scalar metric.
-
-        This is the primary logging method. Called from training loops
-        to record losses, rewards, Q-values, epsilon, etc.
-
-        Auto-flushes when buffer reaches `buffer_size` entries.
-
-        Args:
-            name: Metric name (e.g. "reward", "loss", "q_mean").
-            value: Scalar value.
-            step: Training step (env transitions or gradient steps).
-        """
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
-
         self.entries.append(MetricEntry(step, wall_time_ms, name, value))
         self._total_logged += 1
-
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
     fn log_scalars(
-        mut self,
-        names: List[String],
-        values: List[Float64],
-        step: Int,
+        mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
-        """Log multiple scalar metrics at the same step.
-
-        Convenience method for logging several metrics with the same
-        step and wall_time. More efficient than multiple log_scalar calls
-        (single timestamp, single buffer-size check).
-
-        Args:
-            names: Metric names.
-            values: Corresponding values (must be same length as names).
-            step: Training step.
-        """
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
-
         var n = min(len(names), len(values))
         for i in range(n):
             self.entries.append(
                 MetricEntry(step, wall_time_ms, names[i], values[i])
             )
         self._total_logged += n
-
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
-    # =========================================================================
-    # Flush
-    # =========================================================================
-
     fn flush(mut self) raises:
-        """Flush buffered entries to all enabled backends.
-
-        Called automatically when buffer is full, or explicitly by the user.
-        After flush, the buffer is cleared.
-        """
         if len(self.entries) == 0:
             return
-
-        if len(self.file_path) > 0:
-            self._flush_file()
-
-        if len(self.server_url) > 0:
-            self._flush_remote()
-
-        self.entries.clear()
-
-    fn close(mut self) raises:
-        """Final flush and cleanup. Call at the end of training."""
-        self.flush()
-
-    # =========================================================================
-    # File Backend
-    # =========================================================================
-
-    fn _flush_file(mut self) raises:
-        """Append buffered entries to CSV file."""
         var content = String("")
-
-        # Write header on first flush
         if not self._file_header_written:
             content += "step,wall_time_ms,name,value\n"
             self._file_header_written = True
-
         for i in range(len(self.entries)):
             var e = self.entries[i].copy()
             content += (
@@ -295,28 +228,120 @@ struct MetricsLogger(Movable):
                 + String(e.value)
                 + "\n"
             )
-
-        # Append to file
         with open(self.file_path, "a") as f:
             f.write(content)
+        self.entries.clear()
 
-    # =========================================================================
-    # Remote Backend
-    # =========================================================================
+    fn close(mut self) raises:
+        self.flush()
 
-    fn _flush_remote(mut self) raises:
-        """POST buffered entries to the remote dashboard server."""
+    fn set_config(mut self, key: String, value: String):
+        pass
+
+    fn is_active(self) -> Bool:
+        return True
+
+    fn total_logged(self) -> Int:
+        return self._total_logged
+
+    fn pending(self) -> Int:
+        return len(self.entries)
+
+
+# =============================================================================
+# RemoteLogger — HTTP POST backend
+# =============================================================================
+
+
+struct RemoteLogger(Logger):
+    """Buffered HTTP logger that POSTs JSON to a dashboard server.
+
+    Sends metrics as JSON batches to `server_url/ingest` and registers
+    the run at `server_url/runs` on first flush.  Uses Python urllib.
+    """
+
+    var run_id: String
+    var run_name: String
+    var server_url: String
+    var api_key: String
+    var entries: List[MetricEntry]
+    var buffer_size: Int
+    var _start_ns: UInt
+    var _config_keys: List[String]
+    var _config_vals: List[String]
+    var _run_registered: Bool
+    var _total_logged: Int
+
+    fn __init__(
+        out self,
+        server_url: String,
+        run_name: String = "",
+        run_id: String = "",
+        buffer_size: Int = 200,
+        api_key: String = "",
+    ):
+        self._start_ns = perf_counter_ns()
+        if len(run_id) > 0:
+            self.run_id = run_id
+        else:
+            self.run_id = "run_" + String(self._start_ns)
+        self.run_name = run_name if len(run_name) > 0 else self.run_id
+        self.server_url = server_url
+        self.api_key = api_key
+        self.entries = List[MetricEntry]()
+        self.buffer_size = buffer_size
+        self._config_keys = List[String]()
+        self._config_vals = List[String]()
+        self._run_registered = False
+        self._total_logged = 0
+
+    fn __init__(out self, *, deinit take: Self):
+        self.run_id = take.run_id^
+        self.run_name = take.run_name^
+        self.server_url = take.server_url^
+        self.api_key = take.api_key^
+        self.entries = take.entries^
+        self.buffer_size = take.buffer_size
+        self._start_ns = take._start_ns
+        self._config_keys = take._config_keys^
+        self._config_vals = take._config_vals^
+        self._run_registered = take._run_registered
+        self._total_logged = take._total_logged
+
+    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        var elapsed_ns = perf_counter_ns() - self._start_ns
+        var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
+        self.entries.append(MetricEntry(step, wall_time_ms, name, value))
+        self._total_logged += 1
+        if len(self.entries) >= self.buffer_size:
+            self.flush()
+
+    fn log_scalars(
+        mut self, names: List[String], values: List[Float64], step: Int
+    ) raises:
+        var elapsed_ns = perf_counter_ns() - self._start_ns
+        var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
+        var n = min(len(names), len(values))
+        for i in range(n):
+            self.entries.append(
+                MetricEntry(step, wall_time_ms, names[i], values[i])
+            )
+        self._total_logged += n
+        if len(self.entries) >= self.buffer_size:
+            self.flush()
+
+    fn flush(mut self) raises:
+        if len(self.entries) == 0:
+            return
         from std.python import Python
 
         var json_mod = Python.import_module("json")
         var urllib_request = Python.import_module("urllib.request")
 
-        # Register run on first flush
         if not self._run_registered:
             self._register_run(json_mod, urllib_request)
             self._run_registered = True
 
-        # Build metrics payload
         var metrics_list = Python.evaluate("[]")
         for i in range(len(self.entries)):
             var e = self.entries[i].copy()
@@ -333,74 +358,100 @@ struct MetricsLogger(Movable):
 
         var url = self.server_url.removesuffix("/") + "/ingest"
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
+        self.entries.clear()
+
+    fn close(mut self) raises:
+        self.flush()
+
+    fn set_config(mut self, key: String, value: String):
+        for i in range(len(self._config_keys)):
+            if self._config_keys[i] == key:
+                self._config_vals[i] = value
+                return
+        self._config_keys.append(key)
+        self._config_vals.append(value)
+
+    fn is_active(self) -> Bool:
+        return True
 
     fn _register_run(
         mut self,
         json_mod: PythonObject,
         urllib_request: PythonObject,
     ) raises:
-        """POST run registration with config metadata."""
         var config = Python.evaluate("{}")
         for i in range(len(self._config_keys)):
             config[PythonObject(self._config_keys[i])] = PythonObject(
                 self._config_vals[i]
             )
-
         var payload = Python.evaluate("{}")
         payload["run_id"] = PythonObject(self.run_id)
         payload["run_name"] = PythonObject(self.run_name)
         payload["config"] = config
-
         var url = self.server_url.removesuffix("/") + "/runs"
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
-    # =========================================================================
-    # Stats
-    # =========================================================================
-
     fn total_logged(self) -> Int:
-        """Return total number of data points logged (including flushed)."""
         return self._total_logged
 
     fn pending(self) -> Int:
-        """Return number of entries waiting in buffer."""
         return len(self.entries)
 
 
 # =============================================================================
-# LoggerPtr — nullable pointer for optional logger in training loops
+# CompositeLogger — fan-out to two loggers
 # =============================================================================
 
 
-comptime LoggerPtr = UnsafePointer[MetricsLogger, MutAnyOrigin]
-"""Nullable pointer to a MetricsLogger.
+struct CompositeLogger[A: Logger, B: Logger](Logger):
+    """Fans out log calls to two underlying loggers.
 
-Used as a parameter in training loop functions to make logging optional.
-Default value is null (no logging). Callers who want logging pass
-`UnsafePointer(to=logger)`.
+    Usage:
+        var logger = CompositeLogger(
+            CsvLogger("logs/run.csv"),
+            RemoteLogger(server_url="http://host:3000/api"),
+        )
+    """
 
-Usage in training loops:
-    fn run_train(..., logger: LoggerPtr = LoggerPtr()) raises:
-        _log(logger, "reward", avg_reward, step)
+    var a: Self.A
+    var b: Self.B
 
-Usage by callers:
-    var logger = MetricsLogger(file_path="logs/run.csv")
-    run_train(..., logger=UnsafePointer(to=logger))
-"""
+    fn __init__(out self, a: Self.A, b: Self.B):
+        self.a = a.copy()
+        self.b = b.copy()
 
+    fn __init__(out self, *, deinit take: Self):
+        self.a = take.a^
+        self.b = take.b^
 
-fn _log(
-    logger: LoggerPtr, name: String, value: Float64, step: Int
-) raises:
-    """Log a scalar if logger is not null. No-op otherwise."""
-    if logger:
-        logger[].log_scalar(name, value, step)
+    fn __init__(out self, *, copy: Self):
+        self.a = copy.a.copy()
+        self.b = copy.b.copy()
 
+    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        self.a.log_scalar(name, value, step)
+        self.b.log_scalar(name, value, step)
 
-fn _log_flush(logger: LoggerPtr) raises:
-    """Flush logger if not null. No-op otherwise."""
-    if logger:
-        logger[].flush()
+    fn log_scalars(
+        mut self, names: List[String], values: List[Float64], step: Int
+    ) raises:
+        self.a.log_scalars(names, values, step)
+        self.b.log_scalars(names, values, step)
+
+    fn flush(mut self) raises:
+        self.a.flush()
+        self.b.flush()
+
+    fn close(mut self) raises:
+        self.a.close()
+        self.b.close()
+
+    fn set_config(mut self, key: String, value: String):
+        self.a.set_config(key, value)
+        self.b.set_config(key, value)
+
+    fn is_active(self) -> Bool:
+        return True
 
 
 # =============================================================================
@@ -416,15 +467,7 @@ fn _http_post(
     api_key: String = "",
 ) raises:
     """POST JSON payload to a URL. Silently ignores errors to avoid
-    disrupting training if the server is down.
-
-    Args:
-        urllib_request: Python urllib.request module.
-        json_mod: Python json module.
-        url: Target URL.
-        payload: Python dict to serialize as JSON.
-        api_key: Bearer token for Authorization header (empty to skip).
-    """
+    disrupting training if the server is down."""
     try:
         var data = json_mod.dumps(payload).encode("utf-8")
         var req = urllib_request.Request(
@@ -434,10 +477,7 @@ fn _http_post(
         req.add_header("Content-Type", "application/json")
         req.add_header("User-Agent", "mojo-rl/1.0")
         if len(api_key) > 0:
-            req.add_header(
-                "Authorization", "Bearer " + api_key
-            )
+            req.add_header("Authorization", "Bearer " + api_key)
         _ = urllib_request.urlopen(req, timeout=5)
     except e:
-        # Log error but don't disrupt training
         print("  [logger] POST", url, "failed:", String(e))

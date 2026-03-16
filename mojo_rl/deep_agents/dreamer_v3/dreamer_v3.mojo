@@ -54,7 +54,7 @@ from .imagination import (
     sample_tanh_normal,
     log_prob_tanh_normal,
 )
-from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .kernels import (
     symlog_kernel,
     symexp_kernel,
@@ -110,6 +110,7 @@ struct DreamerV3Agent[
     batch_length: Int = 64,
     imagine_horizon: Int = 15,
     buffer_capacity: Int = 1000000,
+    L: Logger = NoOpLogger,
 ](Movable):
     """DreamerV3 agent for continuous control.
 
@@ -188,7 +189,7 @@ struct DreamerV3Agent[
     var _prev_action: UnsafePointer[Scalar[dtype], MutAnyOrigin]
 
     # Diagnostics
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     # Step counters
@@ -210,7 +211,6 @@ struct DreamerV3Agent[
         return_norm_rate: Float64 = 0.01,
         warmup_steps: Int = 1000,
         max_grad_norm: Float64 = 1000.0,
-        logger: LoggerPtr = LoggerPtr(),
         diag_every: Int = 0,
     ):
         """Initialize DreamerV3 agent with all sub-networks and buffers.
@@ -224,7 +224,6 @@ struct DreamerV3Agent[
             return_norm_rate: Return normalization EMA rate (default: 0.01).
             warmup_steps: Random exploration steps before training (default: 1000).
             max_grad_norm: Maximum gradient norm for clipping (default: 1000.0).
-            logger: Optional metrics logger for diagnostics.
             diag_every: Log diagnostics every N steps (0 = every step).
         """
         self.state = Self.StateType()
@@ -235,7 +234,7 @@ struct DreamerV3Agent[
         self.slow_critic_tau = slow_critic_tau
         self.return_norm_rate = return_norm_rate
         self.max_grad_norm = max_grad_norm
-        self.logger = logger
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = diag_every
         self.total_steps = 0
         self.train_step_count = 0
@@ -1299,23 +1298,21 @@ struct DreamerV3Agent[
             try:
                 var step = self.train_step_count
                 # World model losses
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "loss",
                     total_wm_loss + actor_loss + critic_loss,
                     step,
                 )
-                _log(self.logger, "obs_loss", obs_loss, step)
-                _log(self.logger, "reward_loss", rew_loss, step)
-                _log(self.logger, "continue_loss", cont_loss, step)
-                _log(self.logger, "dyn_kl", dyn_kl_total, step)
-                _log(self.logger, "rep_kl", rep_kl_total, step)
+                self.logger[].log_scalar("obs_loss", obs_loss, step)
+                self.logger[].log_scalar("reward_loss", rew_loss, step)
+                self.logger[].log_scalar("continue_loss", cont_loss, step)
+                self.logger[].log_scalar("dyn_kl", dyn_kl_total, step)
+                self.logger[].log_scalar("rep_kl", rep_kl_total, step)
                 # Actor-critic
-                _log(self.logger, "policy_loss", actor_loss, step)
-                _log(self.logger, "value_loss", critic_loss, step)
+                self.logger[].log_scalar("policy_loss", actor_loss, step)
+                self.logger[].log_scalar("value_loss", critic_loss, step)
                 # Return normalization
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "return_scale",
                     Float64(self.state.return_ema_hi)
                     - Float64(self.state.return_ema_lo),
@@ -1325,8 +1322,7 @@ struct DreamerV3Agent[
                 var imag_rew_sum: Float64 = 0.0
                 for i in range(HORIZON * IB):
                     imag_rew_sum += Float64((self.state._imag_rewards + i)[])
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "imagined_reward_mean",
                     imag_rew_sum / Float64(HORIZON * IB),
                     step,
@@ -1335,8 +1331,7 @@ struct DreamerV3Agent[
                 var entropy_sum: Float64 = 0.0
                 for i in range((HORIZON - 1) * IB):
                     entropy_sum -= Float64((self.state._imag_log_probs + i)[])
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "entropy",
                     entropy_sum / Float64((HORIZON - 1) * IB),
                     step,
@@ -3989,171 +3984,220 @@ struct DreamerV3Agent[
         values_raw.free()
         continues_raw.free()
 
-        # ── 7. Critic + Actor backward (per horizon step) ─────────────────
-        # Zero actor/critic grads (already done above, but ensure clean)
+        # ── 7. Multi-step Critic + Actor training ──────────────────────
+        # DreamerV3 trains actor/critic on ALL imagination steps (0..H-2).
+        # For each step h: reconstruct feat from ping-pong buffers,
+        # run critic/actor forward+backward, accumulate gradients.
         ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
         ctx.enqueue_memset(gpu_state.critic.grads_buf, 0)
 
-        # Upload values (already on GPU in imag_values_buf) and returns
-        # for advantage computation. Returns are already uploaded above.
-        # We need to iterate over horizon steps, building feat from
-        # the stored all_deter/all_stoch (observe phase), then running
-        # critic/actor forward+backward.
-        #
-        # In DreamerV3 imagination, we iterate over HORIZON-1 steps.
-        # For each step h, the feat is already computed by imagination.
-        # But feat was overwritten each step (single buffer). So we
-        # re-derive feat from the ping-pong deter/stoch buffers.
-        #
-        # Simplified: run critic+actor backward once on the *last*
-        # imagination feat (h=HORIZON-1). This is an approximation
-        # that avoids re-running all imagination steps.
-        # For a full implementation, we'd store feat per horizon step.
-        #
-        # Actually, we can reconstruct feat from the last deter/stoch
-        # in the ping-pong buffer.
-
-        # Use initial imagination states (h=0) = observed states from world model
-        # These have returns[0] which contain full lambda-bootstrapped signal
-        var init_read_off = 0  # h=0 reads from offset 0
-        var last_deter_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-        ](gpu_state.imag_deter_buf.unsafe_ptr() + init_read_off * DETER)
-        var last_stoch_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-        ](gpu_state.imag_stoch_buf.unsafe_ptr() + init_read_off * STOCH)
-        var last_feat_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-        ](gpu_state.imag_feat_buf.unsafe_ptr())
-
-        @always_inline
-        fn run_concat_last_feat(
-            f: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
-            d: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-            s: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
-        ):
-            concat_feat_kernel[IB, DETER, STOCH](f, d, s)
-
+        comptime ACTOR_OUT_DIM = Self.StateType.ActorModel.OUT_DIM
         comptime IB_FEAT_BLOCKS2 = (IB * FEAT + TPB - 1) // TPB
-        ctx.enqueue_function[run_concat_last_feat, run_concat_last_feat](
-            last_feat_2d,
-            last_deter_2d,
-            last_stoch_2d,
-            grid_dim=(IB_FEAT_BLOCKS2,),
-            block_dim=(TPB,),
-        )
-
-        # ── Critic forward with cache ──────────────────────────────────
-        var critic_logits_2d_ac = LayoutTensor[
-            dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-        ](gpu_state.critic_logits_buf.unsafe_ptr())
-        var critic_cache_2d = LayoutTensor[
-            dtype,
-            Layout.row_major(IB, Self.StateType.CriticModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](gpu_state.critic_cache_buf.unsafe_ptr())
-        Self.CriticNet.forward_gpu_with_cache[IB](
-            ctx,
-            last_feat_2d,
-            critic_logits_2d_ac,
-            gpu_state.critic.params_view(),
-            critic_cache_2d,
-            gpu_state.ws_critic,
-        )
-
-        # ── Compute two-hot targets from returns ───────────────────────
-        # Use h=0 returns (full lambda-bootstrapped signal from horizon)
-        # matching the h=0 feats used for critic/actor
-        comptime LAST_H = HORIZON - 1
-
-        # symlog(returns) for two-hot encoding
-        var returns_1d = LayoutTensor[
-            dtype, Layout.row_major(IB), MutAnyOrigin
-        ](
-            gpu_state.imag_returns_buf.unsafe_ptr()
-        )  # h=0
-        var symlog_ret_1d = LayoutTensor[
-            dtype, Layout.row_major(IB), MutAnyOrigin
-        ](gpu_state.symlog_returns_buf.unsafe_ptr())
-
-        @always_inline
-        fn run_symlog_returns(
-            o: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            inp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-        ):
-            symlog_kernel[IB](o, inp)
-
+        comptime ENCODE_BLOCKS = (IB + TPB - 1) // TPB
+        comptime SAMPLE_BLOCKS2 = (IB + TPB - 1) // TPB
         comptime SYMLOG_RET_BLOCKS = (IB + TPB - 1) // TPB
-        ctx.enqueue_function[run_symlog_returns, run_symlog_returns](
-            symlog_ret_1d,
-            returns_1d,
-            grid_dim=(SYMLOG_RET_BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-        # Two-hot encode the symlog returns
-        var two_hot_tgt_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-        ](gpu_state.two_hot_targets_buf.unsafe_ptr())
+        # Scale gradients by 1/(IB * num_steps) for proper averaging
+        var inv_ib = Scalar[dtype](1.0 / Float64(IB * (HORIZON - 1)))
+        var entropy_coef = Scalar[dtype](self.actor_entropy)
         var bins_1d_ac = LayoutTensor[
             dtype, Layout.row_major(BINS), MutAnyOrigin
         ](gpu_state.bins_buf.unsafe_ptr())
 
-        @always_inline
-        fn run_two_hot_encode(
-            tgt: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-            vals: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
-        ):
-            two_hot_encode_kernel[IB, BINS](tgt, vals, b)
+        for h in range(HORIZON - 1):
+            # Reconstruct feat from ping-pong deter/stoch at step h
+            var h_read_off = (h % 2) * IB
+            var h_deter_2d = LayoutTensor[
+                dtype, Layout.row_major(IB, DETER), MutAnyOrigin
+            ](gpu_state.imag_deter_buf.unsafe_ptr() + h_read_off * DETER)
+            var h_stoch_2d = LayoutTensor[
+                dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
+            ](gpu_state.imag_stoch_buf.unsafe_ptr() + h_read_off * STOCH)
+            var h_feat_2d = LayoutTensor[
+                dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
+            ](gpu_state.imag_feat_buf.unsafe_ptr())
 
-        comptime ENCODE_BLOCKS = (IB + TPB - 1) // TPB
-        ctx.enqueue_function[run_two_hot_encode, run_two_hot_encode](
-            two_hot_tgt_2d,
-            symlog_ret_1d,
-            bins_1d_ac,
-            grid_dim=(ENCODE_BLOCKS,),
-            block_dim=(TPB,),
-        )
+            @always_inline
+            fn run_concat_h_feat(
+                f: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
+                d: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
+            ):
+                concat_feat_kernel[IB, DETER, STOCH](f, d, s)
 
-        # ── Critic gradient: softmax(logits) - target ───────────────────
-        var critic_grad_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-        ](gpu_state.critic_grad_buf.unsafe_ptr())
-        var inv_ib = Scalar[dtype](1.0 / Float64(IB))
+            ctx.enqueue_function[run_concat_h_feat, run_concat_h_feat](
+                h_feat_2d, h_deter_2d, h_stoch_2d,
+                grid_dim=(IB_FEAT_BLOCKS2,), block_dim=(TPB,),
+            )
 
-        @always_inline
-        fn run_critic_grad(
-            g: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-            l: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-            t: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-            ib: Scalar[dtype],
-        ):
-            two_hot_ce_grad_kernel[IB, BINS](g, l, t, ib)
+            # Returns and values at step h
+            var returns_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.imag_returns_buf.unsafe_ptr() + h * IB)
+            var values_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
 
-        ctx.enqueue_function[run_critic_grad, run_critic_grad](
-            critic_grad_2d,
-            critic_logits_2d_ac,
-            two_hot_tgt_2d,
-            inv_ib,
-            grid_dim=(ENCODE_BLOCKS,),
-            block_dim=(TPB,),
-        )
+            # ── Critic: forward, gradient, backward (accumulate grads) ──
+            var critic_logits_h = LayoutTensor[
+                dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+            ](gpu_state.critic_logits_buf.unsafe_ptr())
+            var critic_cache_h = LayoutTensor[
+                dtype, Layout.row_major(IB, Self.StateType.CriticModel.CACHE_SIZE), MutAnyOrigin,
+            ](gpu_state.critic_cache_buf.unsafe_ptr())
+            Self.CriticNet.forward_gpu_with_cache[IB](
+                ctx, h_feat_2d, critic_logits_h,
+                gpu_state.critic.params_view(), critic_cache_h, gpu_state.ws_critic,
+            )
 
-        # ── Critic backward ─────────────────────────────────────────────
-        var critic_grad_in_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-        ](gpu_state.critic_grad_in_buf.unsafe_ptr())
-        var critic_grads = gpu_state.critic.grads_view()
-        Self.CriticNet.backward_gpu[IB](
-            ctx,
-            critic_grad_2d,
-            critic_grad_in_2d,
-            gpu_state.critic.params_view(),
-            critic_cache_2d,
-            critic_grads,
-            gpu_state.ws_critic,
-        )
+            # symlog(returns[h]) -> two-hot encode -> critic CE gradient
+            var symlog_ret_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.symlog_returns_buf.unsafe_ptr())
+
+            @always_inline
+            fn run_symlog_ret_h(
+                o: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                inp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+            ):
+                symlog_kernel[IB](o, inp)
+
+            ctx.enqueue_function[run_symlog_ret_h, run_symlog_ret_h](
+                symlog_ret_h, returns_h,
+                grid_dim=(SYMLOG_RET_BLOCKS,), block_dim=(TPB,),
+            )
+
+            var two_hot_h = LayoutTensor[
+                dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+            ](gpu_state.two_hot_targets_buf.unsafe_ptr())
+
+            @always_inline
+            fn run_two_hot_h(
+                tgt: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                vals: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+            ):
+                two_hot_encode_kernel[IB, BINS](tgt, vals, b)
+
+            ctx.enqueue_function[run_two_hot_h, run_two_hot_h](
+                two_hot_h, symlog_ret_h, bins_1d_ac,
+                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+            )
+
+            var critic_grad_h = LayoutTensor[
+                dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+            ](gpu_state.critic_grad_buf.unsafe_ptr())
+
+            @always_inline
+            fn run_critic_grad_h(
+                g: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                l: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                t: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                ib: Scalar[dtype],
+            ):
+                two_hot_ce_grad_kernel[IB, BINS](g, l, t, ib)
+
+            ctx.enqueue_function[run_critic_grad_h, run_critic_grad_h](
+                critic_grad_h, critic_logits_h, two_hot_h, inv_ib,
+                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+            )
+
+            var critic_grad_in_h = LayoutTensor[
+                dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
+            ](gpu_state.critic_grad_in_buf.unsafe_ptr())
+            var critic_grads = gpu_state.critic.grads_view()
+            Self.CriticNet.backward_gpu[IB](
+                ctx, critic_grad_h, critic_grad_in_h,
+                gpu_state.critic.params_view(), critic_cache_h,
+                critic_grads, gpu_state.ws_critic,
+            )
+
+            # ── Actor: forward, advantage, REINFORCE, backward ──────────
+            var actor_out_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin,
+            ](gpu_state.actor_out_buf.unsafe_ptr())
+            var actor_cache_h = LayoutTensor[
+                dtype, Layout.row_major(IB, Self.StateType.ActorModel.CACHE_SIZE), MutAnyOrigin,
+            ](gpu_state.actor_cache_buf.unsafe_ptr())
+            Self.ActorNet.forward_gpu_with_cache[IB](
+                ctx, h_feat_2d, actor_out_h,
+                gpu_state.actor.params_view(), actor_cache_h, gpu_state.ws_actor,
+            )
+
+            # Advantage = returns[h] - values[h]
+            var adv_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.imag_advantages_buf.unsafe_ptr())
+
+            @always_inline
+            fn run_adv_h(
+                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+            ):
+                advantage_kernel[IB](adv, ret, val)
+
+            ctx.enqueue_function[run_adv_h, run_adv_h](
+                adv_h, returns_h, values_h,
+                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+            )
+
+            # Sample actions from actor
+            var actions_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACT), MutAnyOrigin
+            ](gpu_state.imag_actions_buf.unsafe_ptr())
+            var log_probs_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.imag_log_probs_buf.unsafe_ptr())
+            var act_seed_h = Scalar[DType.uint32](
+                UInt32(self.train_step_count * HORIZON + h + 5000) * UInt32(IB * ACT + 1)
+            )
+
+            @always_inline
+            fn run_sample_h(
+                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
+                lp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                s: Scalar[DType.uint32],
+            ):
+                tanh_normal_sample_kernel[IB, ACT](a, lp, ao, s)
+
+            ctx.enqueue_function[run_sample_h, run_sample_h](
+                actions_h, log_probs_h, actor_out_h, act_seed_h,
+                grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
+            )
+
+            # REINFORCE gradient
+            var actor_grad_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin
+            ](gpu_state.actor_grad_buf.unsafe_ptr())
+
+            @always_inline
+            fn run_reinforce_h(
+                g: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
+                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ib_scale: Scalar[dtype],
+                ec: Scalar[dtype],
+            ):
+                reinforce_grad_kernel[IB, ACT](g, ao, a, adv, ib_scale, ec)
+
+            ctx.enqueue_function[run_reinforce_h, run_reinforce_h](
+                actor_grad_h, actor_out_h, actions_h,
+                adv_h, inv_ib, entropy_coef,
+                grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
+            )
+
+            # Actor backward (accumulates into actor grads)
+            var actor_grad_in_h = LayoutTensor[
+                dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
+            ](gpu_state.actor_grad_in_buf.unsafe_ptr())
+            var actor_grads = gpu_state.actor.grads_view()
+            Self.ActorNet.backward_gpu[IB](
+                ctx, actor_grad_h, actor_grad_in_h,
+                gpu_state.actor.params_view(), actor_cache_h,
+                actor_grads, gpu_state.ws_actor,
+            )
 
         # ── Critic gradient clipping + optimizer step ─────────────────────
         _clip_grads_gpu[Self.CriticNet.MODEL.PARAM_SIZE](
@@ -4163,135 +4207,6 @@ struct DreamerV3Agent[
             grad_norm_max,
         )
         gpu_state.critic.optimizer_step(ctx)
-
-        # ── Actor forward with cache ────────────────────────────────────
-        comptime ACTOR_OUT_DIM = Self.StateType.ActorModel.OUT_DIM
-        var actor_out_2d_ac = LayoutTensor[
-            dtype,
-            Layout.row_major(IB, ACTOR_OUT_DIM),
-            MutAnyOrigin,
-        ](gpu_state.actor_out_buf.unsafe_ptr())
-        var actor_cache_2d = LayoutTensor[
-            dtype,
-            Layout.row_major(IB, Self.StateType.ActorModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](gpu_state.actor_cache_buf.unsafe_ptr())
-        Self.ActorNet.forward_gpu_with_cache[IB](
-            ctx,
-            last_feat_2d,
-            actor_out_2d_ac,
-            gpu_state.actor.params_view(),
-            actor_cache_2d,
-            gpu_state.ws_actor,
-        )
-
-        # ── Compute advantages: returns - values ────────────────────────
-        # Download returns and values for this step to compute advantages
-        # (already on GPU, compute advantage inline on GPU)
-        var advantages_1d = LayoutTensor[
-            dtype, Layout.row_major(IB), MutAnyOrigin
-        ](gpu_state.imag_advantages_buf.unsafe_ptr())
-        var values_last = LayoutTensor[
-            dtype, Layout.row_major(IB), MutAnyOrigin
-        ](
-            gpu_state.imag_values_buf.unsafe_ptr()
-        )  # h=0
-
-        # advantage = returns - values (elementwise)
-        @always_inline
-        fn run_advantage(
-            adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-        ):
-            advantage_kernel[IB](adv, ret, val)
-
-        ctx.enqueue_function[run_advantage, run_advantage](
-            advantages_1d,
-            returns_1d,
-            values_last,
-            grid_dim=(ENCODE_BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-        # ── Sample actions for REINFORCE gradient ─────────────────────
-        var actions_2d_ac = LayoutTensor[
-            dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-        ](gpu_state.imag_actions_buf.unsafe_ptr())
-
-        var act_seed_ac = Scalar[DType.uint32](
-            UInt32(self.train_step_count * HORIZON + HORIZON)
-            * UInt32(IB * ACT + 1)
-        )
-
-        @always_inline
-        fn run_sample_actor(
-            a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-            lp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ao: LayoutTensor[
-                dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-            ],
-            s: Scalar[DType.uint32],
-        ):
-            tanh_normal_sample_kernel[IB, ACT](a, lp, ao, s)
-
-        comptime SAMPLE_BLOCKS2 = (IB + TPB - 1) // TPB
-        var log_probs_ac = LayoutTensor[
-            dtype, Layout.row_major(IB), MutAnyOrigin
-        ](gpu_state.imag_log_probs_buf.unsafe_ptr())
-        ctx.enqueue_function[run_sample_actor, run_sample_actor](
-            actions_2d_ac,
-            log_probs_ac,
-            actor_out_2d_ac,
-            act_seed_ac,
-            grid_dim=(SAMPLE_BLOCKS2,),
-            block_dim=(TPB,),
-        )
-
-        # ── REINFORCE gradient ──────────────────────────────────────────
-        var actor_grad_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin
-        ](gpu_state.actor_grad_buf.unsafe_ptr())
-        var entropy_coef = Scalar[dtype](self.actor_entropy)
-
-        @always_inline
-        fn run_reinforce(
-            g: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
-            ao: LayoutTensor[
-                dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-            ],
-            a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-            adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ib_scale: Scalar[dtype],
-            ec: Scalar[dtype],
-        ):
-            reinforce_grad_kernel[IB, ACT](g, ao, a, adv, ib_scale, ec)
-
-        ctx.enqueue_function[run_reinforce, run_reinforce](
-            actor_grad_2d,
-            actor_out_2d_ac,
-            actions_2d_ac,
-            advantages_1d,
-            inv_ib,
-            entropy_coef,
-            grid_dim=(SAMPLE_BLOCKS2,),
-            block_dim=(TPB,),
-        )
-
-        # ── Actor backward ──────────────────────────────────────────────
-        var actor_grad_in_2d = LayoutTensor[
-            dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-        ](gpu_state.actor_grad_in_buf.unsafe_ptr())
-        var actor_grads = gpu_state.actor.grads_view()
-        Self.ActorNet.backward_gpu[IB](
-            ctx,
-            actor_grad_2d,
-            actor_grad_in_2d,
-            gpu_state.actor.params_view(),
-            actor_cache_2d,
-            actor_grads,
-            gpu_state.ws_actor,
-        )
 
         # ── Actor gradient clipping + optimizer step ─────────────────────
         _clip_grads_gpu[Self.ActorNet.MODEL.PARAM_SIZE](
@@ -4325,7 +4240,9 @@ struct DreamerV3Agent[
         train_every: Int = 5,
         seed_episodes: Int = 5,
         print_every: Int = 10,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) -> TrainingMetrics:
         """Train DreamerV3 on a continuous control environment (CPU).
@@ -4339,7 +4256,7 @@ struct DreamerV3Agent[
             train_every: Steps between training updates (default: 5).
             seed_episodes: Random exploration episodes before training.
             print_every: Episodes between progress prints (default: 10).
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -4411,20 +4328,17 @@ struct DreamerV3Agent[
                 # Log episode metrics
                 if self.logger:
                     try:
-                        _log(
-                            self.logger,
+                        self.logger[].log_scalar(
                             "episode_reward",
                             episode_reward,
                             total_env_steps,
                         )
-                        _log(
-                            self.logger,
+                        self.logger[].log_scalar(
                             "episodes",
                             Float64(episode_count),
                             total_env_steps,
                         )
-                        _log(
-                            self.logger,
+                        self.logger[].log_scalar(
                             "train_steps",
                             Float64(self.train_step_count),
                             total_env_steps,
@@ -4494,7 +4408,9 @@ struct DreamerV3Agent[
         sync_every: Int = 50,
         verbose: Bool = True,
         print_every: Int = 50_000,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train DreamerV3 with GPU environments and GPU training.
@@ -4515,7 +4431,7 @@ struct DreamerV3Agent[
             sync_every: GPU->CPU weight sync interval (train steps).
             verbose: Print progress.
             print_every: Print interval in total env transitions.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps.
 
         Returns:
@@ -5233,20 +5149,17 @@ struct DreamerV3Agent[
 
                     if self.logger:
                         try:
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "episode_reward",
                                 ep_r,
                                 total_steps,
                             )
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "episodes",
                                 Float64(completed_episodes),
                                 total_steps,
                             )
-                            _log(
-                                self.logger,
+                            self.logger[].log_scalar(
                                 "train_steps",
                                 Float64(self.train_step_count),
                                 total_steps,

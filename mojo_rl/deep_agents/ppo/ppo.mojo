@@ -94,7 +94,7 @@ from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.model.model import PerfTimerPtr
 from std.memory import UnsafePointer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.eval import (
     run_onpolicy_discrete_eval,
     run_onpolicy_continuous_eval,
@@ -133,6 +133,7 @@ struct DeepPPOAgent[
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.001,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     Checkpointable,
     GPUOnPolicyDiscreteAgent,
@@ -257,7 +258,7 @@ struct DeepPPOAgent[
     var checkpoint_path: String  # Path for auto-checkpointing
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -389,7 +390,7 @@ struct DeepPPOAgent[
         # Auto-checkpoint settings
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -884,28 +885,27 @@ struct DeepPPOAgent[
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_loss, step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar("loss", avg_loss, step)
+                self.logger[].log_scalar(
                     "policy_loss",
                     Float64(total_policy_loss / n),
                     step,
                 )
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "value_loss",
                     Float64(total_value_loss / n),
                     step,
                 )
-                _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
+                    "entropy", Float64(total_entropy / n), step
+                )
+                self.logger[].log_scalar(
                     "clip_fraction",
                     Float64(total_clip_frac / n),
                     step,
                 )
-                _log(
-                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                self.logger[].log_scalar(
+                    "approx_kl", Float64(total_approx_kl / n), step
                 )
             except:
                 pass
@@ -1305,28 +1305,27 @@ struct DeepPPOAgent[
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_loss, step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar("loss", avg_loss, step)
+                self.logger[].log_scalar(
                     "policy_loss",
                     Float64(total_policy_loss / n),
                     step,
                 )
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "value_loss",
                     Float64(total_value_loss / n),
                     step,
                 )
-                _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
+                    "entropy", Float64(total_entropy / n), step
+                )
+                self.logger[].log_scalar(
                     "clip_fraction",
                     Float64(total_clip_frac / n),
                     step,
                 )
-                _log(
-                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                self.logger[].log_scalar(
+                    "approx_kl", Float64(total_approx_kl / n), step
                 )
             except:
                 pass
@@ -1723,28 +1722,27 @@ struct DeepPPOAgent[
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_loss, step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar("loss", avg_loss, step)
+                self.logger[].log_scalar(
                     "policy_loss",
                     Float64(total_policy_loss / n),
                     step,
                 )
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
                     "value_loss",
                     Float64(total_value_loss / n),
                     step,
                 )
-                _log(self.logger, "entropy", Float64(total_entropy / n), step)
-                _log(
-                    self.logger,
+                self.logger[].log_scalar(
+                    "entropy", Float64(total_entropy / n), step
+                )
+                self.logger[].log_scalar(
                     "clip_fraction",
                     Float64(total_clip_frac / n),
                     step,
                 )
-                _log(
-                    self.logger, "approx_kl", Float64(total_approx_kl / n), step
+                self.logger[].log_scalar(
+                    "approx_kl", Float64(total_approx_kl / n), step
                 )
             except:
                 pass
@@ -1833,7 +1831,9 @@ struct DeepPPOAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the PPO agent on a discrete action environment.
@@ -1845,7 +1845,7 @@ struct DeepPPOAgent[
             verbose: Whether to print progress.
             print_every: Print progress every N updates if verbose.
             environment_name: Name of environment for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -1855,7 +1855,7 @@ struct DeepPPOAgent[
         self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_onpolicy_discrete_train(
+        var metrics = run_onpolicy_discrete_train[E, Self, L](
             self,
             env,
             num_episodes,
@@ -1867,7 +1867,7 @@ struct DeepPPOAgent[
             "PPO",
             logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     fn evaluate[
@@ -2485,9 +2485,11 @@ struct DeepPPOAgent[
                         kl_sum += gpu_state.kl_divergences_host[i]
                     if should_diag:
                         diag_kl_sum += Float64(kl_sum)
-                    if self.target_kl > 0.0 and Float64(
-                        kl_sum
-                    ) / Float64(MINIBATCH) > self.target_kl:
+                    if (
+                        self.target_kl > 0.0
+                        and Float64(kl_sum) / Float64(MINIBATCH)
+                        > self.target_kl
+                    ):
                         kl_early_stop = True
                         break
 
@@ -2506,9 +2508,7 @@ struct DeepPPOAgent[
                         diag_entropy_sum += Float64(
                             gpu_state.diag_entropy_host[i]
                         )
-                        diag_clip_sum += Float64(
-                            gpu_state.diag_clip_host[i]
-                        )
+                        diag_clip_sum += Float64(gpu_state.diag_clip_host[i])
                     diag_sample_count += MINIBATCH
 
                 comptime if Self.profile >= 2:
@@ -2684,10 +2684,10 @@ struct DeepPPOAgent[
                 var avg_entropy = diag_entropy_sum / n
                 var avg_clip = diag_clip_sum / n
                 var avg_value_loss = diag_value_loss_sum / n
-                _log(self.logger, "approx_kl", avg_kl, step)
-                _log(self.logger, "entropy", avg_entropy, step)
-                _log(self.logger, "clip_fraction", avg_clip, step)
-                _log(self.logger, "value_loss", avg_value_loss, step)
+                self.logger[].log_scalar("approx_kl", avg_kl, step)
+                self.logger[].log_scalar("entropy", avg_entropy, step)
+                self.logger[].log_scalar("clip_fraction", avg_clip, step)
+                self.logger[].log_scalar("value_loss", avg_value_loss, step)
             except:
                 pass
 
@@ -2703,7 +2703,9 @@ struct DeepPPOAgent[
         num_updates: Int,
         verbose: Bool = False,
         print_every: Int = 10,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO on GPU with parallel environments.
@@ -2735,7 +2737,7 @@ struct DeepPPOAgent[
         _ = timer.add_slot("update_epochs")
         _ = timer.add_slot("gpu_cpu_sync")
         var metrics = run_onpolicy_discrete_train_gpu[
-            EnvType, Self, Self.profile
+            EnvType, Self, Self.profile, L
         ](
             self,
             ctx,
@@ -2754,7 +2756,7 @@ struct DeepPPOAgent[
 
         comptime if Self.profile >= 1:
             timer.print_report("PPO Discrete (GPU) Profile")
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================

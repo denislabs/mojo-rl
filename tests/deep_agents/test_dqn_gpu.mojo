@@ -27,7 +27,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.envs import CartPoleEnv
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -84,6 +84,7 @@ fn main() raises:
             N_ENVS,
             lr=2.5e-4,
             profile=3,
+            L=RemoteLogger,
         ](
             gamma=0.99,
             tau=1.0,  # CleanRL: hard copy
@@ -121,7 +122,7 @@ fn main() raises:
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
-        var logger = MetricsLogger(
+        var logger = RemoteLogger(
             server_url=url,
             run_name="DQN CartPole GPU",
             buffer_size=64,

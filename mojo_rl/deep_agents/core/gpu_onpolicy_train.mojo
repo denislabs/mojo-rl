@@ -61,7 +61,7 @@ from mojo_rl.core import (
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
-from mojo_rl.core.logger import LoggerPtr, _log, _log_flush
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
@@ -392,6 +392,7 @@ fn run_onpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOnPolicyDiscreteAgent & Checkpointable,
     PROFILE: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -404,7 +405,9 @@ fn run_onpolicy_discrete_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: LoggerPtr = LoggerPtr(),
+    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+        Self.L, MutAnyOrigin
+    ](),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action on-policy agents (PPO).
 
@@ -748,15 +751,20 @@ fn run_onpolicy_discrete_train_gpu[
             )
             next_progress += progress_interval
 
-        if (verbose or logger) and (update + 1) % print_every == 0:
+        if (verbose or (logger and logger[].is_active())) and (
+            update + 1
+        ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
 
             # Logger: record metrics
-            _log(logger, "avg_reward", avg_reward, total_steps)
-            _log(logger, "episodes", Float64(completed_episodes), total_steps)
-            _log(logger, "update", Float64(update + 1), total_steps)
+            if logger:
+                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
                 clear_progress_bar()
@@ -784,10 +792,13 @@ fn run_onpolicy_discrete_train_gpu[
 
     # Final logger flush + print
     var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
-    _log(logger, "avg_reward", final_avg, total_steps)
-    _log(logger, "episodes", Float64(completed_episodes), total_steps)
-    _log(logger, "update", Float64(num_updates), total_steps)
-    _log_flush(logger)
+    if logger:
+        logger[].log_scalar("avg_reward", final_avg, total_steps)
+        logger[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger[].log_scalar("update", Float64(num_updates), total_steps)
+        logger[].flush()
 
     if verbose:
         clear_progress_bar()
@@ -819,6 +830,7 @@ fn run_onpolicy_continuous_train_gpu[
     A: GPUOnPolicyContinuousAgent & Checkpointable,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     PROFILE: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -833,7 +845,9 @@ fn run_onpolicy_continuous_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: LoggerPtr = LoggerPtr(),
+    logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+        Self.L, MutAnyOrigin
+    ](),
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action on-policy agents (PPO).
 
@@ -1149,21 +1163,25 @@ fn run_onpolicy_continuous_train_gpu[
             )
             next_progress += progress_interval
 
-        if (verbose or logger) and (update + 1) % print_every == 0:
+        if (verbose or (logger and logger[].is_active())) and (
+            update + 1
+        ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
                 min(100, completed_episodes)
             )
 
             # Logger: record metrics
-            _log(logger, "avg_reward", avg_reward, total_steps)
-            _log(logger, "episodes", Float64(completed_episodes), total_steps)
-            _log(logger, "update", Float64(update + 1), total_steps)
+            if logger:
+                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
                 var ep_progress = String(completed_episodes) + (
-                    " / " + String(target_episodes)
-                    if target_episodes > 0
-                    else ""
+                    " / " + String(target_episodes) if target_episodes
+                    > 0 else ""
                 )
                 clear_progress_bar()
                 print(
@@ -1187,16 +1205,17 @@ fn run_onpolicy_continuous_train_gpu[
 
     # Final logger flush + print
     var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
-    _log(logger, "avg_reward", final_avg, total_steps)
-    _log(logger, "episodes", Float64(completed_episodes), total_steps)
-    _log(logger, "update", Float64(num_updates), total_steps)
-    _log_flush(logger)
+    if logger:
+        logger[].log_scalar("avg_reward", final_avg, total_steps)
+        logger[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger[].log_scalar("update", Float64(num_updates), total_steps)
+        logger[].flush()
 
     if verbose:
         var ep_progress = String(completed_episodes) + (
-            " / " + String(target_episodes)
-            if target_episodes > 0
-            else ""
+            " / " + String(target_episodes) if target_episodes > 0 else ""
         )
         clear_progress_bar()
         print(

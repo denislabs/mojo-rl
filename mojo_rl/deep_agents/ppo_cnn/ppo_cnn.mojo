@@ -86,7 +86,7 @@ from mojo_rl.deep_agents.core.gpu_onpolicy_train import (
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.nn.model.model import PerfTimerPtr
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 
 from mojo_rl.deep_agents.ppo.kernels import (
     ppo_actor_grad_kernel,
@@ -143,6 +143,7 @@ struct DeepPPOCNNAgent[
     actor_lr: Float64 = 0.00025,
     critic_lr: Float64 = 0.00025,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     Checkpointable,
     GPUOnPolicyDiscreteAgent,
@@ -259,7 +260,7 @@ struct DeepPPOCNNAgent[
     var checkpoint_path: String
 
     # Diagnostics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -336,7 +337,7 @@ struct DeepPPOCNNAgent[
             )
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -1019,7 +1020,9 @@ struct DeepPPOCNNAgent[
         num_updates: Int,
         verbose: Bool = False,
         print_every: Int = 10,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train PPO CNN on GPU with parallel environments.
@@ -1048,7 +1051,7 @@ struct DeepPPOCNNAgent[
         _ = timer.add_slot("update_epochs")
         _ = timer.add_slot("gpu_cpu_sync")
         var metrics = run_onpolicy_discrete_train_gpu[
-            EnvType, Self, Self.profile
+            EnvType, Self, Self.profile, L
         ](
             self,
             ctx,
@@ -1058,7 +1061,7 @@ struct DeepPPOCNNAgent[
             print_every=print_every,
             logger=logger,
         )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
 
         comptime if Self.profile >= 2:
             timer.merge_subtree_range(0, self.train_timer, 0, 3)

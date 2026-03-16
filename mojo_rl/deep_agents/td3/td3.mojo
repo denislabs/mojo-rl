@@ -102,7 +102,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
 )
-from mojo_rl.core.logger import LoggerPtr, _log
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .state import TD3CPUState, TD3GPUState
 
 # =============================================================================
@@ -120,6 +120,7 @@ struct DeepTD3Agent[
     critic_lr: Float64 = 0.001,
     max_n_envs: Int = 64,
     profile: Int = 0,
+    L: Logger = NoOpLogger,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Deep Twin Delayed DDPG agent — unified CPU + GPU.
 
@@ -246,7 +247,7 @@ struct DeepTD3Agent[
     var checkpoint_path: String
 
     # Optional metrics logger
-    var logger: LoggerPtr
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
     fn __init__(
@@ -354,7 +355,7 @@ struct DeepTD3Agent[
             self.actor_bwd_base = Self.ActorModel.register_backward_slots(
                 self.train_timer, parent=4
             )
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
     fn _perf_ptr(mut self) -> PerfTimerPtr:
@@ -652,32 +653,37 @@ struct DeepTD3Agent[
 
         # Log TD3 diagnostics
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                _log(self.logger, "loss", avg_critic_loss, step)
-                _log(self.logger, "critic1_loss", critic1_loss, step)
-                _log(self.logger, "critic2_loss", critic2_loss, step)
+                self.logger[].log_scalar("loss", avg_critic_loss, step)
+                self.logger[].log_scalar("critic1_loss", critic1_loss, step)
+                self.logger[].log_scalar("critic2_loss", critic2_loss, step)
 
                 # Q1 stats
                 var q1_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     q1_sum += Float64(cpu_state._q1_out[i])
-                _log(self.logger, "q1_mean", q1_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "q1_mean", q1_sum / Float64(Self.BATCH), step
+                )
 
                 # Q2 stats
                 var q2_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     q2_sum += Float64(cpu_state._q2_out[i])
-                _log(self.logger, "q2_mean", q2_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "q2_mean", q2_sum / Float64(Self.BATCH), step
+                )
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
                 for i in range(Self.BATCH):
                     tgt_sum += Float64(cpu_state._targets[i])
-                _log(self.logger, "td_target_mean", tgt_sum / Float64(Self.BATCH), step)
+                self.logger[].log_scalar(
+                    "td_target_mean", tgt_sum / Float64(Self.BATCH), step
+                )
             except:
                 pass
 
@@ -790,7 +796,9 @@ struct DeepTD3Agent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the TD3 agent on a continuous action environment.
@@ -804,7 +812,7 @@ struct DeepTD3Agent[
             verbose: Print progress (default: False).
             print_every: Print every N episodes if verbose (default: 10).
             environment_name: Name for metrics labeling.
-            logger: Optional metrics logger pointer.
+            logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (0 = every step).
 
         Returns:
@@ -815,7 +823,7 @@ struct DeepTD3Agent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_offpolicy_continuous_train(
+        var metrics = run_offpolicy_continuous_train[E, Self, L](
             self,
             cpu_state,
             env,
@@ -831,7 +839,7 @@ struct DeepTD3Agent[
             logger=logger,
         )
         self.state = cpu_state^
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
     # =========================================================================
@@ -1508,7 +1516,9 @@ struct DeepTD3Agent[
         sync_every: Int = 5000,
         verbose: Bool = False,
         print_every: Int = 50_000,
-        logger: LoggerPtr = LoggerPtr(),
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
         diag_every: Int = 100,
     ) raises -> TrainingMetrics:
         """Train on GPU using the shared off-policy GPU loop.
@@ -1550,7 +1560,9 @@ struct DeepTD3Agent[
         _ = timer.add_slot("reset")
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
-        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile](
+        var metrics = run_offpolicy_continuous_train_gpu[
+            E, Self, Self.profile, L
+        ](
             self,
             ctx,
             num_steps,
@@ -1573,7 +1585,7 @@ struct DeepTD3Agent[
 
         comptime if Self.profile >= 1:
             timer.print_report("TD3 (GPU) Profile")
-        self.logger = LoggerPtr()
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^
 
     # =========================================================================

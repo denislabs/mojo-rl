@@ -4,7 +4,7 @@ from std.gpu.host import DeviceContext
 from std.memory import UnsafePointer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 
@@ -30,7 +30,7 @@ fn main() raises:
     var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
     var url = env_vars.get("RL_MONITOR_URL", "")
 
-    var logger = MetricsLogger(
+    var logger = RemoteLogger(
         server_url=url,
         run_name="DreamerV3 Pendulum GPU",
         buffer_size=64,
@@ -63,6 +63,7 @@ fn main() raises:
         batch_length=16,
         imagine_horizon=8,
         buffer_capacity=50000,
+        L=RemoteLogger,
     ](warmup_steps=500)
 
     var ctx = DeviceContext()

@@ -20,7 +20,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.ppo import DeepPPOAgent
 from mojo_rl.envs import CartPoleEnv
-from mojo_rl.core.logger import MetricsLogger, LoggerPtr
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -63,6 +63,7 @@ fn main() raises:
             GPU_MINIBATCH_SIZE,
             actor_lr=0.00025,  # CleanRL default: single lr=2.5e-4
             critic_lr=0.00025,  # Same as actor (CleanRL shares optimizer)
+            L=RemoteLogger,
         ](
             gamma=0.99,
             gae_lambda=0.95,
@@ -103,7 +104,7 @@ fn main() raises:
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
-        var logger = MetricsLogger(
+        var logger = RemoteLogger(
             server_url=url,
             run_name="PPO CartPole GPU",
             buffer_size=64,
