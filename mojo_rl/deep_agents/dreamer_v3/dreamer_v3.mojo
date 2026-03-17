@@ -4085,21 +4085,9 @@ struct DreamerV3Agent[
             grid_dim=(1,), block_dim=(TPB,),
         )
 
-        # ── 6d. Normalize returns for critic training ────────────────────
-        @always_inline
-        fn run_norm_returns(
-            ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
-            lo_val: Scalar[dtype],
-            inv_s: Scalar[dtype],
-        ):
-            normalize_returns_elementwise_kernel[RETURNS_SIZE](ret, lo_val, inv_s)
-
-        ctx.enqueue_function[run_norm_returns, run_norm_returns](
-            returns_flat,
-            Scalar[dtype](self.state.return_ema_lo),
-            Scalar[dtype](1.0 / scale),
-            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,), block_dim=(TPB,),
-        )
+        # NOTE: Returns are NOT normalized in-place. The critic is trained on
+        # symlog(raw_return) so it predicts in raw scale. This ensures lambda
+        # returns consistently use raw rewards + raw values during imagination.
 
         # ── 7. Multi-step Critic + Actor training ──────────────────────
         ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
