@@ -76,7 +76,7 @@ comptime V_MAX = 10.0
 comptime N_ENVS = 32
 
 # Training duration
-comptime NUM_EPISODES = 50
+comptime NUM_EPISODES = 2_000
 
 comptime dtype = DType.float32  # GPU training uses float32
 
