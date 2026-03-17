@@ -134,8 +134,16 @@ fn main() raises:
         # ── Warmup ──
         print("Warming up...")
 
-        # conv2d_gpu_naive_nhwc_rscf is a GPU kernel function.
-        # All conv params are compile-time so we construct them inside the wrapper.
+        # conv2d_gpu_naive_nhwc_rscf kernel thread mapping (from source):
+        #   n = block_idx.z
+        #   h = block_idx.y * block_dim.y + thread_idx.y
+        #   w = block_idx.x * block_dim.x + thread_idx.x
+        #   loops over C_out internally
+        # So: block_dim = (BS, BS), grid = (ceil(OUT_W/BS), ceil(OUT_H/BS), BATCH)
+        comptime BS = 16  # block_size for 2D thread block (16x16 = 256 threads)
+        comptime grid_x = (OUT_W + BS - 1) // BS
+        comptime grid_y = (OUT_H + BS - 1) // BS
+
         @always_inline
         fn conv_kernel_wrapper(
             input: LayoutTensor[
@@ -155,7 +163,7 @@ fn main() raises:
             ],
         ):
             conv2d_gpu_naive_nhwc_rscf[
-                block_size=TPB,
+                block_size=BS,
                 maybe_epilogue_func=None,
             ](
                 input,
@@ -167,16 +175,12 @@ fn main() raises:
                 num_groups=1,
             )
 
-        # Grid: one thread per output element
-        comptime out_elems = BATCH * OUT_H * OUT_W * OC
-        comptime grid_blocks = (out_elems + TPB - 1) // TPB
-
         ctx.enqueue_function[conv_kernel_wrapper, conv_kernel_wrapper](
             input_tensor,
             filter_tensor,
             out1_tensor,
-            grid_dim=(grid_blocks,),
-            block_dim=(TPB,),
+            grid_dim=(grid_x, grid_y, BATCH),
+            block_dim=(BS, BS),
         )
         ctx.synchronize()
         print("Warmup done!")
@@ -190,8 +194,8 @@ fn main() raises:
                 input_tensor,
                 filter_tensor,
                 out1_tensor,
-                grid_dim=(grid_blocks,),
-                block_dim=(TPB,),
+                grid_dim=(grid_x, grid_y, BATCH),
+                block_dim=(BS, BS),
             )
         ctx.synchronize()
         var t1 = perf_counter_ns()
