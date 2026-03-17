@@ -527,11 +527,13 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         if global_row < BATCH and global_col < Self.OUT_DIM:
             linear_out[global_row, global_col] = acc
 
-    # ─── MMA (Tensor Core) matmul kernels for NVIDIA GPUs ────────────────
+    # ─── MMA / 2x2 matmul kernels (dispatched inside GPU wrapper) ──────
+    # Grid: ((OUT_DIM + 31) // 32, (BATCH + 31) // 32)
+    # Block: (256, 1) — same for both MMA and 2x2 paths
 
     @always_inline
     @staticmethod
-    fn forward_linear_kernel_mma[
+    fn _linear_kernel_no_cache[
         BATCH: Int,
     ](
         linear_out: LayoutTensor[
@@ -541,163 +543,15 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ],
         W: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-        b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ],
-    ):
-        """MMA matmul: linear_out = input @ W + b, caches input.
-
-        Grid: ((OUT_DIM + MMA_BLOCK_N-1) // MMA_BLOCK_N,
-               (BATCH + MMA_BLOCK_M-1) // MMA_BLOCK_M)
-        Block: (MMA_BLOCK_THREADS, 1)
-        """
-        comptime if is_nvidia_gpu():
-            var tid = Int(thread_idx.x)
-            var warp_id = tid // 32
-            var warp_m = warp_id // MMA_WARPS_N
-            var warp_n = warp_id % MMA_WARPS_N
-            var block_row = Int(block_idx.y) * MMA_BLOCK_M
-            var block_col = Int(block_idx.x) * MMA_BLOCK_N
-
-            # Cache input (first column of blocks only)
-            if Int(block_idx.x) == 0:
-                for i in range(0, Self.IN_DIM, MMA_BLOCK_THREADS):
-                    var col = i + tid
-                    if col < Self.IN_DIM:
-                        for r in range(MMA_BLOCK_M):
-                            var gr = block_row + r
-                            if gr < BATCH:
-                                cache[gr, Self._INPUT_OFFSET + col] = input[
-                                    gr, col
-                                ]
-
-            var a_smem = LayoutTensor[
-                dtype,
-                Layout.row_major(MMA_BLOCK_M, MMA_K),
-                MutAnyOrigin,
-                address_space=AddressSpace.SHARED,
-            ].stack_allocation()
-            var b_smem = LayoutTensor[
-                dtype,
-                Layout.row_major(MMA_K, MMA_BLOCK_N),
-                MutAnyOrigin,
-                address_space=AddressSpace.SHARED,
-            ].stack_allocation()
-
-            var acc = SIMD[DType.float32, 4](0)
-            var lid = lane_id()
-            var group_id = lid >> 2
-            var group_lane = lid % 4
-            comptime num_k_tiles = (Self.IN_DIM + MMA_K - 1) // MMA_K
-
-            for k_tile in range(num_k_tiles):
-                var k_off = k_tile * MMA_K
-                var a_r = tid // MMA_K
-                var a_c = tid % MMA_K
-                var ga_r = block_row + a_r
-                var ga_c = k_off + a_c
-                if ga_r < BATCH and ga_c < Self.IN_DIM:
-                    a_smem[a_r, a_c] = input[ga_r, ga_c]
-                else:
-                    a_smem[a_r, a_c] = 0
-
-                var br = tid // MMA_BLOCK_N
-                var bc = tid % MMA_BLOCK_N
-                var gb_r = k_off + br
-                var gb_c = block_col + bc
-                if gb_r < Self.IN_DIM and gb_c < Self.OUT_DIM:
-                    b_smem[br, bc] = W[gb_r, gb_c]
-                else:
-                    b_smem[br, bc] = 0
-
-                barrier()
-
-                var warp_row = warp_m * MMA_M
-                var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](
-                        a_smem[warp_row + Int(group_id), Int(group_lane)]
-                    ),
-                    rebind[Scalar[DType.float32]](
-                        a_smem[
-                            warp_row + Int(group_id) + 8, Int(group_lane)
-                        ]
-                    ),
-                    rebind[Scalar[DType.float32]](
-                        a_smem[
-                            warp_row + Int(group_id), Int(group_lane) + 4
-                        ]
-                    ),
-                    rebind[Scalar[DType.float32]](
-                        a_smem[
-                            warp_row + Int(group_id) + 8,
-                            Int(group_lane) + 4,
-                        ]
-                    ),
-                )
-                var warp_col = warp_n * MMA_N
-                var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](
-                        b_smem[Int(group_lane), warp_col + Int(group_id)]
-                    ),
-                    rebind[Scalar[DType.float32]](
-                        b_smem[
-                            Int(group_lane) + 4, warp_col + Int(group_id)
-                        ]
-                    ),
-                )
-
-                mma(acc, a_frag, b_frag, acc)
-                barrier()
-
-            # Store with bias (no activation — LN+Mish is separate kernel)
-            var r0 = block_row + warp_m * MMA_M + Int(group_id)
-            var r1 = r0 + 8
-            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
-            var c1 = c0 + 1
-
-            if r0 < BATCH and c0 < Self.OUT_DIM:
-                linear_out[r0, c0] = rebind[Scalar[dtype]](acc[0]) + rebind[
-                    Scalar[dtype]
-                ](b[c0])
-            if r0 < BATCH and c1 < Self.OUT_DIM:
-                linear_out[r0, c1] = rebind[Scalar[dtype]](acc[1]) + rebind[
-                    Scalar[dtype]
-                ](b[c1])
-            if r1 < BATCH and c0 < Self.OUT_DIM:
-                linear_out[r1, c0] = rebind[Scalar[dtype]](acc[2]) + rebind[
-                    Scalar[dtype]
-                ](b[c0])
-            if r1 < BATCH and c1 < Self.OUT_DIM:
-                linear_out[r1, c1] = rebind[Scalar[dtype]](acc[3]) + rebind[
-                    Scalar[dtype]
-                ](b[c1])
-
-    @always_inline
-    @staticmethod
-    fn forward_linear_kernel_mma_no_cache[
-        BATCH: Int,
-    ](
-        linear_out: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ],
-        W: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+            ImmutAnyOrigin,
         ],
         b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
     ):
-        """MMA matmul: linear_out = input @ W + b (no caching).
-
-        Grid: ((OUT_DIM + MMA_BLOCK_N-1) // MMA_BLOCK_N,
-               (BATCH + MMA_BLOCK_M-1) // MMA_BLOCK_M)
-        Block: (MMA_BLOCK_THREADS, 1)
-        """
+        """Dispatching matmul: MMA on NVIDIA, 2x2 register-tiled on Apple."""
         comptime if is_nvidia_gpu():
+            # ── MMA tensor core path ──
             var tid = Int(thread_idx.x)
             var warp_id = tid // 32
             var warp_m = warp_id // MMA_WARPS_N
@@ -728,43 +582,31 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var k_off = k_tile * MMA_K
                 var a_r = tid // MMA_K
                 var a_c = tid % MMA_K
-                var ga_r = block_row + a_r
-                var ga_c = k_off + a_c
-                if ga_r < BATCH and ga_c < Self.IN_DIM:
-                    a_smem[a_r, a_c] = input[ga_r, ga_c]
+                if block_row + a_r < BATCH and k_off + a_c < Self.IN_DIM:
+                    a_smem[a_r, a_c] = input[block_row + a_r, k_off + a_c]
                 else:
                     a_smem[a_r, a_c] = 0
-
                 var br = tid // MMA_BLOCK_N
                 var bc = tid % MMA_BLOCK_N
-                var gb_r = k_off + br
-                var gb_c = block_col + bc
-                if gb_r < Self.IN_DIM and gb_c < Self.OUT_DIM:
-                    b_smem[br, bc] = W[gb_r, gb_c]
+                if k_off + br < Self.IN_DIM and block_col + bc < Self.OUT_DIM:
+                    b_smem[br, bc] = W[k_off + br, block_col + bc]
                 else:
                     b_smem[br, bc] = 0
-
                 barrier()
-
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
                     rebind[Scalar[DType.float32]](
                         a_smem[warp_row + Int(group_id), Int(group_lane)]
                     ),
                     rebind[Scalar[DType.float32]](
-                        a_smem[
-                            warp_row + Int(group_id) + 8, Int(group_lane)
-                        ]
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
                     ),
                     rebind[Scalar[DType.float32]](
                         a_smem[
-                            warp_row + Int(group_id), Int(group_lane) + 4
-                        ]
-                    ),
-                    rebind[Scalar[DType.float32]](
-                        a_smem[
-                            warp_row + Int(group_id) + 8,
-                            Int(group_lane) + 4,
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
                         ]
                     ),
                 )
@@ -774,12 +616,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                         b_smem[Int(group_lane), warp_col + Int(group_id)]
                     ),
                     rebind[Scalar[DType.float32]](
-                        b_smem[
-                            Int(group_lane) + 4, warp_col + Int(group_id)
-                        ]
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
                     ),
                 )
-
                 mma(acc, a_frag, b_frag, acc)
                 barrier()
 
@@ -787,7 +626,6 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             var r1 = r0 + 8
             var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
             var c1 = c0 + 1
-
             if r0 < BATCH and c0 < Self.OUT_DIM:
                 linear_out[r0, c0] = rebind[Scalar[dtype]](acc[0]) + rebind[
                     Scalar[dtype]
@@ -804,6 +642,104 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 linear_out[r1, c1] = rebind[Scalar[dtype]](acc[3]) + rebind[
                     Scalar[dtype]
                 ](b[c1])
+        else:
+            # ── 2x2 register-tiled path (Apple / non-MMA) ──
+            comptime BT = 32
+            comptime SK = 16
+            var tid = Int(thread_idx.x)
+            var sub_r = tid // 16
+            var sub_c = tid % 16
+            var block_row = Int(block_idx.y) * BT
+            var block_col = Int(block_idx.x) * BT
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(BT, SK),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(SK, BT),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc00: Scalar[dtype] = 0
+            var acc01: Scalar[dtype] = 0
+            var acc10: Scalar[dtype] = 0
+            var acc11: Scalar[dtype] = 0
+
+            comptime num_k_tiles = (Self.IN_DIM + SK - 1) // SK
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * SK
+                # Load A tile (2 loads per thread for 32×16 with 256 threads)
+                var a_r0 = tid // SK
+                var a_c0 = tid % SK
+                var a_r1 = (tid + 256) // SK
+                var a_c1 = (tid + 256) % SK
+                if block_row + a_r0 < BATCH and k_off + a_c0 < Self.IN_DIM:
+                    a_smem[a_r0, a_c0] = input[
+                        block_row + a_r0, k_off + a_c0
+                    ]
+                else:
+                    a_smem[a_r0, a_c0] = 0
+                if a_r1 < BT and block_row + a_r1 < BATCH and k_off + a_c1 < Self.IN_DIM:
+                    a_smem[a_r1, a_c1] = input[
+                        block_row + a_r1, k_off + a_c1
+                    ]
+                elif a_r1 < BT:
+                    a_smem[a_r1, a_c1] = 0
+                # Load B tile
+                var b_r0 = tid // BT
+                var b_c0 = tid % BT
+                var b_r1 = (tid + 256) // BT
+                var b_c1 = (tid + 256) % BT
+                if k_off + b_r0 < Self.IN_DIM and block_col + b_c0 < Self.OUT_DIM:
+                    b_smem[b_r0, b_c0] = W[
+                        k_off + b_r0, block_col + b_c0
+                    ]
+                else:
+                    b_smem[b_r0, b_c0] = 0
+                if b_r1 < SK and k_off + b_r1 < Self.IN_DIM and block_col + b_c1 < Self.OUT_DIM:
+                    b_smem[b_r1, b_c1] = W[
+                        k_off + b_r1, block_col + b_c1
+                    ]
+                elif b_r1 < SK:
+                    b_smem[b_r1, b_c1] = 0
+                barrier()
+                for k in range(SK):
+                    if k_off + k < Self.IN_DIM:
+                        var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                        var a1 = rebind[Scalar[dtype]](
+                            a_smem[sub_r * 2 + 1, k]
+                        )
+                        var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                        var b1 = rebind[Scalar[dtype]](
+                            b_smem[k, sub_c * 2 + 1]
+                        )
+                        acc00 += a0 * b0
+                        acc01 += a0 * b1
+                        acc10 += a1 * b0
+                        acc11 += a1 * b1
+                barrier()
+
+            var gr0 = block_row + sub_r * 2
+            var gc0 = block_col + sub_c * 2
+            if gr0 < BATCH and gc0 < Self.OUT_DIM:
+                linear_out[gr0, gc0] = acc00 + rebind[Scalar[dtype]](b[gc0])
+            if gr0 < BATCH and gc0 + 1 < Self.OUT_DIM:
+                linear_out[gr0, gc0 + 1] = acc01 + rebind[Scalar[dtype]](
+                    b[gc0 + 1]
+                )
+            if gr0 + 1 < BATCH and gc0 < Self.OUT_DIM:
+                linear_out[gr0 + 1, gc0] = acc10 + rebind[Scalar[dtype]](
+                    b[gc0]
+                )
+            if gr0 + 1 < BATCH and gc0 + 1 < Self.OUT_DIM:
+                linear_out[gr0 + 1, gc0 + 1] = acc11 + rebind[Scalar[dtype]](
+                    b[gc0 + 1]
+                )
 
     @always_inline
     @staticmethod
@@ -1252,89 +1188,47 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        # Kernel 1: Linear matmul (MMA on NVIDIA, tiled on Apple)
-        comptime if is_nvidia_gpu():
-            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # Kernel 1: Linear matmul (with cache — uses tiled kernel)
+        comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
+        comptime grid_y = (BATCH + TILE - 1) // TILE
 
-            @always_inline
-            fn linear_wrapper_mma(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-                cache: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-            ):
-                Self.forward_linear_kernel_mma[BATCH](
-                    linear_out, input, W, b, cache
-                )
-
-            ctx.enqueue_function[linear_wrapper_mma, linear_wrapper_mma](
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                cache,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
+        @always_inline
+        fn linear_wrapper(
+            linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                ImmutAnyOrigin,
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
+            ],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.CACHE_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            Self.forward_linear_kernel_impl[BATCH](
+                linear_out, input, W, b, cache
             )
-        else:
-            comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-            comptime grid_y = (BATCH + TILE - 1) // TILE
 
-            @always_inline
-            fn linear_wrapper_tiled(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-                cache: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-            ):
-                Self.forward_linear_kernel_impl[BATCH](
-                    linear_out, input, W, b, cache
-                )
-
-            ctx.enqueue_function[linear_wrapper_tiled, linear_wrapper_tiled](
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                cache,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(TILE, TILE),
-            )
+        ctx.enqueue_function[linear_wrapper, linear_wrapper](
+            linear_out_mut,
+            input_immut,
+            W,
+            b,
+            cache,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(TILE, TILE),
+        )
 
         # Kernel 2: Fused LayerNorm + Mish
         @always_inline
@@ -1415,77 +1309,39 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        # Kernel 1: Linear matmul (no cache; MMA on NVIDIA, tiled on Apple)
-        comptime if is_nvidia_gpu():
-            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # Kernel 1: Linear matmul (no cache; dispatch inside wrapper)
+        comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-            @always_inline
-            fn linear_nc_mma(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-            ):
-                Self.forward_linear_kernel_mma_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
+        @always_inline
+        fn linear_nc_wrapper(
+            linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                ImmutAnyOrigin,
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
+            ],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
 
-            ctx.enqueue_function[linear_nc_mma, linear_nc_mma](
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
-        else:
-            comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-            comptime grid_y = (BATCH + TILE - 1) // TILE
-
-            @always_inline
-            fn linear_nc_tiled(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-            ):
-                Self.forward_linear_kernel_impl_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
-
-            ctx.enqueue_function[linear_nc_tiled, linear_nc_tiled](
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(TILE, TILE),
-            )
+        ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
+            linear_out_mut,
+            input_immut,
+            W,
+            b,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
 
         # Kernel 2: Fused LN + Mish (no cache)
         @always_inline
@@ -1561,84 +1417,42 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        comptime if is_nvidia_gpu():
-            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-            @always_inline
-            fn linear_stream_mma(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-            ):
-                Self.forward_linear_kernel_mma_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
+        @always_inline
+        fn linear_stream_wrapper(
+            linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                ImmutAnyOrigin,
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
+            ],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
 
-            var compiled_linear = ctx.compile_function[
-                linear_stream_mma, linear_stream_mma
-            ]()
-            stream.enqueue_function(
-                compiled_linear,
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
-        else:
-            comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-            comptime grid_y = (BATCH + TILE - 1) // TILE
-
-            @always_inline
-            fn linear_stream_tiled(
-                linear_out: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.IN_DIM),
-                    ImmutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                    ImmutAnyOrigin,
-                ],
-                b: LayoutTensor[
-                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-                ],
-            ):
-                Self.forward_linear_kernel_impl_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
-
-            var compiled_linear = ctx.compile_function[
-                linear_stream_tiled, linear_stream_tiled
-            ]()
-            stream.enqueue_function(
-                compiled_linear,
-                linear_out_mut,
-                input_immut,
-                W,
-                b,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(TILE, TILE),
-            )
+        var compiled_linear = ctx.compile_function[
+            linear_stream_wrapper, linear_stream_wrapper
+        ]()
+        stream.enqueue_function(
+            compiled_linear,
+            linear_out_mut,
+            input_immut,
+            W,
+            b,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
 
         @always_inline
         fn ln_mish_wrapper(
