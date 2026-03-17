@@ -1339,7 +1339,7 @@ fn plan_gpu_batched[
         comptime L2_B = L2_BASE + MLP_DIM * NUM_BINS
 
         # ── Grouped kernel aliases ───────────────────────────────────
-        comptime TILE = 32
+        comptime TILE = 16
         comptime MM_GRID_0 = (
             (MLP_DIM + TILE - 1) // TILE,
             (BATCH_TOTAL + TILE - 1) // TILE,

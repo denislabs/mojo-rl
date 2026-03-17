@@ -503,6 +503,7 @@ Policy update:       13934.490553 ms ( 2.5523610730253847 %)
 Soft update:         37.818109 ms ( 0.006927089935573547 %)
 =================================================
 
+Baseline :
 ========== TDMPC2 GPU Timing Summary ==========
 Total measured time: 546007.753209 ms over 1741 training iterations
 Avg per training iter: 313.6173194767375 ms
@@ -516,10 +517,8 @@ WM optimizer:        279.419899 ms ( 0.05117507899069047 %)
 Policy update:       14072.222064 ms ( 2.577293450742165 %)
 Soft update:         38.830942 ms ( 0.007111793151614159 %)
 =================================================
-
-----------------------------------------------------------------------
-TD-MPC2 (GPU) | Step 50016 | Ep: 32 / 50 | AvgR: -189.06 | Train: 1303                                                  
-                                                                                                                        
+                                              
+With fused kernels :                                                                                                            
 ========== TDMPC2 GPU Timing Summary ==========
 Total measured time: 545609.746133 ms over 1741 training iterations
 Avg per training iter: 313.3887111619759 ms
