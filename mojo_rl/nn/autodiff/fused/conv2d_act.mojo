@@ -1138,42 +1138,6 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
-        # Kernel 1: grad_input (naive — sufficient parallelism)
-        var total_dx = BATCH * Self.IN_DIM
-        var grid_dx = (total_dx + TPB - 1) // TPB
-
-        @always_inline
-        fn dx_wrapper(
-            grad_input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-            params: LayoutTensor[
-                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_dx_kernel_impl[BATCH](
-                grad_input, grad_output, params, cache
-            )
-
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
-            grad_input,
-            grad_output_immut,
-            params_immut,
-            cache_immut,
-            grid_dim=(grid_dx,),
-            block_dim=(TPB,),
-        )
-
-        # Kernel 2: dW = masked_grad_reshaped @ col_reshaped
-        # masked_grad applies ACT.backward to grad_output
-        # grad_output is (BATCH, OC*S), need (OC, BATCH*S) with ACT.backward
-        # cache im2col is (BATCH, col_size*S), need (BATCH*S, col_size)
         var dW = LayoutTensor[
             dtype,
             Layout.row_major(Self.out_channels, Self.col_size),
@@ -1181,21 +1145,23 @@ struct FusedConv2DActivation[
         ](grad_params.ptr)
 
         comptime if has_nvidia_gpu_accelerator():
-            # Use max_matmul with transpose+mask kernels (6-16x faster)
+            # ── dW FIRST (before dx) so we can reuse grad_input as workspace ──
+            # dW = masked_grad_reshaped @ col_reshaped
+            # masked_grad: (OC, BATCH*S) with ACT.backward applied
+            # col_reshaped: (BATCH*S, col_size)
             comptime K_TOTAL = BATCH * Self.spatial_out
 
-            var grad_reshaped_buf = ctx.enqueue_create_buffer[dtype](
-                Self.out_channels * K_TOTAL
-            )
-            var col_reshaped_buf = ctx.enqueue_create_buffer[dtype](
-                K_TOTAL * Self.col_size
-            )
-
+            # Reuse grad_input as workspace for grad_reshaped
             var grad_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, K_TOTAL),
                 MutAnyOrigin,
-            ](grad_reshaped_buf.unsafe_ptr())
+            ](grad_input.ptr)
+
+            # Single allocation for col_reshaped only
+            var col_reshaped_buf = ctx.enqueue_create_buffer[dtype](
+                K_TOTAL * Self.col_size
+            )
             var col_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.col_size),
@@ -1203,7 +1169,7 @@ struct FusedConv2DActivation[
             ](col_reshaped_buf.unsafe_ptr())
 
             # Transpose + mask grad: apply ACT.backward and reshape
-            # src[b, oc*S + s] → dst[oc, b*S + s] with ACT.backward applied
+            # src[b, oc*S + s] → dst[oc, b*S + s] with ACT.backward
             comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
@@ -1287,7 +1253,79 @@ struct FusedConv2DActivation[
 
             # max_matmul: dW = masked_grad_reshaped @ col_reshaped
             max_matmul[target="gpu"](dW, grad_reshaped, col_reshaped, ctx)
+
+            # ── dx AFTER dW (grad_input was used as temp, now compute real dx)
+            var total_dx = BATCH * Self.IN_DIM
+            var grid_dx = (total_dx + TPB - 1) // TPB
+
+            @always_inline
+            fn dx_wrapper_nvidia(
+                grad_input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                params: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self.backward_dx_kernel_impl[BATCH](
+                    grad_input, grad_output, params, cache
+                )
+
+            ctx.enqueue_function[dx_wrapper_nvidia, dx_wrapper_nvidia](
+                grad_input,
+                grad_output_immut,
+                params_immut,
+                cache_immut,
+                grid_dim=(grid_dx,),
+                block_dim=(TPB,),
+            )
         else:
+            # ── Apple path: dx first, then dW ──
+            var total_dx = BATCH * Self.IN_DIM
+            var grid_dx = (total_dx + TPB - 1) // TPB
+
+            @always_inline
+            fn dx_wrapper(
+                grad_input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                params: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self.backward_dx_kernel_impl[BATCH](
+                    grad_input, grad_output, params, cache
+                )
+
+            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+                grad_input,
+                grad_output_immut,
+                params_immut,
+                cache_immut,
+                grid_dim=(grid_dx,),
+                block_dim=(TPB,),
+            )
+
             comptime dW_grid_x = (Self.col_size + 31) // 32
             comptime dW_grid_y = (Self.out_channels + 31) // 32
 
