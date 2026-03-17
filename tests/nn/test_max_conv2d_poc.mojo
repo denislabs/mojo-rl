@@ -1,8 +1,9 @@
 """POC: Benchmarking conv2D approaches.
 
 Compares:
-  1. nn.conv.conv2d_gpu_naive_nhwc_rscf (Max's pure Mojo GPU conv2d)
-  2. Our custom 2x2-tiled kernel (baseline reference)
+  1. nn.conv.conv_gpu (Max's auto-dispatching GPU conv2d)
+  2. nn.conv.conv_cudnn (cuDNN directly)
+  3. nn.conv.conv2d_gpu_naive_nhwc_rscf (Max's pure Mojo GPU conv2d)
 
 Layout notes:
   - Max conv expects NHWC input (batch, height, width, channels)
@@ -22,8 +23,8 @@ from std.utils import IndexList
 
 from mojo_rl.nn.constants import dtype, TPB
 
-# Max conv kernels (pure Mojo — no cuDNN dependency)
-from nn.conv import conv2d_gpu_naive_nhwc_rscf
+# Max conv kernels
+from nn.conv import conv_gpu, conv_cudnn, conv2d_gpu_naive_nhwc_rscf
 
 
 fn main() raises:
@@ -55,7 +56,7 @@ fn main() raises:
     )
 
     print("=" * 60)
-    print("Max Kernels Conv2D Benchmark (no cuDNN)")
+    print("Max Kernels Conv2D Benchmark")
     print("=" * 60)
     print(
         "Conv2D: ["
@@ -84,15 +85,18 @@ fn main() raises:
     print()
 
     with DeviceContext() as ctx:
-        # ── Allocate NHWC tensors (what Max expects) ──
-        # Input: (BATCH, IN_H, IN_W, IC) - NHWC
+        # ── Allocate NHWC tensors ──
         var input_buf = ctx.enqueue_create_buffer[dtype](
             BATCH * IN_H * IN_W * IC
         )
-        # Filter: (KS, KS, IC, OC) - RSCF
         var filter_buf = ctx.enqueue_create_buffer[dtype](KS * KS * IC * OC)
-        # Output: (BATCH, OUT_H, OUT_W, OC) - NHWC
         var out_buf1 = ctx.enqueue_create_buffer[dtype](
+            BATCH * OUT_H * OUT_W * OC
+        )
+        var out_buf2 = ctx.enqueue_create_buffer[dtype](
+            BATCH * OUT_H * OUT_W * OC
+        )
+        var out_buf3 = ctx.enqueue_create_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
 
@@ -110,6 +114,8 @@ fn main() raises:
         ctx.enqueue_copy(input_buf, input_host)
         ctx.enqueue_copy(filter_buf, filter_host)
         ctx.enqueue_memset(out_buf1, 0)
+        ctx.enqueue_memset(out_buf2, 0)
+        ctx.enqueue_memset(out_buf3, 0)
         ctx.synchronize()
 
         # ── Create LayoutTensors with NHWC/RSCF layouts ──
@@ -131,21 +137,52 @@ fn main() raises:
             MutAnyOrigin,
         ](out_buf1.unsafe_ptr())
 
-        # ── Warmup ──
+        var out2_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
+            MutAnyOrigin,
+        ](out_buf2.unsafe_ptr())
+
+        var out3_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
+            MutAnyOrigin,
+        ](out_buf3.unsafe_ptr())
+
+        # ── Warmup all three ──
         print("Warming up...")
 
-        # conv2d_gpu_naive_nhwc_rscf kernel thread mapping (from source):
-        #   n = block_idx.z
-        #   h = block_idx.y * block_dim.y + thread_idx.y
-        #   w = block_idx.x * block_dim.x + thread_idx.x
-        #   loops over C_out internally
-        # So: block_dim = (BS, BS), grid = (ceil(OUT_W/BS), ceil(OUT_H/BS), BATCH)
-        comptime BS = 16  # block_size for 2D thread block (16x16 = 256 threads)
+        # 1. conv_gpu (auto-dispatch: may use Blackwell structured conv, cuDNN, or naive)
+        conv_gpu(
+            input_tensor,
+            filter_tensor,
+            out1_tensor,
+            IndexList[2](STRIDE, STRIDE),
+            IndexList[2](1, 1),
+            IndexList[4](PAD, PAD, PAD, PAD),
+            num_groups=1,
+            ctx=ctx,
+        )
+
+        # 2. conv_cudnn
+        conv_cudnn(
+            input_tensor,
+            filter_tensor,
+            out2_tensor,
+            IndexList[2](STRIDE, STRIDE),
+            IndexList[2](1, 1),
+            IndexList[2](PAD, PAD),
+            num_groups=1,
+            ctx=ctx,
+        )
+
+        # 3. conv2d_gpu_naive_nhwc_rscf (manual kernel launch)
+        comptime BS = 16
         comptime grid_x = (OUT_W + BS - 1) // BS
         comptime grid_y = (OUT_H + BS - 1) // BS
 
         @always_inline
-        fn conv_kernel_wrapper(
+        fn naive_kernel_wrapper(
             input: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, IN_H, IN_W, IC),
@@ -175,10 +212,10 @@ fn main() raises:
                 num_groups=1,
             )
 
-        ctx.enqueue_function[conv_kernel_wrapper, conv_kernel_wrapper](
+        ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
             input_tensor,
             filter_tensor,
-            out1_tensor,
+            out3_tensor,
             grid_dim=(grid_x, grid_y, BATCH),
             block_dim=(BS, BS),
         )
@@ -186,55 +223,143 @@ fn main() raises:
         print("Warmup done!")
         print()
 
-        # ── Benchmark: conv2d_gpu_naive_nhwc_rscf ──
+        # ── Benchmark 1: conv_gpu (auto-dispatching) ──
         ctx.synchronize()
         var t0 = perf_counter_ns()
         for _ in range(N_ITERS):
-            ctx.enqueue_function[conv_kernel_wrapper, conv_kernel_wrapper](
+            conv_gpu(
                 input_tensor,
                 filter_tensor,
                 out1_tensor,
+                IndexList[2](STRIDE, STRIDE),
+                IndexList[2](1, 1),
+                IndexList[4](PAD, PAD, PAD, PAD),
+                num_groups=1,
+                ctx=ctx,
+            )
+        ctx.synchronize()
+        var t1 = perf_counter_ns()
+        var gpu_us = Float64(t1 - t0) / 1000.0 / Float64(N_ITERS)
+        var gpu_gflops = flops / (gpu_us * 1e-6) / 1e9
+
+        print(
+            "1. conv_gpu (auto):     "
+            + String(gpu_us)[:8]
+            + " μs  |  "
+            + String(gpu_gflops)[:6]
+            + " GFLOPS"
+        )
+
+        # ── Benchmark 2: conv_cudnn ──
+        ctx.synchronize()
+        var t2 = perf_counter_ns()
+        for _ in range(N_ITERS):
+            conv_cudnn(
+                input_tensor,
+                filter_tensor,
+                out2_tensor,
+                IndexList[2](STRIDE, STRIDE),
+                IndexList[2](1, 1),
+                IndexList[2](PAD, PAD),
+                num_groups=1,
+                ctx=ctx,
+            )
+        ctx.synchronize()
+        var t3 = perf_counter_ns()
+        var cudnn_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
+        var cudnn_gflops = flops / (cudnn_us * 1e-6) / 1e9
+
+        print(
+            "2. conv_cudnn:          "
+            + String(cudnn_us)[:8]
+            + " μs  |  "
+            + String(cudnn_gflops)[:6]
+            + " GFLOPS"
+        )
+
+        # ── Benchmark 3: conv2d_gpu_naive_nhwc_rscf ──
+        ctx.synchronize()
+        var t4 = perf_counter_ns()
+        for _ in range(N_ITERS):
+            ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
+                input_tensor,
+                filter_tensor,
+                out3_tensor,
                 grid_dim=(grid_x, grid_y, BATCH),
                 block_dim=(BS, BS),
             )
         ctx.synchronize()
-        var t1 = perf_counter_ns()
-        var naive_us = Float64(t1 - t0) / 1000.0 / Float64(N_ITERS)
+        var t5 = perf_counter_ns()
+        var naive_us = Float64(t5 - t4) / 1000.0 / Float64(N_ITERS)
         var naive_gflops = flops / (naive_us * 1e-6) / 1e9
 
         print(
-            "1. conv2d_gpu_naive:    "
+            "3. conv2d_gpu_naive:    "
             + String(naive_us)[:8]
             + " μs  |  "
             + String(naive_gflops)[:6]
             + " GFLOPS"
         )
 
-        # ── Verify output is non-zero ──
+        # ── Verify consistency ──
         print()
-        print("Verifying output...")
+        print("Verifying consistency...")
         var out1_host = ctx.enqueue_create_host_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
+        var out2_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * OUT_H * OUT_W * OC
+        )
+        var out3_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * OUT_H * OUT_W * OC
+        )
         ctx.enqueue_copy(out1_host, out_buf1)
+        ctx.enqueue_copy(out2_host, out_buf2)
+        ctx.enqueue_copy(out3_host, out_buf3)
         ctx.synchronize()
 
-        print("Sample output values:")
-        for i in range(5):
-            print("  [" + String(i) + "] = " + String(Float64(out1_host[i])))
-
-        var non_zero = 0
+        var max_diff_12: Float64 = 0.0
+        var max_diff_13: Float64 = 0.0
         for i in range(BATCH * OUT_H * OUT_W * OC):
-            if Float64(out1_host[i]) != 0.0:
-                non_zero += 1
+            var d12 = abs(Float64(out1_host[i]) - Float64(out2_host[i]))
+            var d13 = abs(Float64(out1_host[i]) - Float64(out3_host[i]))
+            if d12 > max_diff_12:
+                max_diff_12 = d12
+            if d13 > max_diff_13:
+                max_diff_13 = d13
         print(
-            "Non-zero outputs: "
-            + String(non_zero)
-            + " / "
-            + String(BATCH * OUT_H * OUT_W * OC)
+            "Max diff (conv_gpu vs cudnn):  " + String(max_diff_12)[:10]
+        )
+        print(
+            "Max diff (conv_gpu vs naive):  " + String(max_diff_13)[:10]
         )
 
+        # Show sample values
+        print()
+        print("Sample output values:")
+        for i in range(3):
+            print(
+                "  conv_gpu["
+                + String(i)
+                + "]="
+                + String(Float64(out1_host[i]))[:8]
+                + "  cudnn="
+                + String(Float64(out2_host[i]))[:8]
+                + "  naive="
+                + String(Float64(out3_host[i]))[:8]
+            )
+
+        # Summary
         print()
         print("=" * 60)
-        print("Benchmark complete!")
+        var fastest = min(gpu_us, min(cudnn_us, naive_us))
+        print(
+            "conv_gpu:    "
+            + String(gpu_us / fastest)[:4]
+            + "x  |  conv_cudnn: "
+            + String(cudnn_us / fastest)[:4]
+            + "x  |  naive: "
+            + String(naive_us / fastest)[:4]
+            + "x"
+        )
         print("=" * 60)
