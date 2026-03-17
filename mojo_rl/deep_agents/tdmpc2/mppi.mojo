@@ -40,16 +40,10 @@ from .kernels import (
     tdmpc2_decode_and_min_kernel,
     tdmpc2_min5_q_values_kernel,
     tdmpc2_zero_kernel,
-    q5_concat_params_kernel,
-    q5_replicate_input_kernel,
-    q5_grouped_matmul_bias_kernel,
-    q5_grouped_ln_mish_kernel,
-    q5_decode_min_kernel,
     # Fused kernels
     mppi_broadcast_z0_zero_returns_batched_kernel,
     mppi_sample_actions_build_za_batched_kernel,
     mppi_accum_reward_copy_z_kernel,
-    q5_decode_min_add_terminal_kernel,
 )
 
 
@@ -1146,40 +1140,7 @@ fn plan_gpu_batched[
     var s1 = ctx.create_stream()  # reward
     var s2 = ctx.create_stream()  # dynamics
 
-    # ─── Hoist Q5 concat_params before loop (target params are read-only) ──
-    # Q model = Sequential[NormedLinear[ZA,MLP], NormedLinear[MLP,MLP], Linear[MLP,BINS]]
     comptime Q_PS = QModel.PARAM_SIZE
-    comptime Q5_BT = NUM_Q * BATCH_TOTAL
-    comptime Q5_BLOCKS = (Q5_BT + TPB - 1) // TPB
-    comptime concat_params = q5_concat_params_kernel[dtype, Q_PS]
-    var q5_params = LayoutTensor[
-        dtype, Layout.row_major(NUM_Q * Q_PS), MutAnyOrigin
-    ](mb.q5_params_buf.unsafe_ptr())
-    var qt1_p = LayoutTensor[
-        dtype, Layout.row_major(Q_PS), MutAnyOrigin
-    ](qt_param_ptrs[0])
-    var qt2_p = LayoutTensor[
-        dtype, Layout.row_major(Q_PS), MutAnyOrigin
-    ](qt_param_ptrs[1])
-    var qt3_p = LayoutTensor[
-        dtype, Layout.row_major(Q_PS), MutAnyOrigin
-    ](qt_param_ptrs[2])
-    var qt4_p = LayoutTensor[
-        dtype, Layout.row_major(Q_PS), MutAnyOrigin
-    ](qt_param_ptrs[3])
-    var qt5_p = LayoutTensor[
-        dtype, Layout.row_major(Q_PS), MutAnyOrigin
-    ](qt_param_ptrs[4])
-    ctx.enqueue_function[concat_params, concat_params](
-        q5_params,
-        qt1_p,
-        qt2_p,
-        qt3_p,
-        qt4_p,
-        qt5_p,
-        grid_dim=((Q_PS + TPB - 1) // TPB,),
-        block_dim=(TPB,),
-    )
 
     # ─── Main MPPI iterations ────────────────────────────────────────────
     var temp_scalar = Scalar[dtype](temperature)
@@ -1318,139 +1279,57 @@ fn plan_gpu_batched[
             block_dim=(TPB,),
         )
 
-        # Q1..Q5: batched grouped forward + decode + min
-        # (concat_params hoisted before the loop — target params don't change)
+        # Q1..Q5: 5 separate forward passes using nn framework (with MMA)
+        comptime q_decode = tdmpc2_q_decode_kernel[dtype, BATCH_TOTAL, NUM_BINS]
+        comptime decode_min = tdmpc2_decode_and_min_kernel[
+            dtype, BATCH_TOTAL, NUM_BINS
+        ]
 
-        # ── Compile-time layer param offsets ─────────────────────────
-        comptime L0_SIZE = ZA_DIM * MLP_DIM + 3 * MLP_DIM
-        comptime L1_SIZE = MLP_DIM * MLP_DIM + 3 * MLP_DIM
-        comptime L0_BASE = 0
-        comptime L1_BASE = L0_SIZE
-        comptime L2_BASE = L0_SIZE + L1_SIZE
-        comptime L0_W = L0_BASE
-        comptime L0_B = L0_BASE + ZA_DIM * MLP_DIM
-        comptime L0_GAMMA = L0_BASE + ZA_DIM * MLP_DIM + MLP_DIM
-        comptime L0_BETA = L0_BASE + ZA_DIM * MLP_DIM + 2 * MLP_DIM
-        comptime L1_W = L1_BASE
-        comptime L1_B = L1_BASE + MLP_DIM * MLP_DIM
-        comptime L1_GAMMA = L1_BASE + MLP_DIM * MLP_DIM + MLP_DIM
-        comptime L1_BETA = L1_BASE + MLP_DIM * MLP_DIM + 2 * MLP_DIM
-        comptime L2_W = L2_BASE
-        comptime L2_B = L2_BASE + MLP_DIM * NUM_BINS
-
-        # ── Grouped kernel aliases ───────────────────────────────────
-        comptime TILE = 16
-        comptime MM_GRID_0 = (
-            (MLP_DIM + TILE - 1) // TILE,
-            (BATCH_TOTAL + TILE - 1) // TILE,
-            NUM_Q,
+        # Q1: forward → decode → initialize q_min
+        var qt1_p = LayoutTensor[dtype, Layout.row_major(Q_PS), MutAnyOrigin](
+            qt_param_ptrs[0]
         )
-        comptime MM_GRID_2 = (
-            (NUM_BINS + TILE - 1) // TILE,
-            (BATCH_TOTAL + TILE - 1) // TILE,
-            NUM_Q,
-        )
-
-        comptime replicate_za = q5_replicate_input_kernel[
-            dtype, BATCH_TOTAL, ZA_DIM, NUM_Q
-        ]
-        comptime gmatmul_0 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, ZA_DIM, MLP_DIM, Q_PS, L0_W, L0_B, TILE
-        ]
-        comptime gln_mish_0 = q5_grouped_ln_mish_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, Q_PS, L0_GAMMA, L0_BETA
-        ]
-        comptime gmatmul_1 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, MLP_DIM, Q_PS, L1_W, L1_B, TILE
-        ]
-        comptime gln_mish_1 = q5_grouped_ln_mish_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, Q_PS, L1_GAMMA, L1_BETA
-        ]
-        comptime gmatmul_2 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, NUM_BINS, Q_PS, L2_W, L2_B, TILE
-        ]
-        comptime gdecode_min = q5_decode_min_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, NUM_BINS
-        ]
-
-        # ── Tensor views over batched Q buffers ──────────────────────
-        var q5_a_za = LayoutTensor[
-            dtype, Layout.row_major(Q5_BT, ZA_DIM), MutAnyOrigin
-        ](mb.q5_buf_a.unsafe_ptr())
-        var q5_a_mlp = LayoutTensor[
-            dtype, Layout.row_major(Q5_BT, MLP_DIM), MutAnyOrigin
-        ](mb.q5_buf_a.unsafe_ptr())
-        var q5_b_mlp = LayoutTensor[
-            dtype, Layout.row_major(Q5_BT, MLP_DIM), MutAnyOrigin
-        ](mb.q5_buf_b.unsafe_ptr())
-        var q5_b_bins = LayoutTensor[
-            dtype, Layout.row_major(Q5_BT, NUM_BINS), MutAnyOrigin
-        ](mb.q5_buf_b.unsafe_ptr())
-
-        # ── 1. Replicate za input 5x ──────────────────────────────
-        ctx.enqueue_function[replicate_za, replicate_za](
-            q5_a_za,
+        QModel.forward_gpu_no_cache[BATCH_TOTAL](
+            ctx,
+            q_out_tensor,
             q_in_tensor,
-            grid_dim=(Q5_BLOCKS,),
+            qt1_p,
+            mb.q_ws_buf,
+        )
+        ctx.enqueue_function[q_decode, q_decode](
+            q_logits_tensor,
+            bins_tensor,
+            q_min_tensor,
+            grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
         )
 
-        # ── 3. Layer 0: grouped matmul+bias → grouped LN+Mish ──────
-        #    input: q5_a_za [5*BT, ZA] → matmul → q5_b_mlp [5*BT, MLP]
-        #    LN+Mish: q5_b_mlp → q5_a_mlp [5*BT, MLP]
-        var eps_scalar = Scalar[dtype](1e-5)
-        ctx.enqueue_function[gmatmul_0, gmatmul_0](
-            q5_b_mlp,
-            q5_a_za,
-            q5_params,
-            grid_dim=MM_GRID_0,
-            block_dim=(TILE, TILE),
-        )
-        ctx.enqueue_function[gln_mish_0, gln_mish_0](
-            q5_a_mlp,
-            q5_b_mlp,
-            q5_params,
-            eps_scalar,
-            grid_dim=(Q5_BT,),
-            block_dim=(1,),
-        )
+        # Q2..Q5: forward → decode + min update
+        comptime for qi in range(1, NUM_Q):
+            var qt_p = LayoutTensor[
+                dtype, Layout.row_major(Q_PS), MutAnyOrigin
+            ](qt_param_ptrs[qi])
+            QModel.forward_gpu_no_cache[BATCH_TOTAL](
+                ctx,
+                q_out_tensor,
+                q_in_tensor,
+                qt_p,
+                mb.q_ws_buf,
+            )
+            ctx.enqueue_function[decode_min, decode_min](
+                q_logits_tensor,
+                bins_tensor,
+                q_min_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
-        # ── 4. Layer 1: grouped matmul+bias → grouped LN+Mish ──────
-        #    input: q5_a_mlp [5*BT, MLP] → matmul → q5_b_mlp [5*BT, MLP]
-        #    LN+Mish: q5_b_mlp → q5_a_mlp [5*BT, MLP]
-        ctx.enqueue_function[gmatmul_1, gmatmul_1](
-            q5_b_mlp,
-            q5_a_mlp,
-            q5_params,
-            grid_dim=MM_GRID_0,
-            block_dim=(TILE, TILE),
-        )
-        ctx.enqueue_function[gln_mish_1, gln_mish_1](
-            q5_a_mlp,
-            q5_b_mlp,
-            q5_params,
-            eps_scalar,
-            grid_dim=(Q5_BT,),
-            block_dim=(1,),
-        )
-
-        # ── 5. Layer 2: grouped matmul+bias (no activation) ─────────
-        #    input: q5_a_mlp [5*BT, MLP] → matmul → q5_b_bins [5*BT, BINS]
-        ctx.enqueue_function[gmatmul_2, gmatmul_2](
-            q5_b_bins,
-            q5_a_mlp,
-            q5_params,
-            grid_dim=MM_GRID_2,
-            block_dim=(TILE, TILE),
-        )
-
-        # ── 6. Fused: decode 5 logits + min + add terminal to returns ──
-        comptime gdecode_min_terminal = q5_decode_min_add_terminal_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, NUM_BINS
+        # Add terminal value to returns
+        comptime add_terminal = mppi_add_terminal_value_kernel[
+            dtype, BATCH_TOTAL
         ]
-        ctx.enqueue_function[gdecode_min_terminal, gdecode_min_terminal](
-            q5_b_bins,
-            bins_tensor,
+        ctx.enqueue_function[add_terminal, add_terminal](
+            q_min_tensor,
             returns_tensor,
             discount,
             grid_dim=(MPPI_BLOCKS,),
