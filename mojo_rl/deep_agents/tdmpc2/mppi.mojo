@@ -45,6 +45,10 @@ from .kernels import (
     q5_grouped_matmul_bias_kernel,
     q5_grouped_ln_mish_kernel,
     q5_decode_min_kernel,
+    # Fused kernels
+    mppi_broadcast_z0_zero_returns_batched_kernel,
+    mppi_sample_actions_build_za_batched_kernel,
+    mppi_accum_reward_copy_z_kernel,
 )
 
 
@@ -1074,27 +1078,31 @@ fn plan_gpu_batched[
     ](mb.q_logits_buf.unsafe_ptr())
 
     # ─── Kernel aliases ────────────────────────────────────────────────────
-    comptime broadcast_z0 = mppi_broadcast_z0_batched_kernel[
+    # Fused: broadcast_z0 + zero_returns → single kernel
+    comptime broadcast_z0_zero = mppi_broadcast_z0_zero_returns_batched_kernel[
         dtype, BATCH_TOTAL, N_ENVS, TOTAL_SAMPLES, LATENT_DIM
     ]
-    comptime sample_actions = mppi_sample_actions_batched_kernel[
+    # Fused: sample_actions + build_za → single kernel
+    comptime sample_build_za = mppi_sample_actions_build_za_batched_kernel[
         dtype,
         BATCH_TOTAL,
         N_ENVS,
         TOTAL_SAMPLES,
         NUM_PI_TRAJS,
         ACTION_DIM,
+        LATENT_DIM,
         HORIZON,
         POL_OUT,
     ]
+    # Fused: accum_reward + copy_z → single kernel
+    comptime accum_copy = mppi_accum_reward_copy_z_kernel[
+        dtype, BATCH_TOTAL, NUM_BINS, LATENT_DIM
+    ]
+    # Unfused (still needed standalone for terminal value step)
     comptime accum_reward = mppi_accumulate_reward_kernel[
         dtype, BATCH_TOTAL, NUM_BINS
     ]
     comptime add_terminal = mppi_add_terminal_value_kernel[dtype, BATCH_TOTAL]
-    comptime copy_z = mppi_copy_z_kernel[dtype, BATCH_TOTAL, LATENT_DIM]
-    comptime build_za = tdmpc2_build_za_kernel[
-        dtype, BATCH_TOTAL, LATENT_DIM, ACTION_DIM
-    ]
     comptime tanh_build_za = tdmpc2_apply_tanh_build_za_deterministic_kernel[
         dtype, BATCH_TOTAL, ACTION_DIM, LATENT_DIM, POL_OUT
     ]
@@ -1102,7 +1110,6 @@ fn plan_gpu_batched[
     comptime decode_min = tdmpc2_decode_and_min_kernel[
         dtype, BATCH_TOTAL, NUM_BINS
     ]
-    comptime zero_returns = tdmpc2_zero_kernel[dtype, BATCH_TOTAL]
     comptime softmax_weights = mppi_softmax_weights_kernel[
         dtype, N_ENVS, TOTAL_SAMPLES, TPB
     ]
@@ -1143,6 +1150,41 @@ fn plan_gpu_batched[
     var s1 = ctx.create_stream()  # reward
     var s2 = ctx.create_stream()  # dynamics
 
+    # ─── Hoist Q5 concat_params before loop (target params are read-only) ──
+    # Q model = Sequential[NormedLinear[ZA,MLP], NormedLinear[MLP,MLP], Linear[MLP,BINS]]
+    comptime Q_PS = QModel.PARAM_SIZE
+    comptime Q5_BT = NUM_Q * BATCH_TOTAL
+    comptime Q5_BLOCKS = (Q5_BT + TPB - 1) // TPB
+    comptime concat_params = q5_concat_params_kernel[dtype, Q_PS]
+    var q5_params = LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * Q_PS), MutAnyOrigin
+    ](mb.q5_params_buf.unsafe_ptr())
+    var qt1_p = LayoutTensor[
+        dtype, Layout.row_major(Q_PS), MutAnyOrigin
+    ](qt_param_ptrs[0])
+    var qt2_p = LayoutTensor[
+        dtype, Layout.row_major(Q_PS), MutAnyOrigin
+    ](qt_param_ptrs[1])
+    var qt3_p = LayoutTensor[
+        dtype, Layout.row_major(Q_PS), MutAnyOrigin
+    ](qt_param_ptrs[2])
+    var qt4_p = LayoutTensor[
+        dtype, Layout.row_major(Q_PS), MutAnyOrigin
+    ](qt_param_ptrs[3])
+    var qt5_p = LayoutTensor[
+        dtype, Layout.row_major(Q_PS), MutAnyOrigin
+    ](qt_param_ptrs[4])
+    ctx.enqueue_function[concat_params, concat_params](
+        q5_params,
+        qt1_p,
+        qt2_p,
+        qt3_p,
+        qt4_p,
+        qt5_p,
+        grid_dim=((Q_PS + TPB - 1) // TPB,),
+        block_dim=(TPB,),
+    )
+
     # ─── Main MPPI iterations ────────────────────────────────────────────
     var temp_scalar = Scalar[dtype](temperature)
     for mppi_iter in range(NUM_ITERATIONS):
@@ -1150,14 +1192,10 @@ fn plan_gpu_batched[
             mppi_iter * BATCH_TOTAL * HORIZON * ACTION_DIM * 2
         )
 
-        # 1. Broadcast per-env z0 to all samples + zero returns
-        ctx.enqueue_function[broadcast_z0, broadcast_z0](
+        # 1. Fused: broadcast per-env z0 + zero returns (1 kernel, was 2)
+        ctx.enqueue_function[broadcast_z0_zero, broadcast_z0_zero](
             z0_tensor,
             z_tensor,
-            grid_dim=(MPPI_BLOCKS,),
-            block_dim=(TPB,),
-        )
-        ctx.enqueue_function[zero_returns, zero_returns](
             returns_tensor,
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
@@ -1177,27 +1215,21 @@ fn plan_gpu_batched[
                 mb.pol_ws_buf,
             )
 
-            # 3b. Sample actions + 3c. Build za
-            ctx.enqueue_function[sample_actions, sample_actions](
+            # 3b. Fused: sample actions + build za (1 kernel, was 2)
+            ctx.enqueue_function[sample_build_za, sample_build_za](
                 pi_out_tensor,
                 mean_tensor,
                 std_tensor,
-                act_step_tensor,
+                z_tensor,
+                za_tensor,
                 all_actions_tensor,
                 t,
                 Scalar[DType.uint32](step_seed),
                 grid_dim=(MPPI_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[build_za, build_za](
-                z_tensor,
-                act_step_tensor,
-                za_tensor,
-                grid_dim=(MPPI_BLOCKS,),
-                block_dim=(TPB,),
-            )
 
-            # 3d-g. Reward + Dynamics in PARALLEL on separate streams
+            # 3d-g. Reward + Dynamics
             comptime if USE_STREAMS:
                 # Stream 1: Reward forward + accumulate
                 RewModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
@@ -1229,6 +1261,9 @@ fn plan_gpu_batched[
                     dyn_params,
                     mb.dyn_ws_buf,
                 )
+                comptime copy_z = mppi_copy_z_kernel[
+                    dtype, BATCH_TOTAL, LATENT_DIM
+                ]
                 var compiled_copy_z = ctx.compile_function[copy_z, copy_z]()
                 s2.enqueue_function(
                     compiled_copy_z,
@@ -1241,6 +1276,7 @@ fn plan_gpu_batched[
                 s1.synchronize()
                 s2.synchronize()
             else:
+                # Reward forward
                 RewModel.forward_gpu_no_cache[BATCH_TOTAL](
                     ctx,
                     rew_out_tensor,
@@ -1248,14 +1284,7 @@ fn plan_gpu_batched[
                     rew_params,
                     mb.rew_ws_buf,
                 )
-                ctx.enqueue_function[accum_reward, accum_reward](
-                    rew_logits_tensor,
-                    bins_tensor,
-                    returns_tensor,
-                    discount,
-                    grid_dim=(MPPI_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                # Dynamics forward
                 DynModel.forward_gpu_no_cache[BATCH_TOTAL](
                     ctx,
                     dyn_out_tensor,
@@ -1263,7 +1292,12 @@ fn plan_gpu_batched[
                     dyn_params,
                     mb.dyn_ws_buf,
                 )
-                ctx.enqueue_function[copy_z, copy_z](
+                # Fused: accum reward + copy z (1 kernel, was 2)
+                ctx.enqueue_function[accum_copy, accum_copy](
+                    rew_logits_tensor,
+                    bins_tensor,
+                    returns_tensor,
+                    discount,
                     z_tensor,
                     z_next_tensor,
                     grid_dim=(MPPI_BLOCKS,),
@@ -1289,32 +1323,26 @@ fn plan_gpu_batched[
         )
 
         # Q1..Q5: batched grouped forward + decode + min
+        # (concat_params hoisted before the loop — target params don't change)
 
         # ── Compile-time layer param offsets ─────────────────────────
-        # Q model = Sequential[NormedLinear[ZA,MLP], NormedLinear[MLP,MLP], Linear[MLP,BINS]]
-        comptime Q_PS = QModel.PARAM_SIZE
         comptime L0_SIZE = ZA_DIM * MLP_DIM + 3 * MLP_DIM
         comptime L1_SIZE = MLP_DIM * MLP_DIM + 3 * MLP_DIM
         comptime L0_BASE = 0
         comptime L1_BASE = L0_SIZE
         comptime L2_BASE = L0_SIZE + L1_SIZE
-        # Layer 0: NormedLinear[ZA, MLP]
         comptime L0_W = L0_BASE
         comptime L0_B = L0_BASE + ZA_DIM * MLP_DIM
         comptime L0_GAMMA = L0_BASE + ZA_DIM * MLP_DIM + MLP_DIM
         comptime L0_BETA = L0_BASE + ZA_DIM * MLP_DIM + 2 * MLP_DIM
-        # Layer 1: NormedLinear[MLP, MLP]
         comptime L1_W = L1_BASE
         comptime L1_B = L1_BASE + MLP_DIM * MLP_DIM
         comptime L1_GAMMA = L1_BASE + MLP_DIM * MLP_DIM + MLP_DIM
         comptime L1_BETA = L1_BASE + MLP_DIM * MLP_DIM + 2 * MLP_DIM
-        # Layer 2: Linear[MLP, BINS]
         comptime L2_W = L2_BASE
         comptime L2_B = L2_BASE + MLP_DIM * NUM_BINS
 
         # ── Grouped kernel aliases ───────────────────────────────────
-        comptime Q5_BT = NUM_Q * BATCH_TOTAL
-        comptime Q5_BLOCKS = (Q5_BT + TPB - 1) // TPB
         comptime TILE = 16
         comptime MM_GRID_0 = (
             (MLP_DIM + TILE - 1) // TILE,
@@ -1327,7 +1355,6 @@ fn plan_gpu_batched[
             NUM_Q,
         )
 
-        comptime concat_params = q5_concat_params_kernel[dtype, Q_PS]
         comptime replicate_za = q5_replicate_input_kernel[
             dtype, BATCH_TOTAL, ZA_DIM, NUM_Q
         ]
@@ -1351,9 +1378,6 @@ fn plan_gpu_batched[
         ]
 
         # ── Tensor views over batched Q buffers ──────────────────────
-        var q5_params = LayoutTensor[
-            dtype, Layout.row_major(NUM_Q * Q_PS), MutAnyOrigin
-        ](mb.q5_params_buf.unsafe_ptr())
         var q5_a_za = LayoutTensor[
             dtype, Layout.row_major(Q5_BT, ZA_DIM), MutAnyOrigin
         ](mb.q5_buf_a.unsafe_ptr())
@@ -1367,34 +1391,7 @@ fn plan_gpu_batched[
             dtype, Layout.row_major(Q5_BT, NUM_BINS), MutAnyOrigin
         ](mb.q5_buf_b.unsafe_ptr())
 
-        # ── 1. Concat 5 Q target params ─────────────────────────────
-        var qt1_p = LayoutTensor[
-            dtype, Layout.row_major(Q_PS), MutAnyOrigin
-        ](qt_param_ptrs[0])
-        var qt2_p = LayoutTensor[
-            dtype, Layout.row_major(Q_PS), MutAnyOrigin
-        ](qt_param_ptrs[1])
-        var qt3_p = LayoutTensor[
-            dtype, Layout.row_major(Q_PS), MutAnyOrigin
-        ](qt_param_ptrs[2])
-        var qt4_p = LayoutTensor[
-            dtype, Layout.row_major(Q_PS), MutAnyOrigin
-        ](qt_param_ptrs[3])
-        var qt5_p = LayoutTensor[
-            dtype, Layout.row_major(Q_PS), MutAnyOrigin
-        ](qt_param_ptrs[4])
-        ctx.enqueue_function[concat_params, concat_params](
-            q5_params,
-            qt1_p,
-            qt2_p,
-            qt3_p,
-            qt4_p,
-            qt5_p,
-            grid_dim=((Q_PS + TPB - 1) // TPB,),
-            block_dim=(TPB,),
-        )
-
-        # ── 2. Replicate za input 5x ────────────────────────────────
+        # ── 1. Replicate za input 5x ──────────────────────────────
         ctx.enqueue_function[replicate_za, replicate_za](
             q5_a_za,
             q_in_tensor,
@@ -1485,7 +1482,9 @@ fn plan_gpu_batched[
             grid_dim=(MEAN_STD_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.synchronize()
+        # No sync needed — GPU executes kernels in order on the same queue.
+        # Next iteration's sample_build_za will naturally wait for
+        # weighted_mean_std to finish writing mean/std.
 
     # ─── Download results ─────────────────────────────────────────────────
     ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)

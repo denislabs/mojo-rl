@@ -2616,3 +2616,181 @@ fn q5_decode_min_kernel[
             min_val = val
 
     q_min[i] = min_val
+
+
+# =============================================================================
+# Fused MPPI kernels — reduce kernel launch overhead
+# =============================================================================
+
+
+fn mppi_broadcast_z0_zero_returns_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    z0: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
+    ],
+    z_all: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
+    ],
+    returns: LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Fused: broadcast per-env z0 + zero returns in one kernel.
+
+    Replaces separate broadcast_z0_batched + zero_kernel calls.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    for k in range(LATENT_DIM):
+        z_all[i, k] = z0[env_idx, k]
+    returns[i] = Scalar[dtype](0.0)
+
+
+@always_inline
+fn mppi_sample_actions_build_za_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    NUM_PI_TRAJS: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int,
+    HORIZON: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, POL_OUT), MutAnyOrigin
+    ],
+    mean: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    std: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    z: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
+    ],
+    za: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_TOTAL, LATENT_DIM + ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_TOTAL * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    step: Int,
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Fused: sample actions + build za = [z, action] in one kernel.
+
+    Replaces separate sample_actions_batched + build_za calls.
+    Saves one kernel launch per horizon step.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    var local_s = i % TOTAL_SAMPLES
+
+    # Copy z into za[:LATENT_DIM]
+    for k in range(LATENT_DIM):
+        za[i, k] = z[i, k]
+
+    # Sample actions and write into za[LATENT_DIM:] + all_actions
+    for j in range(ACTION_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var noise = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        var act: Scalar[dtype]
+        if local_s < NUM_PI_TRAJS:
+            var pi_mean = Scalar[dtype](pi_out[i, j][0])
+            act = pi_mean + noise * Scalar[dtype](0.1)
+        else:
+            var mean_idx = (
+                env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+            )
+            var mu = Scalar[dtype](mean[mean_idx][0])
+            var sigma = Scalar[dtype](std[mean_idx][0])
+            act = mu + sigma * noise
+
+        if act < Scalar[dtype](-1.0):
+            act = Scalar[dtype](-1.0)
+        if act > Scalar[dtype](1.0):
+            act = Scalar[dtype](1.0)
+
+        za[i, LATENT_DIM + j] = act
+        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
+
+
+fn mppi_accum_reward_copy_z_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    BINS: Int,
+    LATENT_DIM: Int,
+](
+    rew_logits: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
+    discount: Scalar[dtype],
+    z_dst: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+    z_src: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Fused: accumulate discounted reward + copy z_next → z in one kernel.
+
+    Replaces separate accum_reward + copy_z calls. These operate on
+    independent data with the same grid, so fusion is trivial.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    # Accumulate reward (softmax decode + symexp + discount)
+    var max_l = Scalar[dtype](rew_logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](rew_logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](rew_logits[i, k][0]) - max_l)
+
+    var val_symlog = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var prob = exp(Scalar[dtype](rew_logits[i, k][0]) - max_l) / sum_exp
+        val_symlog = val_symlog + prob * Scalar[dtype](bins[k][0])
+
+    var reward_val = _symexp[dtype](val_symlog)
+    returns[i] = returns[i] + discount * reward_val
+
+    # Copy z_next → z
+    for k in range(LATENT_DIM):
+        z_dst[i, k] = z_src[i, k]
