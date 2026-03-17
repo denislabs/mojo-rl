@@ -4357,8 +4357,27 @@ struct DreamerV3Agent[
                 adv_var += d * d
             adv_var /= Float64(DIAG_ADV_N)
 
-            # Also check raw imagined rewards (first horizon step in imag_rewards_buf)
-            # Actually imag_rewards_buf has advantages now. Check values instead.
+            # Check actor gradient L2 norm
+            comptime ACTOR_PS = Self.StateType.ActorModel.PARAM_SIZE
+            var diag_ag = ctx.enqueue_create_host_buffer[dtype](ACTOR_PS)
+            ctx.enqueue_copy(diag_ag, gpu_state.actor.grads_buf)
+            ctx.synchronize()
+            var actor_grad_norm = Float64(0)
+            for i in range(ACTOR_PS):
+                var g = Float64(diag_ag[i])
+                actor_grad_norm += g * g
+            actor_grad_norm = sqrt(actor_grad_norm)
+
+            # Check actor first layer weights L2 norm (to see if they change)
+            var diag_ap = ctx.enqueue_create_host_buffer[dtype](ACTOR_PS)
+            ctx.enqueue_copy(diag_ap, gpu_state.actor.params_buf)
+            ctx.synchronize()
+            var actor_param_norm = Float64(0)
+            for i in range(min(FEAT * Self.units, ACTOR_PS)):
+                var p = Float64(diag_ap[i])
+                actor_param_norm += p * p
+            actor_param_norm = sqrt(actor_param_norm)
+
             var avg_val = Float64(0)
             for i in range(IB):
                 avg_val += Float64(diag_val[i])
@@ -4366,11 +4385,11 @@ struct DreamerV3Agent[
 
             print(
                 "  [diag] step=" + String(self.train_step_count)
-                + " adv_mean=" + String(avg_adv)
-                + " adv_std=" + String(sqrt(adv_var))
+                + " adv_std=" + String(sqrt(adv_var))[:6]
                 + " adv[" + String(adv_min)[:7] + "," + String(adv_max)[:7]
-                + "] val=" + String(avg_val)
-                + " rscale=" + String(self.state.return_ema_hi - self.state.return_ema_lo)
+                + "] val=" + String(avg_val)[:6]
+                + " actor_grad=" + String(actor_grad_norm)
+                + " actor_w=" + String(actor_param_norm)
             )
 
         self.train_step_count += 1
