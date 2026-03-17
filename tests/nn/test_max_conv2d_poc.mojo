@@ -18,7 +18,7 @@ from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
-from collections import IndexList
+from std.utils import IndexList
 
 from mojo_rl.nn.constants import dtype
 
@@ -86,7 +86,9 @@ fn main() raises:
     with DeviceContext() as ctx:
         # ── Allocate NHWC tensors (what Max expects) ──
         # Input: (BATCH, IN_H, IN_W, IC) - NHWC
-        var input_buf = ctx.enqueue_create_buffer[dtype](BATCH * IN_H * IN_W * IC)
+        var input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH * IN_H * IN_W * IC
+        )
         # Filter: (KS, KS, IC, OC) - RSCF
         var filter_buf = ctx.enqueue_create_buffer[dtype](KS * KS * IC * OC)
         # Output: (BATCH, OUT_H, OUT_W, OC) - NHWC
@@ -146,7 +148,7 @@ fn main() raises:
 
         # ── Warmup ──
         print("Warming up...")
-        conv_gpu[2](
+        conv_gpu(
             input_tensor,
             filter_tensor,
             out1_tensor,
@@ -174,7 +176,7 @@ fn main() raises:
         ctx.synchronize()
         var t0 = perf_counter_ns()
         for _ in range(N_ITERS):
-            conv_gpu[2](
+            conv_gpu(
                 input_tensor,
                 filter_tensor,
                 out1_tensor,
@@ -242,9 +244,7 @@ fn main() raises:
             var diff = abs(Float64(out1_host[i]) - Float64(out2_host[i]))
             if diff > max_diff:
                 max_diff = diff
-        print(
-            "Max abs diff (first 1000 elements): " + String(max_diff)[:10]
-        )
+        print("Max abs diff (first 1000 elements): " + String(max_diff)[:10])
 
         # Show some output values to verify non-zero
         print()
