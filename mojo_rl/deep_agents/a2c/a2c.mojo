@@ -864,7 +864,7 @@ struct DeepA2CAgent[
         self.diag_every = diag_every
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_onpolicy_discrete_train[E, Self, L](
+        var metrics = run_onpolicy_discrete_train[E, Self, Self.L](
             self,
             env,
             num_updates,
