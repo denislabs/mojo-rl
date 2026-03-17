@@ -30,8 +30,9 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
-from std.sys import is_nvidia_gpu
+from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
+from linalg.matmul import matmul as max_matmul
 
 
 struct FusedConv2DActivation[
@@ -1169,42 +1170,154 @@ struct FusedConv2DActivation[
             block_dim=(TPB,),
         )
 
-        # Kernel 2: dW (tiled matmul with fused activation gradient)
+        # Kernel 2: dW = masked_grad_reshaped @ col_reshaped
+        # masked_grad applies ACT.backward to grad_output
+        # grad_output is (BATCH, OC*S), need (OC, BATCH*S) with ACT.backward
+        # cache im2col is (BATCH, col_size*S), need (BATCH*S, col_size)
         var dW = LayoutTensor[
             dtype,
             Layout.row_major(Self.out_channels, Self.col_size),
             MutAnyOrigin,
         ](grad_params.ptr)
 
-        comptime dW_grid_x = (Self.col_size + 31) // 32
-        comptime dW_grid_y = (Self.out_channels + 31) // 32
+        comptime if has_nvidia_gpu_accelerator():
+            # Use max_matmul with transpose+mask kernels (6-16x faster)
+            comptime K_TOTAL = BATCH * Self.spatial_out
 
-        @always_inline
-        fn dW_wrapper(
-            dW: LayoutTensor[
+            var grad_reshaped_buf = ctx.enqueue_create_buffer[dtype](
+                Self.out_channels * K_TOTAL
+            )
+            var col_reshaped_buf = ctx.enqueue_create_buffer[dtype](
+                K_TOTAL * Self.col_size
+            )
+
+            var grad_reshaped = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.out_channels, Self.col_size),
+                Layout.row_major(Self.out_channels, K_TOTAL),
                 MutAnyOrigin,
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            comptime if is_nvidia_gpu():
-                Self.backward_dW_kernel_mma[BATCH](dW, cache, grad_output)
-            else:
+            ](grad_reshaped_buf.unsafe_ptr())
+            var col_reshaped = LayoutTensor[
+                dtype,
+                Layout.row_major(K_TOTAL, Self.col_size),
+                MutAnyOrigin,
+            ](col_reshaped_buf.unsafe_ptr())
+
+            # Transpose + mask grad: apply ACT.backward and reshape
+            # src[b, oc*S + s] → dst[oc, b*S + s] with ACT.backward applied
+            comptime grad_elems = Self.out_channels * K_TOTAL
+            comptime grad_blocks = (grad_elems + TPB - 1) // TPB
+
+            @always_inline
+            fn transpose_mask_grad_wrapper(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                act_cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= grad_elems:
+                    return
+                var oc = idx // K_TOTAL
+                var bs = idx % K_TOTAL
+                var b = bs // Self.spatial_out
+                var s = bs % Self.spatial_out
+                var out_idx = oc * Self.spatial_out + s
+                var go_val = rebind[Scalar[dtype]](src[b, out_idx])
+                var cache_val = rebind[Scalar[dtype]](
+                    act_cache[b, Self.CONV_CACHE + out_idx]
+                )
+                dst[oc, bs] = Self.ACT.backward(cache_val, go_val)
+
+            ctx.enqueue_function[
+                transpose_mask_grad_wrapper,
+                transpose_mask_grad_wrapper,
+            ](
+                grad_reshaped,
+                grad_output_immut,
+                cache_immut,
+                grid_dim=(grad_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # Transpose cache: (BATCH, col_size*S) → (BATCH*S, col_size)
+            comptime col_elems = K_TOTAL * Self.col_size
+            comptime col_blocks = (col_elems + TPB - 1) // TPB
+
+            @always_inline
+            fn transpose_col_wrapper(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= col_elems:
+                    return
+                var row = idx // Self.col_size
+                var k = idx % Self.col_size
+                var b = row // Self.spatial_out
+                var s = row % Self.spatial_out
+                dst[row, k] = src[b, k * Self.spatial_out + s]
+
+            ctx.enqueue_function[
+                transpose_col_wrapper, transpose_col_wrapper
+            ](
+                col_reshaped,
+                cache_immut,
+                grid_dim=(col_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # max_matmul: dW = masked_grad_reshaped @ col_reshaped
+            max_matmul[target="gpu"](dW, grad_reshaped, col_reshaped, ctx)
+        else:
+            comptime dW_grid_x = (Self.col_size + 31) // 32
+            comptime dW_grid_y = (Self.out_channels + 31) // 32
+
+            @always_inline
+            fn dW_wrapper(
+                dW: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
                 Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
 
-        ctx.enqueue_function[dW_wrapper, dW_wrapper](
-            dW,
-            cache_immut,
-            grad_output_immut,
-            grid_dim=(dW_grid_x, dW_grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+                dW,
+                cache_immut,
+                grad_output_immut,
+                grid_dim=(dW_grid_x, dW_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         # Kernel 3: db (simple reduction with fused activation gradient)
         var db = LayoutTensor[

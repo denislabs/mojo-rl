@@ -4612,14 +4612,22 @@ struct DreamerV3Agent[
                 avg_val += Float64(diag_val[i])
             avg_val /= Float64(IB)
 
-            # print(
-            #     "  [diag] step=" + String(self.train_step_count)
-            #     + " adv_std=" + String(sqrt(adv_var))[:6]
-            #     + " adv[" + String(adv_min)[:7] + "," + String(adv_max)[:7]
-            #     + "] val=" + String(avg_val)[:6]
-            #     + " actor_grad=" + String(actor_grad_norm)
-            #     + " actor_w=" + String(actor_param_norm)
-            # )
+            print(
+                "  [diag] step="
+                + String(self.train_step_count)
+                + " adv_std="
+                + String(sqrt(adv_var))[:6]
+                + " adv["
+                + String(adv_min)[:7]
+                + ","
+                + String(adv_max)[:7]
+                + "] val="
+                + String(avg_val)[:6]
+                + " actor_grad="
+                + String(actor_grad_norm)
+                + " actor_w="
+                + String(actor_param_norm)
+            )
 
         self.train_step_count += 1
 
