@@ -21,7 +21,7 @@ Implementations:
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
-
+from std.gpu import thread_idx, block_idx, block_dim
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.model import Model
 from mojo_rl.nn.optimizer import Optimizer
@@ -83,11 +83,21 @@ trait ActorLoss:
         CriticModel: Model,
         CriticOpt: Optimizer,
     ](
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         alpha: Float64,
     ) -> Float64:
@@ -103,11 +113,21 @@ trait ActorLoss:
         CriticOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         critic_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
@@ -146,9 +166,7 @@ fn _extract_action_grad[
     """Extract dQ/da from d_critic_input (skip obs portion)."""
     for b in range(BATCH):
         for a in range(ACTIONS):
-            d_actions[b * ACTIONS + a] = d_critic_input[
-                b * CRITIC_IN + OBS + a
-            ]
+            d_actions[b * ACTIONS + a] = d_critic_input[b * CRITIC_IN + OBS + a]
 
 
 # =============================================================================
@@ -169,7 +187,10 @@ struct DPGLoss(ActorLoss):
 
     @staticmethod
     fn gpu_lp_offset[
-        BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int, ACTOR_CS: Int,
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
     ]() -> Int:
         """No log_probs for DPG."""
         return 0
@@ -206,11 +227,21 @@ struct DPGLoss(ActorLoss):
         CriticModel: Model,
         CriticOpt: Optimizer,
     ](
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         alpha: Float64,
     ) -> Float64:
@@ -320,11 +351,21 @@ struct DPGLoss(ActorLoss):
         CriticOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         critic_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
@@ -349,6 +390,7 @@ struct DPGLoss(ActorLoss):
         comptime CRITIC_IN = CriticModel.IN_DIM
         comptime CRITIC_OUT = CriticModel.OUT_DIM
         comptime CRITIC_CS = CriticModel.CACHE_SIZE
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
         comptime ELEM_BLOCKS = (BATCH * CRITIC_IN + TPB - 1) // TPB
         comptime ACT_BLOCKS = (BATCH * ACTIONS + TPB - 1) // TPB
 
@@ -391,9 +433,7 @@ struct DPGLoss(ActorLoss):
             d: LayoutTensor[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
-            o: LayoutTensor[
-                dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -434,7 +474,9 @@ struct DPGLoss(ActorLoss):
         @always_inline
         fn fill_dq(
             buf: LayoutTensor[
-                dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH, CriticModel.OUT_DIM),
+                MutAnyOrigin,
             ],
             val: Scalar[dtype],
         ):
@@ -451,8 +493,13 @@ struct DPGLoss(ActorLoss):
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
-            ctx, dq_t, d_ci_t, critic_params, critic_cache_t,
-            critic_grads, critic_ws
+            ctx,
+            dq_t,
+            d_ci_t,
+            critic_params,
+            critic_cache_t,
+            critic_grads,
+            critic_ws,
         )
 
         # 5. Extract action gradients from d_ci
@@ -469,9 +516,9 @@ struct DPGLoss(ActorLoss):
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
         ):
-            actor_grad_from_critic_kernel[dtype, BATCH, OBS, ActorModel.OUT_DIM](
-                da, dnc
-            )
+            actor_grad_from_critic_kernel[
+                dtype, BATCH, OBS, ActorModel.OUT_DIM
+            ](da, dnc)
 
         ctx.enqueue_function[extract_act_grad, extract_act_grad](
             d_act_t,
@@ -485,8 +532,13 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DOBS)
         Network[ActorModel, ActorOpt].backward_gpu[BATCH](
-            ctx, d_act_t, d_obs_t, actor_params, actor_cache_t,
-            actor_grads, actor_ws
+            ctx,
+            d_act_t,
+            d_obs_t,
+            actor_params,
+            actor_cache_t,
+            actor_grads,
+            actor_ws,
         )
 
         return 0.0  # No log_probs for DPG
@@ -519,7 +571,10 @@ struct MaxEntLoss[
 
     @staticmethod
     fn gpu_lp_offset[
-        BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int, ACTOR_CS: Int,
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
     ]() -> Int:
         """Offset of log_probs [BATCH] in GPU strat_ws."""
         return BATCH * ACTOR_OUT + BATCH * ACTOR_CS + BATCH * ACTIONS
@@ -565,11 +620,21 @@ struct MaxEntLoss[
         CriticModel: Model,
         CriticOpt: Optimizer,
     ](
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         alpha: Float64,
     ) -> Float64:
@@ -621,9 +686,7 @@ struct MaxEntLoss[
         # 2. Extract mean + log_std from Parallel output
         for b in range(BATCH):
             for a in range(ACTIONS):
-                (ws + W_MEAN)[b * ACTIONS + a] = (ws + W_RAW)[
-                    b * ACTOR_OUT + a
-                ]
+                (ws + W_MEAN)[b * ACTIONS + a] = (ws + W_RAW)[b * ACTOR_OUT + a]
                 (ws + W_LSTD)[b * ACTIONS + a] = (ws + W_RAW)[
                     b * ACTOR_OUT + ACTIONS + a
                 ]
@@ -643,15 +706,15 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ](ws + W_ZCACHE)
         rsample_with_cache[BATCH, ACTIONS](
-            LayoutTensor[
-                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ](ws + W_MEAN),
-            LayoutTensor[
-                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ](ws + W_LSTD),
-            LayoutTensor[
-                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ](ws + W_NOISE),
+            LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin](
+                ws + W_MEAN
+            ),
+            LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin](
+                ws + W_LSTD
+            ),
+            LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin](
+                ws + W_NOISE
+            ),
             act_t,
             lp_t,
             z_cache_t,
@@ -707,9 +770,7 @@ struct MaxEntLoss[
         )
 
         # 10. Entropy gradient: grad_log_prob = alpha / batch
-        var grad_lp_arr = InlineArray[Scalar[dtype], BATCH](
-            uninitialized=True
-        )
+        var grad_lp_arr = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
         for b in range(BATCH):
             grad_lp_arr[b] = Scalar[dtype](alpha / Float64(BATCH))
 
@@ -730,12 +791,12 @@ struct MaxEntLoss[
             ga_t,
             glp_t,
             act_t,
-            LayoutTensor[
-                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ](ws + W_LSTD),
-            LayoutTensor[
-                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
-            ](ws + W_NOISE),
+            LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin](
+                ws + W_LSTD
+            ),
+            LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin](
+                ws + W_NOISE
+            ),
             gmean_t,
             glstd_t,
         )
@@ -781,11 +842,21 @@ struct MaxEntLoss[
         CriticOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        mut actor_grads: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
-        critic_params: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
-        mut critic_grads: LayoutTensor[dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         critic_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
@@ -912,9 +983,7 @@ struct MaxEntLoss[
             d: LayoutTensor[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
-            o: LayoutTensor[
-                dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-            ],
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -955,7 +1024,9 @@ struct MaxEntLoss[
         @always_inline
         fn fill_dq(
             buf: LayoutTensor[
-                dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH, CriticModel.OUT_DIM),
+                MutAnyOrigin,
             ],
             val: Scalar[dtype],
         ):
@@ -972,8 +1043,13 @@ struct MaxEntLoss[
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
-            ctx, dq_t, d_ci_t, critic_params, critic_cache_t,
-            critic_grads, critic_ws
+            ctx,
+            dq_t,
+            d_ci_t,
+            critic_params,
+            critic_cache_t,
+            critic_grads,
+            critic_ws,
         )
 
         # 6. Extract action gradients from d_ci
@@ -990,9 +1066,7 @@ struct MaxEntLoss[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
         ):
-            actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](
-                da, dnc
-            )
+            actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](da, dnc)
 
         ctx.enqueue_function[extract_act_grad, extract_act_grad](
             grad_act_t,
@@ -1055,8 +1129,13 @@ struct MaxEntLoss[
         ](ws_ptr + W_DOBS)
         # Actor backward (grads pre-zeroed by agent)
         Network[ActorModel, ActorOpt].backward_gpu[BATCH](
-            ctx, actor_grad_t, d_obs_t, actor_params, actor_cache_t,
-            actor_grads, actor_ws
+            ctx,
+            actor_grad_t,
+            d_obs_t,
+            actor_params,
+            actor_cache_t,
+            actor_grads,
+            actor_ws,
         )
 
         # Return 0.0 — mean log_prob requires GPU->CPU sync which the agent
