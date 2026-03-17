@@ -57,7 +57,7 @@ fn main() raises:
         stoch_dim=8,
         classes=8,
         units=64,
-        num_bins=65,
+        num_bins=255,
         blocks=2,
         batch_size=8,
         batch_length=16,

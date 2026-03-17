@@ -3551,36 +3551,54 @@ struct DreamerV3Agent[
             # Save deter/stoch for multi-step actor-critic
             comptime IMAG_D_SLICE = IB * DETER
             comptime IMAG_S_SLICE = IB * STOCH
-            var save_d = LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin](
-                gpu_state.imag_all_deter_buf.unsafe_ptr() + h * IMAG_D_SLICE)
-            var save_s = LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin](
-                gpu_state.imag_all_stoch_buf.unsafe_ptr() + h * IMAG_S_SLICE)
-            var src_d = LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin](
-                gpu_state.imag_deter_buf.unsafe_ptr() + read_off * DETER)
-            var src_s = LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin](
-                gpu_state.imag_stoch_buf.unsafe_ptr() + read_off * STOCH)
+            var save_d = LayoutTensor[
+                dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
+            ](gpu_state.imag_all_deter_buf.unsafe_ptr() + h * IMAG_D_SLICE)
+            var save_s = LayoutTensor[
+                dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
+            ](gpu_state.imag_all_stoch_buf.unsafe_ptr() + h * IMAG_S_SLICE)
+            var src_d = LayoutTensor[
+                dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
+            ](gpu_state.imag_deter_buf.unsafe_ptr() + read_off * DETER)
+            var src_s = LayoutTensor[
+                dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
+            ](gpu_state.imag_stoch_buf.unsafe_ptr() + read_off * STOCH)
 
             @always_inline
             fn copy_imag_d(
-                d: LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin],
-                s: LayoutTensor[dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin],
+                d: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
+                ],
             ):
                 copy_kernel[IMAG_D_SLICE](d, s)
 
             @always_inline
             fn copy_imag_s(
-                d: LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin],
-                s: LayoutTensor[dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin],
+                d: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
+                ],
             ):
                 copy_kernel[IMAG_S_SLICE](d, s)
 
             comptime COPY_ID_BLOCKS = (IMAG_D_SLICE + TPB - 1) // TPB
             comptime COPY_IS_BLOCKS = (IMAG_S_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_imag_d, copy_imag_d](
-                save_d, src_d, grid_dim=(COPY_ID_BLOCKS,), block_dim=(TPB,),
+                save_d,
+                src_d,
+                grid_dim=(COPY_ID_BLOCKS,),
+                block_dim=(TPB,),
             )
             ctx.enqueue_function[copy_imag_s, copy_imag_s](
-                save_s, src_s, grid_dim=(COPY_IS_BLOCKS,), block_dim=(TPB,),
+                save_s,
+                src_s,
+                grid_dim=(COPY_IS_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             comptime IB_FEAT_BLOCKS = (IB * FEAT + TPB - 1) // TPB
@@ -3597,34 +3615,51 @@ struct DreamerV3Agent[
             comptime ACTOR_CACHE_SZ = Self.StateType.ActorModel.CACHE_SIZE
             comptime ACTOR_OUT_DIM_I = Self.StateType.ActorModel.OUT_DIM
             var actor_out_2d = LayoutTensor[
-                dtype, Layout.row_major(IB, ACTOR_OUT_DIM_I), MutAnyOrigin,
+                dtype,
+                Layout.row_major(IB, ACTOR_OUT_DIM_I),
+                MutAnyOrigin,
             ](gpu_state.actor_out_buf.unsafe_ptr())
             var imag_actor_cache_h = LayoutTensor[
                 dtype, Layout.row_major(IB, ACTOR_CACHE_SZ), MutAnyOrigin
-            ](gpu_state.imag_actor_cache_buf.unsafe_ptr() + h * IB * ACTOR_CACHE_SZ)
+            ](
+                gpu_state.imag_actor_cache_buf.unsafe_ptr()
+                + h * IB * ACTOR_CACHE_SZ
+            )
             Self.ActorNet.forward_gpu_with_cache[IB](
-                ctx, imag_feat_2d, actor_out_2d,
-                gpu_state.actor.params_view(), imag_actor_cache_h,
+                ctx,
+                imag_feat_2d,
+                actor_out_2d,
+                gpu_state.actor.params_view(),
+                imag_actor_cache_h,
                 gpu_state.ws_actor,
             )
 
             # Save actor_out per step for reparameterization backward
             comptime AO_SLICE = IB * 2 * ACT
-            var save_ao = LayoutTensor[dtype, Layout.row_major(AO_SLICE), MutAnyOrigin](
-                gpu_state.imag_actor_out_save_buf.unsafe_ptr() + h * AO_SLICE)
-            var src_ao = LayoutTensor[dtype, Layout.row_major(AO_SLICE), MutAnyOrigin](
-                gpu_state.actor_out_buf.unsafe_ptr())
+            var save_ao = LayoutTensor[
+                dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
+            ](gpu_state.imag_actor_out_save_buf.unsafe_ptr() + h * AO_SLICE)
+            var src_ao = LayoutTensor[
+                dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
+            ](gpu_state.actor_out_buf.unsafe_ptr())
 
             @always_inline
             fn copy_ao(
-                d: LayoutTensor[dtype, Layout.row_major(AO_SLICE), MutAnyOrigin],
-                s: LayoutTensor[dtype, Layout.row_major(AO_SLICE), MutAnyOrigin],
+                d: LayoutTensor[
+                    dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
+                ],
             ):
                 copy_kernel[AO_SLICE](d, s)
 
             comptime COPY_AO_BLOCKS = (AO_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_ao, copy_ao](
-                save_ao, src_ao, grid_dim=(COPY_AO_BLOCKS,), block_dim=(TPB,),
+                save_ao,
+                src_ao,
+                grid_dim=(COPY_AO_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Sample tanh-normal actions + log probs
@@ -3663,21 +3698,30 @@ struct DreamerV3Agent[
 
             # Save actions per horizon step for actor-critic training
             comptime IMAG_A_SLICE = IB * ACT
-            var save_a = LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin](
-                gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IMAG_A_SLICE)
-            var src_a = LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin](
-                gpu_state.imag_actions_buf.unsafe_ptr())
+            var save_a = LayoutTensor[
+                dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
+            ](gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IMAG_A_SLICE)
+            var src_a = LayoutTensor[
+                dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
+            ](gpu_state.imag_actions_buf.unsafe_ptr())
 
             @always_inline
             fn copy_imag_a(
-                d: LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin],
-                s: LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin],
+                d: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
+                ],
             ):
                 copy_kernel[IMAG_A_SLICE](d, s)
 
             comptime COPY_IA_BLOCKS = (IMAG_A_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_imag_a, copy_imag_a](
-                save_a, src_a, grid_dim=(COPY_IA_BLOCKS,), block_dim=(TPB,),
+                save_a,
+                src_a,
+                grid_dim=(COPY_IA_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Predict reward from feat
@@ -3687,7 +3731,10 @@ struct DreamerV3Agent[
             comptime IMAG_REW_CACHE_SZ = Self.StateType.RSSMType.RewModel.CACHE_SIZE
             var imag_rew_cache_h = LayoutTensor[
                 dtype, Layout.row_major(IB, IMAG_REW_CACHE_SZ), MutAnyOrigin
-            ](gpu_state.imag_rew_cache_buf.unsafe_ptr() + h * IB * IMAG_REW_CACHE_SZ)
+            ](
+                gpu_state.imag_rew_cache_buf.unsafe_ptr()
+                + h * IB * IMAG_REW_CACHE_SZ
+            )
             RewNet.forward_gpu_with_cache[IB](
                 ctx,
                 imag_feat_2d,
@@ -3857,8 +3904,13 @@ struct DreamerV3Agent[
                 )
                 comptime IMAG_APROJ_CACHE_SZ = Self.StateType.RSSMType.ActionProj.CACHE_SIZE
                 var imag_aproj_cache_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, IMAG_APROJ_CACHE_SZ), MutAnyOrigin
-                ](gpu_state.imag_aproj_cache_buf.unsafe_ptr() + h * IB * IMAG_APROJ_CACHE_SZ)
+                    dtype,
+                    Layout.row_major(IB, IMAG_APROJ_CACHE_SZ),
+                    MutAnyOrigin,
+                ](
+                    gpu_state.imag_aproj_cache_buf.unsafe_ptr()
+                    + h * IB * IMAG_APROJ_CACHE_SZ
+                )
                 AProjNet.forward_gpu_with_cache[IB](
                     ctx,
                     imag_norm_act_2d,
@@ -3912,7 +3964,10 @@ struct DreamerV3Agent[
                 ](gpu_state.imag_hidden_buf.unsafe_ptr())
                 var imag_gh_cache_h = LayoutTensor[
                     dtype, Layout.row_major(IB, IMAG_GH_CACHE_SZ), MutAnyOrigin
-                ](gpu_state.imag_gh_cache_buf.unsafe_ptr() + h * IB * IMAG_GH_CACHE_SZ)
+                ](
+                    gpu_state.imag_gh_cache_buf.unsafe_ptr()
+                    + h * IB * IMAG_GH_CACHE_SZ
+                )
                 GHNet.forward_gpu_with_cache[IB](
                     ctx,
                     imag_concat_2d,
@@ -3929,7 +3984,10 @@ struct DreamerV3Agent[
                 ](gpu_state.imag_gate_buf.unsafe_ptr())
                 var imag_gg_cache_h = LayoutTensor[
                     dtype, Layout.row_major(IB, IMAG_GG_CACHE_SZ), MutAnyOrigin
-                ](gpu_state.imag_gg_cache_buf.unsafe_ptr() + h * IB * IMAG_GG_CACHE_SZ)
+                ](
+                    gpu_state.imag_gg_cache_buf.unsafe_ptr()
+                    + h * IB * IMAG_GG_CACHE_SZ
+                )
                 GGNet.forward_gpu_with_cache[IB](
                     ctx,
                     imag_hidden_2d,
@@ -3941,21 +3999,33 @@ struct DreamerV3Agent[
 
                 # Save gate_out for GRU backward
                 comptime IMAG_GATE_SLICE = IB * 3 * DETER
-                var save_gate = LayoutTensor[dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin](
-                    gpu_state.imag_gate_out_save_buf.unsafe_ptr() + h * IMAG_GATE_SLICE)
-                var src_gate = LayoutTensor[dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin](
-                    gpu_state.imag_gate_buf.unsafe_ptr())
+                var save_gate = LayoutTensor[
+                    dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
+                ](
+                    gpu_state.imag_gate_out_save_buf.unsafe_ptr()
+                    + h * IMAG_GATE_SLICE
+                )
+                var src_gate = LayoutTensor[
+                    dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
+                ](gpu_state.imag_gate_buf.unsafe_ptr())
 
                 @always_inline
                 fn copy_imag_gate(
-                    d: LayoutTensor[dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin],
-                    s: LayoutTensor[dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin],
+                    d: LayoutTensor[
+                        dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
+                    ],
+                    s: LayoutTensor[
+                        dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
+                    ],
                 ):
                     copy_kernel[IMAG_GATE_SLICE](d, s)
 
                 comptime COPY_IG_BLOCKS = (IMAG_GATE_SLICE + TPB - 1) // TPB
                 ctx.enqueue_function[copy_imag_gate, copy_imag_gate](
-                    save_gate, src_gate, grid_dim=(COPY_IG_BLOCKS,), block_dim=(TPB,),
+                    save_gate,
+                    src_gate,
+                    grid_dim=(COPY_IG_BLOCKS,),
+                    block_dim=(TPB,),
                 )
 
                 # Apply GRU gating -> next_deter
@@ -4057,20 +4127,35 @@ struct DreamerV3Agent[
 
         @always_inline
         fn run_lambda_returns(
-            ret: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
-            rew: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
-            val: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
-            cont: LayoutTensor[dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin],
+            ret: LayoutTensor[
+                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+            ],
+            rew: LayoutTensor[
+                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+            ],
+            val: LayoutTensor[
+                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+            ],
+            cont: LayoutTensor[
+                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
+            ],
             gamma: Scalar[dtype],
             lambda_: Scalar[dtype],
         ):
-            lambda_returns_kernel[HORIZON, IB](ret, rew, val, cont, gamma, lambda_)
+            lambda_returns_kernel[HORIZON, IB](
+                ret, rew, val, cont, gamma, lambda_
+            )
 
         comptime LAMBDA_BLOCKS = (IB + TPB - 1) // TPB
         ctx.enqueue_function[run_lambda_returns, run_lambda_returns](
-            returns_2d, rewards_2d, values_2d, continues_2d,
-            Scalar[dtype](self.gamma), Scalar[dtype](self.lambda_),
-            grid_dim=(LAMBDA_BLOCKS,), block_dim=(TPB,),
+            returns_2d,
+            rewards_2d,
+            values_2d,
+            continues_2d,
+            Scalar[dtype](self.gamma),
+            Scalar[dtype](self.lambda_),
+            grid_dim=(LAMBDA_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── 6b. Compute return scale for advantage normalization ─────────
@@ -4079,20 +4164,24 @@ struct DreamerV3Agent[
         var returns_flat = LayoutTensor[
             dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
         ](gpu_state.imag_returns_buf.unsafe_ptr())
-        var minmax_2 = LayoutTensor[
-            dtype, Layout.row_major(2), MutAnyOrigin
-        ](gpu_state.returns_minmax_buf.unsafe_ptr())
+        var minmax_2 = LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin](
+            gpu_state.returns_minmax_buf.unsafe_ptr()
+        )
 
         @always_inline
         fn run_minmax(
             r: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
-            d: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+            d: LayoutTensor[
+                dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
+            ],
         ):
             min_max_reduce_kernel[RETURNS_SIZE, TPB](r, d)
 
         ctx.enqueue_function[run_minmax, run_minmax](
-            minmax_2, returns_flat,
-            grid_dim=(1,), block_dim=(TPB,),
+            minmax_2,
+            returns_flat,
+            grid_dim=(1,),
+            block_dim=(TPB,),
         )
 
         var host_minmax = ctx.enqueue_create_host_buffer[dtype](2)
@@ -4101,8 +4190,12 @@ struct DreamerV3Agent[
 
         var lo = Float64(host_minmax[0])
         var hi = Float64(host_minmax[1])
-        self.state.return_ema_lo = (1.0 - self.return_norm_rate) * self.state.return_ema_lo + self.return_norm_rate * lo
-        self.state.return_ema_hi = (1.0 - self.return_norm_rate) * self.state.return_ema_hi + self.return_norm_rate * hi
+        self.state.return_ema_lo = (
+            1.0 - self.return_norm_rate
+        ) * self.state.return_ema_lo + self.return_norm_rate * lo
+        self.state.return_ema_hi = (
+            1.0 - self.return_norm_rate
+        ) * self.state.return_ema_hi + self.return_norm_rate * hi
         var scale = self.state.return_ema_hi - self.state.return_ema_lo
         if scale < 1.0:
             scale = 1.0
@@ -4114,11 +4207,14 @@ struct DreamerV3Agent[
         var inv_rscale = Scalar[dtype](1.0 / scale)
         for h in range(HORIZON - 1):
             var ret_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_returns_buf.unsafe_ptr() + h * IB)
+                gpu_state.imag_returns_buf.unsafe_ptr() + h * IB
+            )
             var val_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
+                gpu_state.imag_values_buf.unsafe_ptr() + h * IB
+            )
             var adv_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
+                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB
+            )
 
             @always_inline
             fn run_adv_precompute(
@@ -4129,13 +4225,17 @@ struct DreamerV3Agent[
                 advantage_kernel[IB](adv, ret, val)
 
             ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
-                adv_h, ret_h, val_h,
-                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+                adv_h,
+                ret_h,
+                val_h,
+                grid_dim=(ENCODE_BLOCKS,),
+                block_dim=(TPB,),
             )
 
         # Scale advantages by 1/rscale
-        var all_adv = LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin](
-            gpu_state.imag_rewards_buf.unsafe_ptr())
+        var all_adv = LayoutTensor[
+            dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin
+        ](gpu_state.imag_rewards_buf.unsafe_ptr())
 
         @always_inline
         fn run_scale_adv(
@@ -4150,7 +4250,8 @@ struct DreamerV3Agent[
             all_adv,
             Scalar[dtype](0.0),  # no offset
             inv_rscale,
-            grid_dim=((ADV_TOTAL + TPB - 1) // TPB,), block_dim=(TPB,),
+            grid_dim=((ADV_TOTAL + TPB - 1) // TPB,),
+            block_dim=(TPB,),
         )
 
         # Normalize advantages: (adv - mean) / max(std, 1.0)
@@ -4162,7 +4263,8 @@ struct DreamerV3Agent[
 
         ctx.enqueue_function[run_norm_adv, run_norm_adv](
             all_adv,
-            grid_dim=(1,), block_dim=(TPB,),
+            grid_dim=(1,),
+            block_dim=(TPB,),
         )
 
         # ── 6d. Normalize returns IN-PLACE for critic training ─────────────
@@ -4171,17 +4273,22 @@ struct DreamerV3Agent[
         # This matches reference: critic sees [0,1]-scale targets.
         @always_inline
         fn run_norm_returns(
-            ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+            ret: LayoutTensor[
+                dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
+            ],
             lo_val: Scalar[dtype],
             inv_s: Scalar[dtype],
         ):
-            normalize_returns_elementwise_kernel[RETURNS_SIZE](ret, lo_val, inv_s)
+            normalize_returns_elementwise_kernel[RETURNS_SIZE](
+                ret, lo_val, inv_s
+            )
 
         ctx.enqueue_function[run_norm_returns, run_norm_returns](
             returns_flat,
             Scalar[dtype](self.state.return_ema_lo),
             Scalar[dtype](1.0 / scale),
-            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,), block_dim=(TPB,),
+            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,),
+            block_dim=(TPB,),
         )
 
         # ── 7. Multi-step Critic + Actor training ──────────────────────
@@ -4212,15 +4319,24 @@ struct DreamerV3Agent[
 
             @always_inline
             fn run_concat_h_feat(
-                f: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
-                d: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                s: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
+                f: LayoutTensor[
+                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
+                ],
+                d: LayoutTensor[
+                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
+                ],
             ):
                 concat_feat_kernel[IB, DETER, STOCH](f, d, s)
 
             ctx.enqueue_function[run_concat_h_feat, run_concat_h_feat](
-                h_feat_2d, h_deter_2d, h_stoch_2d,
-                grid_dim=(IB_FEAT_BLOCKS2,), block_dim=(TPB,),
+                h_feat_2d,
+                h_deter_2d,
+                h_stoch_2d,
+                grid_dim=(IB_FEAT_BLOCKS2,),
+                block_dim=(TPB,),
             )
 
             # Returns and values at step h
@@ -4236,11 +4352,17 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, BINS), MutAnyOrigin
             ](gpu_state.critic_logits_buf.unsafe_ptr())
             var critic_cache_h = LayoutTensor[
-                dtype, Layout.row_major(IB, Self.StateType.CriticModel.CACHE_SIZE), MutAnyOrigin,
+                dtype,
+                Layout.row_major(IB, Self.StateType.CriticModel.CACHE_SIZE),
+                MutAnyOrigin,
             ](gpu_state.critic_cache_buf.unsafe_ptr())
             Self.CriticNet.forward_gpu_with_cache[IB](
-                ctx, h_feat_2d, critic_logits_h,
-                gpu_state.critic.params_view(), critic_cache_h, gpu_state.ws_critic,
+                ctx,
+                h_feat_2d,
+                critic_logits_h,
+                gpu_state.critic.params_view(),
+                critic_cache_h,
+                gpu_state.ws_critic,
             )
 
             # symlog(returns[h]) -> two-hot encode -> critic CE gradient
@@ -4256,8 +4378,10 @@ struct DreamerV3Agent[
                 symlog_kernel[IB](o, inp)
 
             ctx.enqueue_function[run_symlog_ret_h, run_symlog_ret_h](
-                symlog_ret_h, returns_h,
-                grid_dim=(SYMLOG_RET_BLOCKS,), block_dim=(TPB,),
+                symlog_ret_h,
+                returns_h,
+                grid_dim=(SYMLOG_RET_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             var two_hot_h = LayoutTensor[
@@ -4266,15 +4390,20 @@ struct DreamerV3Agent[
 
             @always_inline
             fn run_two_hot_h(
-                tgt: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                tgt: LayoutTensor[
+                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+                ],
                 vals: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
                 b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
             ):
                 two_hot_encode_kernel[IB, BINS](tgt, vals, b)
 
             ctx.enqueue_function[run_two_hot_h, run_two_hot_h](
-                two_hot_h, symlog_ret_h, bins_1d_ac,
-                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+                two_hot_h,
+                symlog_ret_h,
+                bins_1d_ac,
+                grid_dim=(ENCODE_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             var critic_grad_h = LayoutTensor[
@@ -4283,16 +4412,26 @@ struct DreamerV3Agent[
 
             @always_inline
             fn run_critic_grad_h(
-                g: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-                l: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
-                t: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                g: LayoutTensor[
+                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+                ],
+                l: LayoutTensor[
+                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+                ],
+                t: LayoutTensor[
+                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
+                ],
                 ib: Scalar[dtype],
             ):
                 two_hot_ce_grad_kernel[IB, BINS](g, l, t, ib)
 
             ctx.enqueue_function[run_critic_grad_h, run_critic_grad_h](
-                critic_grad_h, critic_logits_h, two_hot_h, inv_ib,
-                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+                critic_grad_h,
+                critic_logits_h,
+                two_hot_h,
+                inv_ib,
+                grid_dim=(ENCODE_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             var critic_grad_in_h = LayoutTensor[
@@ -4300,9 +4439,13 @@ struct DreamerV3Agent[
             ](gpu_state.critic_grad_in_buf.unsafe_ptr())
             var critic_grads = gpu_state.critic.grads_view()
             Self.CriticNet.backward_gpu[IB](
-                ctx, critic_grad_h, critic_grad_in_h,
-                gpu_state.critic.params_view(), critic_cache_h,
-                critic_grads, gpu_state.ws_critic,
+                ctx,
+                critic_grad_h,
+                critic_grad_in_h,
+                gpu_state.critic.params_view(),
+                critic_cache_h,
+                critic_grads,
+                gpu_state.ws_critic,
             )
 
             # ── Actor: REINFORCE with saved imagination actions ────────────
@@ -4310,20 +4453,28 @@ struct DreamerV3Agent[
             # All features/advantages are stop-gradiented. Gradient flows
             # only through log_prob(saved_action | current_policy).
             var actor_out_h = LayoutTensor[
-                dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin,
+                dtype,
+                Layout.row_major(IB, ACTOR_OUT_DIM),
+                MutAnyOrigin,
             ](gpu_state.actor_out_buf.unsafe_ptr())
             var actor_cache_h = LayoutTensor[
-                dtype, Layout.row_major(IB, Self.StateType.ActorModel.CACHE_SIZE), MutAnyOrigin,
+                dtype,
+                Layout.row_major(IB, Self.StateType.ActorModel.CACHE_SIZE),
+                MutAnyOrigin,
             ](gpu_state.actor_cache_buf.unsafe_ptr())
             Self.ActorNet.forward_gpu_with_cache[IB](
-                ctx, h_feat_2d, actor_out_h,
-                gpu_state.actor.params_view(), actor_cache_h, gpu_state.ws_actor,
+                ctx,
+                h_feat_2d,
+                actor_out_h,
+                gpu_state.actor.params_view(),
+                actor_cache_h,
+                gpu_state.ws_actor,
             )
 
             # Read pre-computed normalized advantages for step h
-            var adv_h = LayoutTensor[
-                dtype, Layout.row_major(IB), MutAnyOrigin
-            ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
+            var adv_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB
+            )
 
             # Use saved imagination actions (same actions that generated returns)
             var actions_h = LayoutTensor[
@@ -4337,8 +4488,12 @@ struct DreamerV3Agent[
 
             @always_inline
             fn run_reinforce_h(
-                g: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
-                ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                g: LayoutTensor[
+                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
+                ],
+                ao: LayoutTensor[
+                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
+                ],
                 a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
                 adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
                 ib_scale: Scalar[dtype],
@@ -4347,9 +4502,14 @@ struct DreamerV3Agent[
                 reinforce_grad_kernel[IB, ACT](g, ao, a, adv, ib_scale, ec)
 
             ctx.enqueue_function[run_reinforce_h, run_reinforce_h](
-                actor_grad_h, actor_out_h, actions_h,
-                adv_h, inv_ib, entropy_coef,
-                grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
+                actor_grad_h,
+                actor_out_h,
+                actions_h,
+                adv_h,
+                inv_ib,
+                entropy_coef,
+                grid_dim=(SAMPLE_BLOCKS2,),
+                block_dim=(TPB,),
             )
 
             # Actor backward (accumulates into actor grads)
@@ -4358,9 +4518,13 @@ struct DreamerV3Agent[
             ](gpu_state.actor_grad_in_buf.unsafe_ptr())
             var actor_grads = gpu_state.actor.grads_view()
             Self.ActorNet.backward_gpu[IB](
-                ctx, actor_grad_h, actor_grad_in_h,
-                gpu_state.actor.params_view(), actor_cache_h,
-                actor_grads, gpu_state.ws_actor,
+                ctx,
+                actor_grad_h,
+                actor_grad_in_h,
+                gpu_state.actor.params_view(),
+                actor_cache_h,
+                actor_grads,
+                gpu_state.ws_actor,
             )
 
         # ── Critic gradient clipping + optimizer step ─────────────────────
@@ -4394,7 +4558,9 @@ struct DreamerV3Agent[
         if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             # Download a few diagnostic values
             var diag_rew = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-            ctx.enqueue_copy(diag_rew, gpu_state.imag_rewards_buf)  # now has advantages
+            ctx.enqueue_copy(
+                diag_rew, gpu_state.imag_rewards_buf
+            )  # now has advantages
             var diag_ret = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
             ctx.enqueue_copy(diag_ret, gpu_state.imag_returns_buf)
             var diag_val = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
@@ -4446,14 +4612,14 @@ struct DreamerV3Agent[
                 avg_val += Float64(diag_val[i])
             avg_val /= Float64(IB)
 
-            print(
-                "  [diag] step=" + String(self.train_step_count)
-                + " adv_std=" + String(sqrt(adv_var))[:6]
-                + " adv[" + String(adv_min)[:7] + "," + String(adv_max)[:7]
-                + "] val=" + String(avg_val)[:6]
-                + " actor_grad=" + String(actor_grad_norm)
-                + " actor_w=" + String(actor_param_norm)
-            )
+            # print(
+            #     "  [diag] step=" + String(self.train_step_count)
+            #     + " adv_std=" + String(sqrt(adv_var))[:6]
+            #     + " adv[" + String(adv_min)[:7] + "," + String(adv_max)[:7]
+            #     + "] val=" + String(avg_val)[:6]
+            #     + " actor_grad=" + String(actor_grad_norm)
+            #     + " actor_w=" + String(actor_param_norm)
+            # )
 
         self.train_step_count += 1
 
@@ -5419,78 +5585,80 @@ struct DreamerV3Agent[
                             break
 
                     if ready:
-                      for _tr in range(actual_train_ratio):
-                        var batch_obs = List[Scalar[DType.float32]](
-                            capacity=B * (BL + 1) * OBS
-                        )
-                        var batch_acts = List[Scalar[DType.float32]](
-                            capacity=B * BL * ACT
-                        )
-                        var batch_rews = List[Scalar[DType.float32]](
-                            capacity=B * BL
-                        )
-                        var batch_dones = List[Scalar[DType.float32]](
-                            capacity=B * BL
-                        )
-                        for _ in range(B * (BL + 1) * OBS):
-                            batch_obs.append(Scalar[DType.float32](0))
-                        for _ in range(B * BL * ACT):
-                            batch_acts.append(Scalar[DType.float32](0))
-                        for _ in range(B * BL):
-                            batch_rews.append(Scalar[DType.float32](0))
-                            batch_dones.append(Scalar[DType.float32](0))
+                        for _tr in range(actual_train_ratio):
+                            var batch_obs = List[Scalar[DType.float32]](
+                                capacity=B * (BL + 1) * OBS
+                            )
+                            var batch_acts = List[Scalar[DType.float32]](
+                                capacity=B * BL * ACT
+                            )
+                            var batch_rews = List[Scalar[DType.float32]](
+                                capacity=B * BL
+                            )
+                            var batch_dones = List[Scalar[DType.float32]](
+                                capacity=B * BL
+                            )
+                            for _ in range(B * (BL + 1) * OBS):
+                                batch_obs.append(Scalar[DType.float32](0))
+                            for _ in range(B * BL * ACT):
+                                batch_acts.append(Scalar[DType.float32](0))
+                            for _ in range(B * BL):
+                                batch_rews.append(Scalar[DType.float32](0))
+                                batch_dones.append(Scalar[DType.float32](0))
 
-                        var b_per_env = B // n_envs
-                        var b_rem = B % n_envs
-                        var b_offset = 0
-                        for e in range(n_envs):
-                            var n_seqs = b_per_env + (1 if e < b_rem else 0)
-                            for _ in range(n_seqs):
-                                var s_obs = List[Scalar[DType.float32]](
-                                    capacity=(BL + 1) * OBS
-                                )
-                                var s_act = List[Scalar[DType.float32]](
-                                    capacity=BL * ACT
-                                )
-                                var s_rew = List[Scalar[DType.float32]](
-                                    capacity=BL
-                                )
-                                var s_don = List[Scalar[DType.float32]](
-                                    capacity=BL
-                                )
-                                for _ in range((BL + 1) * OBS):
-                                    s_obs.append(Scalar[DType.float32](0))
-                                for _ in range(BL * ACT):
-                                    s_act.append(Scalar[DType.float32](0))
-                                for _ in range(BL):
-                                    s_rew.append(Scalar[DType.float32](0))
-                                    s_don.append(Scalar[DType.float32](0))
-                                env_bufs[e].sample_sequences[1, BL](
-                                    s_obs, s_act, s_rew, s_don
-                                )
+                            var b_per_env = B // n_envs
+                            var b_rem = B % n_envs
+                            var b_offset = 0
+                            for e in range(n_envs):
+                                var n_seqs = b_per_env + (1 if e < b_rem else 0)
+                                for _ in range(n_seqs):
+                                    var s_obs = List[Scalar[DType.float32]](
+                                        capacity=(BL + 1) * OBS
+                                    )
+                                    var s_act = List[Scalar[DType.float32]](
+                                        capacity=BL * ACT
+                                    )
+                                    var s_rew = List[Scalar[DType.float32]](
+                                        capacity=BL
+                                    )
+                                    var s_don = List[Scalar[DType.float32]](
+                                        capacity=BL
+                                    )
+                                    for _ in range((BL + 1) * OBS):
+                                        s_obs.append(Scalar[DType.float32](0))
+                                    for _ in range(BL * ACT):
+                                        s_act.append(Scalar[DType.float32](0))
+                                    for _ in range(BL):
+                                        s_rew.append(Scalar[DType.float32](0))
+                                        s_don.append(Scalar[DType.float32](0))
+                                    env_bufs[e].sample_sequences[1, BL](
+                                        s_obs, s_act, s_rew, s_don
+                                    )
 
-                                var b = b_offset
-                                for k in range((BL + 1) * OBS):
-                                    batch_obs[b * (BL + 1) * OBS + k] = s_obs[k]
-                                for k in range(BL * ACT):
-                                    batch_acts[b * BL * ACT + k] = s_act[k]
-                                for k in range(BL):
-                                    batch_rews[b * BL + k] = s_rew[k]
-                                    batch_dones[b * BL + k] = s_don[k]
-                                b_offset += 1
+                                    var b = b_offset
+                                    for k in range((BL + 1) * OBS):
+                                        batch_obs[
+                                            b * (BL + 1) * OBS + k
+                                        ] = s_obs[k]
+                                    for k in range(BL * ACT):
+                                        batch_acts[b * BL * ACT + k] = s_act[k]
+                                    for k in range(BL):
+                                        batch_rews[b * BL + k] = s_rew[k]
+                                        batch_dones[b * BL + k] = s_don[k]
+                                    b_offset += 1
 
-                        self.do_gpu_train_step(
-                            ctx,
-                            gpu_state,
-                            batch_obs,
-                            batch_acts,
-                            batch_rews,
-                            batch_dones,
-                        )
+                            self.do_gpu_train_step(
+                                ctx,
+                                gpu_state,
+                                batch_obs,
+                                batch_acts,
+                                batch_rews,
+                                batch_dones,
+                            )
 
-                        if self.train_step_count % sync_every == 0:
-                            self.download_from_gpu(gpu_state, ctx)
-                            ctx.synchronize()
+                            if self.train_step_count % sync_every == 0:
+                                self.download_from_gpu(gpu_state, ctx)
+                                ctx.synchronize()
 
             # ── 8. Progress ──────────────────────────────────────────
             if verbose and total_steps >= next_print:
