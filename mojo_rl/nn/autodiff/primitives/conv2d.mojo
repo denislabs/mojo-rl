@@ -1074,15 +1074,16 @@ struct Conv2D[
                 MutAnyOrigin,
             ](grad_input.ptr)
 
-            # Single allocation for col_reshaped only
-            var col_reshaped_buf = ctx.enqueue_create_buffer[dtype](
-                K_TOTAL * Self.col_size
-            )
+            # Single allocation: col_reshaped + W.T + dcol share one buffer
+            comptime ws_size = K_TOTAL * Self.col_size + Self.col_size * Self.out_channels + Self.col_size * K_TOTAL
+            var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+            var ws_ptr = workspace_buf.unsafe_ptr()
+
             var col_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.col_size),
                 MutAnyOrigin,
-            ](col_reshaped_buf.unsafe_ptr())
+            ](ws_ptr)
 
             # Transpose grad: (BATCH, OC*S) → (OC, BATCH*S)
             comptime grad_elems = Self.out_channels * K_TOTAL
@@ -1158,18 +1159,16 @@ struct Conv2D[
             max_matmul[target="gpu"](dW, grad_reshaped, col_reshaped, ctx)
 
             # ── dx via matmul + col2im gather ──
-            # dcol = W.T @ grad_reshaped → (col_size, K_TOTAL)
-            # then col2im gather: dcol → grad_input
+            # W.T and dcol use regions of workspace_buf (after col_reshaped)
 
-            # Transpose W: (OC, col_size) → W_T (col_size, OC)
+            comptime w_t_offset = K_TOTAL * Self.col_size
             comptime w_elems = Self.out_channels * Self.col_size
             comptime w_blocks = (w_elems + TPB - 1) // TPB
-            var w_t_buf = ctx.enqueue_create_buffer[dtype](w_elems)
             var w_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, Self.out_channels),
                 MutAnyOrigin,
-            ](w_t_buf.unsafe_ptr())
+            ](ws_ptr + w_t_offset)
 
             @always_inline
             fn transpose_w_wrapper(
@@ -1198,12 +1197,12 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
 
-            # Reuse col_reshaped_buf for dcol (col_size, K_TOTAL)
+            comptime dcol_offset = w_t_offset + Self.col_size * Self.out_channels
             var dcol = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, K_TOTAL),
                 MutAnyOrigin,
-            ](col_reshaped_buf.unsafe_ptr())
+            ](ws_ptr + dcol_offset)
 
             # max_matmul: dcol = W_T @ grad_reshaped
             max_matmul[target="gpu"](dcol, w_t, grad_reshaped, ctx)

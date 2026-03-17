@@ -1017,8 +1017,8 @@ struct TDMPC2Agent[
                 if t == 0:
                     q_vals_t0.append(avg_q)
                 # Normalize Q-values by running scale (reference: RunningScale)
-                policy_loss -= rho_t * (avg_q / self.running_scale) / Float64(
-                    Self.BATCH
+                policy_loss -= (
+                    rho_t * (avg_q / self.running_scale) / Float64(Self.BATCH)
                 )
                 total_q_sum += avg_q
                 total_q_count += 1
@@ -1082,9 +1082,7 @@ struct TDMPC2Agent[
                     total_entropy / Float64(Self.H),
                     step,
                 )
-                self.logger[].log_scalar(
-                    "pi_scale", self.running_scale, step
-                )
+                self.logger[].log_scalar("pi_scale", self.running_scale, step)
             except:
                 pass
 
@@ -2468,6 +2466,10 @@ struct TDMPC2Agent[
             ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)
             ctx.synchronize()
 
+
+            var nb_done = 0
+            var sum_rew = 0.0
+
             # CPU: episode tracking only (replay insertion is on GPU now)
             for env_idx in range(n_envs):
                 var rew_val = Scalar[dtype](gs.env_rew_host[env_idx])
@@ -2476,6 +2478,7 @@ struct TDMPC2Agent[
                 # Accumulate per-env episode reward on CPU
                 cpu_ep_rewards[env_idx] += Float64(rew_val)
 
+
                 if done_val:
                     # Episode completed — log and reset accumulator
                     var ep_r = cpu_ep_rewards[env_idx]
@@ -2483,34 +2486,34 @@ struct TDMPC2Agent[
                     completed_episodes += 1
                     recent_reward_sum += ep_r
                     recent_episode_count += 1
-
-                    # Log episode metrics (throttled to reduce data volume)
-                    var log_ep = self.diag_every <= 0 or completed_episodes % self.diag_every == 0
-                    if self.logger and log_ep:
-                        try:
-                            self.logger[].log_scalar(
-                                "episode_reward",
-                                ep_r,
-                                total_steps,
-                            )
-                            self.logger[].log_scalar(
-                                "episodes",
-                                Float64(completed_episodes),
-                                total_steps,
-                            )
-                            self.logger[].log_scalar(
-                                "train_steps",
-                                Float64(self.train_step_count),
-                                total_steps,
-                            )
-                        except:
-                            pass
+                    nb_done += 1
+                    sum_rew += ep_r
 
                     cpu_ep_rewards[env_idx] = 0.0
                     # Reset MPPI warm-start for this env
                     if use_mppi:
                         env_t0_flags[env_idx] = True
                         env_prev_means[env_idx] = List[Float64]()
+            
+            if self.logger and nb_done > 0:
+                try:
+                    self.logger[].log_scalar(
+                        "episode_reward",
+                        sum_rew / nb_done,
+                        total_steps,
+                    )
+                    self.logger[].log_scalar(
+                        "episodes",
+                        Float64(completed_episodes),
+                        total_steps,
+                    )
+                    self.logger[].log_scalar(
+                        "train_steps",
+                        Float64(self.train_step_count),
+                        total_steps,
+                    )
+                except:
+                    pass
 
             total_steps += n_envs
             t_data_collection += Int(perf_counter_ns() - _t0_dc)
@@ -3454,24 +3457,20 @@ struct TDMPC2Agent[
             self.train_step_count += 1
 
             # Log training diagnostics periodically
-            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            if (
+                self.logger
+                and self.diag_every > 0
+                and self.train_step_count % self.diag_every == 0
+            ):
                 try:
                     var step = self.train_step_count
-                    self.logger[].log_scalar(
-                        "q_mean", diag_q_mean, step
-                    )
-                    self.logger[].log_scalar(
-                        "q_min", diag_q_min, step
-                    )
-                    self.logger[].log_scalar(
-                        "q_max", diag_q_max, step
-                    )
+                    self.logger[].log_scalar("q_mean", diag_q_mean, step)
+                    self.logger[].log_scalar("q_min", diag_q_min, step)
+                    self.logger[].log_scalar("q_max", diag_q_max, step)
                     self.logger[].log_scalar(
                         "pi_scale", self.running_scale, step
                     )
-                    self.logger[].log_scalar(
-                        "gamma", self.gamma, step
-                    )
+                    self.logger[].log_scalar("gamma", self.gamma, step)
                 except:
                     pass
 
