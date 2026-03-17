@@ -1157,32 +1157,119 @@ struct Conv2D[
             # max_matmul: dW = grad_reshaped @ col_reshaped
             max_matmul[target="gpu"](dW, grad_reshaped, col_reshaped, ctx)
 
-            # ── dx AFTER dW (grad_input was used as temp, now compute real dx) ──
+            # ── dx via matmul + col2im gather ──
+            # dcol = W.T @ grad_reshaped → (col_size, K_TOTAL)
+            # then col2im gather: dcol → grad_input
+
+            # Transpose W: (OC, col_size) → W_T (col_size, OC)
+            comptime w_elems = Self.out_channels * Self.col_size
+            comptime w_blocks = (w_elems + TPB - 1) // TPB
+            var w_t_buf = ctx.enqueue_create_buffer[dtype](w_elems)
+            var w_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.out_channels),
+                MutAnyOrigin,
+            ](w_t_buf.unsafe_ptr())
+
+            @always_inline
+            fn transpose_w_wrapper(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.PARAM_SIZE),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= w_elems:
+                    return
+                var k = idx // Self.out_channels
+                var oc = idx % Self.out_channels
+                dst[k, oc] = src[oc * Self.col_size + k]
+
+            ctx.enqueue_function[transpose_w_wrapper, transpose_w_wrapper](
+                w_t,
+                params_immut,
+                grid_dim=(w_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # Reuse col_reshaped_buf for dcol (col_size, K_TOTAL)
+            var dcol = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, K_TOTAL),
+                MutAnyOrigin,
+            ](col_reshaped_buf.unsafe_ptr())
+
+            # max_matmul: dcol = W_T @ grad_reshaped
+            max_matmul[target="gpu"](dcol, w_t, grad_reshaped, ctx)
+
+            # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
             @always_inline
-            fn dx_wrapper_nvidia(
+            fn col2im_gather_wrapper(
                 grad_input: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-                ],
-                grad_output: LayoutTensor[
                     dtype,
-                    Layout.row_major(BATCH, Self.OUT_DIM),
-                    ImmutAnyOrigin,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    MutAnyOrigin,
                 ],
-                params: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                dcol: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, K_TOTAL),
+                    MutAnyOrigin,
                 ],
             ):
-                Self.backward_dx_kernel_impl[BATCH](
-                    grad_input, grad_output, params
-                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                var total = BATCH * Self.IN_DIM
+                if idx >= total:
+                    return
 
-            ctx.enqueue_function[dx_wrapper_nvidia, dx_wrapper_nvidia](
+                var b = idx // Self.IN_DIM
+                var in_pos = idx % Self.IN_DIM
+                var c = in_pos // (Self.in_h * Self.in_w)
+                var rem = in_pos % (Self.in_h * Self.in_w)
+                var ih = rem // Self.in_w
+                var iw = rem % Self.in_w
+
+                var acc: Scalar[dtype] = 0
+                for kh in range(Self.kernel_size):
+                    for kw in range(Self.kernel_size):
+                        var oh_num = ih + Self.padding - kh
+                        var ow_num = iw + Self.padding - kw
+                        if (
+                            oh_num >= 0
+                            and oh_num % Self.stride == 0
+                            and ow_num >= 0
+                            and ow_num % Self.stride == 0
+                        ):
+                            var oh = oh_num // Self.stride
+                            var ow = ow_num // Self.stride
+                            if oh < Self.out_h and ow < Self.out_w:
+                                var s = oh * Self.out_w + ow
+                                var c_k = (
+                                    c
+                                    * Self.kernel_size
+                                    * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
+                                acc += rebind[Scalar[dtype]](
+                                    dcol[c_k, b * Self.spatial_out + s]
+                                )
+
+                grad_input[b, in_pos] = acc
+
+            ctx.enqueue_function[
+                col2im_gather_wrapper, col2im_gather_wrapper
+            ](
                 grad_input,
-                grad_output_immut,
-                params_immut,
+                dcol,
                 grid_dim=(grid_dx,),
                 block_dim=(TPB,),
             )
