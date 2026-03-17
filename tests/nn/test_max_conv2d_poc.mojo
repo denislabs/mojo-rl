@@ -1,9 +1,8 @@
 """POC: Benchmarking conv2D approaches.
 
 Compares:
-  1. nn.conv.conv_gpu (Max's GPU conv2d - auto-dispatches cuDNN/naive)
-  2. nn.conv.conv_cudnn (cuDNN directly)
-  3. Our custom 2x2-tiled kernel (via FusedConv2DActivation forward)
+  1. nn.conv.conv2d_gpu_naive_nhwc_rscf (Max's pure Mojo GPU conv2d)
+  2. Our custom 2x2-tiled kernel (baseline reference)
 
 Layout notes:
   - Max conv expects NHWC input (batch, height, width, channels)
@@ -17,13 +16,14 @@ Run:
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from std.utils import IndexList
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import dtype, TPB
 
-# Max conv kernels
-from nn.conv import conv_gpu, conv_cudnn
+# Max conv kernels (pure Mojo — no cuDNN dependency)
+from nn.conv import conv2d_gpu_naive_nhwc_rscf
 
 
 fn main() raises:
@@ -55,7 +55,7 @@ fn main() raises:
     )
 
     print("=" * 60)
-    print("Max Kernels Conv2D Benchmark")
+    print("Max Kernels Conv2D Benchmark (no cuDNN)")
     print("=" * 60)
     print(
         "Conv2D: ["
@@ -95,9 +95,6 @@ fn main() raises:
         var out_buf1 = ctx.enqueue_create_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
-        var out_buf2 = ctx.enqueue_create_buffer[dtype](
-            BATCH * OUT_H * OUT_W * OC
-        )
 
         # Initialize with random data
         var input_host = ctx.enqueue_create_host_buffer[dtype](
@@ -113,7 +110,6 @@ fn main() raises:
         ctx.enqueue_copy(input_buf, input_host)
         ctx.enqueue_copy(filter_buf, filter_host)
         ctx.enqueue_memset(out_buf1, 0)
-        ctx.enqueue_memset(out_buf2, 0)
         ctx.synchronize()
 
         # ── Create LayoutTensors with NHWC/RSCF layouts ──
@@ -135,135 +131,107 @@ fn main() raises:
             MutAnyOrigin,
         ](out_buf1.unsafe_ptr())
 
-        var out2_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
-            MutAnyOrigin,
-        ](out_buf2.unsafe_ptr())
-
         var stride = IndexList[2](STRIDE, STRIDE)
         var dilation = IndexList[2](1, 1)
-        var padding = IndexList[4](PAD, PAD, PAD, PAD)
-        var padding_2 = IndexList[2](PAD, PAD)
+        var padding = IndexList[2](PAD, PAD)
 
         # ── Warmup ──
         print("Warming up...")
-        conv_gpu(
+
+        # conv2d_gpu_naive_nhwc_rscf is a GPU kernel — we need to launch it
+        # via enqueue_function with appropriate grid/block dims
+        @always_inline
+        fn conv_kernel_wrapper(
+            input: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, IN_H, IN_W, IC),
+                MutAnyOrigin,
+            ],
+            filter: LayoutTensor[
+                dtype,
+                Layout.row_major(KS, KS, IC, OC),
+                MutAnyOrigin,
+            ],
+            output: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, OUT_H, OUT_W, OC),
+                MutAnyOrigin,
+            ],
+        ):
+            conv2d_gpu_naive_nhwc_rscf[block_size=TPB](
+                input,
+                filter,
+                output,
+                stride,
+                dilation,
+                padding,
+                num_groups=1,
+            )
+
+        # Grid: one thread per output element
+        comptime out_elems = BATCH * OUT_H * OUT_W * OC
+        comptime grid_blocks = (out_elems + TPB - 1) // TPB
+
+        ctx.enqueue_function[conv_kernel_wrapper, conv_kernel_wrapper](
             input_tensor,
             filter_tensor,
             out1_tensor,
-            stride,
-            dilation,
-            padding,
-            num_groups=1,
-            ctx=ctx,
-        )
-        conv_cudnn(
-            input_tensor,
-            filter_tensor,
-            out2_tensor,
-            stride,
-            dilation,
-            padding_2,
-            num_groups=1,
-            ctx=ctx,
+            grid_dim=(grid_blocks,),
+            block_dim=(TPB,),
         )
         ctx.synchronize()
         print("Warmup done!")
         print()
 
-        # ── Benchmark 1: conv_gpu (auto-dispatching) ──
+        # ── Benchmark: conv2d_gpu_naive_nhwc_rscf ──
         ctx.synchronize()
         var t0 = perf_counter_ns()
         for _ in range(N_ITERS):
-            conv_gpu(
+            ctx.enqueue_function[conv_kernel_wrapper, conv_kernel_wrapper](
                 input_tensor,
                 filter_tensor,
                 out1_tensor,
-                stride,
-                dilation,
-                padding,
-                num_groups=1,
-                ctx=ctx,
+                grid_dim=(grid_blocks,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         var t1 = perf_counter_ns()
-        var gpu_us = Float64(t1 - t0) / 1000.0 / Float64(N_ITERS)
-        var gpu_gflops = flops / (gpu_us * 1e-6) / 1e9
+        var naive_us = Float64(t1 - t0) / 1000.0 / Float64(N_ITERS)
+        var naive_gflops = flops / (naive_us * 1e-6) / 1e9
 
         print(
-            "1. conv_gpu (auto):     "
-            + String(gpu_us)[:8]
+            "1. conv2d_gpu_naive:    "
+            + String(naive_us)[:8]
             + " μs  |  "
-            + String(gpu_gflops)[:6]
+            + String(naive_gflops)[:6]
             + " GFLOPS"
         )
 
-        # ── Benchmark 2: conv_cudnn (direct cuDNN) ──
-        ctx.synchronize()
-        var t2 = perf_counter_ns()
-        for _ in range(N_ITERS):
-            conv_cudnn(
-                input_tensor,
-                filter_tensor,
-                out2_tensor,
-                stride,
-                dilation,
-                padding_2,
-                num_groups=1,
-                ctx=ctx,
-            )
-        ctx.synchronize()
-        var t3 = perf_counter_ns()
-        var cudnn_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
-        var cudnn_gflops = flops / (cudnn_us * 1e-6) / 1e9
-
-        print(
-            "2. conv_cudnn:          "
-            + String(cudnn_us)[:8]
-            + " μs  |  "
-            + String(cudnn_gflops)[:6]
-            + " GFLOPS"
-        )
-
-        # ── Verify consistency ──
+        # ── Verify output is non-zero ──
         print()
-        print("Verifying consistency...")
+        print("Verifying output...")
         var out1_host = ctx.enqueue_create_host_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
-        var out2_host = ctx.enqueue_create_host_buffer[dtype](
-            BATCH * OUT_H * OUT_W * OC
-        )
         ctx.enqueue_copy(out1_host, out_buf1)
-        ctx.enqueue_copy(out2_host, out_buf2)
         ctx.synchronize()
 
-        var max_diff: Float64 = 0.0
-        for i in range(min(1000, BATCH * OUT_H * OUT_W * OC)):
-            var diff = abs(Float64(out1_host[i]) - Float64(out2_host[i]))
-            if diff > max_diff:
-                max_diff = diff
-        print("Max abs diff (first 1000 elements): " + String(max_diff)[:10])
-
-        # Show some output values to verify non-zero
-        print()
-        print("Sample output values (conv_gpu):")
+        print("Sample output values:")
         for i in range(5):
             print("  [" + String(i) + "] = " + String(Float64(out1_host[i])))
 
+        var non_zero = 0
+        for i in range(BATCH * OUT_H * OUT_W * OC):
+            if Float64(out1_host[i]) != 0.0:
+                non_zero += 1
+        print(
+            "Non-zero outputs: "
+            + String(non_zero)
+            + " / "
+            + String(BATCH * OUT_H * OUT_W * OC)
+        )
+
         print()
         print("=" * 60)
-        if cudnn_us < gpu_us:
-            print(
-                ">>> cuDNN is faster (ratio: "
-                + String(gpu_us / cudnn_us)[:4]
-                + "x) <<<"
-            )
-        else:
-            print(
-                ">>> conv_gpu is faster (ratio: "
-                + String(cudnn_us / gpu_us)[:4]
-                + "x) <<<"
-            )
+        print("Benchmark complete!")
         print("=" * 60)

@@ -14,8 +14,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
-from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
@@ -1135,11 +1134,6 @@ fn plan_gpu_batched[
     ctx.enqueue_copy(mb.mean_buf, mb.mean_host)
     ctx.enqueue_copy(mb.std_buf, mb.std_host)
 
-    # ─── Create streams for parallel rew+dyn (NVIDIA only) ─────────────
-    comptime USE_STREAMS = has_nvidia_gpu_accelerator()
-    var s1 = ctx.create_stream()  # reward
-    var s2 = ctx.create_stream()  # dynamics
-
     comptime Q_PS = QModel.PARAM_SIZE
 
     # ─── Main MPPI iterations ────────────────────────────────────────────
@@ -1186,80 +1180,32 @@ fn plan_gpu_batched[
                 block_dim=(TPB,),
             )
 
-            # 3d-g. Reward + Dynamics
-            comptime if USE_STREAMS:
-                # Stream 1: Reward forward + accumulate
-                RewModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                    ctx,
-                    s1,
-                    rew_out_tensor,
-                    rew_in_tensor,
-                    rew_params,
-                    mb.rew_ws_buf,
-                )
-                var compiled_accum = ctx.compile_function[
-                    accum_reward, accum_reward
-                ]()
-                s1.enqueue_function(
-                    compiled_accum,
-                    rew_logits_tensor,
-                    bins_tensor,
-                    returns_tensor,
-                    discount,
-                    grid_dim=(MPPI_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                # Stream 2: Dynamics forward + copy z
-                DynModel.forward_gpu_no_cache_on_stream[BATCH_TOTAL](
-                    ctx,
-                    s2,
-                    dyn_out_tensor,
-                    dyn_in_tensor,
-                    dyn_params,
-                    mb.dyn_ws_buf,
-                )
-                comptime copy_z = mppi_copy_z_kernel[
-                    dtype, BATCH_TOTAL, LATENT_DIM
-                ]
-                var compiled_copy_z = ctx.compile_function[copy_z, copy_z]()
-                s2.enqueue_function(
-                    compiled_copy_z,
-                    z_tensor,
-                    z_next_tensor,
-                    grid_dim=(MPPI_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                # Wait for both to finish before next horizon step
-                s1.synchronize()
-                s2.synchronize()
-            else:
-                # Reward forward
-                RewModel.forward_gpu_no_cache[BATCH_TOTAL](
-                    ctx,
-                    rew_out_tensor,
-                    rew_in_tensor,
-                    rew_params,
-                    mb.rew_ws_buf,
-                )
-                # Dynamics forward
-                DynModel.forward_gpu_no_cache[BATCH_TOTAL](
-                    ctx,
-                    dyn_out_tensor,
-                    dyn_in_tensor,
-                    dyn_params,
-                    mb.dyn_ws_buf,
-                )
-                # Fused: accum reward + copy z (1 kernel, was 2)
-                ctx.enqueue_function[accum_copy, accum_copy](
-                    rew_logits_tensor,
-                    bins_tensor,
-                    returns_tensor,
-                    discount,
-                    z_tensor,
-                    z_next_tensor,
-                    grid_dim=(MPPI_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+            # 3d-g. Reward + Dynamics (sequential on default queue)
+            RewModel.forward_gpu_no_cache[BATCH_TOTAL](
+                ctx,
+                rew_out_tensor,
+                rew_in_tensor,
+                rew_params,
+                mb.rew_ws_buf,
+            )
+            DynModel.forward_gpu_no_cache[BATCH_TOTAL](
+                ctx,
+                dyn_out_tensor,
+                dyn_in_tensor,
+                dyn_params,
+                mb.dyn_ws_buf,
+            )
+            # Fused: accum reward + copy z
+            ctx.enqueue_function[accum_copy, accum_copy](
+                rew_logits_tensor,
+                bins_tensor,
+                returns_tensor,
+                discount,
+                z_tensor,
+                z_next_tensor,
+                grid_dim=(MPPI_BLOCKS,),
+                block_dim=(TPB,),
+            )
             discount = discount * Scalar[dtype](gamma)
 
         # 4. Terminal value: policy → tanh → build za
