@@ -4306,91 +4306,38 @@ struct DreamerV3Agent[
             )
 
             # ── Actor: dynamics backprop (for h < HORIZON-1) ─────────────
-            # Gradient of imagined reward at h+1 flows backward through:
-            # reward_head → feat_concat → GRU_gate → GRU_hidden → concat →
-            # ActionProj → action_normalize → reparam_tanh → actor
+            # Gradient flows: feat_{h+1} → GRU → ActionProj → reparam → actor
+            # Use advantage-weighted unit gradient on feat as starting point.
             if h < HORIZON - 1:
-                # Step 1: Reward head backward: d_reward → d_feat_{h+1}
-                # Use normalized advantage as the "d_reward" signal (scalar per batch)
-                # This scales the dynamics gradient by advantage magnitude
+                # Step 1: Create advantage-weighted feat gradient
+                # d_feat[b, j] = -advantage[b] * inv_ib (unit direction, advantage weight)
                 var adv_h = LayoutTensor[
                     dtype, Layout.row_major(IB), MutAnyOrigin
                 ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
-
-                # Expand scalar advantage to BINS-sized gradient via two-hot CE
-                # approach: grad = -advantage * d(decoded_reward)/d(logits)
-                # Simplified: use MSE gradient -advantage/FEAT as feat gradient
-                # Even simpler: directly use advantage as a scalar weight on
-                # the d(feat)/d(action) gradient.
-
-                # The dynamics gradient: d(return)/d(actor) ≈ d(value_{h+1})/d(action_h)
-                # Using saved reward head cache at step h+1... but h+1 cache is for
-                # the feat at h+1, which needs the value backward.
-                # Simpler approach: just backprop from the reward head at step h.
-
-                # Get d_feat from reward_head backward at step h
-                comptime IMAG_REW_C = Self.StateType.RSSMType.RewModel.CACHE_SIZE
-                var rew_cache_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, IMAG_REW_C), MutAnyOrigin
-                ](gpu_state.imag_rew_cache_buf.unsafe_ptr() + h * IB * IMAG_REW_C)
-
-                # Use advantage-weighted gradient through reward head
-                # grad_reward_logits[b,k] = advantage[b] * (softmax[k] - uniform) * inv_ib
-                # Simplified: use uniform gradient scaled by advantage
-                # Even simpler: compute d(decoded_reward)/d(feat) via reward_head backward
-                # with a unit gradient, then scale by advantage.
-
-                # Create unit gradient for reward logits (ones/BINS)
-                var rew_grad_unit = LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ](gpu_state.rew_grad_out_buf.unsafe_ptr())
                 var rew_grad_in_dyn = LayoutTensor[
                     dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
                 ](gpu_state.rew_grad_in_buf.unsafe_ptr())
 
-                # Compute softmax gradient: this gives d(loss)/d(feat) through reward_head
-                # Use the advantage as the loss weight via MSE-style gradient
-                # For dynamics backprop: gradient = -1/IB * d(decoded_reward)/d(feat)
-                # Use reward_head logits at step h for softmax gradient
-                var rew_logits_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ](gpu_state.rew_logits_buf.unsafe_ptr())
-
-                # Two-hot CE gradient with uniform target gives softmax - 1/BINS
-                # But we want d(expected_reward)/d(logits), not a loss gradient.
-                # d(E[bins * softmax])/d(logits) = bins * softmax * (1 - softmax)
-                # This is complex. Instead, just backward through the network:
-                # Use d(output)/d(input) = reward_head.backward with identity gradient.
-
-                # Identity gradient: 1/BINS for each output logit * inv_ib
                 @always_inline
-                fn run_unit_grad(
-                    g: LayoutTensor[dtype, Layout.row_major(IB, BINS), MutAnyOrigin],
+                fn run_feat_grad(
+                    g: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
                     adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
                     ib: Scalar[dtype],
                 ):
                     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
                     if b >= IB:
                         return
+                    # Negative because we want to MAXIMIZE returns
                     var w = -rebind[Scalar[dtype]](adv[b]) * ib
-                    var per_bin = w / Scalar[dtype](Float64(BINS))
-                    for k in range(BINS):
-                        g[b, k] = per_bin
+                    for j in range(FEAT):
+                        g[b, j] = w
 
-                ctx.enqueue_function[run_unit_grad, run_unit_grad](
-                    rew_grad_unit, adv_h, inv_ib,
+                ctx.enqueue_function[run_feat_grad, run_feat_grad](
+                    rew_grad_in_dyn, adv_h, inv_ib,
                     grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
                 )
 
-                # Reward head backward: d_reward_logits → d_feat
-                var rew_grads_dummy = gpu_state.reward_head.grads_view()
-                RewNet.backward_gpu[IB](
-                    ctx, rew_grad_unit, rew_grad_in_dyn,
-                    gpu_state.reward_head.params_view(), rew_cache_h,
-                    rew_grads_dummy, gpu_state.ws_reward,
-                )
-
-                # Step 2: Split d_feat → d_deter, d_stoch (stoch gradient discarded for now)
+                # Step 2: Split d_feat → d_deter, d_stoch
                 var d_deter_dyn = LayoutTensor[
                     dtype, Layout.row_major(IB, DETER), MutAnyOrigin
                 ](gpu_state.d_deter_total_buf.unsafe_ptr())
