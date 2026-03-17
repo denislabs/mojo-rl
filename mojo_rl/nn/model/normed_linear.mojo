@@ -20,8 +20,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.gpu.compute.mma import mma
-from std.sys import is_nvidia_gpu
+from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.math import sqrt, exp, log
+import linalg.matmul.vendor.blas as vendor_blas
 
 
 struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
@@ -526,6 +527,31 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         if global_row < BATCH and global_col < Self.OUT_DIM:
             linear_out[global_row, global_col] = acc
+
+    # ─── Bias-add kernel (used after vendor_blas matmul) ────────────────
+
+    @always_inline
+    @staticmethod
+    fn _bias_add_kernel[
+        BATCH: Int,
+    ](
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
+    ):
+        """Add bias to each row: output[i, j] += b[j].
+
+        Grid: ((BATCH * OUT_DIM + TPB - 1) // TPB,)
+        Block: (TPB,)
+        """
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * Self.OUT_DIM:
+            return
+        var col = idx % Self.OUT_DIM
+        output[idx // Self.OUT_DIM, col] = output[idx // Self.OUT_DIM, col] + b[
+            col
+        ]
 
     # ─── MMA / 2x2 matmul kernels (dispatched inside GPU wrapper) ──────
     # Grid: ((OUT_DIM + 31) // 32, (BATCH + 31) // 32)
@@ -1867,47 +1893,115 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        # Kernel 1: Linear matmul (with cache; dispatch inside wrapper)
-        comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # Kernel 1: Linear matmul (with cache)
+        comptime if has_nvidia_gpu_accelerator():
+            # Cache input (copy input into cache buffer)
+            comptime cache_elems = BATCH * Self.IN_DIM
+            comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
-        @always_inline
-        fn linear_wrapper(
-            linear_out: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.IN_DIM),
-                ImmutAnyOrigin,
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                ImmutAnyOrigin,
-            ],
-            b: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-            ],
-            cache: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.CACHE_SIZE),
-                MutAnyOrigin,
-            ],
-        ):
-            Self._linear_kernel_with_cache[BATCH](
-                linear_out, input, W, b, cache
+            @always_inline
+            fn cache_input_wrapper(
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    MutAnyOrigin,
+                ],
+                input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= cache_elems:
+                    return
+                var row = idx // Self.IN_DIM
+                var col = idx % Self.IN_DIM
+                cache[row, Self._INPUT_OFFSET + col] = input[row, col]
+
+            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+                cache,
+                input_immut,
+                grid_dim=(cache_blocks,),
+                block_dim=(TPB,),
             )
 
-        ctx.enqueue_function[linear_wrapper, linear_wrapper](
-            linear_out_mut,
-            input_immut,
-            W,
-            b,
-            cache,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            # Vendor BLAS matmul
+            vendor_blas.matmul(
+                ctx,
+                linear_out_mut,
+                input_immut,
+                W,
+                c_row_major=True,
+            )
+
+            # Bias add
+            comptime bias_blocks = (
+                BATCH * Self.OUT_DIM + TPB - 1
+            ) // TPB
+
+            @always_inline
+            fn bias_cache_wrapper(
+                output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+            ):
+                Self._bias_add_kernel[BATCH](output, b)
+
+            ctx.enqueue_function[bias_cache_wrapper, bias_cache_wrapper](
+                linear_out_mut,
+                b,
+                grid_dim=(bias_blocks,),
+                block_dim=(TPB,),
+            )
+        else:
+            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @always_inline
+            fn linear_wrapper(
+                linear_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self._linear_kernel_with_cache[BATCH](
+                    linear_out, input, W, b, cache
+                )
+
+            ctx.enqueue_function[linear_wrapper, linear_wrapper](
+                linear_out_mut,
+                input_immut,
+                W,
+                b,
+                cache,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         # Kernel 2: Fused LayerNorm + Mish
         @always_inline
@@ -1988,39 +2082,77 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        # Kernel 1: Linear matmul (no cache; dispatch inside wrapper)
-        comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
+        comptime if has_nvidia_gpu_accelerator():
+            # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
+            vendor_blas.matmul(
+                ctx,
+                linear_out_mut,
+                input_immut,
+                W,
+                c_row_major=True,
+            )
+            # Bias add (separate small kernel)
+            comptime bias_blocks = (
+                BATCH * Self.OUT_DIM + TPB - 1
+            ) // TPB
 
-        @always_inline
-        fn linear_nc_wrapper(
-            linear_out: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.IN_DIM),
-                ImmutAnyOrigin,
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                ImmutAnyOrigin,
-            ],
-            b: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
+            @always_inline
+            fn bias_nc_wrapper(
+                output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+            ):
+                Self._bias_add_kernel[BATCH](output, b)
 
-        ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
-            linear_out_mut,
-            input_immut,
-            W,
-            b,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            ctx.enqueue_function[bias_nc_wrapper, bias_nc_wrapper](
+                linear_out_mut,
+                b,
+                grid_dim=(bias_blocks,),
+                block_dim=(TPB,),
+            )
+        else:
+            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @always_inline
+            fn linear_nc_wrapper(
+                linear_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+            ):
+                Self._linear_kernel_no_cache[BATCH](
+                    linear_out, input, W, b
+                )
+
+            ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
+                linear_out_mut,
+                input_immut,
+                W,
+                b,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         # Kernel 2: Fused LN + Mish (no cache)
         @always_inline
@@ -2096,42 +2228,81 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
-        comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # Note: vendor_blas.matmul doesn't support streams — use on default queue.
+        # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
+        # before and after this call anyway, so this is functionally correct.
+        comptime if has_nvidia_gpu_accelerator():
+            vendor_blas.matmul(
+                ctx,
+                linear_out_mut,
+                input_immut,
+                W,
+                c_row_major=True,
+            )
+            comptime bias_blocks = (
+                BATCH * Self.OUT_DIM + TPB - 1
+            ) // TPB
 
-        @always_inline
-        fn linear_stream_wrapper(
-            linear_out: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.IN_DIM),
-                ImmutAnyOrigin,
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                ImmutAnyOrigin,
-            ],
-            b: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
+            @always_inline
+            fn bias_stream_wrapper(
+                output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+            ):
+                Self._bias_add_kernel[BATCH](output, b)
 
-        var compiled_linear = ctx.compile_function[
-            linear_stream_wrapper, linear_stream_wrapper
-        ]()
-        stream.enqueue_function(
-            compiled_linear,
-            linear_out_mut,
-            input_immut,
-            W,
-            b,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            ctx.enqueue_function[bias_stream_wrapper, bias_stream_wrapper](
+                linear_out_mut,
+                b,
+                grid_dim=(bias_blocks,),
+                block_dim=(TPB,),
+            )
+        else:
+            comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @always_inline
+            fn linear_stream_wrapper(
+                linear_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+                ],
+            ):
+                Self._linear_kernel_no_cache[BATCH](
+                    linear_out, input, W, b
+                )
+
+            var compiled_linear = ctx.compile_function[
+                linear_stream_wrapper, linear_stream_wrapper
+            ]()
+            stream.enqueue_function(
+                compiled_linear,
+                linear_out_mut,
+                input_immut,
+                W,
+                b,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         @always_inline
         fn ln_mish_wrapper(
