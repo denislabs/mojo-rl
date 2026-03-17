@@ -1143,7 +1143,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace)
 
-            comptime col_elems = K_TOTAL * Self.col_size
+            comptime col_elems = BATCH * Self.spatial_out * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1372,7 +1372,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace)
 
-            comptime col_elems = K_TOTAL * Self.col_size
+            comptime col_elems = BATCH * Self.spatial_out * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1407,7 +1407,7 @@ struct FusedConv2DActivation[
 
             # Transpose + mask grad: apply ACT.backward and reshape
             # src[b, oc*S + s] → dst[oc, b*S + s] with ACT.backward
-            comptime grad_elems = Self.out_channels * K_TOTAL
+            comptime grad_elems = Self.out_channels * BATCH * Self.spatial_out
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
             @always_inline

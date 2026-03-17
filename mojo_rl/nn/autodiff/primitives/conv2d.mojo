@@ -1238,7 +1238,7 @@ struct Conv2D[
             ](cache.ptr)
 
             # Transpose grad: (BATCH, OC*S) → (OC, BATCH*S)
-            comptime grad_elems = Self.out_channels * K_TOTAL
+            comptime grad_elems = Self.out_channels * BATCH * Self.spatial_out
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
             @always_inline
