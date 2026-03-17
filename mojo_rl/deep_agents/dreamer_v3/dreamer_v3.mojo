@@ -3993,49 +3993,9 @@ struct DreamerV3Agent[
             grid_dim=(LAMBDA_BLOCKS,), block_dim=(TPB,),
         )
 
-        # ── 6b. Pre-compute advantages BEFORE return normalization ─────
-        # Both returns and values are in original scale here.
-        # Store advantages in imag_rewards_buf (no longer needed).
-        comptime ENCODE_BLOCKS = (IB + TPB - 1) // TPB
-        comptime ADV_TOTAL = (HORIZON - 1) * IB
-        for h in range(HORIZON - 1):
-            var ret_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_returns_buf.unsafe_ptr() + h * IB)
-            var val_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
-            var adv_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
-                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
-
-            @always_inline
-            fn run_adv_precompute(
-                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ):
-                advantage_kernel[IB](adv, ret, val)
-
-            ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
-                adv_h, ret_h, val_h,
-                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
-            )
-
-        # Normalize all advantages: (adv - mean) / max(std, 1.0)
-        var all_adv = LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin](
-            gpu_state.imag_rewards_buf.unsafe_ptr())
-
-        @always_inline
-        fn run_norm_adv(
-            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
-        ):
-            normalize_advantages_kernel[ADV_TOTAL, TPB](a)
-
-        ctx.enqueue_function[run_norm_adv, run_norm_adv](
-            all_adv,
-            grid_dim=(1,), block_dim=(TPB,),
-        )
-
-        # ── 6c. Normalize returns for critic training ────────────────────
+        # ── 6b. Compute return scale for advantage normalization ─────────
         comptime RETURNS_SIZE = HORIZON * IB
+        comptime ENCODE_BLOCKS = (IB + TPB - 1) // TPB
         var returns_flat = LayoutTensor[
             dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
         ](gpu_state.imag_returns_buf.unsafe_ptr())
@@ -4067,6 +4027,65 @@ struct DreamerV3Agent[
         if scale < 1.0:
             scale = 1.0
 
+        # ── 6c. Compute advantages: (return - value) / rscale ─────────
+        # Reference DreamerV3: adv = (ret - tarval) / rscale
+        # Both returns and values in original scale. Divide by return scale.
+        comptime ADV_TOTAL = (HORIZON - 1) * IB
+        var inv_rscale = Scalar[dtype](1.0 / scale)
+        for h in range(HORIZON - 1):
+            var ret_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_returns_buf.unsafe_ptr() + h * IB)
+            var val_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
+            var adv_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
+                gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
+
+            @always_inline
+            fn run_adv_precompute(
+                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+            ):
+                advantage_kernel[IB](adv, ret, val)
+
+            ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
+                adv_h, ret_h, val_h,
+                grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
+            )
+
+        # Scale advantages by 1/rscale
+        var all_adv = LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin](
+            gpu_state.imag_rewards_buf.unsafe_ptr())
+
+        @always_inline
+        fn run_scale_adv(
+            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
+            lo_val: Scalar[dtype],
+            inv_s: Scalar[dtype],
+        ):
+            normalize_returns_elementwise_kernel[ADV_TOTAL](a, lo_val, inv_s)
+
+        # adv = (adv - 0) * inv_rscale = adv / rscale
+        ctx.enqueue_function[run_scale_adv, run_scale_adv](
+            all_adv,
+            Scalar[dtype](0.0),  # no offset
+            inv_rscale,
+            grid_dim=((ADV_TOTAL + TPB - 1) // TPB,), block_dim=(TPB,),
+        )
+
+        # Normalize advantages: (adv - mean) / max(std, 1.0)
+        @always_inline
+        fn run_norm_adv(
+            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
+        ):
+            normalize_advantages_kernel[ADV_TOTAL, TPB](a)
+
+        ctx.enqueue_function[run_norm_adv, run_norm_adv](
+            all_adv,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
+
+        # ── 6d. Normalize returns for critic training ────────────────────
         @always_inline
         fn run_norm_returns(
             ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
