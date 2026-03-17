@@ -2499,7 +2499,7 @@ struct TDMPC2Agent[
                 try:
                     self.logger[].log_scalar(
                         "episode_reward",
-                        sum_rew / nb_done,
+                        sum_rew / Float64(nb_done),
                         total_steps,
                     )
                     self.logger[].log_scalar(

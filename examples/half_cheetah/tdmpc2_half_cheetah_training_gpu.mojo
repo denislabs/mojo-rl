@@ -157,7 +157,7 @@ fn main() raises:
             wm_lr=3e-4,
             enc_lr_scale=0.3,
             pi_lr=3e-4,
-            diag_every=50,
+            diag_every=500,
         )
         agent.logger = UnsafePointer(to=logger)
 
