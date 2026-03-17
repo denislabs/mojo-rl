@@ -43,6 +43,9 @@ from mojo_rl.nn.loss.two_hot import (
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
+from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
+    GPUSequenceReplayBuffer,
+)
 from mojo_rl.deep_agents.core.kernels import (
     copy_buffer_kernel,
 )
@@ -1899,14 +1902,11 @@ struct TDMPC2Agent[
         comptime ENV_BLOCKS = (n_envs + TPB - 1) // TPB
 
         # =================================================================
-        # Per-env CPU replay buffers
+        # GPU sequence replay buffer (replaces per-env CPU buffers)
         # =================================================================
-        comptime PerEnvBuf = SequenceReplayBuffer[
-            PER_ENV_CAP, Self.OBS, Self.ACT, dtype
-        ]
-        var env_bufs = List[PerEnvBuf](capacity=n_envs)
-        for _ in range(n_envs):
-            env_bufs.append(PerEnvBuf())
+        var gpu_replay = GPUSequenceReplayBuffer[
+            PER_ENV_CAP, Self.OBS, Self.ACT, n_envs
+        ](ctx)
 
         # =================================================================
         # GPU State (all device + host buffers in one struct)
@@ -2394,12 +2394,8 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
-            # Download CURRENT obs to CPU BEFORE step overwrites env_obs_buf.
-            # The replay buffer needs (obs_t, act_t, rew_t, done_t) where obs_t
-            # is the observation when act_t was selected. The step kernel will
-            # overwrite env_obs_buf with obs_{t+1}, so we must save it now.
-            ctx.enqueue_copy(gs.env_obs_host, gs.env_obs_buf)
-            ctx.synchronize()
+            # Save obs on GPU BEFORE step overwrites env_obs_buf
+            gpu_replay.save_obs(ctx, gs.env_obs_buf)
 
             # Step all environments
             var env_seed = UInt64(total_steps * 1103515245 + 12345)
@@ -2430,13 +2426,17 @@ struct TDMPC2Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # Download act/rew/done after step (obs already downloaded above)
-            ctx.enqueue_copy(gs.env_act_host, gs.env_act_buf)
+            # Store transitions on GPU (saved obs + step results)
+            gpu_replay.store(
+                ctx, gs.env_act_buf, gs.env_rew_buf, gs.env_done_buf
+            )
+
+            # Download only rew/done for episode tracking (small transfer)
             ctx.enqueue_copy(gs.env_rew_host, gs.env_rew_buf)
             ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)
             ctx.synchronize()
 
-            # CPU: push transitions to per-env replay buffers + track episodes
+            # CPU: episode tracking only (replay insertion is on GPU now)
             for env_idx in range(n_envs):
                 var rew_val = Scalar[dtype](gs.env_rew_host[env_idx])
                 var done_val = Float64(gs.env_done_host[env_idx]) > 0.5
@@ -2478,15 +2478,6 @@ struct TDMPC2Agent[
                     if use_mppi:
                         env_t0_flags[env_idx] = True
                         env_prev_means[env_idx] = List[Float64]()
-
-                # Build obs/action InlineArrays and add to per-env replay buffer
-                var obs_arr = InlineArray[Scalar[dtype], Self.OBS](fill=0)
-                var act_arr = InlineArray[Scalar[dtype], Self.ACT](fill=0)
-                for k in range(Self.OBS):
-                    obs_arr[k] = gs.env_obs_host[env_idx * Self.OBS + k]
-                for k in range(Self.ACT):
-                    act_arr[k] = gs.env_act_host[env_idx * Self.ACT + k]
-                env_bufs[env_idx].add(obs_arr, act_arr, rew_val, done_val)
 
             total_steps += n_envs
             t_data_collection += Int(perf_counter_ns() - _t0_dc)
@@ -2576,71 +2567,26 @@ struct TDMPC2Agent[
             if total_steps < self.warmup_steps:
                 continue
 
-            # Check all per-env buffers have enough data
+            # Check GPU replay buffer has enough data
             comptime min_ready = Self.BATCH + Self.H + 1
-            var ready = True
-            for env_idx in range(n_envs):
-                if not env_bufs[env_idx].is_ready[min_ready]():
-                    ready = False
-                    break
-            if not ready:
+            if not gpu_replay.is_ready[min_ready]():
                 continue
 
-            # Sample BATCH sequences uniformly across n_envs buffers
-            # (batch_obs/act/rew/done in host buffers, b-major flat layout)
+            # Sample BATCH sequences directly on GPU (no CPU round-trip)
             var _t0_rs = perf_counter_ns()
-            var b_per_env = Self.BATCH // n_envs
-            var b_remainder = Self.BATCH - b_per_env * n_envs
-            var b_offset = 0
-            for env_idx in range(n_envs):
-                var n_seqs = b_per_env + (1 if env_idx < b_remainder else 0)
-                # Sample n_seqs sequences from this env's buffer
-                for seq_idx in range(n_seqs):
-                    # Use sample_sequences[1, H] for single sequence at a time
-                    # We must copy into the correct offset of host buffers
-                    var seq_obs = List[Scalar[dtype]](
-                        capacity=(Self.H + 1) * Self.OBS
-                    )
-                    var seq_act = List[Scalar[dtype]](
-                        capacity=Self.H * Self.ACT
-                    )
-                    var seq_rew = List[Scalar[dtype]](capacity=Self.H)
-                    var seq_done = List[Scalar[dtype]](capacity=Self.H)
-                    for _ in range((Self.H + 1) * Self.OBS):
-                        seq_obs.append(Scalar[dtype](0))
-                    for _ in range(Self.H * Self.ACT):
-                        seq_act.append(Scalar[dtype](0))
-                    for _ in range(Self.H):
-                        seq_rew.append(Scalar[dtype](0))
-                        seq_done.append(Scalar[dtype](0))
-                    env_bufs[env_idx].sample_sequences[1, Self.H](
-                        seq_obs, seq_act, seq_rew, seq_done
-                    )
-                    # Copy into host upload buffers at offset b_offset
-                    var b = b_offset + seq_idx
-                    for k in range((Self.H + 1) * Self.OBS):
-                        gs.batch_obs_host[
-                            b * (Self.H + 1) * Self.OBS + k
-                        ] = seq_obs[k]
-                    for k in range(Self.H * Self.ACT):
-                        gs.batch_act_host[b * Self.H * Self.ACT + k] = seq_act[
-                            k
-                        ]
-                    for k in range(Self.H):
-                        gs.batch_rew_host[b * Self.H + k] = seq_rew[k]
-                        gs.batch_done_host[b * Self.H + k] = seq_done[k]
-                b_offset += n_seqs
-
+            var sample_seed = UInt32(total_steps * 1999999973 + 31)
+            gpu_replay.sample[Self.BATCH, Self.H](
+                ctx,
+                sample_seed,
+                gs.batch_obs_buf,
+                gs.batch_act_buf,
+                gs.batch_rew_buf,
+                gs.batch_done_buf,
+            )
             t_replay_sample += Int(perf_counter_ns() - _t0_rs)
 
-            # Upload batch to GPU
+            # No batch upload needed — data is already on GPU
             var _t0_bu = perf_counter_ns()
-            ctx.enqueue_copy(gs.batch_obs_buf, gs.batch_obs_host)
-            ctx.enqueue_copy(gs.batch_act_buf, gs.batch_act_host)
-            ctx.enqueue_copy(gs.batch_rew_buf, gs.batch_rew_host)
-            ctx.enqueue_copy(gs.batch_done_buf, gs.batch_done_host)
-
-            ctx.synchronize()
             t_batch_upload += Int(perf_counter_ns() - _t0_bu)
 
             # ──────────────────────────────────────────────────────────────
