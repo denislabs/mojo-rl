@@ -1115,6 +1115,11 @@ struct GenericOffPolicyAgent[
             ](b_obs.unsafe_ptr())
             var a_grads = cpu_state.actor.online.grads_view()
             var c_grads = cpu_state.critic.online.grads_view()
+            var c2_grads = cpu_state.critic.online.grads_view()
+            var c2_params = cpu_state.critic.online.params_view()
+            comptime if Self.Config.NUM_CRITICS == 2:
+                c2_grads = cpu_state.critic2.online.grads_view()
+                c2_params = cpu_state.critic2.online.params_view()
             var mean_lp = Self.Config.ActorLoss.update_actor_cpu[
                 Self.BATCH,
                 Self.ACTIONS,
@@ -1128,6 +1133,8 @@ struct GenericOffPolicyAgent[
                 a_grads,
                 cpu_state.critic.online.params_view(),
                 c_grads,
+                c2_params,
+                c2_grads,
                 ws + Self._O_STRAT_WS,
                 self.alpha,
             )
@@ -1573,6 +1580,15 @@ struct GenericOffPolicyAgent[
             gpu_state.critic.online.zero_grads(ctx)
             var a_grads = gpu_state.actor.online.grads_view()
             var c_grads = gpu_state.critic.online.grads_view()
+            # For twin critics, zero and pass critic2; otherwise reuse critic1
+            var c2_grads = c_grads
+            var p_c2 = p_critic
+            var c2_ws = gpu_state.critic_ws
+            comptime if Self.Config.NUM_CRITICS == 2:
+                gpu_state.critic2.online.zero_grads(ctx)
+                c2_grads = gpu_state.critic2.online.grads_view()
+                p_c2 = gpu_state.critic2.online.params_view()
+                c2_ws = gpu_state.critic2_ws
             _ = Self.Config.ActorLoss.update_actor_gpu[
                 BS,
                 Self.ACTIONS,
@@ -1587,8 +1603,11 @@ struct GenericOffPolicyAgent[
                 a_grads,
                 p_critic,
                 c_grads,
+                p_c2,
+                c2_grads,
                 gpu_state.actor_ws,
                 gpu_state.critic_ws,
+                c2_ws,
                 gpu_state.strat_ws,
                 self.alpha,
                 UInt32(self.total_steps),

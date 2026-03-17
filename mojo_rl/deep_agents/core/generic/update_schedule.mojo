@@ -101,7 +101,7 @@ struct DelayedActorOnly(Schedule):
 
     comptime DELAYS_ACTOR: Bool = True
     comptime DELAYS_TARGETS: Bool = False
-    comptime DEFAULT_POLICY_DELAY: Int = 2
+    comptime DEFAULT_POLICY_DELAY: Int = 1
 
     @staticmethod
     fn should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
