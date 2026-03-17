@@ -49,6 +49,7 @@ from .kernels import (
     mppi_broadcast_z0_zero_returns_batched_kernel,
     mppi_sample_actions_build_za_batched_kernel,
     mppi_accum_reward_copy_z_kernel,
+    q5_decode_min_add_terminal_kernel,
 )
 
 
@@ -1098,17 +1099,12 @@ fn plan_gpu_batched[
     comptime accum_copy = mppi_accum_reward_copy_z_kernel[
         dtype, BATCH_TOTAL, NUM_BINS, LATENT_DIM
     ]
-    # Unfused (still needed standalone for terminal value step)
+    # Unfused (still needed standalone for NVIDIA stream path)
     comptime accum_reward = mppi_accumulate_reward_kernel[
         dtype, BATCH_TOTAL, NUM_BINS
     ]
-    comptime add_terminal = mppi_add_terminal_value_kernel[dtype, BATCH_TOTAL]
     comptime tanh_build_za = tdmpc2_apply_tanh_build_za_deterministic_kernel[
         dtype, BATCH_TOTAL, ACTION_DIM, LATENT_DIM, POL_OUT
-    ]
-    comptime q_decode = tdmpc2_q_decode_kernel[dtype, BATCH_TOTAL, NUM_BINS]
-    comptime decode_min = tdmpc2_decode_and_min_kernel[
-        dtype, BATCH_TOTAL, NUM_BINS
     ]
     comptime softmax_weights = mppi_softmax_weights_kernel[
         dtype, N_ENVS, TOTAL_SAMPLES, TPB
@@ -1343,7 +1339,7 @@ fn plan_gpu_batched[
         comptime L2_B = L2_BASE + MLP_DIM * NUM_BINS
 
         # ── Grouped kernel aliases ───────────────────────────────────
-        comptime TILE = 16
+        comptime TILE = 32
         comptime MM_GRID_0 = (
             (MLP_DIM + TILE - 1) // TILE,
             (BATCH_TOTAL + TILE - 1) // TILE,
@@ -1359,19 +1355,19 @@ fn plan_gpu_batched[
             dtype, BATCH_TOTAL, ZA_DIM, NUM_Q
         ]
         comptime gmatmul_0 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, ZA_DIM, MLP_DIM, Q_PS, L0_W, L0_B
+            dtype, NUM_Q, BATCH_TOTAL, ZA_DIM, MLP_DIM, Q_PS, L0_W, L0_B, TILE
         ]
         comptime gln_mish_0 = q5_grouped_ln_mish_kernel[
             dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, Q_PS, L0_GAMMA, L0_BETA
         ]
         comptime gmatmul_1 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, MLP_DIM, Q_PS, L1_W, L1_B
+            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, MLP_DIM, Q_PS, L1_W, L1_B, TILE
         ]
         comptime gln_mish_1 = q5_grouped_ln_mish_kernel[
             dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, Q_PS, L1_GAMMA, L1_BETA
         ]
         comptime gmatmul_2 = q5_grouped_matmul_bias_kernel[
-            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, NUM_BINS, Q_PS, L2_W, L2_B
+            dtype, NUM_Q, BATCH_TOTAL, MLP_DIM, NUM_BINS, Q_PS, L2_W, L2_B, TILE
         ]
         comptime gdecode_min = q5_decode_min_kernel[
             dtype, NUM_Q, BATCH_TOTAL, NUM_BINS
@@ -1448,18 +1444,13 @@ fn plan_gpu_batched[
             block_dim=(TILE, TILE),
         )
 
-        # ── 6. Decode 5 logits + min ────────────────────────────────
-        ctx.enqueue_function[gdecode_min, gdecode_min](
+        # ── 6. Fused: decode 5 logits + min + add terminal to returns ──
+        comptime gdecode_min_terminal = q5_decode_min_add_terminal_kernel[
+            dtype, NUM_Q, BATCH_TOTAL, NUM_BINS
+        ]
+        ctx.enqueue_function[gdecode_min_terminal, gdecode_min_terminal](
             q5_b_bins,
             bins_tensor,
-            q_min_tensor,
-            grid_dim=(MPPI_BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-        # 4b. Add terminal value to returns
-        ctx.enqueue_function[add_terminal, add_terminal](
-            q_min_tensor,
             returns_tensor,
             discount,
             grid_dim=(MPPI_BLOCKS,),

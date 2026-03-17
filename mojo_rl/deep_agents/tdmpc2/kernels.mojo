@@ -2411,6 +2411,7 @@ fn q5_grouped_matmul_bias_kernel[
     PARAM_STRIDE: Int,
     W_OFF: Int,
     B_OFF: Int,
+    _TILE: Int = 16,
 ](
     output: LayoutTensor[
         dtype, Layout.row_major(NUM_Q * GROUP_SIZE, OUT_DIM), MutAnyOrigin
@@ -2425,11 +2426,10 @@ fn q5_grouped_matmul_bias_kernel[
     """Grouped tiled matmul+bias: output[i] = input[i] @ W[group] + b[group].
 
     Each group uses a different weight matrix and bias from all_params.
-    Grid: ((OUT_DIM + 15) // 16, (GROUP_SIZE + 15) // 16, NUM_Q)
-    Block: (16, 16)
+    Grid: ((OUT_DIM + TILE-1) // TILE, (GROUP_SIZE + TILE-1) // TILE, NUM_Q)
+    Block: (TILE, TILE)
     block_idx.z selects the Q-network (group).
     """
-    comptime _TILE = 16
     var group = Int(block_idx.z)
     var local_row = Int(thread_idx.y)
     var local_col = Int(thread_idx.x)
@@ -2794,3 +2794,58 @@ fn mppi_accum_reward_copy_z_kernel[
     # Copy z_next → z
     for k in range(LATENT_DIM):
         z_dst[i, k] = z_src[i, k]
+
+
+fn q5_decode_min_add_terminal_kernel[
+    dtype: DType,
+    NUM_Q: Int,
+    GROUP_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(NUM_Q * GROUP_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(GROUP_SIZE), MutAnyOrigin],
+    discount: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Fused: decode NUM_Q distributional Q-values, take min, add to returns.
+
+    Replaces separate q5_decode_min + add_terminal calls.
+    returns[i] += discount * min_q(decode(logits[g*GS+i]) for g in NUM_Q)
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= GROUP_SIZE:
+        return
+
+    var min_val = Scalar[dtype](1e30)
+
+    for g in range(NUM_Q):
+        var row = g * GROUP_SIZE + i
+
+        var max_l = Scalar[dtype](logits[row, 0][0])
+        for k in range(1, BINS):
+            var v = Scalar[dtype](logits[row, k][0])
+            if v > max_l:
+                max_l = v
+
+        var sum_exp = Scalar[dtype](0.0)
+        for k in range(BINS):
+            sum_exp = sum_exp + exp(
+                Scalar[dtype](logits[row, k][0]) - max_l
+            )
+
+        var expected_val = Scalar[dtype](0.0)
+        for k in range(BINS):
+            var sm_k = exp(
+                Scalar[dtype](logits[row, k][0]) - max_l
+            ) / sum_exp
+            expected_val = expected_val + sm_k * Scalar[dtype](
+                bins[k][0]
+            )
+
+        var val = _symexp[dtype](expected_val)
+        if val < min_val:
+            min_val = val
+
+    returns[i] = returns[i] + discount * min_val
