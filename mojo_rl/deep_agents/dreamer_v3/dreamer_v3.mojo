@@ -213,7 +213,7 @@ struct DreamerV3Agent[
         slow_critic_tau: Float64 = 0.02,
         return_norm_rate: Float64 = 0.01,
         warmup_steps: Int = 1000,
-        max_grad_norm: Float64 = 1000.0,
+        max_grad_norm: Float64 = 100.0,
         diag_every: Int = 0,
     ):
         """Initialize DreamerV3 agent with all sub-networks and buffers.
