@@ -2415,7 +2415,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             block_dim=(32,),
         )
 
-        # Kernel 2: dx = d_linear_out @ W.T (MMA on NVIDIA)
+        # Kernel 2: dx = d_linear_out @ W.T
         var dW = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
         ](grads.ptr)
@@ -2423,32 +2423,41 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
         ](grads.ptr + Self._B_OFFSET)
 
-        comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        comptime if has_nvidia_gpu_accelerator():
+            max_matmul[transpose_b=True, target="gpu"](
+                grad_input, d_linear_out_immut, W, ctx
+            )
+        else:
+            comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-        @always_inline
-        fn dx_wrapper(
-            grad_input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-            ],
-            d_linear_out: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-                ImmutAnyOrigin,
-            ],
-        ):
-            Self._backward_dx_kernel[BATCH](grad_input, d_linear_out, W)
+            @always_inline
+            fn dx_wrapper(
+                grad_input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+                ],
+                d_linear_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self._backward_dx_kernel[BATCH](
+                    grad_input, d_linear_out, W
+                )
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
-            grad_input,
-            d_linear_out_immut,
-            W,
-            grid_dim=(dx_grid_x, dx_grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+                grad_input,
+                d_linear_out_immut,
+                W,
+                grid_dim=(dx_grid_x, dx_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         # Kernel 3: dW = input.T @ d_linear_out (MMA on NVIDIA)
         comptime dW_grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
