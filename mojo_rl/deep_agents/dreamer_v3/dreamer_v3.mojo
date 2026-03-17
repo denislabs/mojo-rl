@@ -3639,6 +3639,25 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
+            # Save actions per horizon step for actor-critic training
+            comptime IMAG_A_SLICE = IB * ACT
+            var save_a = LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin](
+                gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IMAG_A_SLICE)
+            var src_a = LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin](
+                gpu_state.imag_actions_buf.unsafe_ptr())
+
+            @always_inline
+            fn copy_imag_a(
+                d: LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin],
+            ):
+                copy_kernel[IMAG_A_SLICE](d, s)
+
+            comptime COPY_IA_BLOCKS = (IMAG_A_SLICE + TPB - 1) // TPB
+            ctx.enqueue_function[copy_imag_a, copy_imag_a](
+                save_a, src_a, grid_dim=(COPY_IA_BLOCKS,), block_dim=(TPB,),
+            )
+
             # Predict reward from feat
             var rew_logits_2d = LayoutTensor[
                 dtype, Layout.row_major(IB, BINS), MutAnyOrigin
@@ -4243,30 +4262,10 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB), MutAnyOrigin
             ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
 
-            # Sample actions from actor
+            # Use saved imagination actions (same actions that generated returns)
             var actions_h = LayoutTensor[
                 dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-            ](gpu_state.imag_actions_buf.unsafe_ptr())
-            var log_probs_h = LayoutTensor[
-                dtype, Layout.row_major(IB), MutAnyOrigin
-            ](gpu_state.imag_log_probs_buf.unsafe_ptr())
-            var act_seed_h = Scalar[DType.uint32](
-                UInt32(self.train_step_count * HORIZON + h + 5000) * UInt32(IB * ACT + 1)
-            )
-
-            @always_inline
-            fn run_sample_h(
-                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-                lp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
-                s: Scalar[DType.uint32],
-            ):
-                tanh_normal_sample_kernel[IB, ACT](a, lp, ao, s)
-
-            ctx.enqueue_function[run_sample_h, run_sample_h](
-                actions_h, log_probs_h, actor_out_h, act_seed_h,
-                grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
-            )
+            ](gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IB * ACT)
 
             # REINFORCE gradient
             var actor_grad_h = LayoutTensor[
@@ -4367,12 +4366,11 @@ struct DreamerV3Agent[
 
             print(
                 "  [diag] step=" + String(self.train_step_count)
-                + " adv_mean=" + String(avg_adv)[:8]
-                + " adv_std=" + String(sqrt(adv_var))[:8]
-                + " adv_min=" + String(adv_min)[:8]
-                + " adv_max=" + String(adv_max)[:8]
-                + " avg_val=" + String(avg_val)[:8]
-                + " rscale=" + String(self.state.return_ema_hi - self.state.return_ema_lo)[:8]
+                + " adv_mean=" + String(avg_adv)
+                + " adv_std=" + String(sqrt(adv_var))
+                + " adv[" + String(adv_min)[:7] + "," + String(adv_max)[:7]
+                + "] val=" + String(avg_val)
+                + " rscale=" + String(self.state.return_ema_hi - self.state.return_ema_lo)
             )
 
         self.train_step_count += 1
