@@ -4339,26 +4339,40 @@ struct DreamerV3Agent[
             ctx.enqueue_copy(diag_val, gpu_state.imag_values_buf)
             ctx.synchronize()
 
-            # Compute stats from first few elements
+            # Compute stats across ALL advantages (not just h=0)
+            comptime DIAG_ADV_N = (HORIZON - 1) * IB
             var avg_adv = Float64(0)
-            var avg_ret = Float64(0)
+            var adv_min = Float64(1e30)
+            var adv_max = Float64(-1e30)
+            for i in range(DIAG_ADV_N):
+                var v = Float64(diag_rew[i])
+                avg_adv += v
+                if v < adv_min:
+                    adv_min = v
+                if v > adv_max:
+                    adv_max = v
+            avg_adv /= Float64(DIAG_ADV_N)
+            var adv_var = Float64(0)
+            for i in range(DIAG_ADV_N):
+                var d = Float64(diag_rew[i]) - avg_adv
+                adv_var += d * d
+            adv_var /= Float64(DIAG_ADV_N)
+
+            # Also check raw imagined rewards (first horizon step in imag_rewards_buf)
+            # Actually imag_rewards_buf has advantages now. Check values instead.
             var avg_val = Float64(0)
-            var n = min(IB, HORIZON * IB)
-            for i in range(n):
-                avg_adv += Float64(diag_rew[i])
-                avg_ret += Float64(diag_ret[i])
+            for i in range(IB):
                 avg_val += Float64(diag_val[i])
-            avg_adv /= Float64(n)
-            avg_ret /= Float64(n)
-            avg_val /= Float64(n)
+            avg_val /= Float64(IB)
 
             print(
                 "  [diag] step=" + String(self.train_step_count)
-                + " avg_adv=" + String(avg_adv)[:8]
-                + " avg_ret=" + String(avg_ret)[:8]
+                + " adv_mean=" + String(avg_adv)[:8]
+                + " adv_std=" + String(sqrt(adv_var))[:8]
+                + " adv_min=" + String(adv_min)[:8]
+                + " adv_max=" + String(adv_max)[:8]
                 + " avg_val=" + String(avg_val)[:8]
-                + " ema_lo=" + String(self.state.return_ema_lo)[:8]
-                + " ema_hi=" + String(self.state.return_ema_hi)[:8]
+                + " rscale=" + String(self.state.return_ema_hi - self.state.return_ema_lo)[:8]
             )
 
         self.train_step_count += 1
