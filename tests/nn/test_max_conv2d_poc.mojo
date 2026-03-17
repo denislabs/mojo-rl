@@ -95,9 +95,6 @@ fn main() raises:
         var out_buf2 = ctx.enqueue_create_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
-        var out_buf3 = ctx.enqueue_create_buffer[dtype](
-            BATCH * OUT_H * OUT_W * OC
-        )
 
         # Initialize with random data
         var input_host = ctx.enqueue_create_host_buffer[dtype](
@@ -114,7 +111,6 @@ fn main() raises:
         ctx.enqueue_copy(filter_buf, filter_host)
         ctx.enqueue_memset(out_buf1, 0)
         ctx.enqueue_memset(out_buf2, 0)
-        ctx.enqueue_memset(out_buf3, 0)
         ctx.synchronize()
 
         # ── Create LayoutTensors with NHWC/RSCF layouts ──
@@ -142,16 +138,10 @@ fn main() raises:
             MutAnyOrigin,
         ](out_buf2.unsafe_ptr())
 
-        var out3_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
-            MutAnyOrigin,
-        ](out_buf3.unsafe_ptr())
-
-        # ── Warmup all three ──
+        # ── Warmup ──
         print("Warming up...")
 
-        # 1. conv_gpu (auto-dispatch: may use Blackwell structured conv, cuDNN, or naive)
+        # 1. conv_gpu (auto-dispatch)
         conv_gpu(
             input_tensor,
             filter_tensor,
@@ -163,19 +153,7 @@ fn main() raises:
             ctx=ctx,
         )
 
-        # 2. conv_cudnn
-        conv_cudnn(
-            input_tensor,
-            filter_tensor,
-            out2_tensor,
-            IndexList[2](STRIDE, STRIDE),
-            IndexList[2](1, 1),
-            IndexList[2](PAD, PAD),
-            num_groups=1,
-            ctx=ctx,
-        )
-
-        # 3. conv2d_gpu_naive_nhwc_rscf (manual kernel launch)
+        # 2. conv2d_gpu_naive_nhwc_rscf (manual kernel launch)
         comptime BS = 16
         comptime grid_x = (OUT_W + BS - 1) // BS
         comptime grid_y = (OUT_H + BS - 1) // BS
@@ -214,7 +192,7 @@ fn main() raises:
         ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
             input_tensor,
             filter_tensor,
-            out3_tensor,
+            out2_tensor,
             grid_dim=(grid_x, grid_y, BATCH),
             block_dim=(BS, BS),
         )
@@ -249,51 +227,24 @@ fn main() raises:
             + " GFLOPS"
         )
 
-        # ── Benchmark 2: conv_cudnn ──
+        # ── Benchmark 2: conv2d_gpu_naive_nhwc_rscf ──
         ctx.synchronize()
         var t2 = perf_counter_ns()
-        for _ in range(N_ITERS):
-            conv_cudnn(
-                input_tensor,
-                filter_tensor,
-                out2_tensor,
-                IndexList[2](STRIDE, STRIDE),
-                IndexList[2](1, 1),
-                IndexList[2](PAD, PAD),
-                num_groups=1,
-                ctx=ctx,
-            )
-        ctx.synchronize()
-        var t3 = perf_counter_ns()
-        var cudnn_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
-        var cudnn_gflops = flops / (cudnn_us * 1e-6) / 1e9
-
-        print(
-            "2. conv_cudnn:          "
-            + String(cudnn_us)[:8]
-            + " μs  |  "
-            + String(cudnn_gflops)[:6]
-            + " GFLOPS"
-        )
-
-        # ── Benchmark 3: conv2d_gpu_naive_nhwc_rscf ──
-        ctx.synchronize()
-        var t4 = perf_counter_ns()
         for _ in range(N_ITERS):
             ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
                 input_tensor,
                 filter_tensor,
-                out3_tensor,
+                out2_tensor,
                 grid_dim=(grid_x, grid_y, BATCH),
                 block_dim=(BS, BS),
             )
         ctx.synchronize()
-        var t5 = perf_counter_ns()
-        var naive_us = Float64(t5 - t4) / 1000.0 / Float64(N_ITERS)
+        var t3 = perf_counter_ns()
+        var naive_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
         var naive_gflops = flops / (naive_us * 1e-6) / 1e9
 
         print(
-            "3. conv2d_gpu_naive:    "
+            "2. conv2d_gpu_naive:    "
             + String(naive_us)[:8]
             + " μs  |  "
             + String(naive_gflops)[:6]
@@ -309,28 +260,17 @@ fn main() raises:
         var out2_host = ctx.enqueue_create_host_buffer[dtype](
             BATCH * OUT_H * OUT_W * OC
         )
-        var out3_host = ctx.enqueue_create_host_buffer[dtype](
-            BATCH * OUT_H * OUT_W * OC
-        )
         ctx.enqueue_copy(out1_host, out_buf1)
         ctx.enqueue_copy(out2_host, out_buf2)
-        ctx.enqueue_copy(out3_host, out_buf3)
         ctx.synchronize()
 
-        var max_diff_12: Float64 = 0.0
-        var max_diff_13: Float64 = 0.0
+        var max_diff: Float64 = 0.0
         for i in range(BATCH * OUT_H * OUT_W * OC):
-            var d12 = abs(Float64(out1_host[i]) - Float64(out2_host[i]))
-            var d13 = abs(Float64(out1_host[i]) - Float64(out3_host[i]))
-            if d12 > max_diff_12:
-                max_diff_12 = d12
-            if d13 > max_diff_13:
-                max_diff_13 = d13
+            var d = abs(Float64(out1_host[i]) - Float64(out2_host[i]))
+            if d > max_diff:
+                max_diff = d
         print(
-            "Max diff (conv_gpu vs cudnn):  " + String(max_diff_12)[:10]
-        )
-        print(
-            "Max diff (conv_gpu vs naive):  " + String(max_diff_13)[:10]
+            "Max diff (conv_gpu vs naive):  " + String(max_diff)[:10]
         )
 
         # Show sample values
@@ -342,21 +282,17 @@ fn main() raises:
                 + String(i)
                 + "]="
                 + String(Float64(out1_host[i]))[:8]
-                + "  cudnn="
-                + String(Float64(out2_host[i]))[:8]
                 + "  naive="
-                + String(Float64(out3_host[i]))[:8]
+                + String(Float64(out2_host[i]))[:8]
             )
 
         # Summary
         print()
         print("=" * 60)
-        var fastest = min(gpu_us, min(cudnn_us, naive_us))
+        var fastest = min(gpu_us, naive_us)
         print(
-            "conv_gpu:    "
+            "conv_gpu: "
             + String(gpu_us / fastest)[:4]
-            + "x  |  conv_cudnn: "
-            + String(cudnn_us / fastest)[:4]
             + "x  |  naive: "
             + String(naive_us / fastest)[:4]
             + "x"
