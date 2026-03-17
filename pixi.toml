@@ -19,6 +19,7 @@ channels = ["nvidia"]
 cuda-toolkit = "12.*" # for compute-sanitizer etc.
 cuda-gdb = "12.*"     # for GPU kernel debugging
 nsight-compute = "*"  # interactive kernel profiling
+cudnn = ">=9,<10"     # cuDNN for conv_gpu/conv_cudnn
 
 [feature.nvidia.activation]
 # Use the system ptxas from the CUDA container (/usr/local/cuda/bin/ptxas).
