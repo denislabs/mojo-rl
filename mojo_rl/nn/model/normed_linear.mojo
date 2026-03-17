@@ -22,7 +22,7 @@ from std.gpu.primitives import block, lane_id
 from std.gpu.compute.mma import mma
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.math import sqrt, exp, log
-import linalg.matmul.vendor.blas as vendor_blas
+from linalg.matmul import matmul as max_matmul
 
 
 struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
@@ -1927,12 +1927,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
             # Vendor BLAS matmul
-            vendor_blas.matmul(
-                ctx,
-                linear_out_mut,
-                input_immut,
-                W,
-                c_row_major=True,
+            max_matmul[target="gpu"](
+                linear_out_mut, input_immut, W, ctx
             )
 
             # Bias add
@@ -2085,12 +2081,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
         comptime if has_nvidia_gpu_accelerator():
             # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
-            vendor_blas.matmul(
-                ctx,
-                linear_out_mut,
-                input_immut,
-                W,
-                c_row_major=True,
+            max_matmul[target="gpu"](
+                linear_out_mut, input_immut, W, ctx
             )
             # Bias add (separate small kernel)
             comptime bias_blocks = (
@@ -2232,12 +2224,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
         # before and after this call anyway, so this is functionally correct.
         comptime if has_nvidia_gpu_accelerator():
-            vendor_blas.matmul(
-                ctx,
-                linear_out_mut,
-                input_immut,
-                W,
-                c_row_major=True,
+            max_matmul[target="gpu"](
+                linear_out_mut, input_immut, W, ctx
             )
             comptime bias_blocks = (
                 BATCH * Self.OUT_DIM + TPB - 1
