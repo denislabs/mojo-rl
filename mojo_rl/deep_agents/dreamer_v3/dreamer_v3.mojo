@@ -4305,208 +4305,63 @@ struct DreamerV3Agent[
                 critic_grads, gpu_state.ws_critic,
             )
 
-            # ── Actor: dynamics backprop (for h < HORIZON-1) ─────────────
-            # Gradient flows: feat_{h+1} → GRU → ActionProj → reparam → actor
-            # Use advantage-weighted unit gradient on feat as starting point.
-            if h < HORIZON - 1:
-                # Step 1: Create advantage-weighted feat gradient
-                # d_feat[b, j] = -advantage[b] * inv_ib (unit direction, advantage weight)
-                var adv_h = LayoutTensor[
-                    dtype, Layout.row_major(IB), MutAnyOrigin
-                ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
-                var rew_grad_in_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-                ](gpu_state.rew_grad_in_buf.unsafe_ptr())
+            # ── Actor: REINFORCE with saved imagination actions ────────────
+            # Reference DreamerV3 uses pure REINFORCE (not dynamics backprop).
+            # All features/advantages are stop-gradiented. Gradient flows
+            # only through log_prob(saved_action | current_policy).
+            var actor_out_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin,
+            ](gpu_state.actor_out_buf.unsafe_ptr())
+            var actor_cache_h = LayoutTensor[
+                dtype, Layout.row_major(IB, Self.StateType.ActorModel.CACHE_SIZE), MutAnyOrigin,
+            ](gpu_state.actor_cache_buf.unsafe_ptr())
+            Self.ActorNet.forward_gpu_with_cache[IB](
+                ctx, h_feat_2d, actor_out_h,
+                gpu_state.actor.params_view(), actor_cache_h, gpu_state.ws_actor,
+            )
 
-                @always_inline
-                fn run_feat_grad(
-                    g: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
-                    adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                    ib: Scalar[dtype],
-                ):
-                    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-                    if b >= IB:
-                        return
-                    # Negative because we want to MAXIMIZE returns
-                    var w = -rebind[Scalar[dtype]](adv[b]) * ib
-                    for j in range(FEAT):
-                        g[b, j] = w
+            # Read pre-computed normalized advantages for step h
+            var adv_h = LayoutTensor[
+                dtype, Layout.row_major(IB), MutAnyOrigin
+            ](gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB)
 
-                ctx.enqueue_function[run_feat_grad, run_feat_grad](
-                    rew_grad_in_dyn, adv_h, inv_ib,
-                    grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
-                )
+            # Use saved imagination actions (same actions that generated returns)
+            var actions_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACT), MutAnyOrigin
+            ](gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IB * ACT)
 
-                # Step 2: Split d_feat → d_deter, d_stoch
-                var d_deter_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ](gpu_state.d_deter_total_buf.unsafe_ptr())
-                var d_stoch_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
-                var rew_gi_2d = LayoutTensor[
-                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-                ](gpu_state.rew_grad_in_buf.unsafe_ptr())
+            # REINFORCE gradient: -advantage * d(log_prob)/d(actor_out)
+            var actor_grad_h = LayoutTensor[
+                dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin
+            ](gpu_state.actor_grad_buf.unsafe_ptr())
 
-                @always_inline
-                fn run_dyn_split_feat(
-                    dd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                    ds: LayoutTensor[dtype, Layout.row_major(IB, STOCH), MutAnyOrigin],
-                    df: LayoutTensor[dtype, Layout.row_major(IB, FEAT), MutAnyOrigin],
-                ):
-                    concat_feat_backward_kernel[IB, DETER, STOCH](dd, ds, df)
+            @always_inline
+            fn run_reinforce_h(
+                g: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
+                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
+                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
+                ib_scale: Scalar[dtype],
+                ec: Scalar[dtype],
+            ):
+                reinforce_grad_kernel[IB, ACT](g, ao, a, adv, ib_scale, ec)
 
-                comptime DYN_SPLIT_BLOCKS = (IB * FEAT + TPB - 1) // TPB
-                ctx.enqueue_function[run_dyn_split_feat, run_dyn_split_feat](
-                    d_deter_dyn, d_stoch_dyn, rew_gi_2d,
-                    grid_dim=(DYN_SPLIT_BLOCKS,), block_dim=(TPB,),
-                )
+            ctx.enqueue_function[run_reinforce_h, run_reinforce_h](
+                actor_grad_h, actor_out_h, actions_h,
+                adv_h, inv_ib, entropy_coef,
+                grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
+            )
 
-                # Step 3: GRU gate backward: d_deter → d_gate_out, d_prev_deter
-                var d_gate_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin
-                ](gpu_state.d_gate_out_bwd_buf.unsafe_ptr())
-                var d_prev_deter_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ](gpu_state.d_prev_deter_gru_buf.unsafe_ptr())
-                var imag_prev_deter_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ](gpu_state.imag_all_deter_buf.unsafe_ptr() + h * IB * DETER)
-                var imag_gate_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin
-                ](gpu_state.imag_gate_out_save_buf.unsafe_ptr() + h * IB * 3 * DETER)
-
-                @always_inline
-                fn run_dyn_gru_bwd(
-                    dg: LayoutTensor[dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin],
-                    dpd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                    dnd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                    pd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                    go: LayoutTensor[dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin],
-                ):
-                    gru_gate_backward_kernel[IB, DETER](dg, dpd, dnd, pd, go)
-
-                comptime DYN_GRU_BLOCKS = (IB * DETER + TPB - 1) // TPB
-                ctx.enqueue_function[run_dyn_gru_bwd, run_dyn_gru_bwd](
-                    d_gate_dyn, d_prev_deter_dyn, d_deter_dyn, imag_prev_deter_h, imag_gate_h,
-                    grid_dim=(DYN_GRU_BLOCKS,), block_dim=(TPB,),
-                )
-
-                # Step 4: GGNet backward: d_gate → d_hidden
-                comptime DYN_GG_C = Self.StateType.RSSMType.GRUGateModel.CACHE_SIZE
-                var dyn_gg_cache = LayoutTensor[
-                    dtype, Layout.row_major(IB, DYN_GG_C), MutAnyOrigin
-                ](gpu_state.imag_gg_cache_buf.unsafe_ptr() + h * IB * DYN_GG_C)
-                var d_hidden_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ](gpu_state.d_hidden_out_bwd_buf.unsafe_ptr())
-                var gg_grads_dummy = gpu_state.gru_gates.grads_view()
-                GGNet.backward_gpu[IB](
-                    ctx, d_gate_dyn, d_hidden_dyn,
-                    gpu_state.gru_gates.params_view(), dyn_gg_cache,
-                    gg_grads_dummy, gpu_state.ws_gru_gates,
-                )
-
-                # Step 5: GHNet backward: d_hidden → d_concat
-                comptime DYN_GH_C = Self.StateType.RSSMType.GRUHiddenModel.CACHE_SIZE
-                comptime GRU_IN_DYN = DETER + 3 * HID
-                var dyn_gh_cache = LayoutTensor[
-                    dtype, Layout.row_major(IB, DYN_GH_C), MutAnyOrigin
-                ](gpu_state.imag_gh_cache_buf.unsafe_ptr() + h * IB * DYN_GH_C)
-                var d_concat_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, GRU_IN_DYN), MutAnyOrigin
-                ](gpu_state.d_concat_bwd_buf.unsafe_ptr())
-                var gh_grads_dummy = gpu_state.gru_hidden.grads_view()
-                GHNet.backward_gpu[IB](
-                    ctx, d_hidden_dyn, d_concat_dyn,
-                    gpu_state.gru_hidden.params_view(), dyn_gh_cache,
-                    gh_grads_dummy, gpu_state.ws_gru_hidden,
-                )
-
-                # Step 6: Split d_concat → extract d_proj_a
-                var d_deter_concat_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ](gpu_state.d_deter_from_post_buf.unsafe_ptr())
-                var d_proj_d_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                ](gpu_state.d_proj_d_bwd_buf.unsafe_ptr())
-                var d_proj_s_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                ](gpu_state.d_proj_s_bwd_buf.unsafe_ptr())
-                var d_proj_a_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                ](gpu_state.d_proj_a_bwd_buf.unsafe_ptr())
-
-                @always_inline
-                fn run_dyn_split_concat(
-                    dd: LayoutTensor[dtype, Layout.row_major(IB, DETER), MutAnyOrigin],
-                    dpd: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
-                    dps: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
-                    dpa: LayoutTensor[dtype, Layout.row_major(IB, HID), MutAnyOrigin],
-                    dc: LayoutTensor[dtype, Layout.row_major(IB, GRU_IN_DYN), MutAnyOrigin],
-                ):
-                    concat_gru_input_backward_kernel[IB, DETER, HID](dd, dpd, dps, dpa, dc)
-
-                comptime DYN_SPLIT_CONCAT_BLOCKS = (IB * GRU_IN_DYN + TPB - 1) // TPB
-                ctx.enqueue_function[run_dyn_split_concat, run_dyn_split_concat](
-                    d_deter_concat_dyn, d_proj_d_dyn, d_proj_s_dyn, d_proj_a_dyn, d_concat_dyn,
-                    grid_dim=(DYN_SPLIT_CONCAT_BLOCKS,), block_dim=(TPB,),
-                )
-
-                # Step 7: ActionProj backward: d_proj_a → d_action
-                comptime DYN_APROJ_C = Self.StateType.RSSMType.ActionProj.CACHE_SIZE
-                var dyn_aproj_cache = LayoutTensor[
-                    dtype, Layout.row_major(IB, DYN_APROJ_C), MutAnyOrigin
-                ](gpu_state.imag_aproj_cache_buf.unsafe_ptr() + h * IB * DYN_APROJ_C)
-                var d_action_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-                ](gpu_state.d_prev_action_bwd_buf.unsafe_ptr())
-                var aproj_grads_dummy = gpu_state.action_proj.grads_view()
-                AProjNet.backward_gpu[IB](
-                    ctx, d_proj_a_dyn, d_action_dyn,
-                    gpu_state.action_proj.params_view(), dyn_aproj_cache,
-                    aproj_grads_dummy, gpu_state.ws_action_proj,
-                )
-
-                # Step 8: Reparameterization backward: d_action → d_actor_out
-                var d_actor_out_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin
-                ](gpu_state.actor_grad_buf.unsafe_ptr())
-                var saved_actor_out_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-                ](gpu_state.imag_actor_out_save_buf.unsafe_ptr() + h * IB * 2 * ACT)
-                var saved_actions_h = LayoutTensor[
-                    dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-                ](gpu_state.imag_all_actions_buf.unsafe_ptr() + h * IB * ACT)
-
-                @always_inline
-                fn run_reparam_bwd(
-                    gao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
-                    ga: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-                    ao: LayoutTensor[dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin],
-                    a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-                ):
-                    reparam_tanh_backward_kernel[IB, ACT](gao, ga, ao, a)
-
-                ctx.enqueue_function[run_reparam_bwd, run_reparam_bwd](
-                    d_actor_out_dyn, d_action_dyn, saved_actor_out_h, saved_actions_h,
-                    grid_dim=(SAMPLE_BLOCKS2,), block_dim=(TPB,),
-                )
-
-                # Step 9: Actor backward: d_actor_out → accumulate actor grads
-                comptime DYN_ACTOR_C = Self.StateType.ActorModel.CACHE_SIZE
-                var dyn_actor_cache = LayoutTensor[
-                    dtype, Layout.row_major(IB, DYN_ACTOR_C), MutAnyOrigin
-                ](gpu_state.imag_actor_cache_buf.unsafe_ptr() + h * IB * DYN_ACTOR_C)
-                var actor_grad_in_dyn = LayoutTensor[
-                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-                ](gpu_state.actor_grad_in_buf.unsafe_ptr())
-                var actor_grads = gpu_state.actor.grads_view()
-                Self.ActorNet.backward_gpu[IB](
-                    ctx, d_actor_out_dyn, actor_grad_in_dyn,
-                    gpu_state.actor.params_view(), dyn_actor_cache,
-                    actor_grads, gpu_state.ws_actor,
-                )
+            # Actor backward (accumulates into actor grads)
+            var actor_grad_in_h = LayoutTensor[
+                dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
+            ](gpu_state.actor_grad_in_buf.unsafe_ptr())
+            var actor_grads = gpu_state.actor.grads_view()
+            Self.ActorNet.backward_gpu[IB](
+                ctx, actor_grad_h, actor_grad_in_h,
+                gpu_state.actor.params_view(), actor_cache_h,
+                actor_grads, gpu_state.ws_actor,
+            )
 
         # ── Critic gradient clipping + optimizer step ─────────────────────
         _clip_grads_gpu[Self.CriticNet.MODEL.PARAM_SIZE](
