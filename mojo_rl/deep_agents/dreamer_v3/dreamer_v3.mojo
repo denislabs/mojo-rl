@@ -3993,75 +3993,10 @@ struct DreamerV3Agent[
             grid_dim=(LAMBDA_BLOCKS,), block_dim=(TPB,),
         )
 
-        # Min/max reduction on GPU for return normalization EMA
-        comptime RETURNS_SIZE = HORIZON * IB
-        var returns_flat = LayoutTensor[
-            dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
-        ](gpu_state.imag_returns_buf.unsafe_ptr())
-        var minmax_2 = LayoutTensor[
-            dtype, Layout.row_major(2), MutAnyOrigin
-        ](gpu_state.returns_minmax_buf.unsafe_ptr())
-
-        @always_inline
-        fn run_minmax(
-            r: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
-            d: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
-        ):
-            min_max_reduce_kernel[RETURNS_SIZE, TPB](r, d)
-
-        ctx.enqueue_function[run_minmax, run_minmax](
-            minmax_2, returns_flat,
-            grid_dim=(1,), block_dim=(TPB,),
-        )
-
-        # Download just 2 scalars for EMA update
-        var host_minmax = ctx.enqueue_create_host_buffer[dtype](2)
-        ctx.enqueue_copy(host_minmax, gpu_state.returns_minmax_buf)
-        ctx.synchronize()
-
-        var lo = Float64(host_minmax[0])
-        var hi = Float64(host_minmax[1])
-        self.state.return_ema_lo = (1.0 - self.return_norm_rate) * self.state.return_ema_lo + self.return_norm_rate * lo
-        self.state.return_ema_hi = (1.0 - self.return_norm_rate) * self.state.return_ema_hi + self.return_norm_rate * hi
-        var scale = self.state.return_ema_hi - self.state.return_ema_lo
-        if scale < 1.0:
-            scale = 1.0
-
-        # Normalize returns on GPU in-place
-        @always_inline
-        fn run_norm_returns(
-            ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
-            lo_val: Scalar[dtype],
-            inv_s: Scalar[dtype],
-        ):
-            normalize_returns_elementwise_kernel[RETURNS_SIZE](ret, lo_val, inv_s)
-
-        ctx.enqueue_function[run_norm_returns, run_norm_returns](
-            returns_flat,
-            Scalar[dtype](self.state.return_ema_lo),
-            Scalar[dtype](1.0 / scale),
-            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,), block_dim=(TPB,),
-        )
-
-        # ── 7. Multi-step Critic + Actor training ──────────────────────
-        # DreamerV3 trains actor/critic on ALL imagination steps (0..H-2).
-        ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
-        ctx.enqueue_memset(gpu_state.critic.grads_buf, 0)
-
-        comptime ACTOR_OUT_DIM = Self.StateType.ActorModel.OUT_DIM
-        comptime IB_FEAT_BLOCKS2 = (IB * FEAT + TPB - 1) // TPB
+        # ── 6b. Pre-compute advantages BEFORE return normalization ─────
+        # Both returns and values are in original scale here.
+        # Store advantages in imag_rewards_buf (no longer needed).
         comptime ENCODE_BLOCKS = (IB + TPB - 1) // TPB
-        comptime SAMPLE_BLOCKS2 = (IB + TPB - 1) // TPB
-        comptime SYMLOG_RET_BLOCKS = (IB + TPB - 1) // TPB
-        # Scale gradients by 1/(IB * num_steps) for proper averaging
-        var inv_ib = Scalar[dtype](1.0 / Float64(IB * (HORIZON - 1)))
-        var entropy_coef = Scalar[dtype](self.actor_entropy)
-        var bins_1d_ac = LayoutTensor[
-            dtype, Layout.row_major(BINS), MutAnyOrigin
-        ](gpu_state.bins_buf.unsafe_ptr())
-
-        # Pre-compute all advantages: adv[h] = returns[h] - values[h]
-        # Store in imag_rewards_buf (no longer needed after lambda returns)
         comptime ADV_TOTAL = (HORIZON - 1) * IB
         for h in range(HORIZON - 1):
             var ret_h = LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin](
@@ -4084,7 +4019,7 @@ struct DreamerV3Agent[
                 grid_dim=(ENCODE_BLOCKS,), block_dim=(TPB,),
             )
 
-        # Normalize all advantages across all (HORIZON-1)*IB elements
+        # Normalize all advantages: (adv - mean) / max(std, 1.0)
         var all_adv = LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin](
             gpu_state.imag_rewards_buf.unsafe_ptr())
 
@@ -4098,6 +4033,68 @@ struct DreamerV3Agent[
             all_adv,
             grid_dim=(1,), block_dim=(TPB,),
         )
+
+        # ── 6c. Normalize returns for critic training ────────────────────
+        comptime RETURNS_SIZE = HORIZON * IB
+        var returns_flat = LayoutTensor[
+            dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
+        ](gpu_state.imag_returns_buf.unsafe_ptr())
+        var minmax_2 = LayoutTensor[
+            dtype, Layout.row_major(2), MutAnyOrigin
+        ](gpu_state.returns_minmax_buf.unsafe_ptr())
+
+        @always_inline
+        fn run_minmax(
+            r: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
+            d: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+        ):
+            min_max_reduce_kernel[RETURNS_SIZE, TPB](r, d)
+
+        ctx.enqueue_function[run_minmax, run_minmax](
+            minmax_2, returns_flat,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
+
+        var host_minmax = ctx.enqueue_create_host_buffer[dtype](2)
+        ctx.enqueue_copy(host_minmax, gpu_state.returns_minmax_buf)
+        ctx.synchronize()
+
+        var lo = Float64(host_minmax[0])
+        var hi = Float64(host_minmax[1])
+        self.state.return_ema_lo = (1.0 - self.return_norm_rate) * self.state.return_ema_lo + self.return_norm_rate * lo
+        self.state.return_ema_hi = (1.0 - self.return_norm_rate) * self.state.return_ema_hi + self.return_norm_rate * hi
+        var scale = self.state.return_ema_hi - self.state.return_ema_lo
+        if scale < 1.0:
+            scale = 1.0
+
+        @always_inline
+        fn run_norm_returns(
+            ret: LayoutTensor[dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin],
+            lo_val: Scalar[dtype],
+            inv_s: Scalar[dtype],
+        ):
+            normalize_returns_elementwise_kernel[RETURNS_SIZE](ret, lo_val, inv_s)
+
+        ctx.enqueue_function[run_norm_returns, run_norm_returns](
+            returns_flat,
+            Scalar[dtype](self.state.return_ema_lo),
+            Scalar[dtype](1.0 / scale),
+            grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,), block_dim=(TPB,),
+        )
+
+        # ── 7. Multi-step Critic + Actor training ──────────────────────
+        ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
+        ctx.enqueue_memset(gpu_state.critic.grads_buf, 0)
+
+        comptime ACTOR_OUT_DIM = Self.StateType.ActorModel.OUT_DIM
+        comptime IB_FEAT_BLOCKS2 = (IB * FEAT + TPB - 1) // TPB
+        comptime SAMPLE_BLOCKS2 = (IB + TPB - 1) // TPB
+        comptime SYMLOG_RET_BLOCKS = (IB + TPB - 1) // TPB
+        var inv_ib = Scalar[dtype](1.0 / Float64(IB * (HORIZON - 1)))
+        var entropy_coef = Scalar[dtype](self.actor_entropy)
+        var bins_1d_ac = LayoutTensor[
+            dtype, Layout.row_major(BINS), MutAnyOrigin
+        ](gpu_state.bins_buf.unsafe_ptr())
 
         for h in range(HORIZON - 1):
             # Read saved deter/stoch for imagination step h
