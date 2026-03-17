@@ -2,8 +2,7 @@
 
 Compares:
   1. nn.conv.conv_gpu (Max's auto-dispatching GPU conv2d)
-  2. nn.conv.conv_cudnn (cuDNN directly)
-  3. nn.conv.conv2d_gpu_naive_nhwc_rscf (Max's pure Mojo GPU conv2d)
+  2. nn.conv.conv2d_gpu_naive_nhwc_rscf (Max's pure Mojo GPU conv2d)
 
 Layout notes:
   - Max conv expects NHWC input (batch, height, width, channels)
@@ -24,7 +23,7 @@ from std.utils import IndexList
 from mojo_rl.nn.constants import dtype, TPB
 
 # Max conv kernels
-from nn.conv import conv_gpu, conv_cudnn, conv2d_gpu_naive_nhwc_rscf
+from nn.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
 
 
 fn main() raises:
