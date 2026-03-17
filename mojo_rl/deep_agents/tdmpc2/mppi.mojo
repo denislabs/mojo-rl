@@ -1092,10 +1092,6 @@ fn plan_gpu_batched[
     comptime accum_copy = mppi_accum_reward_copy_z_kernel[
         dtype, BATCH_TOTAL, NUM_BINS, LATENT_DIM
     ]
-    # Unfused (still needed standalone for NVIDIA stream path)
-    comptime accum_reward = mppi_accumulate_reward_kernel[
-        dtype, BATCH_TOTAL, NUM_BINS
-    ]
     comptime tanh_build_za = tdmpc2_apply_tanh_build_za_deterministic_kernel[
         dtype, BATCH_TOTAL, ACTION_DIM, LATENT_DIM, POL_OUT
     ]
