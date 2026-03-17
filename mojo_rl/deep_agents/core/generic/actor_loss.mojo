@@ -421,14 +421,33 @@ struct DPGLoss(ActorLoss):
             ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
         )
 
-        # 4. Critic backward with dQ = -1/batch (pre-filled dq in strat_ws)
-        # Fill dq seed on GPU via a small kernel
+        # 4. Fill dq seed = -1/batch on GPU (maximize Q)
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_DQ)
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
+
+        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+
+        @always_inline
+        fn fill_dq(
+            buf: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
+            ],
+            val: Scalar[dtype],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < BATCH:
+                buf[i, 0] = val
+
+        ctx.enqueue_function[fill_dq, fill_dq](
+            dq_t,
+            neg_inv_batch,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
@@ -923,13 +942,33 @@ struct MaxEntLoss[
             ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
         )
 
-        # 5. Critic backward with dQ = -1/batch -> d_ci
+        # 5. Fill dq seed = -1/batch on GPU (maximize Q)
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_DQ)
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
+
+        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+
+        @always_inline
+        fn fill_dq(
+            buf: LayoutTensor[
+                dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
+            ],
+            val: Scalar[dtype],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < BATCH:
+                buf[i, 0] = val
+
+        ctx.enqueue_function[fill_dq, fill_dq](
+            dq_t,
+            neg_inv_batch,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
