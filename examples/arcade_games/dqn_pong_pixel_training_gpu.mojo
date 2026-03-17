@@ -37,7 +37,7 @@ comptime BATCH_SIZE = 256
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
 # Training duration
-comptime NUM_STEPS = 2_000_000  # Total env transitions
+comptime NUM_STEPS = 10_000  # Total env transitions
 
 comptime dtype = DType.float32
 
@@ -109,11 +109,11 @@ fn main() raises:
             var metrics = agent.train_gpu[PongPixelEnv[dtype]](
                 ctx,
                 num_steps=NUM_STEPS,
-                warmup_steps=5000,
+                warmup_steps=1000,
                 gradient_steps=8,
-                sync_every=10_000,
+                sync_every=1_000,
                 verbose=True,
-                print_every=100_000,
+                print_every=1_000,
                 environment_name="Pong (Pixel)",
             )
 
