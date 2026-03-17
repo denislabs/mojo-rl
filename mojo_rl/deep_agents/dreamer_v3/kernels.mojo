@@ -385,6 +385,71 @@ fn normalize_advantages_kernel[
 
 
 @always_inline
+fn reparam_tanh_backward_kernel[
+    BATCH: Int,
+    ACTION_DIM: Int,
+](
+    grad_actor_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 2 * ACTION_DIM), MutAnyOrigin
+    ],
+    grad_action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    actor_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 2 * ACTION_DIM), MutAnyOrigin
+    ],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+):
+    """Backward through tanh reparameterization: action = tanh(mean + std * noise).
+
+    Given d_action, compute d_mean and d_log_std.
+    d_mean = d_action * (1 - action^2)
+    d_log_std = d_action * (1 - action^2) * noise * std
+             = d_action * (1 - action^2) * (pre_tanh - mean)  [since noise*std = pre_tanh - mean]
+    """
+    comptime AD2 = 2 * ACTION_DIM
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var one = S(1.0)
+    var eps = S(1e-6)
+
+    for a in range(ACTION_DIM):
+        var mean_val = _rd2[BATCH, AD2](actor_out, b, a)
+        var log_std_val = _rd2[BATCH, AD2](actor_out, b, ACTION_DIM + a)
+        if log_std_val < S(-5.0):
+            log_std_val = S(-5.0)
+        if log_std_val > S(2.0):
+            log_std_val = S(2.0)
+        var std_val = exp(log_std_val)
+
+        var action_val = _rd2[BATCH, ACTION_DIM](actions, b, a)
+        if action_val > one - eps:
+            action_val = one - eps
+        if action_val < -one + eps:
+            action_val = -one + eps
+
+        var d_act = _rd2[BATCH, ACTION_DIM](grad_action, b, a)
+
+        # d(tanh)/d(input) = 1 - tanh^2
+        var dtanh = one - action_val * action_val
+        if dtanh < eps:
+            dtanh = eps
+
+        # d_mean = d_action * dtanh
+        grad_actor_out[b, a] = d_act * dtanh
+
+        # d_log_std = d_action * dtanh * (pre_tanh - mean) [= noise * std]
+        # Recover pre_tanh = atanh(action)
+        var pre_tanh = S(0.5) * log((one + action_val) / (one - action_val))
+        var noise_times_std = pre_tanh - mean_val
+        grad_actor_out[b, ACTION_DIM + a] = d_act * dtanh * noise_times_std
+
+
+@always_inline
 fn clamp_kernel[
     SIZE: Int,
 ](
@@ -1139,6 +1204,12 @@ fn reinforce_grad_kernel[
         # atanh
         var pre_tanh = S(0.5) * log((one + action_val) / (one - action_val))
         var z = (pre_tanh - mean_val) / std_val
+
+        # Clip z to prevent outlier gradients from unlikely actions
+        if z > S(3.0):
+            z = S(3.0)
+        if z < S(-3.0):
+            z = S(-3.0)
 
         var grad_mean = z / std_val
         var grad_log_std = z * z - one

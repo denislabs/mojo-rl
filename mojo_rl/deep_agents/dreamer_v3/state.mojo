@@ -40,7 +40,7 @@ struct DreamerV3CPUState[
     NUM_BINS: Int = 255,
     BLOCKS: Int = 4,
     WM_LR: Float64 = 1e-4,
-    ACTOR_LR: Float64 = 3e-5,
+    ACTOR_LR: Float64 = 3e-4,
     CRITIC_LR: Float64 = 3e-5,
     UNIMIX: Float64 = 0.01,
     FREE_NATS: Float64 = 1.0,
@@ -470,7 +470,7 @@ struct DreamerV3GPUState[
     NUM_BINS: Int = 255,
     BLOCKS: Int = 4,
     WM_LR: Float64 = 1e-4,
-    ACTOR_LR: Float64 = 3e-5,
+    ACTOR_LR: Float64 = 3e-4,
     CRITIC_LR: Float64 = 3e-5,
     UNIMIX: Float64 = 0.01,
     FREE_NATS: Float64 = 1.0,
@@ -630,6 +630,18 @@ struct DreamerV3GPUState[
     var imag_all_deter_buf: DeviceBuffer[dtype]  # [HORIZON * IB * DETER]
     var imag_all_stoch_buf: DeviceBuffer[dtype]  # [HORIZON * IB * STOCH]
     var imag_all_actions_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ACT]
+
+    # Per-horizon imagination caches (for dynamics backprop through actor)
+    var imag_actor_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ActorModel.CACHE_SIZE]
+    var imag_aproj_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ActionProj.CACHE_SIZE]
+    var imag_gh_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * GRUHiddenModel.CACHE_SIZE]
+    var imag_gg_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * GRUGateModel.CACHE_SIZE]
+    var imag_prior_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * PriorModel.CACHE_SIZE]
+    var imag_rew_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * RewModel.CACHE_SIZE]
+    # Per-horizon saved gate_out for GRU backward
+    var imag_gate_out_save_buf: DeviceBuffer[dtype]  # [HORIZON * IB * 3*DETER]
+    # Per-horizon actor_out for reparameterization backward
+    var imag_actor_out_save_buf: DeviceBuffer[dtype]  # [HORIZON * IB * 2*ACT]
 
     # ── Actor/Critic GPU scratch (IB-sized for imagination) ──────────────
     var actor_out_buf: DeviceBuffer[dtype]  # [IB * 2*ACT]
@@ -854,6 +866,14 @@ struct DreamerV3GPUState[
         self.imag_all_deter_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.DETER)
         self.imag_all_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.STOCH)
         self.imag_all_actions_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.ACT)
+        self.imag_actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.ActorModel.CACHE_SIZE)
+        self.imag_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.ActionProj.CACHE_SIZE)
+        self.imag_gh_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.GRUHiddenModel.CACHE_SIZE)
+        self.imag_gg_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.GRUGateModel.CACHE_SIZE)
+        self.imag_prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.PriorModel.CACHE_SIZE)
+        self.imag_rew_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.RewModel.CACHE_SIZE)
+        self.imag_gate_out_save_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * 3 * Self.DETER)
+        self.imag_actor_out_save_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * 2 * Self.ACT)
 
         # ── Actor/Critic scratch ─────────────────────────────────────────
         comptime ACTOR_OUT_DIM = Self.ActorModel.OUT_DIM
@@ -1093,6 +1113,14 @@ struct DreamerV3GPUState[
         self.imag_all_deter_buf = take.imag_all_deter_buf^
         self.imag_all_stoch_buf = take.imag_all_stoch_buf^
         self.imag_all_actions_buf = take.imag_all_actions_buf^
+        self.imag_actor_cache_buf = take.imag_actor_cache_buf^
+        self.imag_aproj_cache_buf = take.imag_aproj_cache_buf^
+        self.imag_gh_cache_buf = take.imag_gh_cache_buf^
+        self.imag_gg_cache_buf = take.imag_gg_cache_buf^
+        self.imag_prior_cache_buf = take.imag_prior_cache_buf^
+        self.imag_rew_cache_buf = take.imag_rew_cache_buf^
+        self.imag_gate_out_save_buf = take.imag_gate_out_save_buf^
+        self.imag_actor_out_save_buf = take.imag_actor_out_save_buf^
         self.actor_out_buf = take.actor_out_buf^
         self.actor_cache_buf = take.actor_cache_buf^
         self.actor_grad_buf = take.actor_grad_buf^
