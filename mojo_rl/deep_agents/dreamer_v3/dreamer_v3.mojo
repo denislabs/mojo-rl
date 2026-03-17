@@ -1598,8 +1598,8 @@ struct DreamerV3Agent[
             # Copy obs slice: batch_obs[b*(BL+1)*OBS + t*OBS : ... + (t+1)*OBS]
             # For simplicity, we do this on CPU and upload per timestep.
             # A more optimized version would use gather kernels.
-            var host_obs_step = gpu_state.host_obs_step_buf
-            var host_act_step = gpu_state.host_act_step_buf
+            var host_obs_step = ctx.enqueue_create_host_buffer[dtype](B * OBS)
+            var host_act_step = ctx.enqueue_create_host_buffer[dtype](B * ACT)
             for b in range(B):
                 for i in range(OBS):
                     host_obs_step[b * OBS + i] = Scalar[dtype](
@@ -2221,7 +2221,7 @@ struct DreamerV3Agent[
             )
 
             # Upload symlog(obs[t+1]) target to GPU
-            var host_target = gpu_state.host_target_buf
+            var host_target = ctx.enqueue_create_host_buffer[dtype](B * OBS)
             for b in range(B):
                 for i in range(OBS):
                     var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
@@ -2300,7 +2300,7 @@ struct DreamerV3Agent[
             )
 
             # Upload symlog(reward[t]) target
-            var host_rew_symlog = gpu_state.host_rew_symlog_step_buf
+            var host_rew_symlog = ctx.enqueue_create_host_buffer[dtype](B)
             for b in range(B):
                 var r = batch_rewards[b * BL + t]
                 host_rew_symlog[b] = Scalar[dtype](symlog(Float32(r)))
@@ -2416,7 +2416,7 @@ struct DreamerV3Agent[
             )
 
             # Upload 1.0 - done[t] as target
-            var host_cont_target = gpu_state.host_cont_target_step_buf
+            var host_cont_target = ctx.enqueue_create_host_buffer[dtype](B)
             for b in range(B):
                 host_cont_target[b] = Scalar[dtype](
                     1.0 - Float64(batch_dones[b * BL + t])
