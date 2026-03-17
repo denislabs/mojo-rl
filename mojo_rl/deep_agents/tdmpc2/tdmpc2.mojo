@@ -2285,13 +2285,8 @@ struct TDMPC2Agent[
         var t_batch_upload: Int = 0  # Phase 2b: Upload batch to GPU
         var t_td_targets: Int = 0  # Phase 2c: TD target computation
         var t_wm_gradient: Int = (
-            0  # Phase 2d: World model gradient loop (H steps)
+            0  # Phase 2d-g: BPTT + optim + policy + soft update (pipelined)
         )
-        var t_wm_optim: Int = 0  # Phase 2e: WM gradient clip + optimizer
-        var t_policy_update: Int = (
-            0  # Phase 2f: Policy update (H steps + optim)
-        )
-        var t_soft_update: Int = 0  # Phase 2g: Target Q soft update
         var timing_train_iters: Int = (
             0  # Number of training iterations measured
         )
@@ -2807,10 +2802,7 @@ struct TDMPC2Agent[
             self._wm_bptt_gpu[n_envs, ENV.STATE_SIZE](ctx, gs)
 
             # ── Gradient clipping + optimizer step for all world model networks ──
-            ctx.synchronize()
-            t_wm_gradient += Int(perf_counter_ns() - _t0_wm)
-
-            var _t0_wo = perf_counter_ns()
+            # No sync needed — GPU pipelines BPTT → optimizer naturally
             ctx.enqueue_function[
                 gradient_norm_kernel[
                     dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
@@ -3109,10 +3101,7 @@ struct TDMPC2Agent[
             # Step 2c: Policy update (maximize Q + entropy)
             # Policy uses stop-gradient z from encoder (no grad to encoder)
             # ──────────────────────────────────────────────────────────────
-            ctx.synchronize()
-            t_wm_optim += Int(perf_counter_ns() - _t0_wo)
-
-            var _t0_pi = perf_counter_ns()
+            # No sync needed — GPU pipelines optimizer → policy update naturally
             gs.pol.zero_grads(ctx)
 
             # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
@@ -3387,10 +3376,7 @@ struct TDMPC2Agent[
             # ──────────────────────────────────────────────────────────────
             # Step 2d: Soft update target Q networks
             # ──────────────────────────────────────────────────────────────
-            ctx.synchronize()
-            t_policy_update += Int(perf_counter_ns() - _t0_pi)
-
-            var _t0_su = perf_counter_ns()
+            # No sync needed — GPU pipelines policy → soft update naturally
             var tau_scalar = Scalar[dtype](self.tau)
 
             # Fused: soft update all 5 Q-target networks (5 kernels → 1)
@@ -3414,7 +3400,9 @@ struct TDMPC2Agent[
             )
 
             ctx.synchronize()
-            t_soft_update += Int(perf_counter_ns() - _t0_su)
+            # Single timing for entire training phase (BPTT + optim + policy + soft update)
+            var _t_train_all = Int(perf_counter_ns() - _t0_wm)
+            t_wm_gradient += _t_train_all
             timing_train_iters += 1
 
             self.train_step_count += 1
@@ -3430,9 +3418,6 @@ struct TDMPC2Agent[
                 + t_batch_upload
                 + t_td_targets
                 + t_wm_gradient
-                + t_wm_optim
-                + t_policy_update
-                + t_soft_update
             )
             var total_ms = Float64(total_ns) / 1e6
 
@@ -3486,31 +3471,10 @@ struct TDMPC2Agent[
                 "%)",
             )
             print(
-                "WM gradient (Hx):   ",
+                "Train (BPTT+optim+policy+soft): ",
                 Float64(t_wm_gradient) / 1e6,
                 "ms (",
                 _pct(t_wm_gradient, total_ns),
-                "%)",
-            )
-            print(
-                "WM optimizer:       ",
-                Float64(t_wm_optim) / 1e6,
-                "ms (",
-                _pct(t_wm_optim, total_ns),
-                "%)",
-            )
-            print(
-                "Policy update:      ",
-                Float64(t_policy_update) / 1e6,
-                "ms (",
-                _pct(t_policy_update, total_ns),
-                "%)",
-            )
-            print(
-                "Soft update:        ",
-                Float64(t_soft_update) / 1e6,
-                "ms (",
-                _pct(t_soft_update, total_ns),
                 "%)",
             )
             print("=================================================\n")
