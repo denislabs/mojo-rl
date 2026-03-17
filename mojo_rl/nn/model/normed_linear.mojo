@@ -1323,6 +1323,354 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
+    fn _backward_dx_kernel[
+        BATCH: Int,
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        d_linear_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        W: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+            ImmutAnyOrigin,
+        ],
+    ):
+        """Dispatching backward dx = d_linear_out @ W.T."""
+        comptime if is_nvidia_gpu():
+            var tid = Int(thread_idx.x)
+            var warp_id = tid // 32
+            var warp_m = warp_id // MMA_WARPS_N
+            var warp_n = warp_id % MMA_WARPS_N
+            var block_row = Int(block_idx.y) * MMA_BLOCK_M
+            var block_col = Int(block_idx.x) * MMA_BLOCK_N
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc = SIMD[DType.float32, 4](0)
+            var lid = lane_id()
+            var group_id = lid >> 2
+            var group_lane = lid % 4
+            comptime num_k_tiles = (Self.OUT_DIM + MMA_K - 1) // MMA_K
+
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * MMA_K
+                # Load A = d_linear_out
+                var a_r = tid // MMA_K
+                var a_c = tid % MMA_K
+                if block_row + a_r < BATCH and k_off + a_c < Self.OUT_DIM:
+                    a_smem[a_r, a_c] = d_linear_out[
+                        block_row + a_r, k_off + a_c
+                    ]
+                else:
+                    a_smem[a_r, a_c] = 0
+                # Load B = W.T (swap indices)
+                var br = tid // MMA_BLOCK_N
+                var bc = tid % MMA_BLOCK_N
+                if k_off + br < Self.OUT_DIM and block_col + bc < Self.IN_DIM:
+                    b_smem[br, bc] = W[block_col + bc, k_off + br]
+                else:
+                    b_smem[br, bc] = 0
+                barrier()
+                var warp_row = warp_m * MMA_M
+                var a_frag = SIMD[DType.float32, 4](
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
+                )
+                var warp_col = warp_n * MMA_N
+                var b_frag = SIMD[DType.float32, 2](
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
+                )
+                mma(acc, a_frag, b_frag, acc)
+                barrier()
+
+            var r0 = block_row + warp_m * MMA_M + Int(group_id)
+            var r1 = r0 + 8
+            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+            var c1 = c0 + 1
+            if r0 < BATCH and c0 < Self.IN_DIM:
+                grad_input[r0, c0] = rebind[Scalar[dtype]](acc[0])
+            if r0 < BATCH and c1 < Self.IN_DIM:
+                grad_input[r0, c1] = rebind[Scalar[dtype]](acc[1])
+            if r1 < BATCH and c0 < Self.IN_DIM:
+                grad_input[r1, c0] = rebind[Scalar[dtype]](acc[2])
+            if r1 < BATCH and c1 < Self.IN_DIM:
+                grad_input[r1, c1] = rebind[Scalar[dtype]](acc[3])
+        else:
+            # 2x2 register-tiled fallback
+            comptime BT = 32
+            comptime SK = 16
+            var tid = Int(thread_idx.x)
+            var sub_r = tid // 16
+            var sub_c = tid % 16
+            var block_row = Int(block_idx.y) * BT
+            var block_col = Int(block_idx.x) * BT
+            var a_smem = LayoutTensor[
+                dtype, Layout.row_major(BT, SK), MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype, Layout.row_major(SK, BT), MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var acc00: Scalar[dtype] = 0
+            var acc01: Scalar[dtype] = 0
+            var acc10: Scalar[dtype] = 0
+            var acc11: Scalar[dtype] = 0
+            for k_tile in range((Self.OUT_DIM + SK - 1) // SK):
+                var k_off = k_tile * SK
+                var a_r0 = tid // SK
+                var a_c0 = tid % SK
+                var a_r1 = (tid + 256) // SK
+                var a_c1 = (tid + 256) % SK
+                if block_row + a_r0 < BATCH and k_off + a_c0 < Self.OUT_DIM:
+                    a_smem[a_r0, a_c0] = d_linear_out[block_row + a_r0, k_off + a_c0]
+                else:
+                    a_smem[a_r0, a_c0] = 0
+                if a_r1 < BT and block_row + a_r1 < BATCH and k_off + a_c1 < Self.OUT_DIM:
+                    a_smem[a_r1, a_c1] = d_linear_out[block_row + a_r1, k_off + a_c1]
+                elif a_r1 < BT:
+                    a_smem[a_r1, a_c1] = 0
+                var b_r0 = tid // BT
+                var b_c0 = tid % BT
+                var b_r1 = (tid + 256) // BT
+                var b_c1 = (tid + 256) % BT
+                if k_off + b_r0 < Self.OUT_DIM and block_col + b_c0 < Self.IN_DIM:
+                    b_smem[b_r0, b_c0] = W[block_col + b_c0, k_off + b_r0]
+                else:
+                    b_smem[b_r0, b_c0] = 0
+                if b_r1 < SK and k_off + b_r1 < Self.OUT_DIM and block_col + b_c1 < Self.IN_DIM:
+                    b_smem[b_r1, b_c1] = W[block_col + b_c1, k_off + b_r1]
+                elif b_r1 < SK:
+                    b_smem[b_r1, b_c1] = 0
+                barrier()
+                for k in range(SK):
+                    if k_off + k < Self.OUT_DIM:
+                        var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                        var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
+                        var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                        var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
+                        acc00 += a0 * b0
+                        acc01 += a0 * b1
+                        acc10 += a1 * b0
+                        acc11 += a1 * b1
+                barrier()
+            var gr0 = block_row + sub_r * 2
+            var gc0 = block_col + sub_c * 2
+            if gr0 < BATCH and gc0 < Self.IN_DIM:
+                grad_input[gr0, gc0] = acc00
+            if gr0 < BATCH and gc0 + 1 < Self.IN_DIM:
+                grad_input[gr0, gc0 + 1] = acc01
+            if gr0 + 1 < BATCH and gc0 < Self.IN_DIM:
+                grad_input[gr0 + 1, gc0] = acc10
+            if gr0 + 1 < BATCH and gc0 + 1 < Self.IN_DIM:
+                grad_input[gr0 + 1, gc0 + 1] = acc11
+
+    @always_inline
+    @staticmethod
+    fn _backward_dW_kernel[
+        BATCH: Int,
+    ](
+        dW: LayoutTensor[
+            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ],
+        d_linear_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+    ):
+        """Dispatching backward dW = input.T @ d_linear_out."""
+        comptime if is_nvidia_gpu():
+            var tid = Int(thread_idx.x)
+            var warp_id = tid // 32
+            var warp_m = warp_id // MMA_WARPS_N
+            var warp_n = warp_id % MMA_WARPS_N
+            var block_row = Int(block_idx.y) * MMA_BLOCK_M  # IN_DIM
+            var block_col = Int(block_idx.x) * MMA_BLOCK_N  # OUT_DIM
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc = SIMD[DType.float32, 4](0)
+            var lid = lane_id()
+            var group_id = lid >> 2
+            var group_lane = lid % 4
+            comptime num_k_tiles = (BATCH + MMA_K - 1) // MMA_K
+
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * MMA_K
+                # Load A = input.T from cache
+                var a_r = tid // MMA_K
+                var a_c = tid % MMA_K
+                if k_off + a_c < BATCH and block_row + a_r < Self.IN_DIM:
+                    a_smem[a_r, a_c] = cache[
+                        k_off + a_c, Self._INPUT_OFFSET + block_row + a_r
+                    ]
+                else:
+                    a_smem[a_r, a_c] = 0
+                # Load B = d_linear_out
+                var br = tid // MMA_BLOCK_N
+                var bc = tid % MMA_BLOCK_N
+                if k_off + br < BATCH and block_col + bc < Self.OUT_DIM:
+                    b_smem[br, bc] = d_linear_out[k_off + br, block_col + bc]
+                else:
+                    b_smem[br, bc] = 0
+                barrier()
+                var warp_row = warp_m * MMA_M
+                var a_frag = SIMD[DType.float32, 4](
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
+                )
+                var warp_col = warp_n * MMA_N
+                var b_frag = SIMD[DType.float32, 2](
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
+                )
+                mma(acc, a_frag, b_frag, acc)
+                barrier()
+
+            var r0 = block_row + warp_m * MMA_M + Int(group_id)
+            var r1 = r0 + 8
+            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+            var c1 = c0 + 1
+            if r0 < Self.IN_DIM and c0 < Self.OUT_DIM:
+                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+            if r0 < Self.IN_DIM and c1 < Self.OUT_DIM:
+                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+            if r1 < Self.IN_DIM and c0 < Self.OUT_DIM:
+                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+            if r1 < Self.IN_DIM and c1 < Self.OUT_DIM:
+                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+        else:
+            # 2x2 register-tiled fallback
+            comptime BT = 32
+            comptime SK = 16
+            var tid = Int(thread_idx.x)
+            var sub_r = tid // 16
+            var sub_c = tid % 16
+            var block_row = Int(block_idx.y) * BT
+            var block_col = Int(block_idx.x) * BT
+            var a_smem = LayoutTensor[
+                dtype, Layout.row_major(BT, SK), MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype, Layout.row_major(SK, BT), MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var acc00: Scalar[dtype] = 0
+            var acc01: Scalar[dtype] = 0
+            var acc10: Scalar[dtype] = 0
+            var acc11: Scalar[dtype] = 0
+            for k_tile in range((BATCH + SK - 1) // SK):
+                var k_off = k_tile * SK
+                var a_r0 = tid // SK
+                var a_c0 = tid % SK
+                var a_r1 = (tid + 256) // SK
+                var a_c1 = (tid + 256) % SK
+                if k_off + a_c0 < BATCH and block_row + a_r0 < Self.IN_DIM:
+                    a_smem[a_r0, a_c0] = cache[k_off + a_c0, Self._INPUT_OFFSET + block_row + a_r0]
+                else:
+                    a_smem[a_r0, a_c0] = 0
+                if a_r1 < BT and k_off + a_c1 < BATCH and block_row + a_r1 < Self.IN_DIM:
+                    a_smem[a_r1, a_c1] = cache[k_off + a_c1, Self._INPUT_OFFSET + block_row + a_r1]
+                elif a_r1 < BT:
+                    a_smem[a_r1, a_c1] = 0
+                var b_r0 = tid // BT
+                var b_c0 = tid % BT
+                var b_r1 = (tid + 256) // BT
+                var b_c1 = (tid + 256) % BT
+                if k_off + b_r0 < BATCH and block_col + b_c0 < Self.OUT_DIM:
+                    b_smem[b_r0, b_c0] = d_linear_out[k_off + b_r0, block_col + b_c0]
+                else:
+                    b_smem[b_r0, b_c0] = 0
+                if b_r1 < SK and k_off + b_r1 < BATCH and block_col + b_c1 < Self.OUT_DIM:
+                    b_smem[b_r1, b_c1] = d_linear_out[k_off + b_r1, block_col + b_c1]
+                elif b_r1 < SK:
+                    b_smem[b_r1, b_c1] = 0
+                barrier()
+                for k in range(SK):
+                    if k_off + k < BATCH:
+                        var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                        var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
+                        var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                        var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
+                        acc00 += a0 * b0
+                        acc01 += a0 * b1
+                        acc10 += a1 * b0
+                        acc11 += a1 * b1
+                barrier()
+            var gr0 = block_row + sub_r * 2
+            var gc0 = block_col + sub_c * 2
+            if gr0 < Self.IN_DIM and gc0 < Self.OUT_DIM:
+                dW[gr0, gc0] = acc00
+            if gr0 < Self.IN_DIM and gc0 + 1 < Self.OUT_DIM:
+                dW[gr0, gc0 + 1] = acc01
+            if gr0 + 1 < Self.IN_DIM and gc0 < Self.OUT_DIM:
+                dW[gr0 + 1, gc0] = acc10
+            if gr0 + 1 < Self.IN_DIM and gc0 + 1 < Self.OUT_DIM:
+                dW[gr0 + 1, gc0 + 1] = acc11
+
+    @always_inline
+    @staticmethod
     fn backward_linear_fused_kernel_impl[
         BATCH: Int,
     ](
@@ -1908,7 +2256,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             block_dim=(32,),
         )
 
-        # Kernel 2: Fused Linear backward (dx + dW + db)
+        # Kernel 2: dx = d_linear_out @ W.T (MMA on NVIDIA)
         var dW = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
         ](grads.ptr)
@@ -1916,23 +2264,13 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
         ](grads.ptr + Self._B_OFFSET)
 
-        comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
-        comptime dx_grid_y = (BATCH + TILE - 1) // TILE
-        comptime dW_grid_x = (Self.OUT_DIM + TILE - 1) // TILE
-        comptime dW_grid_y = (Self.IN_DIM + TILE - 1) // TILE
-        comptime fused_grid_x = dx_grid_x if dx_grid_x > dW_grid_x else dW_grid_x
-        comptime fused_grid_y = dx_grid_y + dW_grid_y
+        comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn linear_backward_wrapper(
+        fn dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-            ],
-            dW: LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-            ],
-            db: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
             ],
             d_linear_out: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
@@ -1942,23 +2280,69 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
                 ImmutAnyOrigin,
             ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
-            ],
         ):
-            Self.backward_linear_fused_kernel_impl[BATCH](
-                grad_input, dW, db, d_linear_out, W, cache
-            )
+            Self._backward_dx_kernel[BATCH](grad_input, d_linear_out, W)
 
-        ctx.enqueue_function[
-            linear_backward_wrapper, linear_backward_wrapper
-        ](
+        ctx.enqueue_function[dx_wrapper, dx_wrapper](
             grad_input,
-            dW,
-            db,
             d_linear_out_immut,
             W,
+            grid_dim=(dx_grid_x, dx_grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+        # Kernel 3: dW = input.T @ d_linear_out (MMA on NVIDIA)
+        comptime dW_grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dW_grid_y = (Self.IN_DIM + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        fn dW_wrapper(
+            dW: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                MutAnyOrigin,
+            ],
+            cache: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.CACHE_SIZE),
+                ImmutAnyOrigin,
+            ],
+            d_linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self._backward_dW_kernel[BATCH](dW, cache, d_linear_out)
+
+        ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            dW,
             cache_immut,
-            grid_dim=(fused_grid_x, fused_grid_y),
-            block_dim=(TILE, TILE),
+            d_linear_out_immut,
+            grid_dim=(dW_grid_x, dW_grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+        # Kernel 4: db = sum(d_linear_out, axis=0)
+        comptime db_blocks = (Self.OUT_DIM + TPB - 1) // TPB
+
+        @always_inline
+        fn db_wrapper(
+            db: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+            ],
+            d_linear_out: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            var col = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if col < Self.OUT_DIM:
+                var acc: Scalar[dtype] = 0
+                for ba in range(BATCH):
+                    acc += rebind[Scalar[dtype]](d_linear_out[ba, col])
+                db[col] = acc
+
+        ctx.enqueue_function[db_wrapper, db_wrapper](
+            db,
+            d_linear_out_immut,
+            grid_dim=(db_blocks,),
+            block_dim=(TPB,),
         )
