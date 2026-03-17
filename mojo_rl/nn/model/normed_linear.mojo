@@ -1000,43 +1000,87 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     ):
         """Fused LayerNorm + Mish kernel with caching.
 
-        One block per sample (sequential over features).
+        Warp-parallel: 32 threads per sample for reduction.
         Grid: (BATCH,)
-        Block: (1,)
+        Block: (32,)
         """
         var batch_idx = Int(block_idx.x)
         if batch_idx >= BATCH:
             return
-        if thread_idx.x != 0:
-            return
 
+        var tid = Int(thread_idx.x)
+        comptime WARP = 32
         var n = Scalar[dtype](Self.OUT_DIM)
 
-        # Compute mean
-        var mean: output.element_type = 0.0
-        for j in range(Self.OUT_DIM):
-            mean = mean + linear_out[batch_idx, j]
-        mean = mean / n
+        # ── Pass 1: compute mean (warp-parallel reduction) ──
+        var local_sum: Scalar[dtype] = 0.0
+        for j in range(tid, Self.OUT_DIM, WARP):
+            local_sum += rebind[Scalar[dtype]](linear_out[batch_idx, j])
 
-        # Compute variance
-        var var_: output.element_type = 0.0
-        for j in range(Self.OUT_DIM):
-            var diff = linear_out[batch_idx, j] - mean
-            var_ = var_ + diff * diff
-        var_ = var_ / n
+        # Shared memory reduction for sum
+        var smem = LayoutTensor[
+            dtype,
+            Layout.row_major(WARP),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        smem[tid] = local_sum
+        barrier()
+        if tid < 16:
+            smem[tid] = smem[tid] + smem[tid + 16]
+        barrier()
+        if tid < 8:
+            smem[tid] = smem[tid] + smem[tid + 8]
+        barrier()
+        if tid < 4:
+            smem[tid] = smem[tid] + smem[tid + 4]
+        barrier()
+        if tid < 2:
+            smem[tid] = smem[tid] + smem[tid + 2]
+        barrier()
+        if tid == 0:
+            smem[0] = smem[0] + smem[1]
+        barrier()
+        var mean = rebind[Scalar[dtype]](smem[0]) / n
 
-        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
+        # ── Pass 2: compute variance (warp-parallel reduction) ──
+        var local_var: Scalar[dtype] = 0.0
+        for j in range(tid, Self.OUT_DIM, WARP):
+            var diff = rebind[Scalar[dtype]](linear_out[batch_idx, j]) - mean
+            local_var += diff * diff
 
-        # LN + Mish fused
-        for j in range(Self.OUT_DIM):
-            var z_val = linear_out[batch_idx, j]
+        # Shared memory reduction for variance
+        smem[tid] = local_var
+        barrier()
+        if tid < 16:
+            smem[tid] = smem[tid] + smem[tid + 16]
+        barrier()
+        if tid < 8:
+            smem[tid] = smem[tid] + smem[tid + 8]
+        barrier()
+        if tid < 4:
+            smem[tid] = smem[tid] + smem[tid + 4]
+        barrier()
+        if tid < 2:
+            smem[tid] = smem[tid] + smem[tid + 2]
+        barrier()
+        if tid == 0:
+            smem[0] = smem[0] + smem[1]
+        barrier()
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n
+        var inv_std = 1.0 / sqrt(var_ + eps)
+
+        # ── Pass 3: normalize + Mish + cache (warp-parallel) ──
+        for j in range(tid, Self.OUT_DIM, WARP):
+            var z_val = rebind[Scalar[dtype]](linear_out[batch_idx, j])
             var normalized = (z_val - mean) * inv_std
             cache[batch_idx, Self._LN_NORM_OFFSET + j] = normalized
 
-            var ln_out = gamma[j] * normalized + beta[j]
+            var ln_out = rebind[Scalar[dtype]](gamma[j]) * normalized + rebind[
+                Scalar[dtype]
+            ](beta[j])
             cache[batch_idx, Self._LN_OUT_OFFSET + j] = ln_out
 
-            # Mish: y = x * tanh(softplus(x))
             var x_val = rebind[Scalar[DType.float32]](ln_out)
             var sp: Scalar[DType.float32]
             if x_val > 20.0:
@@ -1053,8 +1097,10 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 x_val * tanh_sp
             )
 
-        cache[batch_idx, Self._INV_STD_OFFSET] = inv_std
-        cache[batch_idx, Self._MEAN_OFFSET] = mean
+        # Store scalars (only thread 0)
+        if tid == 0:
+            cache[batch_idx, Self._INV_STD_OFFSET] = inv_std
+            cache[batch_idx, Self._MEAN_OFFSET] = mean
 
     @always_inline
     @staticmethod
@@ -1077,34 +1123,84 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     ):
         """Fused LayerNorm + Mish kernel without caching (inference).
 
+        Warp-parallel: 32 threads per sample for reduction.
         Grid: (BATCH,)
-        Block: (1,)
+        Block: (32,)
         """
         var batch_idx = Int(block_idx.x)
         if batch_idx >= BATCH:
             return
-        if thread_idx.x != 0:
-            return
 
+        var tid = Int(thread_idx.x)
+        comptime WARP = 32
         var n = Scalar[dtype](Self.OUT_DIM)
 
-        var mean: output.element_type = 0.0
-        for j in range(Self.OUT_DIM):
-            mean = mean + linear_out[batch_idx, j]
-        mean = mean / n
+        # ── Pass 1: compute mean (warp-parallel reduction) ──
+        var local_sum: Scalar[dtype] = 0.0
+        for j in range(tid, Self.OUT_DIM, WARP):
+            local_sum += rebind[Scalar[dtype]](linear_out[batch_idx, j])
 
-        var var_: output.element_type = 0.0
-        for j in range(Self.OUT_DIM):
-            var diff = linear_out[batch_idx, j] - mean
-            var_ = var_ + diff * diff
-        var_ = var_ / n
+        # Warp shuffle reduction for sum
+        # Shared memory reduction for sum
+        var smem = LayoutTensor[
+            dtype,
+            Layout.row_major(WARP),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        smem[tid] = local_sum
+        barrier()
+        if tid < 16:
+            smem[tid] = smem[tid] + smem[tid + 16]
+        barrier()
+        if tid < 8:
+            smem[tid] = smem[tid] + smem[tid + 8]
+        barrier()
+        if tid < 4:
+            smem[tid] = smem[tid] + smem[tid + 4]
+        barrier()
+        if tid < 2:
+            smem[tid] = smem[tid] + smem[tid + 2]
+        barrier()
+        if tid == 0:
+            smem[0] = smem[0] + smem[1]
+        barrier()
+        var mean = rebind[Scalar[dtype]](smem[0]) / n
 
-        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
+        # ── Pass 2: compute variance (warp-parallel reduction) ──
+        var local_var: Scalar[dtype] = 0.0
+        for j in range(tid, Self.OUT_DIM, WARP):
+            var diff = rebind[Scalar[dtype]](linear_out[batch_idx, j]) - mean
+            local_var += diff * diff
 
-        for j in range(Self.OUT_DIM):
-            var z_val = linear_out[batch_idx, j]
+        # Shared memory reduction for variance
+        smem[tid] = local_var
+        barrier()
+        if tid < 16:
+            smem[tid] = smem[tid] + smem[tid + 16]
+        barrier()
+        if tid < 8:
+            smem[tid] = smem[tid] + smem[tid + 8]
+        barrier()
+        if tid < 4:
+            smem[tid] = smem[tid] + smem[tid + 4]
+        barrier()
+        if tid < 2:
+            smem[tid] = smem[tid] + smem[tid + 2]
+        barrier()
+        if tid == 0:
+            smem[0] = smem[0] + smem[1]
+        barrier()
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n
+        var inv_std = 1.0 / sqrt(var_ + eps)
+
+        # ── Pass 3: normalize + Mish (warp-parallel) ──
+        for j in range(tid, Self.OUT_DIM, WARP):
+            var z_val = rebind[Scalar[dtype]](linear_out[batch_idx, j])
             var normalized = (z_val - mean) * inv_std
-            var ln_out = gamma[j] * normalized + beta[j]
+            var ln_out = rebind[Scalar[dtype]](gamma[j]) * normalized + rebind[
+                Scalar[dtype]
+            ](beta[j])
 
             var x_val = rebind[Scalar[DType.float32]](ln_out)
             var sp: Scalar[DType.float32]
@@ -1497,7 +1593,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache,
             eps_scalar,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(32,),
         )
 
     @staticmethod
@@ -1606,7 +1702,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             beta,
             eps_scalar,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(32,),
         )
 
     @staticmethod
@@ -1718,7 +1814,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             beta,
             eps_scalar,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(32,),
         )
 
     @staticmethod
@@ -1809,7 +1905,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dgamma,
             dbeta,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(32,),
         )
 
         # Kernel 2: Fused Linear backward (dx + dW + db)
