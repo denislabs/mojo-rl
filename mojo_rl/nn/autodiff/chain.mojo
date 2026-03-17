@@ -70,11 +70,21 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             total += Self.op_types[i].OUT_DIM
         return total
 
+    @staticmethod
+    fn _max_op_workspace() -> Int:
+        """Max per-sample op workspace across all ops (reused sequentially)."""
+        var m = 0
+
+        comptime for i in range(Self.N):
+            if Self.op_types[i].OP_WORKSPACE_PER_SAMPLE > m:
+                m = Self.op_types[i].OP_WORKSPACE_PER_SAMPLE
+        return m
+
     comptime PARAM_SIZE: Int = Self._sum_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
-    # DiffOps don't have per-layer workspace — only inter buffers needed.
     comptime INTER_SIZE_PER_SAMPLE: Int = Self._total_inter()
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+    comptime MAX_OP_WORKSPACE_PER_SAMPLE: Int = Self._max_op_workspace()
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE + Self.MAX_OP_WORKSPACE_PER_SAMPLE
 
     # --- Offset helpers ---
 
@@ -412,9 +422,16 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     ) raises:
         """GPU forward pass using pre-allocated workspace for intermediates.
 
-        Workspace layout: [inter_buf_0 | inter_buf_1 | ... | inter_buf_{N-2}]
+        Workspace layout:
+          [inter_buf_0 | ... | inter_buf_{N-2} | cache (unused) | op_workspace]
         Each inter_buf_i has size BATCH * op_types[i].OUT_DIM.
+        op_workspace has size BATCH * MAX_OP_WORKSPACE_PER_SAMPLE.
         """
+
+        # Op workspace pointer: past inter + cache region
+        var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
+            Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+        )
 
         comptime if Self.N == 1:
             var p_v = LayoutTensor[
@@ -442,7 +459,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 ]
             ](input)
             Self.op_types[0].eval_gpu[BATCH](
-                ctx, out_rb, in_rb, p_v, c_v
+                ctx, out_rb, in_rb, p_v, c_v, op_ws_ptr
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -473,7 +490,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         ]
                     ](input)
                     Self.op_types[i].eval_gpu[BATCH](
-                        ctx, inter_out, in_rb, li_p, li_c
+                        ctx, inter_out, in_rb, li_p, li_c, op_ws_ptr
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -491,7 +508,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         ]
                     ](output)
                     Self.op_types[i].eval_gpu[BATCH](
-                        ctx, out_rb, inter_in, li_p, li_c
+                        ctx, out_rb, inter_in, li_p, li_c, op_ws_ptr
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -505,7 +522,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.op_types[i].eval_gpu[BATCH](
-                        ctx, inter_out, inter_in, li_p, li_c
+                        ctx, inter_out, inter_in, li_p, li_c, op_ws_ptr
                     )
 
     # =========================================================================
@@ -559,7 +576,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 ]
             ](input)
             Self.op_types[0].eval_gpu[BATCH](
-                ctx, out_rb, in_rb, p_v, c_v
+                ctx, out_rb, in_rb, p_v, c_v, op_ws_ptr
             )
         else:
             # Dummy cache from workspace (after inter region)
@@ -624,6 +641,10 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         """GPU backward pass. Workspace inter region reused for gradient intermediates.
         """
 
+        var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
+            Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+        )
+
         comptime if Self.N == 1:
             var p_v = LayoutTensor[
                 dtype,
@@ -655,7 +676,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                 ]
             ](grad_output)
             Self.op_types[0].vjp_gpu[BATCH](
-                ctx, go_rb, gi_rb, p_v, c_v, g_v
+                ctx, go_rb, gi_rb, p_v, c_v, g_v, op_ws_ptr
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -697,7 +718,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         ]
                     ](grad_output)
                     Self.op_types[i].vjp_gpu[BATCH](
-                        ctx, go_rb, gi, li_p, li_c, li_g
+                        ctx, go_rb, gi, li_p, li_c, li_g, op_ws_ptr
                     )
                 elif i == 0:
                     # First op: grad_inter[0] -> grad_input
@@ -714,7 +735,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         ]
                     ](grad_input)
                     Self.op_types[i].vjp_gpu[BATCH](
-                        ctx, go, gi_rb, li_p, li_c, li_g
+                        ctx, go, gi_rb, li_p, li_c, li_g, op_ws_ptr
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
@@ -729,5 +750,5 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.op_types[i].vjp_gpu[BATCH](
-                        ctx, go, gi, li_p, li_c, li_g
+                        ctx, go, gi, li_p, li_c, li_g, op_ws_ptr
                     )

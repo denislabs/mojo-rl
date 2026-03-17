@@ -49,6 +49,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     comptime OUT_DIM: Int = Self.out_dim
     comptime PARAM_SIZE: Int = Self.in_dim * Self.out_dim + Self.out_dim
     comptime CACHE_SIZE: Int = Self.in_dim + Self.out_dim
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
     comptime FUSED_COUNT: Int = 3
 
     fn __init__(out self):
@@ -1212,6 +1213,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
@@ -1366,6 +1368,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
@@ -1444,6 +1447,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin

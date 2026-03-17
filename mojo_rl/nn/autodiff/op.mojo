@@ -81,6 +81,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
     - Its shape signature (IN_DIM -> OUT_DIM)
     - How many parameters it owns
     - What it needs to cache for backward
+    - Per-op workspace for GPU temp buffers (pre-allocated, 0 for most ops)
     - Its forward computation (eval)
     - Its VJP (vector-Jacobian product) for backward
     """
@@ -92,6 +93,12 @@ trait DiffOp(Movable & ImplicitlyCopyable):
     comptime OUT_DIM: Int
     comptime PARAM_SIZE: Int
     comptime CACHE_SIZE: Int
+
+    # Per-sample GPU workspace for cross-batch temp buffers (e.g. transpose
+    # workspace for conv2d). Total allocation = BATCH * OP_WORKSPACE_PER_SAMPLE.
+    # Chain takes max across all ops (workspace reused sequentially).
+    # Most ops set this to 0.
+    comptime OP_WORKSPACE_PER_SAMPLE: Int
 
     # --- CPU ---
     @staticmethod
@@ -153,6 +160,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         ...
 
@@ -176,6 +184,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         ...
 

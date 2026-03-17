@@ -29,6 +29,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     comptime OUT_DIM: Int = Self.out_dim
     comptime PARAM_SIZE: Int = Self.in_dim * Self.out_dim
     comptime CACHE_SIZE: Int = Self.in_dim
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     fn __init__(out self):
         pass
@@ -1027,6 +1028,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
@@ -1090,6 +1092,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin

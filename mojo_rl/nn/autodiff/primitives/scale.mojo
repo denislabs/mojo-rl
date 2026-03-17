@@ -19,6 +19,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
     comptime OUT_DIM: Int = Self.dim
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = 0
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     fn __init__(out self):
         pass
@@ -149,6 +150,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
@@ -194,6 +196,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin

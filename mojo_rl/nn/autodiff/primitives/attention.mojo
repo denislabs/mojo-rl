@@ -63,6 +63,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
         3 * Self.seq_len * Self.dim
         + Self.n_heads * Self.seq_len * Self.seq_len
     )
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     fn __init__(out self):
         pass
@@ -454,6 +455,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         # CPU fallback for now — GPU attention kernel is a future optimization
         Self.eval[BATCH](input, output, params, cache)
@@ -482,6 +484,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         # CPU fallback for now — GPU attention kernel is a future optimization
         Self.vjp[BATCH](grad_output, grad_input, params, cache, grad_params)

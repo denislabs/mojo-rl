@@ -68,6 +68,10 @@ struct FusedConv2DActivation[
     comptime CONV_CACHE: Int = Self.col_size * Self.spatial_out
     comptime CACHE_SIZE: Int = Self.CONV_CACHE + Self.OUT_DIM
     comptime FUSED_COUNT: Int = 2
+    # Forward: col_flat (CONV_CACHE) + out_temp (OUT_DIM) + w_t (col_size*OC)
+    # Backward dW: col_flat (CONV_CACHE)
+    # Max of forward and backward per sample:
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM + Self.col_size * Self.out_channels
 
     fn __init__(out self):
         pass
@@ -1067,6 +1071,7 @@ struct FusedConv2DActivation[
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
@@ -1130,15 +1135,13 @@ struct FusedConv2DActivation[
                 block_dim=(TPB,),
             )
 
+            # Workspace layout: [col_flat: BATCH*CONV_CACHE | out_temp: BATCH*OUT_DIM | w_t: col_size*OC]
             # 2. Strided copy: cache im2col → col_flat (skip activation gap)
-            var col_flat_buf = ctx.enqueue_create_buffer[dtype](
-                K_TOTAL * Self.col_size
-            )
             var col_flat = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.col_size),
                 MutAnyOrigin,
-            ](col_flat_buf.unsafe_ptr())
+            ](workspace)
 
             comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
@@ -1176,15 +1179,15 @@ struct FusedConv2DActivation[
                 block_dim=(TPB,),
             )
 
-            # 3. Transpose W → W.T (tiny)
+            # 3. Transpose W → W.T (tiny) — in workspace after col_flat + out_temp
             comptime w_elems = W_SIZE
             comptime w_blocks = (w_elems + TPB - 1) // TPB
-            var w_t_buf = ctx.enqueue_create_buffer[dtype](w_elems)
+            comptime w_t_ws_offset = BATCH * Self.CONV_CACHE + BATCH * Self.OUT_DIM
             var w_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, Self.out_channels),
                 MutAnyOrigin,
-            ](w_t_buf.unsafe_ptr())
+            ](workspace + w_t_ws_offset)
 
             @always_inline
             fn transpose_w_fwd(
@@ -1212,14 +1215,12 @@ struct FusedConv2DActivation[
             )
 
             # 4. max_matmul: out_temp = col_flat @ W.T → (K_TOTAL, OC)
-            var out_temp_buf = ctx.enqueue_create_buffer[dtype](
-                K_TOTAL * Self.out_channels
-            )
+            comptime out_temp_ws_offset = BATCH * Self.CONV_CACHE
             var out_temp = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.out_channels),
                 MutAnyOrigin,
-            ](out_temp_buf.unsafe_ptr())
+            ](workspace + out_temp_ws_offset)
 
             max_matmul[target="gpu"](out_temp, col_flat, w_t, ctx)
 
@@ -1330,6 +1331,7 @@ struct FusedConv2DActivation[
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var params_immut = LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
@@ -1363,15 +1365,12 @@ struct FusedConv2DActivation[
 
             # Cache is (batch, s*col_size+k | act_cache), but CACHE_SIZE
             # includes activation cache so we can't reinterpret directly.
-            # Simple strided copy: skip activation gap per batch.
-            var col_flat_buf = ctx.enqueue_create_buffer[dtype](
-                K_TOTAL * Self.col_size
-            )
+            # Use pre-allocated workspace for strided copy.
             var col_flat = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.col_size),
                 MutAnyOrigin,
-            ](col_flat_buf.unsafe_ptr())
+            ](workspace)
 
             comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB

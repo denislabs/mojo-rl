@@ -65,6 +65,8 @@ struct Conv2D[
     comptime OUT_DIM: Int = Self.out_channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = Self.out_channels * Self.col_size + Self.out_channels
     comptime CACHE_SIZE: Int = Self.col_size * Self.spatial_out
+    # Forward workspace: out_temp (OUT_DIM) + w_t (col_size * OC)
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.OUT_DIM + Self.col_size * Self.out_channels
 
     fn __init__(out self):
         pass
@@ -982,6 +984,7 @@ struct Conv2D[
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
@@ -1048,14 +1051,14 @@ struct Conv2D[
             ](cache.ptr)
 
             # 2. Transpose W: (OC, col_size) → W.T (col_size, OC) — tiny
+            # Workspace layout: [out_temp: BATCH*OUT_DIM | w_t: col_size*OC]
             comptime w_elems = Self.out_channels * Self.col_size
             comptime w_blocks = (w_elems + TPB - 1) // TPB
-            var w_t_buf = ctx.enqueue_create_buffer[dtype](w_elems)
             var w_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, Self.out_channels),
                 MutAnyOrigin,
-            ](w_t_buf.unsafe_ptr())
+            ](workspace + BATCH * Self.OUT_DIM)
 
             @always_inline
             fn transpose_w_fwd(
@@ -1083,14 +1086,11 @@ struct Conv2D[
             )
 
             # 3. max_matmul: output_temp = col_flat @ W.T → (K_TOTAL, OC)
-            # Use output buffer as temp (reinterpret as (K_TOTAL, OC))
-            # Need separate temp since output layout is (BATCH, OC*S) ≠ (K_TOTAL, OC)
-            var out_temp_buf = ctx.enqueue_create_buffer[dtype](K_TOTAL * Self.out_channels)
             var out_temp = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.out_channels),
                 MutAnyOrigin,
-            ](out_temp_buf.unsafe_ptr())
+            ](workspace)
 
             max_matmul[target="gpu"](out_temp, col_flat, w_t, ctx)
 
@@ -1195,6 +1195,7 @@ struct Conv2D[
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var params_immut = LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin

@@ -29,6 +29,7 @@ struct MaxPool2D[
     comptime OUT_DIM: Int = Self.channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = Self.channels * Self.out_h * Self.out_w
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     fn __init__(out self):
         pass
@@ -214,6 +215,7 @@ struct MaxPool2D[
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
@@ -264,6 +266,7 @@ struct MaxPool2D[
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
@@ -322,6 +325,7 @@ struct AvgPool2D[
     comptime OUT_DIM: Int = Self.channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = 0
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     fn __init__(out self):
         pass
@@ -510,6 +514,7 @@ struct AvgPool2D[
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
@@ -556,6 +561,7 @@ struct AvgPool2D[
         mut grad_params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
