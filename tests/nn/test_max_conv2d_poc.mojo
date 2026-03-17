@@ -131,15 +131,11 @@ fn main() raises:
             MutAnyOrigin,
         ](out_buf1.unsafe_ptr())
 
-        var stride = IndexList[2](STRIDE, STRIDE)
-        var dilation = IndexList[2](1, 1)
-        var padding = IndexList[2](PAD, PAD)
-
         # ── Warmup ──
         print("Warming up...")
 
-        # conv2d_gpu_naive_nhwc_rscf is a GPU kernel — we need to launch it
-        # via enqueue_function with appropriate grid/block dims
+        # conv2d_gpu_naive_nhwc_rscf is a GPU kernel function.
+        # All conv params are compile-time so we construct them inside the wrapper.
         @always_inline
         fn conv_kernel_wrapper(
             input: LayoutTensor[
@@ -158,13 +154,16 @@ fn main() raises:
                 MutAnyOrigin,
             ],
         ):
-            conv2d_gpu_naive_nhwc_rscf[block_size=TPB](
+            conv2d_gpu_naive_nhwc_rscf[
+                block_size=TPB,
+                maybe_epilogue_func=None,
+            ](
                 input,
                 filter,
                 output,
-                stride,
-                dilation,
-                padding,
+                IndexList[2](STRIDE, STRIDE),
+                IndexList[2](1, 1),
+                IndexList[2](PAD, PAD),
                 num_groups=1,
             )
 
