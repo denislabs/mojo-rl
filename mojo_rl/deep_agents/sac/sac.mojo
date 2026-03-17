@@ -2103,7 +2103,7 @@ struct DeepSACAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
         var metrics = run_offpolicy_continuous_train_gpu[
-            E, Self, Self.profile, L
+            E, Self, Self.profile, Self.L
         ](
             self,
             ctx,
@@ -2172,7 +2172,7 @@ struct DeepSACAgent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_offpolicy_continuous_train[E, Self, L](
+        var metrics = run_offpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
