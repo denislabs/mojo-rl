@@ -123,7 +123,7 @@ fn main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("wm_lr", "3e-4")
         logger.set_config("pi_lr", "3e-4")
-        logger.set_config("gamma", "0.99")
+        logger.set_config("gamma", "0.995 (dynamic)")
 
         var agent = TDMPC2Agent[
             obs_dim=OBS_DIM,
@@ -143,7 +143,7 @@ fn main() raises:
             v_max=V_MAX,
             L=RemoteLogger,
         ](
-            gamma=0.99,
+            episode_length=HalfCheetahConfig.MAX_STEPS,  # dynamic gamma: 0.995
             rho=0.5,
             tau=0.01,
             consistency_coef=20.0,
@@ -191,7 +191,7 @@ fn main() raises:
         print("  Policy LR: 3e-4")
         print()
         print("Key hyperparameters:")
-        print("  - gamma: 0.99 (discount)")
+        print("  - gamma: 0.995 (dynamic, from episode_length=1000)")
         print("  - rho: 0.5 (temporal weight decay per horizon step)")
         print("  - tau: 0.01 (target Q soft update)")
         print("  - consistency_coef: 20.0 (latent consistency loss weight)")

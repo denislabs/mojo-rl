@@ -931,6 +931,8 @@ struct TDMPC2Agent[
         var total_q_min: Float64 = 1e30
         var total_q_max: Float64 = -1e30
         var total_entropy: Float64 = 0.0
+        # Buffer for RunningScale update (Q-values at t=0)
+        var q_vals_t0 = List[Float64](capacity=Self.BATCH)
 
         for t in range(Self.H):
             # Sample action from policy (with cache for backprop) → _pi_out, _pi_cache
@@ -1012,13 +1014,40 @@ struct TDMPC2Agent[
                 )
                 # Reference uses avg of 2 Q-networks for policy gradient
                 var avg_q = (v1 + v2) * 0.5
-                policy_loss -= rho_t * avg_q / Float64(Self.BATCH)
+                if t == 0:
+                    q_vals_t0.append(avg_q)
+                # Normalize Q-values by running scale (reference: RunningScale)
+                policy_loss -= rho_t * (avg_q / self.running_scale) / Float64(
+                    Self.BATCH
+                )
                 total_q_sum += avg_q
                 total_q_count += 1
                 if avg_q < total_q_min:
                     total_q_min = avg_q
                 if avg_q > total_q_max:
                     total_q_max = avg_q
+
+            # Update RunningScale at t=0 using 5th-95th percentile range
+            if t == 0:
+                # Insertion sort (BATCH is small)
+                for i in range(1, len(q_vals_t0)):
+                    var key = q_vals_t0[i]
+                    var j = i - 1
+                    while j >= 0 and q_vals_t0[j] > key:
+                        q_vals_t0[j + 1] = q_vals_t0[j]
+                        j -= 1
+                    q_vals_t0[j + 1] = key
+                var idx_5 = Int(0.05 * Float64(Self.BATCH))
+                var idx_95 = Int(0.95 * Float64(Self.BATCH))
+                if idx_95 >= Self.BATCH:
+                    idx_95 = Self.BATCH - 1
+                var pct_range = q_vals_t0[idx_95] - q_vals_t0[idx_5]
+                if pct_range < 1.0:
+                    pct_range = 1.0
+                # EMA update: scale ← (1-tau)*scale + tau*pct_range
+                self.running_scale = (
+                    1.0 - self.tau
+                ) * self.running_scale + self.tau * pct_range
 
             total_entropy += entropy
             policy_loss -= rho_t * self.entropy_coef * entropy
@@ -1052,6 +1081,9 @@ struct TDMPC2Agent[
                     "entropy",
                     total_entropy / Float64(Self.H),
                     step,
+                )
+                self.logger[].log_scalar(
+                    "pi_scale", self.running_scale, step
                 )
             except:
                 pass
@@ -2277,6 +2309,11 @@ struct TDMPC2Agent[
         var gpu_wm_step: Int = 0  # Adam step counter for world model networks
         var gpu_pi_step: Int = 0  # Adam step counter for policy network
 
+        # Diagnostics (captured from RunningScale Q-value download)
+        var diag_q_mean: Float64 = 0.0
+        var diag_q_min: Float64 = 0.0
+        var diag_q_max: Float64 = 0.0
+
         # =================================================================
         # Timing accumulators (nanoseconds)
         # =================================================================
@@ -2447,8 +2484,9 @@ struct TDMPC2Agent[
                     recent_reward_sum += ep_r
                     recent_episode_count += 1
 
-                    # Log episode metrics
-                    if self.logger:
+                    # Log episode metrics (throttled to reduce data volume)
+                    var log_ep = self.diag_every <= 0 or completed_episodes % self.diag_every == 0
+                    if self.logger and log_ep:
                         try:
                             self.logger[].log_scalar(
                                 "episode_reward",
@@ -3226,6 +3264,14 @@ struct TDMPC2Agent[
                     ) * self.running_scale + self.tau * pct_range
                     scale_scalar = Scalar[dtype](self.running_scale)
 
+                    # Capture Q-value stats for diagnostics (sorted_q is available)
+                    diag_q_min = sorted_q[0]
+                    diag_q_max = sorted_q[Self.BATCH - 1]
+                    var q_sum: Float64 = 0.0
+                    for b in range(Self.BATCH):
+                        q_sum += sorted_q[b]
+                    diag_q_mean = q_sum / Float64(Self.BATCH)
+
                 for qi_iter in range(2):
                     var qi = qi_a if qi_iter == 0 else qi_b
                     # Entropy weighted by rho^t (temporal decay), applied once
@@ -3406,6 +3452,28 @@ struct TDMPC2Agent[
             timing_train_iters += 1
 
             self.train_step_count += 1
+
+            # Log training diagnostics periodically
+            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+                try:
+                    var step = self.train_step_count
+                    self.logger[].log_scalar(
+                        "q_mean", diag_q_mean, step
+                    )
+                    self.logger[].log_scalar(
+                        "q_min", diag_q_min, step
+                    )
+                    self.logger[].log_scalar(
+                        "q_max", diag_q_max, step
+                    )
+                    self.logger[].log_scalar(
+                        "pi_scale", self.running_scale, step
+                    )
+                    self.logger[].log_scalar(
+                        "gamma", self.gamma, step
+                    )
+                except:
+                    pass
 
         # =================================================================
         # Print timing summary
