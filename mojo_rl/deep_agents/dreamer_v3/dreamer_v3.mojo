@@ -4308,6 +4308,40 @@ struct DreamerV3Agent[
         )
 
         ctx.synchronize()
+
+        # ── Diagnostics ──────────────────────────────────────────────────
+        if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            # Download a few diagnostic values
+            var diag_rew = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
+            ctx.enqueue_copy(diag_rew, gpu_state.imag_rewards_buf)  # now has advantages
+            var diag_ret = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
+            ctx.enqueue_copy(diag_ret, gpu_state.imag_returns_buf)
+            var diag_val = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
+            ctx.enqueue_copy(diag_val, gpu_state.imag_values_buf)
+            ctx.synchronize()
+
+            # Compute stats from first few elements
+            var avg_adv = Float64(0)
+            var avg_ret = Float64(0)
+            var avg_val = Float64(0)
+            var n = min(IB, HORIZON * IB)
+            for i in range(n):
+                avg_adv += Float64(diag_rew[i])
+                avg_ret += Float64(diag_ret[i])
+                avg_val += Float64(diag_val[i])
+            avg_adv /= Float64(n)
+            avg_ret /= Float64(n)
+            avg_val /= Float64(n)
+
+            print(
+                "  [diag] step=" + String(self.train_step_count)
+                + " avg_adv=" + String(avg_adv)[:8]
+                + " avg_ret=" + String(avg_ret)[:8]
+                + " avg_val=" + String(avg_val)[:8]
+                + " ema_lo=" + String(self.state.return_ema_lo)[:8]
+                + " ema_hi=" + String(self.state.return_ema_hi)[:8]
+            )
+
         self.train_step_count += 1
 
     # ══════════════════════════════════════════════════════════════════════
