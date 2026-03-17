@@ -65,8 +65,9 @@ struct Conv2D[
     comptime OUT_DIM: Int = Self.out_channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = Self.out_channels * Self.col_size + Self.out_channels
     comptime CACHE_SIZE: Int = Self.col_size * Self.spatial_out
-    # Forward workspace: out_temp (OUT_DIM) + w_t (col_size * OC)
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.OUT_DIM + Self.col_size * Self.out_channels
+    # Workspace: max(forward out_temp, backward dcol) + w_t
+    # Forward: out_temp (OUT_DIM), Backward dx: dcol (CACHE_SIZE = col_size*spatial_out)
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CACHE_SIZE + Self.col_size * Self.out_channels
 
     fn __init__(out self):
         pass
@@ -1051,14 +1052,15 @@ struct Conv2D[
             ](cache.ptr)
 
             # 2. Transpose W: (OC, col_size) → W.T (col_size, OC) — tiny
-            # Workspace layout: [out_temp: BATCH*OUT_DIM | w_t: col_size*OC]
+            # Workspace: [out_temp/dcol: BATCH*CACHE_SIZE | w_t: col_size*OC]
+            comptime w_t_offset = BATCH * Self.CACHE_SIZE
             comptime w_elems = Self.out_channels * Self.col_size
             comptime w_blocks = (w_elems + TPB - 1) // TPB
             var w_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, Self.out_channels),
                 MutAnyOrigin,
-            ](workspace + BATCH * Self.OUT_DIM)
+            ](workspace + w_t_offset)
 
             @always_inline
             fn transpose_w_fwd(
@@ -1273,32 +1275,106 @@ struct Conv2D[
             # Zero-alloc dW: dW = grad_reshaped @ col_flat
             max_matmul[target="gpu"](dW, grad_reshaped, col_flat, ctx)
 
-            # ── dx AFTER dW (grad_input was used as temp, now compute real dx)
+            # ── dx via matmul + col2im gather ──
+            # dcol = W.T @ grad_reshaped, then col2im gather
+            # grad_reshaped (OC, K_TOTAL) is still in grad_input.ptr
+
+            # W.T in workspace (same offset as forward)
+            comptime w_t_bwd_offset = BATCH * Self.CACHE_SIZE
+            comptime w_elems_bwd = Self.out_channels * Self.col_size
+            comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
+            var w_t_bwd = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.out_channels),
+                MutAnyOrigin,
+            ](workspace + w_t_bwd_offset)
+
+            @always_inline
+            fn transpose_w_bwd(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= w_elems_bwd:
+                    return
+                var k = idx // Self.out_channels
+                var oc = idx % Self.out_channels
+                dst[k, oc] = src[oc * Self.col_size + k]
+
+            ctx.enqueue_function[transpose_w_bwd, transpose_w_bwd](
+                w_t_bwd,
+                params_immut,
+                grid_dim=(w_blocks_bwd,),
+                block_dim=(TPB,),
+            )
+
+            # dcol at workspace offset 0 (reuses out_temp/col_flat region)
+            var dcol = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, K_TOTAL),
+                MutAnyOrigin,
+            ](workspace)
+
+            # max_matmul: dcol = W.T @ grad_reshaped
+            max_matmul[target="gpu"](dcol, w_t_bwd, grad_reshaped, ctx)
+
+            # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
             @always_inline
-            fn dx_wrapper_nvidia(
+            fn col2im_gather(
                 grad_input: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-                ],
-                grad_output: LayoutTensor[
                     dtype,
-                    Layout.row_major(BATCH, Self.OUT_DIM),
-                    ImmutAnyOrigin,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    MutAnyOrigin,
                 ],
-                params: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                dcol: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, K_TOTAL),
+                    MutAnyOrigin,
                 ],
             ):
-                Self.backward_dx_kernel_impl[BATCH](
-                    grad_input, grad_output, params
-                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= BATCH * Self.IN_DIM:
+                    return
+                var b = idx // Self.IN_DIM
+                var in_pos = idx % Self.IN_DIM
+                var c = in_pos // (Self.in_h * Self.in_w)
+                var rem = in_pos % (Self.in_h * Self.in_w)
+                var ih = rem // Self.in_w
+                var iw = rem % Self.in_w
 
-            ctx.enqueue_function[dx_wrapper_nvidia, dx_wrapper_nvidia](
+                var acc: Scalar[dtype] = 0
+                for kh in range(Self.kernel_size):
+                    for kw in range(Self.kernel_size):
+                        var oh_num = ih + Self.padding - kh
+                        var ow_num = iw + Self.padding - kw
+                        if (
+                            oh_num >= 0
+                            and oh_num % Self.stride == 0
+                            and ow_num >= 0
+                            and ow_num % Self.stride == 0
+                        ):
+                            var oh = oh_num // Self.stride
+                            var ow = ow_num // Self.stride
+                            if oh < Self.out_h and ow < Self.out_w:
+                                var s = oh * Self.out_w + ow
+                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                acc += rebind[Scalar[dtype]](
+                                    dcol[c_k, b * Self.spatial_out + s]
+                                )
+                grad_input[b, in_pos] = acc
+
+            ctx.enqueue_function[col2im_gather, col2im_gather](
                 grad_input,
-                grad_output_immut,
-                params_immut,
+                dcol,
                 grid_dim=(grid_dx,),
                 block_dim=(TPB,),
             )
