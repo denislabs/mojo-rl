@@ -59,6 +59,10 @@ from mojo_rl.deep_agents.core.kernels import (
     td_target_min_twin_kernel,
 )
 from mojo_rl.deep_agents.sac.kernels import sac_sample_actions_kernel
+from mojo_rl.deep_agents.dreamer_v3.kernels import (
+    gradient_norm_kernel,
+    gradient_reduce_apply_fused_kernel,
+)
 from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
@@ -305,6 +309,9 @@ struct GenericGPUState[
     # Pre-filled dq buffer: constant -1/BATCH for actor policy gradient
     var dq: DeviceBuffer[dtype]
 
+    # Gradient clipping scratch (partial sums for norm reduction)
+    var grad_clip_ps: DeviceBuffer[dtype]
+
     # Twin critic extra (only used when num_critics==2)
     var nq2: DeviceBuffer[dtype]
     var q2_out: DeviceBuffer[dtype]
@@ -375,6 +382,13 @@ struct GenericGPUState[
         for i in range(BS):
             dq_host[i] = Scalar[dtype](-1.0 / Float64(BS))
         ctx.enqueue_copy(self.dq, dq_host)
+
+        # Gradient clipping partial sums buffer (sized for largest network)
+        comptime ACTOR_PS = Self.Config.ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = Self.Config.CriticModel.PARAM_SIZE
+        comptime MAX_PS = ACTOR_PS if ACTOR_PS > CRITIC_PS else CRITIC_PS
+        comptime MAX_BLOCKS = (MAX_PS + TPB - 1) // TPB
+        self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](MAX_BLOCKS)
 
         # Twin critic extra
         self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
@@ -717,6 +731,9 @@ struct GenericOffPolicyAgent[
     # Note: L3 per-layer profiling slots not available through trait-bounded Config.
     # Old per-algorithm agents support L3 via concrete Model.register_forward_slots().
 
+    # Gradient clipping
+    var max_grad_norm: Float64
+
     # Diagnostic logging
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
@@ -735,6 +752,7 @@ struct GenericOffPolicyAgent[
         auto_alpha: Bool = True,
         alpha: Float64 = 0.2,
         alpha_lr: Float64 = 0.0003,
+        max_grad_norm: Float64 = 40.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -767,6 +785,7 @@ struct GenericOffPolicyAgent[
 
         self.total_steps = 0
         self.train_step_count = 0
+        self.max_grad_norm = max_grad_norm
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
 
@@ -1706,6 +1725,56 @@ struct GenericOffPolicyAgent[
                     )
                 except:
                     pass
+
+            # Clip actor gradients
+            if self.max_grad_norm > 0.0:
+                comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
+                comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
+                var ps_t = LayoutTensor[
+                    dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                @always_inline
+                fn run_norm(
+                    p: LayoutTensor[
+                        dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+                    ],
+                    g: LayoutTensor[
+                        dtype, Layout.row_major(A_PS), MutAnyOrigin
+                    ],
+                ):
+                    gradient_norm_kernel[dtype, A_PS, A_BLOCKS, TPB](p, g)
+
+                ctx.enqueue_function[run_norm, run_norm](
+                    ps_t,
+                    a_grads,
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                var mgn = Scalar[dtype](self.max_grad_norm)
+
+                @always_inline
+                fn run_clip(
+                    g: LayoutTensor[
+                        dtype, Layout.row_major(A_PS), MutAnyOrigin
+                    ],
+                    p: LayoutTensor[
+                        dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+                    ],
+                    m: Scalar[dtype],
+                ):
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, A_PS, A_BLOCKS, TPB
+                    ](g, p, m)
+
+                ctx.enqueue_function[run_clip, run_clip](
+                    a_grads,
+                    ps_t,
+                    mgn,
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
 
             gpu_state.actor.online.optimizer_step(ctx)
 
