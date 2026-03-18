@@ -335,10 +335,15 @@ graph definitions — no manual backward code needed.
 | 1 | `SkipConcat` | ✅ Done | Pass input alongside Inner output |
 | 1 | `DualPath` | ✅ Done | Twin network forward + gradient split |
 | 1 | `RSample` / `Min` | ✅ Done | Model wrappers via AutoDiffChain |
-| 2a | `SliceOp` | TODO | Extract dimension range |
+| 2a | `SliceOp` | ✅ Done | Extract dimension range |
+| 2a | `NegateOp` | ✅ Done | Elementwise negation |
+| 2a | `SplitApply` | ✅ Done | Split input, apply different Models |
+| 2a | `AutodiffMaxEntLoss` | ✅ Done | SAC actor loss via composed graph |
+| 2a | `AutodiffSACConfig` | ✅ Done | Drop-in SAC config using autodiff loss |
 | 2b | `FanOut` | TODO | General fan-out combinator |
 | 2c | `ComputeGraph` | TODO | Full compile-time DAG builder |
-| 3 | Agent losses | TODO | Rewrite DDPG/TD3/SAC as graph defs |
+| 3 | DDPG/TD3 losses | TODO | Rewrite as graph defs |
+| 3 | GPU autodiff path | TODO | GPU forward/backward for composed graph |
 
 ## Benefits
 

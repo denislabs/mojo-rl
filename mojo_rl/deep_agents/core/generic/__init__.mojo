@@ -25,14 +25,14 @@ from .exploration import Explore, GaussianNoise, StochasticSample
 from .update_schedule import Schedule, EveryStep, DelayedAll, DelayedActorOnly
 from .target_value import TargetValue, SingleQTarget, TwinQTarget, EntropicTwinQTarget
 from .target_action import TargetAction, DeterministicTarget, SmoothedTarget, ReparamTarget
-from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss
+from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss, AutodiffMaxEntLoss
 from .policy_gradient import PolicyGradient, VanillaPG, ClippedSurrogate
 from .epoch_schedule import EpochSchedule, SinglePass, MultiEpochMinibatch
 from .q_target import QTarget, StandardQTarget, DoubleQTarget
 from .q_output import QOutput, DirectQ, DuelingQ
 
 # Configs and agents
-from .offpolicy_config import OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
+from .offpolicy_config import OffPolicyConfig, DDPGConfig, TD3Config, SACConfig, AutodiffSACConfig
 from .offpolicy_agent import GenericOffPolicyAgent
 from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric

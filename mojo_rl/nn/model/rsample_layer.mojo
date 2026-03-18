@@ -23,6 +23,8 @@ Usage:
 from ..autodiff.chain import AutoDiffChain
 from ..autodiff.primitives.rsample import RSampleOp
 from ..autodiff.primitives.min_op import MinOp
+from ..autodiff.primitives.slice_op import SliceOp
+from ..autodiff.primitives.negate import NegateOp
 
 
 comptime RSample[
@@ -32,3 +34,9 @@ comptime RSample[
 ] = AutoDiffChain[RSampleOp[action_dim, log_std_min, log_std_max]]
 
 comptime Min[dim: Int] = AutoDiffChain[MinOp[dim]]
+
+comptime Slice[in_dim: Int, start: Int, end: Int] = AutoDiffChain[
+    SliceOp[in_dim, start, end]
+]
+
+comptime Negate[dim: Int] = AutoDiffChain[NegateOp[dim]]

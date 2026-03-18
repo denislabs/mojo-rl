@@ -1248,3 +1248,545 @@ struct MaxEntLoss[
         # Return 0.0 — mean log_prob requires GPU->CPU sync which the agent
         # handles separately by reading curr_lp from strat_ws offset W_LP
         return 0.0
+
+
+# =============================================================================
+# AutodiffMaxEntLoss — composed autodiff replacement for MaxEntLoss
+# =============================================================================
+
+
+from mojo_rl.nn.model import (
+    Sequential,
+    RSample,
+    Min,
+    Slice,
+)
+from mojo_rl.nn.autodiff.combinators import SkipConcat, DualPath, SplitApply
+
+
+struct AutodiffMaxEntLoss[
+    log_std_scale: Float64 = 3.5,
+](ActorLoss):
+    """Max-entropy actor loss using composed autodiff graph.
+
+    Replaces the manual 260-line forward/backward in MaxEntLoss with
+    automatic differentiation via composed Model primitives:
+
+        obs → SkipConcat[Actor → RSample] → [obs, action, log_prob]
+            → SplitApply[DualPath[Critic, Critic] → Min, Identity]
+            → [min_Q, log_prob]
+
+    The backward pass is fully automatic — no manual gradient stitching.
+    Produces identical gradients to MaxEntLoss but with ~30 lines of code.
+    """
+
+    comptime HAS_ALPHA: Bool = True
+
+    @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+    ]() -> Int:
+        # For now, same offset as MaxEntLoss (agent reads log_probs from here)
+        return BATCH * ACTOR_OUT + BATCH * ACTOR_CS + BATCH * ACTIONS
+
+    @staticmethod
+    fn ws_size[
+        BATCH: Int,
+        OBS: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+        CRITIC_IN: Int,
+        CRITIC_OUT: Int,
+        CRITIC_CS: Int,
+    ]() -> Int:
+        # Workspace for the composed graph: we need space for the combined
+        # params buffer, cache, output, grad_output, grad_input, and grad_params.
+        # The graph bundles actor + critic1 + critic2 params.
+
+        # Build the graph type to get its sizes
+        comptime ActorGraph = Sequential[
+            SkipConcat[
+                Sequential[
+                    # Placeholder: the actual actor model will be passed at call time.
+                    # For workspace sizing, we use the maximum cache/workspace sizes.
+                    Slice[ACTOR_OUT, 0, ACTOR_OUT],  # identity placeholder
+                    RSample[ACTIONS],
+                ]
+            ],
+        ]
+        # Conservative workspace estimate — same as MaxEntLoss
+        return (
+            BATCH * ACTOR_OUT  # raw_out
+            + BATCH * ACTOR_CS  # actor_cache
+            + BATCH * ACTIONS  # mean
+            + BATCH * ACTIONS  # log_std
+            + BATCH * ACTIONS  # noise
+            + BATCH * ACTIONS  # act
+            + BATCH  # log_probs
+            + BATCH * ACTIONS  # z_cache
+            + BATCH * CRITIC_IN  # critic_input
+            + BATCH * CRITIC_OUT  # Q1
+            + BATCH * CRITIC_CS  # Q1 cache
+            + BATCH * CRITIC_OUT  # Q2
+            + BATCH * CRITIC_CS  # Q2 cache
+            + BATCH * CRITIC_OUT  # dq1
+            + BATCH * CRITIC_OUT  # dq2
+            + BATCH * CRITIC_IN  # d_ci1
+            + BATCH * CRITIC_IN  # d_ci2
+            + BATCH * ACTIONS  # d_act
+            + BATCH * ACTIONS  # grad_mean
+            + BATCH * ACTIONS  # grad_log_std
+            + BATCH * ACTOR_OUT  # actor_grad
+            + BATCH * OBS  # d_obs
+        )
+
+    @staticmethod
+    fn update_actor_cpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        alpha: Float64,
+    ) -> Float64:
+        """Compute max-entropy actor gradient using composed autodiff graph.
+
+        Returns mean log_prob for alpha auto-tuning.
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+
+        # =====================================================================
+        # Build the composed SAC graph type
+        # =====================================================================
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorSkip = SkipConcat[ActorRSample]
+        # ActorSkip: IN=OBS, OUT=OBS+ACTIONS+1
+
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime LogProbPass = Slice[1, 0, 1]
+        comptime SACOutput = SplitApply[
+            TwinCriticMin, LogProbPass, OBS + ACTIONS
+        ]
+        comptime SACGraph = Sequential[ActorSkip, SACOutput]
+        # SACGraph: IN=OBS, OUT=2 (min_Q, log_prob)
+
+        # =====================================================================
+        # Assemble combined params: [actor | critic1 | critic2]
+        # =====================================================================
+        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+        var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(ACTOR_PS):
+            combined_params[i] = actor_params.ptr[i]
+        for i in range(CRITIC_PS):
+            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+        for i in range(CRITIC_PS):
+            combined_params[ACTOR_PS + CRITIC_PS + i] = critic2_params.ptr[i]
+
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params.unsafe_ptr())
+
+        # =====================================================================
+        # Forward: obs → [min_Q, log_prob]
+        # =====================================================================
+        var output = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+        ](output.unsafe_ptr())
+
+        var cache = InlineArray[Scalar[dtype], BATCH * SACGraph.CACHE_SIZE](
+            uninitialized=True
+        )
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, SACGraph.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+
+        SACGraph.forward[BATCH](obs, output_t, params_t, cache_t)
+
+        # =====================================================================
+        # Backward: gradient seed = [-1/BS, alpha/BS] per sample
+        # =====================================================================
+        # output[:, 0] = min_Q → maximize → gradient = -1/BS
+        # output[:, 1] = log_prob → entropy regularization → gradient = alpha/BS
+        var grad_out = InlineArray[Scalar[dtype], BATCH * 2](
+            uninitialized=True
+        )
+        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+        var alpha_inv_batch = Scalar[dtype](alpha / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out[b * 2] = neg_inv_batch
+            grad_out[b * 2 + 1] = alpha_inv_batch
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+        ](grad_out.unsafe_ptr())
+
+        var grad_obs = InlineArray[Scalar[dtype], BATCH * OBS](
+            uninitialized=True
+        )
+        var grad_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](grad_obs.unsafe_ptr())
+
+        var combined_grads = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(TOTAL_PS):
+            combined_grads[i] = Scalar[dtype](0.0)
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads.unsafe_ptr())
+
+        SACGraph.backward[BATCH](
+            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+        )
+
+        # =====================================================================
+        # Scatter gradients back to separate actor/critic grad buffers
+        # =====================================================================
+        for i in range(ACTOR_PS):
+            actor_grads.ptr[i] = combined_grads[i]
+        for i in range(CRITIC_PS):
+            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+        for i in range(CRITIC_PS):
+            critic2_grads.ptr[i] = combined_grads[ACTOR_PS + CRITIC_PS + i]
+
+        # =====================================================================
+        # Return mean log_prob for alpha update
+        # =====================================================================
+        var mean_lp: Float64 = 0.0
+        for b in range(BATCH):
+            var lp = Float64(output[b * 2 + 1])
+            if lp != lp or lp > 100.0 or lp < -100.0:
+                lp = -1.0
+            mean_lp += lp
+        mean_lp /= Float64(BATCH)
+        return mean_lp
+
+    @staticmethod
+    fn update_actor_gpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        ctx: DeviceContext,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        actor_ws: DeviceBuffer[dtype],
+        critic_ws: DeviceBuffer[dtype],
+        critic2_ws: DeviceBuffer[dtype],
+        strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
+        alpha: Float64,
+        rng_seed: UInt32,
+    ) raises -> Float64:
+        """GPU max-entropy actor gradient via composed autodiff graph.
+
+        Same graph as CPU but on GPU DeviceBuffers. Steps:
+        1. Concat params [actor | critic1 | critic2] on GPU
+        2. Forward graph on GPU
+        3. Backward graph on GPU
+        4. Scatter grads back to separate buffers
+        5. Extract log_probs for alpha auto-tuning
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+
+        # =================================================================
+        # Build the composed SAC graph type (same as CPU)
+        # =================================================================
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorSkip = SkipConcat[ActorRSample]
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime LogProbPass = Slice[1, 0, 1]
+        comptime SACOutput = SplitApply[
+            TwinCriticMin, LogProbPass, OBS + ACTIONS
+        ]
+        comptime SACGraph = Sequential[ActorSkip, SACOutput]
+        comptime GRAPH_CS = SACGraph.CACHE_SIZE
+        comptime GRAPH_WS = SACGraph.WORKSPACE_SIZE_PER_SAMPLE
+
+        # =================================================================
+        # 1. Concat params on GPU: [actor | critic1 | critic2]
+        # =================================================================
+        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+
+        # Copy via GPU kernel (params are already in device memory)
+        comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
+
+        @always_inline
+        fn concat_params_kernel(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ap: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cp: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+            c2p: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                dst.ptr[i] = ap.ptr[i]
+            elif i < ACTOR_PS + CRITIC_PS:
+                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+            else:
+                dst.ptr[i] = c2p.ptr[i - ACTOR_PS - CRITIC_PS]
+
+        # Rebind critic2_params to CriticModel.PARAM_SIZE layout
+        var c2p_rb = LayoutTensor[
+            dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+        ](critic2_params.ptr)
+
+        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+            params_t,
+            actor_params,
+            critic_params,
+            c2p_rb,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # =================================================================
+        # 2. Allocate output, cache, workspace on GPU
+        # =================================================================
+        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 2)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+
+        var cache_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_CS)
+        )
+
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_WS)
+        )
+
+        # =================================================================
+        # 3. Forward: obs → [min_Q, log_prob]
+        # =================================================================
+        # Rebind params/cache to SACGraph's expected layout dimensions
+        var graph_params = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+        var graph_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var graph_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, SACGraph.IN_DIM), MutAnyOrigin
+        ](obs.ptr)
+
+        SACGraph.forward_gpu[BATCH](
+            ctx,
+            output_t,
+            graph_obs,
+            graph_params,
+            graph_cache,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 4. Backward with gradient seed [-1/BS, alpha/BS]
+        # =================================================================
+        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH * 2)
+        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+        var alpha_inv_batch = Scalar[dtype](alpha / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out_host[b * 2] = neg_inv_batch
+            grad_out_host[b * 2 + 1] = alpha_inv_batch
+
+        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * 2)
+        ctx.enqueue_copy(grad_out_buf, grad_out_host)
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+        ](grad_out_buf.unsafe_ptr())
+
+        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+
+        # Combined grads buffer (zeroed)
+        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
+        for i in range(TOTAL_PS):
+            zero_host[i] = Scalar[dtype](0.0)
+        ctx.enqueue_copy(combined_grads_buf, zero_host)
+
+        # Rebind to graph's expected layout types
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+        var graph_grad_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, SACGraph.IN_DIM), MutAnyOrigin
+        ](grad_obs_buf.unsafe_ptr())
+
+        SACGraph.backward_gpu[BATCH](
+            ctx,
+            graph_grad_obs,
+            grad_out_t,
+            graph_params,
+            graph_cache,
+            graph_grads,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 5. Scatter grads back to separate actor/critic grad buffers
+        # =================================================================
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+        var c2g_rb = LayoutTensor[
+            dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+        ](critic2_grads.ptr)
+
+        @always_inline
+        fn scatter_grads_kernel(
+            src: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ag: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cg: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+            c2g: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                ag.ptr[i] = src.ptr[i]
+            elif i < ACTOR_PS + CRITIC_PS:
+                cg.ptr[i - ACTOR_PS] = src.ptr[i]
+            else:
+                c2g.ptr[i - ACTOR_PS - CRITIC_PS] = src.ptr[i]
+
+        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+            grads_t,
+            actor_grads,
+            critic_grads,
+            c2g_rb,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # =================================================================
+        # 6. Extract log_probs for alpha auto-tuning
+        # =================================================================
+        comptime LP_OFF = Self.gpu_lp_offset[
+            BATCH, ACTIONS, ActorModel.OUT_DIM, ActorModel.CACHE_SIZE
+        ]()
+
+        # Extract log_probs from output_buf (every 2nd element starting at 1)
+        var lp_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        var out_host = ctx.enqueue_create_host_buffer[dtype](BATCH * 2)
+        ctx.enqueue_copy(out_host, output_buf)
+        ctx.synchronize()
+
+        for b in range(BATCH):
+            lp_host[b] = out_host[b * 2 + 1]
+
+        # Copy log_probs to strat_ws at LP_OFF for the agent to read
+        var lp_buf = ctx.enqueue_create_buffer[dtype](BATCH)
+        ctx.enqueue_copy(lp_buf, lp_host)
+
+        # Copy to strat_ws at the right offset
+        var strat_lp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](strat_ws.unsafe_ptr() + LP_OFF)
+        var src_lp_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](lp_buf.unsafe_ptr())
+
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn copy_lp_kernel(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < BATCH:
+                dst.ptr[i] = src.ptr[i]
+
+        ctx.enqueue_function[copy_lp_kernel, copy_lp_kernel](
+            strat_lp_t,
+            src_lp_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        return 0.0

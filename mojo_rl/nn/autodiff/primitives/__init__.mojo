@@ -16,3 +16,5 @@ from .attention import ScaledDotProductAttention
 from .symlog import SymlogOp
 from .rsample import RSampleOp
 from .min_op import MinOp
+from .slice_op import SliceOp
+from .negate import NegateOp

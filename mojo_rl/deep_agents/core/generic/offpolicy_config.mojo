@@ -39,7 +39,7 @@ from .target_action import (
     SmoothedTarget,
     ReparamTarget,
 )
-from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss
+from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss, AutodiffMaxEntLoss
 
 
 # =============================================================================
@@ -221,3 +221,57 @@ struct SACConfig[
     comptime TargetAction = ReparamTarget
     comptime TargetValue = EntropicTwinQTarget
     comptime ActorLoss = MaxEntLoss[]
+
+
+struct AutodiffSACConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 256,
+    CAP: Int = 100000,
+    BS: Int = 64,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.0003,
+](OffPolicyConfig):
+    """SAC with autodiff-composed actor loss (no manual backward code).
+
+    Identical to SACConfig but uses AutodiffMaxEntLoss for the actor update.
+    The actor loss is expressed as a composed Model graph with automatic
+    forward/backward via the autodiff system.
+
+    Usage:
+        from mojo_rl.deep_agents.core.generic import (
+            GenericOffPolicyAgent, AutodiffSACConfig
+        )
+        var agent = GenericOffPolicyAgent[AutodiffSACConfig[17, 6]](...)
+    """
+
+    comptime NAME: String = "AutodiffSAC"
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, Self.ACT],
+            LinearTanh[Self.HIDDEN, Self.ACT],
+        ],
+    ]
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime NUM_CRITICS: Int = 2
+    comptime HAS_TARGET_ACTOR: Bool = False
+
+    comptime Explore = StochasticSample
+    comptime Schedule = DelayedActorOnly
+    comptime TargetAction = ReparamTarget
+    comptime TargetValue = EntropicTwinQTarget
+    comptime ActorLoss = AutodiffMaxEntLoss[]
