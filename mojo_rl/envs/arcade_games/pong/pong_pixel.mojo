@@ -428,8 +428,9 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
 
+        # ── Kernel 1: Physics + Render (1 thread per env) ──
         @always_inline
-        fn pixel_step_wrapper(
+        fn physics_render_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -447,11 +448,9 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             terminated_out: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
-            obs_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
             rng_seed: Scalar[DType.uint64],
         ):
-            # 1. Run Pong physics (shared with clean obs PongEnv)
             PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
                 states, actions, rewards, dones, rng_seed
             )
@@ -462,7 +461,6 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
             terminated_out[idx] = dones[idx]
 
-            # 2. Render game state to grayscale framebuffer in workspace
             var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
             var frame_buf = env_ws.bitcast[UInt8]()
 
@@ -476,21 +474,105 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 Int(states[idx, S_CPU_SCORE]),
             )
 
-            # 3. Resize to 84×84 and push to frame stack, output obs
-            var env_obs = obs_ptr + idx * PIXEL_OBS_DIM
-            _resize_and_push[
-                FRAME_BUF_F32_SIZE, FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
-            ](frame_buf, env_ws, env_obs)
-
-        ctx.enqueue_function[pixel_step_wrapper, pixel_step_wrapper](
+        ctx.enqueue_function[physics_render_wrapper, physics_render_wrapper](
             states,
             actions,
             rewards,
             dones,
             terminated_out,
-            obs_buf.unsafe_ptr(),
             workspace_ptr,
             seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+        # ── Kernel 2: Resize + Frame Stack (1 thread per output pixel per env) ──
+        # 84×84 = 7056 pixels per env × BATCH_SIZE envs
+        comptime FRAME_SIZE = OBS_W * OBS_H  # 7056
+        comptime RESIZE_TOTAL = BATCH_SIZE * FRAME_SIZE
+        comptime RESIZE_TPB = 256
+        comptime RESIZE_BLOCKS = (RESIZE_TOTAL + RESIZE_TPB - 1) // RESIZE_TPB
+        var obs_ptr = obs_buf.unsafe_ptr()
+
+        @always_inline
+        fn resize_stack_wrapper(
+            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            obs_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= RESIZE_TOTAL:
+                return
+
+            var env_idx = tid // FRAME_SIZE
+            var pixel_idx = tid % FRAME_SIZE
+            var dy = pixel_idx // OBS_W
+            var dx = pixel_idx % OBS_W
+
+            var env_ws = ws_ptr + env_idx * PIXEL_WS_PER_ENV
+            var frame_buf = env_ws.bitcast[UInt8]()
+
+            # Box-filter resize for this single pixel
+            var sy0 = dy * SCREEN_H // OBS_H
+            var sy1 = (dy + 1) * SCREEN_H // OBS_H
+            if sy1 == sy0:
+                sy1 = sy0 + 1
+            var sx0 = dx * SCREEN_W // OBS_W
+            var sx1 = (dx + 1) * SCREEN_W // OBS_W
+            if sx1 == sx0:
+                sx1 = sx0 + 1
+
+            var total: Int = 0
+            var count: Int = 0
+            for sy in range(sy0, sy1):
+                for sx in range(sx0, sx1):
+                    total += Int(frame_buf[sy * SCREEN_W + sx])
+                    count += 1
+
+            # Write to frame stack
+            comptime WS_FRAME_STACK = FRAME_BUF_F32_SIZE
+            comptime WS_FRAME_IDX = FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
+            var slot = Int(env_ws[WS_FRAME_IDX]) % FRAME_STACK
+            var slot_base = WS_FRAME_STACK + slot * FRAME_SIZE
+            env_ws[slot_base + pixel_idx] = (
+                Scalar[gpu_dtype](total // count) / 255.0
+            )
+
+            # Output chronological frame stack for this pixel
+            var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
+            for f in range(FRAME_STACK):
+                var read_slot = (slot + 1 + f) % FRAME_STACK
+                var read_base = WS_FRAME_STACK + read_slot * FRAME_SIZE
+                env_obs[f * FRAME_SIZE + pixel_idx] = env_ws[
+                    read_base + pixel_idx
+                ]
+
+        ctx.enqueue_function[resize_stack_wrapper, resize_stack_wrapper](
+            workspace_ptr,
+            obs_ptr,
+            grid_dim=(RESIZE_BLOCKS,),
+            block_dim=(RESIZE_TPB,),
+        )
+
+        # ── Kernel 3: Advance frame index (1 thread per env) ──
+        comptime WS_FRAME_IDX_OFF = FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
+
+        @always_inline
+        fn advance_frame_idx_wrapper(
+            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= BATCH_SIZE:
+                return
+            var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+            var slot = Int(env_ws[WS_FRAME_IDX_OFF])
+            env_ws[WS_FRAME_IDX_OFF] = Scalar[gpu_dtype](
+                (slot + 1) % FRAME_STACK
+            )
+
+        ctx.enqueue_function[
+            advance_frame_idx_wrapper, advance_frame_idx_wrapper
+        ](
+            workspace_ptr,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )
