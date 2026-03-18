@@ -1335,6 +1335,56 @@ fn _store_pre_step_kernel[
 
 
 @always_inline
+fn _store_pre_step_obs_parallel_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+):
+    """Parallel obs store for pre-step. One thread per element.
+
+    Grid: (ceil(OBS_DIM / TPB), N_ENVS)
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(block_idx.y)
+    if d >= OBS_DIM:
+        return
+    r_obs[i, d] = obs[i, d]
+
+
+@always_inline
+fn ppo_gather_minibatch_obs_parallel_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    TOTAL_SIZE: Int,
+](
+    mb_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    batch_size: Int,
+):
+    """Parallel gather obs from rollout. One thread per element.
+
+    Grid: (ceil(OBS_DIM / TPB), batch_size)
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(block_idx.y)
+    if d >= OBS_DIM or i >= batch_size:
+        return
+    var src_idx = Int(indices[i])
+    mb_obs[i, d] = rollout_obs[src_idx, d]
+
+
+@always_inline
 fn _extract_obs_from_state_kernel[
     dtype: DType,
     N_ENVS: Int,

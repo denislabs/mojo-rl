@@ -42,6 +42,7 @@ from mojo_rl.core.utils.softmax import (
 )
 from mojo_rl.deep_agents.ppo.kernels import (
     ppo_gather_minibatch_kernel,
+    ppo_gather_minibatch_obs_parallel_kernel,
     ppo_critic_grad_kernel,
     ppo_critic_grad_clipped_kernel,
     normalize_advantages_kernel,
@@ -49,8 +50,10 @@ from mojo_rl.deep_agents.ppo.kernels import (
     gradient_reduce_and_compute_scale_kernel,
     gradient_apply_scale_kernel,
     _store_pre_step_kernel,
+    _store_pre_step_obs_parallel_kernel,
     _store_post_step_kernel,
 )
+from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from .onpolicy_config import OnPolicyConfig
@@ -457,14 +460,41 @@ struct PPOGPUStateGeneric[
             dtype, Layout.row_major(N_ENVS), MutAnyOrigin
         ](values_buf.unsafe_ptr())
 
-        comptime store_wrapper = _store_pre_step_kernel[dtype, N_ENVS, Self.OBS]
-        comptime blocks = (N_ENVS + TPB - 1) // TPB
-        ctx.enqueue_function[store_wrapper, store_wrapper](
+        # Parallel obs store: 2D grid (OBS_BLOCKS, N_ENVS)
+        comptime obs_store_wrapper = _store_pre_step_obs_parallel_kernel[
+            dtype, N_ENVS, Self.OBS
+        ]
+        comptime OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
+        ctx.enqueue_function[obs_store_wrapper, obs_store_wrapper](
             r_obs,
+            obs_t,
+            grid_dim=(OBS_BLOCKS, N_ENVS),
+            block_dim=(TPB,),
+        )
+
+        # Scalar store: actions, log_probs, values (tiny kernel)
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+
+        @always_inline
+        fn store_scalars_wrapper(
+            r_a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            r_lp: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            r_v: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            lp: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            v: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= N_ENVS:
+                return
+            r_a[i] = a[i]
+            r_lp[i] = lp[i]
+            r_v[i] = v[i]
+
+        ctx.enqueue_function[store_scalars_wrapper, store_scalars_wrapper](
             r_actions,
             r_log_probs,
             r_values,
-            obs_t,
             actions_t,
             log_probs_t,
             values_t,
@@ -1583,15 +1613,81 @@ struct GenericOnPolicyAgent[
                     gpu_state.mb_indices_buf, gpu_state.mb_indices_host
                 )
 
-                # Gather minibatch from rollout
-                ctx.enqueue_function[gather_wrapper, gather_wrapper](
+                # Parallel obs gather: 2D grid (OBS_BLOCKS, MINIBATCH)
+                comptime gather_obs_wrapper = ppo_gather_minibatch_obs_parallel_kernel[
+                    dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
+                ]
+                comptime GATHER_OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
+                ctx.enqueue_function[
+                    gather_obs_wrapper, gather_obs_wrapper
+                ](
                     mb_obs_t,
+                    rollout_obs_t,
+                    mb_indices_t,
+                    MINIBATCH,
+                    grid_dim=(GATHER_OBS_BLOCKS, MINIBATCH),
+                    block_dim=(TPB,),
+                )
+
+                # Scalar gather: actions, advantages, returns, log_probs, values
+                @always_inline
+                fn gather_scalars_mb_wrapper(
+                    mb_a: LayoutTensor[
+                        dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+                    ],
+                    mb_adv: LayoutTensor[
+                        dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+                    ],
+                    mb_ret: LayoutTensor[
+                        dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+                    ],
+                    mb_olp: LayoutTensor[
+                        dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+                    ],
+                    mb_ov: LayoutTensor[
+                        dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+                    ],
+                    r_a: LayoutTensor[
+                        dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+                    ],
+                    adv: LayoutTensor[
+                        dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+                    ],
+                    ret: LayoutTensor[
+                        dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+                    ],
+                    r_lp: LayoutTensor[
+                        dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+                    ],
+                    r_v: LayoutTensor[
+                        dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+                    ],
+                    idx: LayoutTensor[
+                        DType.int32,
+                        Layout.row_major(MINIBATCH),
+                        MutAnyOrigin,
+                    ],
+                    bs: Int,
+                ):
+                    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if i >= bs:
+                        return
+                    var src = Int(idx[i])
+                    mb_a[i] = r_a[src]
+                    mb_adv[i] = adv[src]
+                    mb_ret[i] = ret[src]
+                    mb_olp[i] = r_lp[src]
+                    mb_ov[i] = r_v[src]
+
+                ctx.enqueue_function[
+                    gather_scalars_mb_wrapper,
+                    gather_scalars_mb_wrapper,
+                ](
                     mb_actions_t,
                     mb_advantages_t,
                     mb_returns_t,
                     mb_old_log_probs_t,
                     mb_old_values_t,
-                    rollout_obs_t,
                     rollout_actions_t,
                     advantages_t,
                     returns_t,
