@@ -348,6 +348,109 @@ graph definitions — no manual backward code needed.
 | 3 | GPU autodiff path | ✅ Done | GPU forward/backward (CUDA; Metal has nested generic limits) |
 | 2c | `ComputeGraph` | Future | Full compile-time DAG builder |
 
+## Extending to Other Algorithm Families
+
+The autodiff composition system is not limited to off-policy continuous agents.
+Every RL algorithm family has a loss that can be expressed as a composed graph.
+
+### DQN Family
+
+DQN's loss is the simplest — the Q-network IS the actor:
+
+```
+obs → QNetwork → Q_values[num_actions] → Gather(action_idx) → Q(s,a)
+loss = MSE(Q(s,a), target)
+```
+
+| New DiffOp | Purpose |
+|-----------|---------|
+| `GatherOp` | Select Q-value at action index; backward = sparse gradient at that index |
+
+```mojo
+comptime DQNGraph = Sequential[QNetwork, GatherOp]
+// loss = MSE(output, target) — handled by existing LossFunction trait
+```
+
+**Double DQN**: Same graph — only the target computation changes (argmax from
+online network, value from target network), which is outside the loss graph.
+
+**Dueling DQN**: The Q-network itself becomes a composed Model:
+```mojo
+comptime DuelingQ = Sequential[
+    SharedTrunk,
+    Parallel[ValueStream, AdvantageStream],  // → [V(s), A(s,a)]
+    DuelingCombineOp,                        // Q = V + A - mean(A)
+]
+```
+Needs `DuelingCombineOp` (subtract advantage mean, add value).
+
+### PPO (Discrete + Continuous)
+
+PPO's actor loss uses the clipped surrogate objective:
+
+```
+obs → Actor → logits/[mean,std]
+    → LogProb(action) → log_pi
+    → ratio = exp(log_pi - old_log_pi)
+    → surrogate = min(ratio * A, clip(ratio, 1-eps, 1+eps) * A)
+```
+
+| New DiffOp | Purpose |
+|-----------|---------|
+| `LogProbOp` | Compute log probability of taken action from logits/distribution |
+| `RatioOp` | `exp(log_prob - old_log_prob)` with old_log_prob as frozen input |
+| `ClipSurrogateOp` | `min(ratio * A, clip(ratio) * A)` with gradient passthrough inside clip range |
+
+```mojo
+comptime PPOActorGraph = Sequential[
+    ActorModel,
+    LogProbOp[action_dim],
+    RatioOp,               // uses old_log_prob from rollout buffer
+    ClipSurrogateOp[eps],   // uses advantages from rollout buffer
+]
+```
+
+Key difference from off-policy: PPO needs "external" frozen inputs (old_log_prob,
+advantages) that come from the rollout buffer, not from the graph. These can be
+passed via the workspace/cache mechanism or as additional DiffOp parameters.
+
+### Algorithm Coverage Summary
+
+| Algorithm Family | Graph Shape | Missing DiffOps | Combinators Sufficient? |
+|-----------------|-------------|-----------------|------------------------|
+| DDPG | Chain | None | ✅ Yes (done) |
+| TD3 | Chain + twin fan-out | None | ✅ Yes (done) |
+| SAC | Chain + twin fan-out + split | None | ✅ Yes (done) |
+| DQN / Double DQN | Chain | `GatherOp` | ✅ Yes |
+| Dueling DQN | Parallel branches | `DuelingCombineOp` | ✅ Yes |
+| PPO (discrete) | Chain + external inputs | `LogProbOp`, `RatioOp`, `ClipSurrogateOp` | ✅ Yes |
+| PPO (continuous) | Chain + external inputs | Same as discrete + `RSampleOp` | ✅ Yes |
+| Dreamer / TD-MPC2 | Multi-head + recurrent | Recurrent ops, multi-loss | Needs ComputeGraph |
+
+### When ComputeGraph Becomes Necessary
+
+The existing combinators handle all algorithms where the loss graph is a
+**tree** (possibly with fan-out and split points). ComputeGraph is only needed
+for **true DAGs** with arbitrary fan-in from non-adjacent nodes — primarily
+model-based RL with world models:
+
+```
+obs → Encoder → latent ──→ TransitionModel → next_latent
+                    │──→ RewardPredictor → reward_hat
+                    │──→ ValuePredictor → value_hat
+                    └──→ Decoder → obs_hat
+
+loss = reconstruction_loss + reward_loss + value_loss + KL_loss
+```
+
+Here `latent` fans out to 4 downstream consumers, and the loss combines
+outputs from all of them. The existing combinators CAN express this
+(via nested FanOut + SplitApply), but a ComputeGraph would be more natural.
+
+**Recommendation**: Build ComputeGraph when a model-based algorithm (Dreamer,
+TD-MPC2 world model training) is the next target. The combinator approach
+covers all current model-free algorithms cleanly.
+
 ## Benefits
 
 1. **Correctness by construction**: No manual gradient stitching → no gradient bugs
@@ -357,3 +460,4 @@ graph definitions — no manual backward code needed.
 5. **~400 lines → ~20 lines**: Actor loss strategy becomes a type alias
 6. **New algorithms for free**: Express any actor-critic loss as a graph definition
 7. **Zero runtime overhead**: All graph topology resolved at compile time
+8. **Incremental**: Each algorithm family needs only 1-3 new DiffOps, not a full rewrite

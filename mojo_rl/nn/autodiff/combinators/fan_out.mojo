@@ -269,27 +269,109 @@ struct FanOut[Inner: Model, N: Int](Model):
         comptime I_OUT = Self.Inner.OUT_DIM
 
         # Forward each copy into temp buffers, then concat
+        comptime I_PS = Self.Inner.PARAM_SIZE
+        comptime IP_BLOCKS = (I_PS + TPB - 1) // TPB
+        comptime I_CS_TOTAL = BATCH * Self.Inner.CACHE_SIZE
+
         comptime for i in range(Self.N):
             var i_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * I_OUT)
             var i_out_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
             ](i_out_buf.unsafe_ptr())
 
-            var pi = LayoutTensor[
-                dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
-            ](params.ptr + Self._param_offset[i]())
-            var ci = LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
-                MutAnyOrigin,
-            ](cache.ptr + BATCH * Self._cache_offset[i]())
-
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
             ](input.ptr)
-            Self.Inner.forward_gpu[BATCH](
-                ctx, i_out_t, input_i, pi, ci, workspace
-            )
+
+            comptime if i == 0:
+                # Copy 0: offset 0, always aligned
+                var pi = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr)
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr)
+                Self.Inner.forward_gpu[BATCH](
+                    ctx, i_out_t, input_i, pi, ci, workspace
+                )
+            else:
+                # Copy i>0: may be misaligned, copy to aligned buffers
+                var pi_buf = ctx.enqueue_create_buffer[dtype](I_PS)
+                var pi = LayoutTensor[
+                    dtype, Layout.row_major(I_PS), MutAnyOrigin
+                ](pi_buf.unsafe_ptr())
+
+                @always_inline
+                fn _fo_fwd_copy_params(
+                    dst: LayoutTensor[
+                        dtype, Layout.row_major(I_PS), MutAnyOrigin
+                    ],
+                    src: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if idx < I_PS:
+                        dst.ptr[idx] = src.ptr[
+                            Self._param_offset[i]() + idx
+                        ]
+
+                ctx.enqueue_function[
+                    _fo_fwd_copy_params, _fo_fwd_copy_params
+                ](pi, params, grid_dim=(IP_BLOCKS,), block_dim=(TPB,))
+
+                var ci_buf = ctx.enqueue_create_buffer[dtype](
+                    max(1, I_CS_TOTAL)
+                )
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](ci_buf.unsafe_ptr())
+
+                Self.Inner.forward_gpu[BATCH](
+                    ctx, i_out_t, input_i, pi, ci, workspace
+                )
+
+                # Copy cache back to parent cache buffer at correct offset
+                if I_CS_TOTAL > 0:
+                    comptime IC_BLOCKS = (I_CS_TOTAL + TPB - 1) // TPB
+
+                    @always_inline
+                    fn _fo_fwd_copy_cache_back(
+                        dst: LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.CACHE_SIZE),
+                            MutAnyOrigin,
+                        ],
+                        src: LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                            MutAnyOrigin,
+                        ],
+                    ):
+                        var idx = Int(
+                            block_dim.x * block_idx.x + thread_idx.x
+                        )
+                        if idx < I_CS_TOTAL:
+                            dst.ptr[
+                                BATCH * Self._cache_offset[i]() + idx
+                            ] = src.ptr[idx]
+
+                    ctx.enqueue_function[
+                        _fo_fwd_copy_cache_back, _fo_fwd_copy_cache_back
+                    ](
+                        cache,
+                        ci,
+                        grid_dim=(IC_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
 
             # Scatter copy i's output into the concat output
             var i_immut = LayoutTensor[
@@ -389,6 +471,10 @@ struct FanOut[Inner: Model, N: Int](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output.ptr)
 
+        comptime I_PS = Self.Inner.PARAM_SIZE
+        comptime IP_BLOCKS = (I_PS + TPB - 1) // TPB
+        comptime I_CS_TOTAL = BATCH * Self.Inner.CACHE_SIZE
+
         comptime for i in range(Self.N):
             # Extract grad_output slice for copy i
             var go_buf = ctx.enqueue_create_buffer[dtype](BATCH * I_OUT)
@@ -423,25 +509,105 @@ struct FanOut[Inner: Model, N: Int](Model):
                 go_t, go_immut, grid_dim=(i_grid,), block_dim=(TPB,)
             )
 
-            var pi = LayoutTensor[
-                dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
-            ](params.ptr + Self._param_offset[i]())
-            var ci = LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
-                MutAnyOrigin,
-            ](cache.ptr + BATCH * Self._cache_offset[i]())
-            var grads_i = LayoutTensor[
-                dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
-            ](grads.ptr + Self._param_offset[i]())
-
             comptime if i == 0:
+                # Copy 0: offset 0, always aligned
+                var pi = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr)
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr)
+                var grads_i = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](grads.ptr)
                 # First copy: backward directly into grad_input
                 Self.Inner.backward_gpu[BATCH](
                     ctx, grad_input, go_t, pi, ci, grads_i, workspace
                 )
             else:
-                # Subsequent copies: backward into temp, then add
+                # Copy i>0: may be misaligned, copy to aligned buffers
+
+                # Copy params to aligned buffer
+                var pi_buf = ctx.enqueue_create_buffer[dtype](I_PS)
+                var pi = LayoutTensor[
+                    dtype, Layout.row_major(I_PS), MutAnyOrigin
+                ](pi_buf.unsafe_ptr())
+
+                @always_inline
+                fn _fo_bwd_copy_params(
+                    dst: LayoutTensor[
+                        dtype, Layout.row_major(I_PS), MutAnyOrigin
+                    ],
+                    src: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if idx < I_PS:
+                        dst.ptr[idx] = src.ptr[
+                            Self._param_offset[i]() + idx
+                        ]
+
+                ctx.enqueue_function[
+                    _fo_bwd_copy_params, _fo_bwd_copy_params
+                ](pi, params, grid_dim=(IP_BLOCKS,), block_dim=(TPB,))
+
+                # Copy cache to aligned buffer
+                var ci_buf = ctx.enqueue_create_buffer[dtype](
+                    max(1, I_CS_TOTAL)
+                )
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](ci_buf.unsafe_ptr())
+                if I_CS_TOTAL > 0:
+                    comptime IC_BLOCKS = (I_CS_TOTAL + TPB - 1) // TPB
+
+                    @always_inline
+                    fn _fo_bwd_copy_cache(
+                        dst: LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                            MutAnyOrigin,
+                        ],
+                        src: LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.CACHE_SIZE),
+                            MutAnyOrigin,
+                        ],
+                    ):
+                        var idx = Int(
+                            block_dim.x * block_idx.x + thread_idx.x
+                        )
+                        if idx < I_CS_TOTAL:
+                            dst.ptr[idx] = src.ptr[
+                                BATCH * Self._cache_offset[i]() + idx
+                            ]
+
+                    ctx.enqueue_function[
+                        _fo_bwd_copy_cache, _fo_bwd_copy_cache
+                    ](ci, cache, grid_dim=(IC_BLOCKS,), block_dim=(TPB,))
+
+                # Aligned grads buffer, zeroed
+                var grads_i_buf = ctx.enqueue_create_buffer[dtype](I_PS)
+                var grads_i = LayoutTensor[
+                    dtype, Layout.row_major(I_PS), MutAnyOrigin
+                ](grads_i_buf.unsafe_ptr())
+                var zero_gi = ctx.enqueue_create_host_buffer[dtype](I_PS)
+                for zi in range(I_PS):
+                    zero_gi[zi] = Scalar[dtype](0.0)
+                ctx.enqueue_copy(grads_i_buf, zero_gi)
+
+                # Backward into temp grad_input, then add
                 var gi_buf = ctx.enqueue_create_buffer[dtype](
                     BATCH * Self.IN_DIM
                 )
@@ -453,6 +619,26 @@ struct FanOut[Inner: Model, N: Int](Model):
                 Self.Inner.backward_gpu[BATCH](
                     ctx, gi_t, go_t, pi, ci, grads_i, workspace
                 )
+
+                # Copy grads back to parent grads buffer at correct offset
+                @always_inline
+                fn _fo_bwd_scatter_grads(
+                    dst: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ],
+                    src: LayoutTensor[
+                        dtype, Layout.row_major(I_PS), MutAnyOrigin
+                    ],
+                ):
+                    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if idx < I_PS:
+                        dst.ptr[Self._param_offset[i]() + idx] = src.ptr[idx]
+
+                ctx.enqueue_function[
+                    _fo_bwd_scatter_grads, _fo_bwd_scatter_grads
+                ](grads, grads_i, grid_dim=(IP_BLOCKS,), block_dim=(TPB,))
 
                 # Add to grad_input
                 var gi_immut = LayoutTensor[
