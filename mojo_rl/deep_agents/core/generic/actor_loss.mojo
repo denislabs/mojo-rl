@@ -146,6 +146,7 @@ trait ActorLoss:
         critic_ws: DeviceBuffer[dtype],
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
         alpha: Float64,
         rng_seed: UInt32,
     ) raises -> Float64:
@@ -398,6 +399,7 @@ struct DPGLoss(ActorLoss):
         critic_ws: DeviceBuffer[dtype],
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
         alpha: Float64,
         rng_seed: UInt32,
     ) raises -> Float64:
@@ -491,28 +493,13 @@ struct DPGLoss(ActorLoss):
             ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
         )
 
-        # 4. Fill dq seed = -1/batch (maximize Q) via memset + known kernel
+        # 4. dq seed = -1/batch from pre-filled GPU buffer (maximize Q)
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
-        ](ws_ptr + W_DQ)
+        ](dq_buf.unsafe_ptr())
         var d_ci_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
-
-        # Use the td_mse_grad_kernel with Q=0 and target=1/2 to get
-        # grad = 2*(0 - 0.5)/BATCH = -1/BATCH per element.
-        # This reuses a proven working kernel instead of a custom fill.
-        #
-        # Alternatively, write a separate dq buffer from host and use it.
-        var dq_device = ctx.enqueue_create_buffer[dtype](BATCH)
-        var dq_host_buf = ctx.enqueue_create_host_buffer[dtype](BATCH)
-        for i in range(BATCH):
-            dq_host_buf[i] = Scalar[dtype](-1.0 / Float64(BATCH))
-        ctx.enqueue_copy(dq_device, dq_host_buf)
-        # Re-point dq_t to the freshly filled device buffer
-        dq_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
-        ](dq_device.unsafe_ptr())
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
@@ -935,6 +922,7 @@ struct MaxEntLoss[
         critic_ws: DeviceBuffer[dtype],
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
         alpha: Float64,
         rng_seed: UInt32,
     ) raises -> Float64:

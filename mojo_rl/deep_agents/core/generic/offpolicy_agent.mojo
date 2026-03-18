@@ -302,6 +302,9 @@ struct GenericGPUState[
     # Alpha auto-tuning (SAC): small buffers for log_prob GPU→CPU transfer
     var curr_lp: DeviceBuffer[dtype]  # [BS] current log_probs from actor loss
 
+    # Pre-filled dq buffer: constant -1/BATCH for actor policy gradient
+    var dq: DeviceBuffer[dtype]
+
     # Twin critic extra (only used when num_critics==2)
     var nq2: DeviceBuffer[dtype]
     var q2_out: DeviceBuffer[dtype]
@@ -365,6 +368,13 @@ struct GenericGPUState[
 
         # Alpha auto-tuning
         self.curr_lp = ctx.enqueue_create_buffer[dtype](BS)
+
+        # Pre-fill dq with -1/BATCH (constant policy-gradient seed)
+        self.dq = ctx.enqueue_create_buffer[dtype](BS)
+        var dq_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        for i in range(BS):
+            dq_host[i] = Scalar[dtype](-1.0 / Float64(BS))
+        ctx.enqueue_copy(self.dq, dq_host)
 
         # Twin critic extra
         self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
@@ -1671,6 +1681,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.critic_ws,
                 c2_ws,
                 gpu_state.strat_ws,
+                gpu_state.dq,
                 self.alpha,
                 UInt32(self.train_step_count),
             )
