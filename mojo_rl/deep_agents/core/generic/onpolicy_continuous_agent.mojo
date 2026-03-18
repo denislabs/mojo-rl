@@ -1506,6 +1506,17 @@ struct GenericOnPolicyContinuousAgent[
         var n_epochs = Self.Config.EpochSched.get_num_epochs(self.num_epochs)
         var num_minibatches = ROLLOUT_TOTAL // MINIBATCH
 
+        # Diagnostic accumulators
+        var should_diag = self.logger and (
+            self.diag_every <= 0
+            or (self.train_step_count + 1) % self.diag_every == 0
+        )
+        var diag_kl_sum: Float64 = 0.0
+        var diag_entropy_sum: Float64 = 0.0
+        var diag_clip_sum: Float64 = 0.0
+        var diag_value_loss_sum: Float64 = 0.0
+        var diag_sample_count: Int = 0
+
         for epoch in range(n_epochs):
             if kl_early_stop:
                 break
@@ -1631,9 +1642,9 @@ struct GenericOnPolicyContinuousAgent[
                 )
                 ctx.synchronize()
 
-                # KL early stopping
+                # KL early stopping + diagnostic readback
                 comptime if Self.Config.EpochSched.USES_KL_EARLY_STOP:
-                    if self.target_kl > 0.0:
+                    if self.target_kl > 0.0 or should_diag:
                         ctx.enqueue_copy(
                             gpu_state.kl_divergences_host,
                             gpu_state.kl_divergences_buf,
@@ -1642,12 +1653,34 @@ struct GenericOnPolicyContinuousAgent[
                         var kl_sum = Scalar[dtype](0.0)
                         for i in range(MINIBATCH):
                             kl_sum += gpu_state.kl_divergences_host[i]
-                        if (
+                        if should_diag:
+                            diag_kl_sum += Float64(kl_sum)
+                        if self.target_kl > 0.0 and (
                             Float64(kl_sum) / Float64(MINIBATCH)
                             > self.target_kl
                         ):
                             kl_early_stop = True
                             break
+
+                # Accumulate diagnostics (entropy, clip fraction)
+                if should_diag:
+                    ctx.enqueue_copy(
+                        gpu_state.diag_entropy_host,
+                        gpu_state.diag_entropy_buf,
+                    )
+                    ctx.enqueue_copy(
+                        gpu_state.diag_clip_host,
+                        gpu_state.diag_clip_buf,
+                    )
+                    ctx.synchronize()
+                    for i in range(MINIBATCH):
+                        diag_entropy_sum += Float64(
+                            gpu_state.diag_entropy_host[i]
+                        )
+                        diag_clip_sum += Float64(
+                            gpu_state.diag_clip_host[i]
+                        )
+                    diag_sample_count += MINIBATCH
 
                 Self.ActorModel.backward_gpu[MINIBATCH](
                     ctx,
@@ -1716,6 +1749,23 @@ struct GenericOnPolicyContinuousAgent[
                 )
                 ctx.synchronize()
 
+                # Accumulate value loss diagnostic
+                if should_diag:
+                    ctx.enqueue_copy(
+                        gpu_state.diag_values_host,
+                        gpu_state.critic_values_buf,
+                    )
+                    ctx.enqueue_copy(
+                        gpu_state.diag_returns_host,
+                        gpu_state.mb_returns_buf,
+                    )
+                    ctx.synchronize()
+                    for i in range(MINIBATCH):
+                        var diff = Float64(
+                            gpu_state.diag_values_host[i]
+                        ) - Float64(gpu_state.diag_returns_host[i])
+                        diag_value_loss_sum += diff * diff
+
                 if self.clip_value:
                     ctx.enqueue_function[
                         critic_grad_clipped_k, critic_grad_clipped_k
@@ -1782,6 +1832,26 @@ struct GenericOnPolicyContinuousAgent[
 
                 gpu_state.gpu_critic.optimizer_step(ctx)
                 ctx.synchronize()
+
+        # Log diagnostics
+        if should_diag and diag_sample_count > 0:
+            try:
+                var step = self.train_step_count
+                var n = Float64(diag_sample_count)
+                self.logger[].log_scalar(
+                    "approx_kl", diag_kl_sum / n, step
+                )
+                self.logger[].log_scalar(
+                    "entropy", diag_entropy_sum / n, step
+                )
+                self.logger[].log_scalar(
+                    "clip_fraction", diag_clip_sum / n, step
+                )
+                self.logger[].log_scalar(
+                    "value_loss", diag_value_loss_sum / n, step
+                )
+            except:
+                pass
 
         gpu_state.rollout_step = 0
         self.train_step_count += 1

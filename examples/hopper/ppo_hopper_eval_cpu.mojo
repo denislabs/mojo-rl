@@ -55,19 +55,18 @@ fn main() raises:
         rollout_len=ROLLOUT_LEN,
         n_envs=N_ENVS,
         gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+        actor_lr=0.0003,
+        critic_lr=0.0003,
     ](
         clip_value=True,
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
         entropy_coef=0.0,
         value_loss_coef=0.5,
         num_epochs=10,
         target_kl=0.0,
         max_grad_norm=0.5,
-        anneal_lr=False,
     )
 
     # =========================================================================
@@ -112,7 +111,7 @@ fn main() raises:
     var avg_reward = agent.evaluate(
         env,
         num_episodes=NUM_EPISODES,
-        max_steps=MAX_STEPS,
+        max_steps_per_episode=MAX_STEPS,
         verbose=True,
         stochastic=False,  # Use deterministic policy for evaluation
         render=RENDER,
