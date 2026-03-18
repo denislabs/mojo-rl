@@ -590,6 +590,7 @@ struct GenericOffPolicyAgent[
     Config: OffPolicyConfig,
     profile: Int = 0,
     L: Logger = NoOpLogger,
+    max_n_envs: Int = 64,
 ](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
     """
@@ -663,7 +664,7 @@ struct GenericOffPolicyAgent[
     comptime OBS_DIM: Int = Self.OBS
     comptime ACTION_DIM: Int = Self.ACTIONS
     comptime BUFFER_CAPACITY: Int = Self.Config.buffer_capacity
-    comptime MAX_N_ENVS: Int = 64  # default, can be overridden via Config
+    comptime MAX_N_ENVS: Int = Self.max_n_envs
     comptime _AL_WS_SIZE: Int = Self.Config.ActorLoss.ws_size[
         Self.BATCH,
         Self.OBS,

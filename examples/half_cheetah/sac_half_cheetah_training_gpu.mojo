@@ -83,6 +83,7 @@ fn main() raises:
             actor_lr=0.0003,
             critic_lr=0.001,  # CleanRL default: q_lr=1e-3 (higher than actor)
             L=RemoteLogger,
+            max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,

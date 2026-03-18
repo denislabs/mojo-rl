@@ -114,10 +114,12 @@ comptime DeepDDPGAgent[
     critic_lr: Float64 = 0.001,
     profile: Int = 0,
     L: Logger = NoOpLogger,
+    max_n_envs: Int = 64,
 ] = GenericOffPolicyAgent[
     DDPGConfig[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size, actor_lr, critic_lr],
     profile,
     L,
+    max_n_envs,
 ]
 
 
@@ -131,10 +133,12 @@ comptime DeepTD3Agent[
     critic_lr: Float64 = 0.001,
     profile: Int = 0,
     L: Logger = NoOpLogger,
+    max_n_envs: Int = 64,
 ] = GenericOffPolicyAgent[
     TD3Config[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size, actor_lr, critic_lr],
     profile,
     L,
+    max_n_envs,
 ]
 
 
@@ -148,10 +152,12 @@ comptime DeepSACAgent[
     critic_lr: Float64 = 0.0003,
     profile: Int = 0,
     L: Logger = NoOpLogger,
+    max_n_envs: Int = 64,
 ] = GenericOffPolicyAgent[
     SACConfig[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size, actor_lr, critic_lr],
     profile,
     L,
+    max_n_envs,
 ]
 
 
