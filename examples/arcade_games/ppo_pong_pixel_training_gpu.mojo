@@ -26,7 +26,7 @@ comptime MINIBATCH_SIZE = 256
 
 # Training: num_updates × rollout_len × n_envs = total transitions
 # 500 updates × 128 × 64 = 4,096,000 transitions
-comptime NUM_UPDATES = 10  # To profile the training
+comptime NUM_UPDATES = 500
 
 comptime dtype = DType.float32
 

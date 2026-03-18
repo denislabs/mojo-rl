@@ -37,6 +37,7 @@ from mojo_rl.deep_agents.core.onpolicy_train import (
     OnPolicyContinuousState,
 )
 from mojo_rl.deep_agents.core.gpu_onpolicy_train import GPUOnPolicyState
+from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 
@@ -990,6 +991,7 @@ struct PPOContinuousGPUState[
         """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
         """
         from mojo_rl.deep_agents.ppo.kernels import (
+            _store_pre_step_obs_parallel_kernel,
             _store_continuous_pre_step_kernel,
         )
 
@@ -1020,16 +1022,48 @@ struct PPOContinuousGPUState[
             dtype, Layout.row_major(N_ENVS), MutAnyOrigin
         ](values_buf.unsafe_ptr())
 
-        comptime store_wrapper = _store_continuous_pre_step_kernel[
-            dtype, N_ENVS, Self.OBS, Self.ACTIONS
+        # Parallel obs store: 2D grid (OBS_BLOCKS, N_ENVS)
+        comptime obs_store_wrapper = _store_pre_step_obs_parallel_kernel[
+            dtype, N_ENVS, Self.OBS
         ]
-        comptime blocks = (N_ENVS + TPB - 1) // TPB
-        ctx.enqueue_function[store_wrapper, store_wrapper](
+        comptime OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
+        ctx.enqueue_function[obs_store_wrapper, obs_store_wrapper](
             r_obs,
+            obs_t,
+            grid_dim=(OBS_BLOCKS, N_ENVS),
+            block_dim=(TPB,),
+        )
+
+        # Scalar store: actions, log_probs, values (tiny kernel)
+        comptime blocks = (N_ENVS + TPB - 1) // TPB
+
+        @always_inline
+        fn store_scalars_cont_wrapper(
+            r_a: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            r_lp: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            r_v: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            a: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            lp: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+            v: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= N_ENVS:
+                return
+            for ad in range(Self.ACTIONS):
+                r_a[i, ad] = a[i, ad]
+            r_lp[i] = lp[i]
+            r_v[i] = v[i]
+
+        ctx.enqueue_function[
+            store_scalars_cont_wrapper, store_scalars_cont_wrapper
+        ](
             r_actions,
             r_log_probs,
             r_values,
-            obs_t,
             actions_t,
             log_probs_t,
             values_t,

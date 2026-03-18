@@ -50,8 +50,10 @@ from mojo_rl.deep_agents.ppo.state import (
 from mojo_rl.deep_agents.ppo.kernels import (
     _sample_continuous_actions_kernel,
     _store_continuous_pre_step_kernel,
+    _store_pre_step_obs_parallel_kernel,
     _store_post_step_kernel,
     ppo_continuous_gather_minibatch_kernel,
+    ppo_gather_minibatch_obs_parallel_kernel,
     ppo_continuous_actor_grad_kernel,
     ppo_critic_grad_kernel,
     ppo_critic_grad_clipped_kernel,
@@ -1171,7 +1173,21 @@ struct GenericOnPolicyContinuousAgent[
                     gpu_state.mb_indices_buf, gpu_state.mb_indices_host
                 )
 
-                # Gather minibatch (continuous actions)
+                # Parallel obs gather: 2D grid (OBS_BLOCKS, MINIBATCH)
+                comptime gather_obs_k = ppo_gather_minibatch_obs_parallel_kernel[
+                    dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
+                ]
+                comptime GATHER_OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
+                ctx.enqueue_function[gather_obs_k, gather_obs_k](
+                    mb_obs_t,
+                    rollout_obs_t,
+                    mb_indices_t,
+                    MINIBATCH,
+                    grid_dim=(GATHER_OBS_BLOCKS, MINIBATCH),
+                    block_dim=(TPB,),
+                )
+
+                # Scalar+action gather (actions are small dim, scalars trivial)
                 ctx.enqueue_function[gather_k, gather_k](
                     mb_obs_t,
                     mb_actions_t,
