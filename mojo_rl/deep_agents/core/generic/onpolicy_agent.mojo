@@ -38,6 +38,7 @@ from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
     GPUDiscreteEnv,
+    RenderableEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
@@ -1212,41 +1213,97 @@ struct GenericOnPolicyAgent[
     # =========================================================================
 
     fn evaluate[
-        E: BoxDiscreteActionEnv
+        E: BoxDiscreteActionEnv & RenderableEnv
     ](
         mut self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 500,
         verbose: Bool = False,
-    ) -> Float64:
-        """Evaluate the agent on the environment.
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent on the environment with optional rendering.
 
         Args:
-            env: Environment to evaluate on.
+            env: Environment to evaluate on (must implement RenderableEnv).
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps_per_episode: Maximum steps per episode (default: 500).
             verbose: Print per-episode results (default: False).
+            render: If True, render each frame (default: False).
+            frame_delay_ms: Delay between frames in ms (default: 16 ~60fps).
 
         Returns:
             Average reward across episodes.
         """
-        from mojo_rl.deep_agents.core.eval import run_onpolicy_discrete_eval
-
         # Use a separate cpu_state reference to avoid aliasing self + self.cpu_state
         var eval_state = self.make_cpu_state()
-        # Copy trained weights
         eval_state.actor.copy_params_from(self.cpu_state.actor)
         eval_state.critic.copy_params_from(self.cpu_state.critic)
-        var metrics = run_onpolicy_discrete_eval(
-            self,
-            eval_state,
-            env,
-            num_episodes=num_episodes,
-            max_steps=max_steps_per_episode,
-            verbose=verbose,
-        )
-        return metrics.mean_reward()
+
+        var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
+
+        for episode in range(num_episodes):
+            if quit_requested:
+                break
+
+            var obs_raw = env.reset_obs_list()
+            var obs = List[Float64]()
+            for i in range(len(obs_raw)):
+                obs.append(Float64(obs_raw[i]))
+
+            var episode_reward: Float64 = 0.0
+            var episode_steps = 0
+
+            for _ in range(max_steps_per_episode):
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+                    if (
+                        env.renderer_is_paused()
+                        and not env.renderer_step_once()
+                    ):
+                        continue
+
+                var action_list = self.select_greedy_action(eval_state, obs)
+                var action_int = Int(Float64(action_list[0]))
+                var result = env.step_obs(action_int)
+                var next_obs = List[Float64]()
+                for i in range(len(result[0])):
+                    next_obs.append(Float64(result[0][i]))
+                var reward = Float64(result[1])
+                var done = result[2]
+
+                episode_reward += reward
+                episode_steps += 1
+                obs = next_obs^
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+            if verbose:
+                print(
+                    "Eval Episode",
+                    episode + 1,
+                    "| Reward:",
+                    String(episode_reward)[:10],
+                    "| Steps:",
+                    episode_steps,
+                )
+
+        if render:
+            env.close_renderer()
+
+        return total_reward / Float64(num_episodes)
 
     # =========================================================================
     # GPUOnPolicyDiscreteAgent trait conformance

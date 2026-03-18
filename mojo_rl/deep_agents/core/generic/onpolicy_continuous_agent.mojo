@@ -41,6 +41,7 @@ from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
+    RenderableEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
@@ -764,39 +765,395 @@ struct GenericOnPolicyContinuousAgent[
     # =========================================================================
 
     fn evaluate[
-        E: BoxContinuousActionEnv
+        E: BoxContinuousActionEnv & RenderableEnv
     ](
         mut self,
         mut env: E,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 1000,
         verbose: Bool = False,
-    ) -> Float64:
-        """Evaluate the agent using deterministic (mean) policy.
+        stochastic: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent with optional rendering and stochastic sampling.
 
         Args:
-            env: Environment to evaluate on.
+            env: Environment to evaluate on (must implement RenderableEnv).
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps_per_episode: Maximum steps per episode (default: 1000).
             verbose: Print per-episode results (default: False).
+            stochastic: If True, sample from policy; if False, use mean (default: False).
+            render: If True, render each frame (default: False).
+            frame_delay_ms: Delay between frames in ms (default: 16 ~60fps).
 
         Returns:
             Average reward across episodes.
         """
-
         # Copy weights to avoid aliasing self + self.cpu_state
         var eval_state = self.make_cpu_state()
         eval_state.actor.copy_params_from(self.cpu_state.actor)
         eval_state.critic.copy_params_from(self.cpu_state.critic)
-        var metrics = run_onpolicy_continuous_eval(
-            self,
-            eval_state,
-            env,
-            num_episodes=num_episodes,
-            max_steps=max_steps_per_episode,
-            verbose=verbose,
+
+        var total_reward: Float64 = 0.0
+        var quit_requested = False
+
+        if render:
+            _ = env.init_renderer()
+
+        for episode in range(num_episodes):
+            if quit_requested:
+                break
+
+            var obs_raw = env.reset_obs_list()
+            var obs_arr = InlineArray[Scalar[dtype], Self.OBS](
+                uninitialized=True
+            )
+            for i in range(Self.OBS):
+                obs_arr[i] = Scalar[dtype](obs_raw[i])
+
+            var episode_reward: Float64 = 0.0
+            var episode_steps = 0
+
+            for _ in range(max_steps_per_episode):
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+                    if (
+                        env.renderer_is_paused()
+                        and not env.renderer_step_once()
+                    ):
+                        continue
+
+                var obs_t = LayoutTensor[
+                    dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                ](obs_arr.unsafe_ptr())
+
+                # Actor forward
+                var actor_out = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                    uninitialized=True
+                )
+                var actor_out_t = LayoutTensor[
+                    dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
+                ](actor_out.unsafe_ptr())
+                var p = eval_state.actor.params_view()
+                Self.ActorNet.forward[1](obs_t, actor_out_t, p)
+
+                var action = List[Float64](capacity=Self.ACTIONS)
+                if stochastic:
+                    # Sample from Gaussian policy
+                    for j in range(Self.ACTIONS):
+                        var mean = Float64(actor_out[j])
+                        var raw_ls = Float64(actor_out[Self.ACTIONS + j])
+                        if raw_ls < LOG_STD_MIN:
+                            raw_ls = LOG_STD_MIN
+                        elif raw_ls > LOG_STD_MAX:
+                            raw_ls = LOG_STD_MAX
+                        var std = exp(raw_ls)
+                        var u1 = random_float64()
+                        var u2 = random_float64()
+                        if u1 < 1e-10:
+                            u1 = 1e-10
+                        var noise = sqrt(-2.0 * log(u1)) * cos(
+                            2.0 * 3.14159265358979 * u2
+                        )
+                        action.append(mean + std * noise)
+                else:
+                    # Deterministic: use mean
+                    for j in range(Self.ACTIONS):
+                        action.append(Float64(actor_out[j]))
+
+                var result = env.step_continuous_vec(action)
+                var reward = Float64(result[1])
+                var done = result[2]
+
+                episode_reward += reward
+                episode_steps += 1
+
+                if done:
+                    var next_obs = env.reset_obs_list()
+                    for i in range(Self.OBS):
+                        obs_arr[i] = Scalar[dtype](next_obs[i])
+                    break
+                else:
+                    for i in range(Self.OBS):
+                        obs_arr[i] = Scalar[dtype](result[0][i])
+
+            total_reward += episode_reward
+
+            if verbose:
+                print(
+                    "Eval Episode",
+                    episode + 1,
+                    "| Reward:",
+                    String(episode_reward)[:10],
+                    "| Steps:",
+                    episode_steps,
+                )
+
+        if render:
+            env.close_renderer()
+
+        return total_reward / Float64(num_episodes)
+
+    fn evaluate_gpu[
+        EnvType: GPUContinuousEnv
+    ](
+        self,
+        ctx: DeviceContext,
+        num_episodes: Int = 100,
+        max_steps: Int = 1000,
+        verbose: Bool = False,
+        stochastic: Bool = True,
+    ) raises -> Float64:
+        """Evaluate the agent on GPU parallel environments.
+
+        Uses unbounded Gaussian policy. Actions are clipped to environment
+        bounds by the GPU environment kernel.
+
+        Args:
+            ctx: GPU device context.
+            num_episodes: Target number of evaluation episodes (default: 100).
+            max_steps: Maximum steps per episode (default: 1000).
+            verbose: Whether to print progress (default: False).
+            stochastic: If True, sample from policy; if False, use mean (default: True).
+
+        Returns:
+            Average reward over completed episodes.
+        """
+        comptime N_EVAL_ENVS = Self.n_envs
+        comptime ENV_OBS_SIZE = N_EVAL_ENVS * Self.OBS
+        comptime ENV_ACTION_SIZE = N_EVAL_ENVS * Self.ACTIONS
+        comptime ENV_BLOCKS = (N_EVAL_ENVS + TPB - 1) // TPB
+
+        # Environment state buffers
+        var env_states_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * EnvType.STATE_SIZE
         )
-        return metrics.mean_reward()
+        var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+
+        # Action buffers
+        var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
+        var actor_out_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * Self.ACTOR_OUT
+        )
+
+        # Network parameter buffers (copy from CPU)
+        var actor_params_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ActorModel.PARAM_SIZE
+        )
+        ctx.enqueue_copy(actor_params_buf, self.cpu_state.actor.params)
+
+        # Workspace buffer for forward pass
+        comptime WORKSPACE_PER_SAMPLE = Self.ActorModel.WORKSPACE_SIZE_PER_SAMPLE
+        var actor_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * WORKSPACE_PER_SAMPLE
+        )
+
+        # Tracking arrays (on CPU)
+        var episode_rewards = List[Float64]()
+        var current_rewards = InlineArray[Float64, N_EVAL_ENVS](fill=0.0)
+        var episodes_completed = 0
+
+        # Step workspace
+        comptime EVAL_TOTAL_WS = EnvType.STEP_WS_SHARED + N_EVAL_ENVS * EnvType.STEP_WS_PER_ENV
+        comptime EVAL_WS_ALLOC = EVAL_TOTAL_WS if EVAL_TOTAL_WS > 0 else 1
+        var eval_ws_buf = ctx.enqueue_create_buffer[dtype](EVAL_WS_ALLOC)
+        EnvType.init_step_workspace_gpu[N_EVAL_ENVS](ctx, eval_ws_buf)
+
+        # Initialize environments
+        EnvType.reset_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE](
+            ctx, env_states_buf
+        )
+        EnvType.extract_obs_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS](
+            ctx, env_states_buf, obs_buf
+        )
+        ctx.synchronize()
+
+        if verbose:
+            print(
+                "Running GPU evaluation with", N_EVAL_ENVS, "parallel envs..."
+            )
+
+        # Log probs buffer (needed for sampling kernel)
+        var log_probs_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+
+        # Deterministic action extraction kernel
+        @always_inline
+        fn extract_deterministic_actions(
+            actions: LayoutTensor[
+                dtype, Layout.row_major(N_EVAL_ENVS, Self.ACTIONS), MutAnyOrigin
+            ],
+            actor_out: LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                ImmutAnyOrigin,
+            ],
+        ):
+            var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
+            if idx >= N_EVAL_ENVS:
+                return
+            for j in range(Self.ACTIONS):
+                actions[idx, j] = actor_out[idx, j]
+
+        comptime sample_k = _sample_continuous_actions_kernel[
+            dtype, N_EVAL_ENVS, Self.ACTIONS
+        ]
+
+        var step = 0
+        while episodes_completed < num_episodes and step < max_steps:
+            # Forward actor
+            var eval_actor_out_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ActorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](actor_out_buf.unsafe_ptr())
+            var eval_obs_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ActorModel.IN_DIM),
+                MutAnyOrigin,
+            ](obs_buf.unsafe_ptr())
+            var eval_params_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.ActorModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](actor_params_buf.unsafe_ptr())
+            Self.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
+                ctx,
+                eval_actor_out_t,
+                eval_obs_t,
+                eval_params_t,
+                actor_workspace_buf,
+            )
+
+            var actions_t = LayoutTensor[
+                dtype, Layout.row_major(N_EVAL_ENVS, Self.ACTIONS), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var actor_out_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                MutAnyOrigin,
+            ](actor_out_buf.unsafe_ptr())
+
+            if stochastic:
+                var log_probs_t = LayoutTensor[
+                    dtype, Layout.row_major(N_EVAL_ENVS), MutAnyOrigin
+                ](log_probs_buf.unsafe_ptr())
+                ctx.enqueue_function[sample_k, sample_k](
+                    actor_out_t,
+                    actions_t,
+                    log_probs_t,
+                    Scalar[DType.uint32](step * 2654435761),
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+            else:
+                var actor_out_immut = LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                    ImmutAnyOrigin,
+                ](actor_out_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    extract_deterministic_actions,
+                    extract_deterministic_actions,
+                ](
+                    actions_t,
+                    actor_out_immut,
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+            # Step environments
+            comptime if EVAL_TOTAL_WS > 0:
+                EnvType.step_kernel_gpu[
+                    N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(step),
+                    List[Scalar[dtype]](),
+                    eval_ws_buf.unsafe_ptr(),
+                )
+            else:
+                EnvType.step_kernel_gpu[
+                    N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(step),
+                )
+            ctx.synchronize()
+
+            # Copy rewards and dones to CPU
+            var rewards_host = InlineArray[Scalar[dtype], N_EVAL_ENVS](
+                uninitialized=True
+            )
+            var dones_host = InlineArray[Scalar[dtype], N_EVAL_ENVS](
+                uninitialized=True
+            )
+            ctx.enqueue_copy(rewards_host.unsafe_ptr(), rewards_buf)
+            ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
+            ctx.synchronize()
+
+            # Track rewards and episode completion
+            for i in range(N_EVAL_ENVS):
+                current_rewards[i] += Float64(rewards_host[i])
+                if dones_host[i] > 0:
+                    episode_rewards.append(current_rewards[i])
+                    current_rewards[i] = 0.0
+                    episodes_completed += 1
+                    if episodes_completed >= num_episodes:
+                        break
+
+            # Auto-reset done environments
+            EnvType.selective_reset_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE](
+                ctx,
+                env_states_buf,
+                dones_buf,
+                UInt64(step),
+                workspace_ptr=eval_ws_buf.unsafe_ptr(),
+            )
+            EnvType.extract_obs_kernel_gpu[
+                N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS
+            ](ctx, env_states_buf, obs_buf)
+
+            step += 1
+
+        if len(episode_rewards) == 0:
+            if verbose:
+                print("Warning: No episodes completed!")
+            return 0.0
+
+        var total_reward: Float64 = 0.0
+        for i in range(len(episode_rewards)):
+            total_reward += episode_rewards[i]
+        var avg = total_reward / Float64(len(episode_rewards))
+
+        if verbose:
+            print(
+                "GPU Eval:",
+                len(episode_rewards),
+                "episodes | Avg reward:",
+                String(avg)[:10],
+            )
+
+        return avg
 
     # =========================================================================
     # GPUOnPolicyContinuousAgent trait conformance
