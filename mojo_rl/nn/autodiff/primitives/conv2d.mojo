@@ -949,20 +949,45 @@ struct Conv2D[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Formula : db = sum(grad_output, axis=batch+spatial). One thread per oc.
+        """Formula: db = sum(grad_output, axis=batch+spatial).
 
-        Grid: ((out_channels + TPB - 1) // TPB,)
+        Parallelized: one block per oc, TPB threads reduce across BATCH.
+
+        Grid: (out_channels,)
         Block: (TPB,)
         """
-        var oc = Int(block_idx.x) * TPB + Int(thread_idx.x)
-        if oc < Self.out_channels:
-            var acc: Scalar[dtype] = 0
-            for b in range(BATCH):
-                for s in range(Self.spatial_out):
-                    acc += rebind[Scalar[dtype]](
-                        grad_output[b, oc * Self.spatial_out + s]
-                    )
-            db[oc] = acc
+        var oc = Int(block_idx.x)
+        if oc >= Self.out_channels:
+            return
+        var tid = Int(thread_idx.x)
+
+        var acc: Scalar[dtype] = 0
+        for b in range(tid, BATCH, TPB):
+            for s in range(Self.spatial_out):
+                acc += rebind[Scalar[dtype]](
+                    grad_output[b, oc * Self.spatial_out + s]
+                )
+
+        var smem = LayoutTensor[
+            dtype,
+            Layout.row_major(TPB),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        smem[tid] = acc
+        barrier()
+
+        var stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = rebind[Scalar[dtype]](smem[tid]) + rebind[
+                    Scalar[dtype]
+                ](smem[tid + stride])
+            barrier()
+            stride //= 2
+
+        if tid == 0:
+            db[oc] = smem[0]
 
     # =========================================================================
     # GPU launchers (tiled forward + tiled dW/db + naive dx)
@@ -1238,7 +1263,7 @@ struct Conv2D[
             ](cache.ptr)
 
             # Transpose grad: (BATCH, OC*S) → (OC, BATCH*S)
-            comptime grad_elems = Self.out_channels * BATCH * Self.spatial_out
+            comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1445,8 +1470,7 @@ struct Conv2D[
             dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
         ](grad_params.ptr + Self.out_channels * Self.col_size)
 
-        comptime db_grid = (Self.out_channels + TPB - 1) // TPB
-
+        # Grid: one block per output channel, TPB threads reduce across BATCH
         @always_inline
         fn db_wrapper(
             db: LayoutTensor[
@@ -1461,6 +1485,6 @@ struct Conv2D[
         ctx.enqueue_function[db_wrapper, db_wrapper](
             db,
             grad_output_immut,
-            grid_dim=(db_grid,),
+            grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )

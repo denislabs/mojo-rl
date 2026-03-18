@@ -1032,23 +1032,52 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Formula: db = sum(masked_dy, axis=batch+spatial). One thread per oc.
+        """Formula: db = sum(masked_dy, axis=batch+spatial).
 
-        Grid: ((out_channels + TPB - 1) // TPB,)
-        Block: (TPB,)
+        Parallelized: one thread per (oc, batch) pair, each reduces over
+        spatial_out, then block-level reduction across batches via shared mem.
+
+        Grid: (out_channels,)
+        Block: (TPB,)  — TPB threads split across BATCH dimension
         """
-        var oc = Int(block_idx.x) * TPB + Int(thread_idx.x)
-        if oc < Self.out_channels:
-            var acc: Scalar[dtype] = 0
-            for b in range(BATCH):
-                for s in range(Self.spatial_out):
-                    var out_idx = oc * Self.spatial_out + s
-                    var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
-                    var cache_val = rebind[Scalar[dtype]](
-                        cache[b, Self.CONV_CACHE + out_idx]
-                    )
-                    acc += Self.ACT.backward(cache_val, go_val)
-            db[oc] = acc
+        var oc = Int(block_idx.x)
+        if oc >= Self.out_channels:
+            return
+        var tid = Int(thread_idx.x)
+
+        # Each thread reduces a chunk of the batch dimension
+        var acc: Scalar[dtype] = 0
+        for b in range(tid, BATCH, TPB):
+            for s in range(Self.spatial_out):
+                var out_idx = oc * Self.spatial_out + s
+                var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
+                var cache_val = rebind[Scalar[dtype]](
+                    cache[b, Self.CONV_CACHE + out_idx]
+                )
+                acc += Self.ACT.backward(cache_val, go_val)
+
+        # Block-level reduction via shared memory
+        var smem = LayoutTensor[
+            dtype,
+            Layout.row_major(TPB),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        smem[tid] = acc
+        barrier()
+
+        # Tree reduction
+        var db_stride = TPB // 2
+        while db_stride > 0:
+            if tid < db_stride:
+                smem[tid] = rebind[Scalar[dtype]](smem[tid]) + rebind[
+                    Scalar[dtype]
+                ](smem[tid + db_stride])
+            barrier()
+            db_stride //= 2
+
+        if tid == 0:
+            db[oc] = smem[0]
 
     # =========================================================================
     # GPU launchers (tiled forward + tiled dW/db + naive dx)
@@ -1143,7 +1172,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace)
 
-            comptime col_elems = BATCH * Self.spatial_out * Self.col_size
+            comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1372,7 +1401,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace)
 
-            comptime col_elems = BATCH * Self.spatial_out * Self.col_size
+            comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1391,7 +1420,6 @@ struct FusedConv2DActivation[
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= col_elems:
                     return
-                # dst[b*S+s, k] = src[b, s*col_size+k] (no reorder, just skip act gap)
                 var row = idx // Self.col_size
                 var k = idx % Self.col_size
                 var b = row // Self.spatial_out
@@ -1407,7 +1435,7 @@ struct FusedConv2DActivation[
 
             # Transpose + mask grad: apply ACT.backward and reshape
             # src[b, oc*S + s] → dst[oc, b*S + s] with ACT.backward
-            comptime grad_elems = Self.out_channels * BATCH * Self.spatial_out
+            comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
             @always_inline
@@ -1547,7 +1575,11 @@ struct FusedConv2DActivation[
                             var ow = ow_num // Self.stride
                             if oh < Self.out_h and ow < Self.out_w:
                                 var s = oh * Self.out_w + ow
-                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
                                 acc += rebind[Scalar[dtype]](
                                     dcol[c_k, b * Self.spatial_out + s]
                                 )
@@ -1632,8 +1664,7 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
         ](grad_params.ptr + Self.out_channels * Self.col_size)
 
-        comptime db_grid = (Self.out_channels + TPB - 1) // TPB
-
+        # Grid: one block per output channel, TPB threads reduce across BATCH
         @always_inline
         fn db_wrapper(
             db: LayoutTensor[
@@ -1652,6 +1683,6 @@ struct FusedConv2DActivation[
             db,
             grad_output_immut,
             cache_immut,
-            grid_dim=(db_grid,),
+            grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )
