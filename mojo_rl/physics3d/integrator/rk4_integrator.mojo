@@ -1802,12 +1802,11 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ](workspace_buf)
 
-        # Grid configuration for stage kernels
-        comptime if STEP_THREADS > 1:
-            comptime STEP_ENV_TPB = TPB // STEP_THREADS
-            comptime STEP_ENV_BLOCKS = (
-                BATCH + STEP_ENV_TPB - 1
-            ) // STEP_ENV_TPB
+        # Grid configuration for stage kernels (multi-threaded)
+        comptime STEP_ENV_TPB = TPB // STEP_THREADS
+        comptime STEP_ENV_BLOCKS = (
+            BATCH + STEP_ENV_TPB - 1
+        ) // STEP_ENV_TPB
 
         # --- Stage 0: forward dynamics at (q0, v0) ---
         comptime stage0_kernel = Self.rk4_stage_kernel[
