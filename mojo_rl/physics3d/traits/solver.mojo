@@ -28,6 +28,11 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     - dt: timestep
     """
 
+    # Whether this solver needs pre-computed M_inv (full NV×NV inverse).
+    # Newton solver: False (uses LDL solve directly).
+    # PGS/CG/Island solvers: True (read M_inv for constraint projection).
+    comptime NEEDS_M_INV: Bool
+
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Solver-specific workspace size in floats per environment.

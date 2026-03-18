@@ -879,14 +879,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
-            compute_M_inv_from_sparse_ldl_gpu[
-                DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-            ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            comptime if Self.SOLVER.NEEDS_M_INV:
+                compute_M_inv_from_sparse_ldl_gpu[
+                    DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
         else:
             ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-            compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                env, workspace
-            )
+            comptime if Self.SOLVER.NEEDS_M_INV:
+                compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, workspace
+                )
 
         # 8. Compute bias forces (reads cdof from workspace, writes bias to workspace)
         compute_bias_forces_rne_gpu[
@@ -1494,19 +1496,21 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var idx = M_idx + dof_adr * NV + dof_adr
                     workspace[env, idx] += diag_add
 
-            # 7. LDL factorize M, compute M_inv
+            # 7. LDL factorize M, conditionally compute M_inv
             comptime if SPARSE:
                 ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                     env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
                 )
-                compute_M_inv_from_sparse_ldl_gpu[
-                    DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-                ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_sparse_ldl_gpu[
+                        DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                    ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
             else:
                 ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-                compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                    env, workspace
-                )
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                        env, workspace
+                    )
 
             # 8. Compute bias forces
             compute_bias_forces_rne_gpu[

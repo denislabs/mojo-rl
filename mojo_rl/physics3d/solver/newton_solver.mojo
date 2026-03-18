@@ -292,6 +292,8 @@ struct NewtonSolver(ConstraintSolver):
     No separate PGS friction phase needed on CPU.
     """
 
+    comptime NEEDS_M_INV: Bool = False
+
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Newton solver workspace size (primal, qacc-space).

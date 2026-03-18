@@ -104,6 +104,8 @@ struct IslandPGSSolver(ConstraintSolver):
     and skipped in subsequent iterations.
     """
 
+    comptime NEEDS_M_INV: Bool = True
+
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Same workspace footprint as PGSSolver."""

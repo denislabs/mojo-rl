@@ -125,6 +125,8 @@ struct CGSolver(ConstraintSolver):
     more iterations to converge.
     """
 
+    comptime NEEDS_M_INV: Bool = True
+
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """CG solver workspace size (primal, qacc-space).

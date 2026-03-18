@@ -91,6 +91,8 @@ struct PGSSolver(ConstraintSolver):
     contact constraints (non-penetration + Coulomb friction) and joint limits.
     """
 
+    comptime NEEDS_M_INV: Bool = True
+
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """PGS solver workspace: 79*MC + 12*MC*NV floats.
