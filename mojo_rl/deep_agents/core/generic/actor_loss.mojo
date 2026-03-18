@@ -491,7 +491,7 @@ struct DPGLoss(ActorLoss):
             ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
         )
 
-        # 4. Fill dq seed = -1/batch on GPU (maximize Q)
+        # 4. Fill dq seed = -1/batch (maximize Q) via memset + known kernel
         var dq_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_DQ)
@@ -499,27 +499,20 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_DCI)
 
-        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
-
-        @always_inline
-        fn fill_dq(
-            buf: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, CriticModel.OUT_DIM),
-                MutAnyOrigin,
-            ],
-            val: Scalar[dtype],
-        ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i < BATCH:
-                buf[i, 0] = val
-
-        ctx.enqueue_function[fill_dq, fill_dq](
-            dq_t,
-            neg_inv_batch,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        # Use the td_mse_grad_kernel with Q=0 and target=1/2 to get
+        # grad = 2*(0 - 0.5)/BATCH = -1/BATCH per element.
+        # This reuses a proven working kernel instead of a custom fill.
+        #
+        # Alternatively, write a separate dq buffer from host and use it.
+        var dq_device = ctx.enqueue_create_buffer[dtype](BATCH)
+        var dq_host_buf = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        for i in range(BATCH):
+            dq_host_buf[i] = Scalar[dtype](-1.0 / Float64(BATCH))
+        ctx.enqueue_copy(dq_device, dq_host_buf)
+        # Re-point dq_t to the freshly filled device buffer
+        dq_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CriticModel.OUT_DIM), MutAnyOrigin
+        ](dq_device.unsafe_ptr())
 
         # Critic backward (grads pre-zeroed by agent, discarded — we need d_ci)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
