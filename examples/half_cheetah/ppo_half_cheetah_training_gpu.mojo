@@ -31,6 +31,7 @@ from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
+    HalfCheetahCurriculum,
 )
 from mojo_rl.core.logger import RemoteLogger
 
@@ -179,7 +180,8 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
+                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetahCurriculum,
             ](
                 ctx,
                 num_updates=NUM_UPDATES,

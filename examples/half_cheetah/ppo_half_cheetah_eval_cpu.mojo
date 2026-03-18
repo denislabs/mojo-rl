@@ -102,7 +102,7 @@ fn main() raises:
 
     var env = HalfCheetah[
         DType.float64,
-        True,
+        False,
     ]()
 
     print("Running CPU evaluation...")
