@@ -37,6 +37,7 @@ from ..kinematics.quat_math import quat_normalize, quat_integrate
 from ..dynamics.mass_matrix import (
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
+    compute_mass_matrix_full_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
     ldl_solve,
@@ -1112,6 +1113,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         STAGE: Int,
         NM: Int = 0,
         SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1130,11 +1132,18 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         STAGE 2: save A[1], set state = (q0+dt/2*C[1], v0+dt/2*A[1]).
         STAGE 3: save A[2], set state = (q0+dt*C[2], v0+dt*A[2]).
 
-        After this kernel, the solver kernel runs to modify qacc_constrained.
+        When STEP_THREADS > 1, uses 2D blocks (envs, STEP_THREADS) to
+        parallelize mass matrix computation across threads.
         """
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
+        comptime if STEP_THREADS > 1:
+            var tid = Int(thread_idx.y)
+        else:
+            var tid = 0
+        var valid_env = env < BATCH
+        comptime if STEP_THREADS <= 1:
+            if not valid_env:
+                return
 
         comptime M_idx = ws_M_offset[NV, NBODY]()
         comptime bias_idx = ws_bias_offset[NV, NBODY]()
@@ -1329,34 +1338,54 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6. Full mass matrix
+        # 6. Full mass matrix (multi-threaded when STEP_THREADS > 1)
+        comptime if STEP_THREADS > 1:
+            barrier()
         comptime if SPARSE:
-            compute_mass_matrix_sparse_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                NM,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            if tid == 0 and valid_env:
+                compute_mass_matrix_sparse_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    NM,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
         else:
-            compute_mass_matrix_full_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+            comptime if STEP_THREADS > 1:
+                if valid_env:
+                    compute_mass_matrix_full_gpu_mt[
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                        WS_SIZE,
+                    ](env, tid, STEP_THREADS, state, model, workspace)
+            else:
+                compute_mass_matrix_full_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
+        comptime if STEP_THREADS > 1:
+            barrier()
 
         # 6b. Armature only (no implicit damping for RK4)
         for j in range(NJOINT):

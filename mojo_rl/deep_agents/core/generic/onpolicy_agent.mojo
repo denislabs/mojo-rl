@@ -34,7 +34,14 @@ from mojo_rl.deep_agents.core.onpolicy_helpers import (
     fisher_yates_shuffle,
 )
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
-from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
+)
+from mojo_rl.core.logger import NoOpLogger
 from mojo_rl.core.utils.softmax import (
     softmax_inline,
     sample_from_probs_inline,
@@ -698,6 +705,7 @@ struct GenericOnPolicyAgent[
 
     # Training state
     var train_step_count: Int
+    var target_total_steps: Int
 
     # Checkpoint
     var checkpoint_every: Int
@@ -719,6 +727,7 @@ struct GenericOnPolicyAgent[
         norm_adv_per_minibatch: Bool = True,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        target_total_steps: Int = 0,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -733,6 +742,7 @@ struct GenericOnPolicyAgent[
         self.clip_value = clip_value
         self.norm_adv_per_minibatch = norm_adv_per_minibatch
         self.train_step_count = 0
+        self.target_total_steps = target_total_steps
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.cpu_state = Self.CPUStateType()
@@ -1914,6 +1924,7 @@ struct GenericOnPolicyAgent[
 
     fn train_gpu[
         EnvType: GPUDiscreteEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1923,11 +1934,14 @@ struct GenericOnPolicyAgent[
     ) raises -> TrainingMetrics:
         """Train on GPU with parallel environments (PPO or A2C via strategy)."""
         var timer = PerfTimer[False]()
-        return run_onpolicy_discrete_train_gpu[EnvType, Self, 0](
+        return run_onpolicy_discrete_train_gpu[
+            EnvType, Self, 0, NoOpLogger, CurriculumType
+        ](
             self,
             ctx,
             num_updates,
             timer,
+            target_total_steps=self.target_total_steps,
             verbose=verbose,
             print_every=print_every,
         )

@@ -75,7 +75,6 @@ fn main() raises:
         num_epochs=10,
         target_kl=0.0,
         max_grad_norm=0.5,
-        anneal_lr=False,
     )
 
     # =========================================================================
@@ -129,9 +128,8 @@ fn main() raises:
     var avg_reward = agent.evaluate(
         env,
         num_episodes=NUM_EPISODES,
-        max_steps=MAX_STEPS,
+        max_steps_per_episode=MAX_STEPS,
         verbose=True,
-        debug=False,
         stochastic=False,  # Use deterministic policy for evaluation
         render=RENDER,
         frame_delay_ms=100,  # ~50 FPS

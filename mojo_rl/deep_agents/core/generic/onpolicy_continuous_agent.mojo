@@ -16,7 +16,9 @@ from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.nn.initializer import Xavier, Kaiming
 from mojo_rl.nn.model.stochastic_actor import LOG_STD_MIN, LOG_STD_MAX, EPS
-
+from mojo_rl.deep_agents.core.eval import (
+    run_onpolicy_continuous_eval,
+)
 from mojo_rl.deep_agents.core import (
     Checkpointable,
     GPUOnPolicyState,
@@ -39,6 +41,8 @@ from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
 
@@ -162,6 +166,7 @@ struct GenericOnPolicyContinuousAgent[
 
     # Training state
     var train_step_count: Int
+    var target_total_steps: Int
 
     # Checkpoint
     var checkpoint_every: Int
@@ -187,6 +192,7 @@ struct GenericOnPolicyContinuousAgent[
         norm_adv_per_minibatch: Bool = True,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        target_total_steps: Int = 0,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -201,6 +207,7 @@ struct GenericOnPolicyContinuousAgent[
         self.clip_value = clip_value
         self.norm_adv_per_minibatch = norm_adv_per_minibatch
         self.train_step_count = 0
+        self.target_total_steps = target_total_steps
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
@@ -776,9 +783,6 @@ struct GenericOnPolicyContinuousAgent[
         Returns:
             Average reward across episodes.
         """
-        from mojo_rl.deep_agents.core.eval import (
-            run_onpolicy_continuous_eval,
-        )
 
         # Copy weights to avoid aliasing self + self.cpu_state
         var eval_state = self.make_cpu_state()
@@ -1431,6 +1435,7 @@ struct GenericOnPolicyContinuousAgent[
 
     fn train_gpu[
         E: GPUContinuousEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1460,15 +1465,15 @@ struct GenericOnPolicyContinuousAgent[
         self.logger = logger
         self.diag_every = diag_every
         var timer = PerfTimer[False]()
-        from mojo_rl.core import NoCurriculumScheduler
 
         var metrics = run_onpolicy_continuous_train_gpu[
-            E, Self, NoCurriculumScheduler, 0, Self.L
+            E, Self, CurriculumType, 0, Self.L
         ](
             self,
             ctx,
             num_updates,
             timer,
+            target_total_steps=self.target_total_steps,
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,

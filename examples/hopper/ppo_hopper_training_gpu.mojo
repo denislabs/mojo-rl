@@ -85,7 +85,7 @@ fn main() raises:
             target_kl=0.015,  # KL early stopping
             max_grad_norm=0.5,
             norm_adv_per_minibatch=True,
-            checkpoint_every=1_000,
+            checkpoint_every=10,
             checkpoint_path="ppo_hopper.ckpt",
         )
 
@@ -143,7 +143,7 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False]
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False], HopperCurriculum
             ](
                 ctx,
                 num_updates=NUM_UPDATES,

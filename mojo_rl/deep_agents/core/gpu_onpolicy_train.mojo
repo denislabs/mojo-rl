@@ -393,12 +393,14 @@ fn run_onpolicy_discrete_train_gpu[
     A: GPUOnPolicyDiscreteAgent & Checkpointable,
     PROFILE: Int = 0,
     L: Logger = NoOpLogger,
+    CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
 ](
     mut agent: A,
     ctx: DeviceContext,
     num_updates: Int,
     mut timer: PerfTimer[PROFILE >= 1],
     sync_every: Int = 50,
+    target_total_steps: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     verbose: Bool = False,
@@ -540,6 +542,18 @@ fn run_onpolicy_discrete_train_gpu[
     var next_progress = progress_interval
 
     for update in range(num_updates):
+        # Curriculum update (once per rollout, before collecting steps)
+        comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+            var progress = Float64(0.0)
+            if target_total_steps > 0:
+                progress = Float64(total_steps) / Float64(target_total_steps)
+            if progress > 1.0:
+                progress = 1.0
+            var curriculum_values = CurriculumType.get_params[dtype](
+                Scalar[dtype](progress)
+            )
+            E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
+
         # ==================================================================
         # Phase 1: Collect rollout (ROLLOUT_LEN steps across n_envs envs)
         # ==================================================================

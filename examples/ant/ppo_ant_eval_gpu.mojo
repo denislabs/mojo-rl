@@ -55,25 +55,21 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            actor_lr=0.0003,
+            critic_lr=0.0003,
         ](
             clip_value=True,
             gamma=0.99,
             gae_lambda=0.95,
             clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
             entropy_coef=0.0,
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.0,
             max_grad_norm=0.5,
-            anneal_lr=False,
-            anneal_entropy=False,
-            target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_ant.ckpt",
-            normalize_rewards=True,
         )
 
         print("Loading checkpoint...")
@@ -88,34 +84,6 @@ fn main() raises:
                 " tests/test_ppo_ant_continuous_gpu.mojo"
             )
             return
-
-        # Show first and last actor parameters to verify checkpoint loaded
-        print()
-        print("Actor param diagnostics:")
-        print("  Total params:", len(agent.actor.params))
-        print(
-            "  First 5:",
-            agent.actor.params[0],
-            agent.actor.params[1],
-            agent.actor.params[2],
-            agent.actor.params[3],
-            agent.actor.params[4],
-        )
-
-        # log_std params are the last ACTION_DIM params
-        var log_std_offset = len(agent.actor.params) - ACTION_DIM
-        print(
-            "  log_std params:",
-            agent.actor.params[log_std_offset],
-            agent.actor.params[log_std_offset + 1],
-            agent.actor.params[log_std_offset + 2],
-            agent.actor.params[log_std_offset + 3],
-            agent.actor.params[log_std_offset + 4],
-            agent.actor.params[log_std_offset + 5],
-            agent.actor.params[log_std_offset + 6],
-            agent.actor.params[log_std_offset + 7],
-        )
-        print()
 
         # =====================================================================
         # GPU Evaluation using built-in method

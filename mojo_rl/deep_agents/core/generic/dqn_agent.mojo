@@ -46,7 +46,14 @@ from mojo_rl.deep_agents.core import (
 )
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer, PrioritizedReplayBuffer
-from mojo_rl.core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    RenderableEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
+)
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.eval import (
     run_offpolicy_discrete_eval,
@@ -486,6 +493,7 @@ struct GenericDQNAgent[
     var epsilon_decay: Float64
     var target_update_freq: Int
     var train_step_count: Int
+    var target_total_steps: Int
     var _target_update_ctr: Int
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -504,6 +512,7 @@ struct GenericDQNAgent[
         target_update_freq: Int = 500,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        target_total_steps: Int = 0,
     ):
         self.state = Self.CPUStateType()
         self.gamma = gamma
@@ -513,6 +522,7 @@ struct GenericDQNAgent[
         self.epsilon_decay = epsilon_decay
         self.target_update_freq = target_update_freq
         self.train_step_count = 0
+        self.target_total_steps = target_total_steps
         self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -1342,6 +1352,7 @@ struct GenericDQNAgent[
 
     fn train_gpu[
         E: GPUDiscreteEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1364,6 +1375,7 @@ struct GenericDQNAgent[
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
+            CurriculumType: Curriculum scheduler type (default: NoCurriculumScheduler).
 
         Args:
             ctx: GPU device context.
@@ -1394,7 +1406,9 @@ struct GenericDQNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, 0, Self.L](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, 0, Self.L, CurriculumType
+        ](
             self,
             ctx,
             num_steps,
@@ -1407,6 +1421,7 @@ struct GenericDQNAgent[
             environment_name=environment_name,
             algorithm_name=algo_name,
             logger=logger,
+            target_total_steps=self.target_total_steps,
         )
 
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
@@ -1580,6 +1595,7 @@ struct GenericDQNPERAgent[
     var epsilon_decay: Float64
     var target_update_freq: Int
     var train_step_count: Int
+    var target_total_steps: Int
     var _target_update_ctr: Int
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -1606,6 +1622,7 @@ struct GenericDQNPERAgent[
         beta_frames: Int = 100000,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        target_total_steps: Int = 0,
     ):
         self.state = Self.CPUStateType(alpha=alpha, beta=beta)
         self.gamma = gamma
@@ -1615,6 +1632,7 @@ struct GenericDQNPERAgent[
         self.epsilon_decay = epsilon_decay
         self.target_update_freq = target_update_freq
         self.train_step_count = 0
+        self.target_total_steps = target_total_steps
         self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -2210,6 +2228,7 @@ struct GenericDQNPERAgent[
 
     fn train_gpu[
         E: GPUDiscreteEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2239,7 +2258,9 @@ struct GenericDQNPERAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_discrete_train_gpu[E, Self, 0, Self.L](
+        var metrics = run_offpolicy_discrete_train_gpu[
+            E, Self, 0, Self.L, CurriculumType
+        ](
             self, ctx, num_steps, timer,
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
@@ -2248,6 +2269,7 @@ struct GenericDQNPERAgent[
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
+            target_total_steps=self.target_total_steps,
             logger=logger,
         )
 

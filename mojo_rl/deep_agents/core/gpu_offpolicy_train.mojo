@@ -55,7 +55,13 @@ Usage:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from .checkpoint_trait import Checkpointable
-from mojo_rl.core import TrainingMetrics, GPUDiscreteEnv, GPUContinuousEnv
+from mojo_rl.core import (
+    TrainingMetrics,
+    GPUDiscreteEnv,
+    GPUContinuousEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
+)
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.core.kernels import (
@@ -282,6 +288,7 @@ fn run_offpolicy_continuous_train_gpu[
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,
     L: Logger = NoOpLogger,
+    CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -297,6 +304,7 @@ fn run_offpolicy_continuous_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
+    target_total_steps: Int = 0,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action off-policy agents.
 
@@ -452,6 +460,18 @@ fn run_offpolicy_continuous_train_gpu[
     var action_scale_val = Scalar[dtype](agent.get_action_scale())
 
     while total_steps < num_steps:
+        # Curriculum update (once per step batch, before environment step)
+        comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+            var progress = Float64(0.0)
+            if target_total_steps > 0:
+                progress = Float64(total_steps) / Float64(target_total_steps)
+            if progress > 1.0:
+                progress = 1.0
+            var curriculum_values = CurriculumType.get_params[dtype](
+                Scalar[dtype](progress)
+            )
+            E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
+
         # ------------------------------------------------------------------
         # Save current obs as prev_obs (before environment step)
         # ------------------------------------------------------------------
@@ -745,6 +765,7 @@ fn run_offpolicy_discrete_train_gpu[
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,
     L: Logger = NoOpLogger,
+    CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -760,6 +781,7 @@ fn run_offpolicy_discrete_train_gpu[
     print_every: Int = 50_000,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
+    target_total_steps: Int = 0,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action off-policy agents (DQN etc.).
 
@@ -896,6 +918,18 @@ fn run_offpolicy_discrete_train_gpu[
     var next_progress = progress_interval
 
     while total_steps < num_steps:
+        # Curriculum update (once per step batch, before environment step)
+        comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+            var progress = Float64(0.0)
+            if target_total_steps > 0:
+                progress = Float64(total_steps) / Float64(target_total_steps)
+            if progress > 1.0:
+                progress = 1.0
+            var curriculum_values = CurriculumType.get_params[dtype](
+                Scalar[dtype](progress)
+            )
+            E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
+
         comptime if PROFILE >= 1:
             timer.sync_and_mark(ctx)
         ctx.enqueue_copy(prev_obs_buf, obs_buf)

@@ -68,6 +68,8 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
 )
 
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
@@ -722,6 +724,7 @@ struct GenericOffPolicyAgent[
     # Training state
     var total_steps: Int
     var train_step_count: Int
+    var target_total_steps: Int
     var checkpoint_every: Int
     var checkpoint_path: String
 
@@ -755,6 +758,7 @@ struct GenericOffPolicyAgent[
         max_grad_norm: Float64 = 40.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        target_total_steps: Int = 0,
     ):
         self.state = Self.CPUStateType()
         self.gamma = gamma
@@ -785,6 +789,7 @@ struct GenericOffPolicyAgent[
 
         self.total_steps = 0
         self.train_step_count = 0
+        self.target_total_steps = target_total_steps
         self.max_grad_norm = max_grad_norm
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -2037,6 +2042,7 @@ struct GenericOffPolicyAgent[
 
     fn train_gpu[
         E: GPUContinuousEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2081,7 +2087,9 @@ struct GenericOffPolicyAgent[
             _ = timer.add_slot("train_step")
             _ = timer.add_slot("gpu_cpu_sync")
 
-        var metrics = run_offpolicy_continuous_train_gpu[E, Self, Self.profile, Self.L](
+        var metrics = run_offpolicy_continuous_train_gpu[
+            E, Self, Self.profile, Self.L, CurriculumType
+        ](
             self,
             ctx,
             num_steps,
@@ -2091,6 +2099,7 @@ struct GenericOffPolicyAgent[
             print_every=print_every,
             environment_name=environment_name,
             logger=logger,
+            target_total_steps=self.target_total_steps,
         )
 
         comptime if Self.profile >= 2:
