@@ -14,3 +14,5 @@ from .conv2d import Conv2D
 from .pool import MaxPool2D, AvgPool2D
 from .attention import ScaledDotProductAttention
 from .symlog import SymlogOp
+from .rsample import RSampleOp
+from .min_op import MinOp

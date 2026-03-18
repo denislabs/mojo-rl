@@ -1,0 +1,34 @@
+"""RSample and Min Model layers — thin wrappers around DiffOps via AutoDiffChain.
+
+These wrap the RSampleOp and MinOp DiffOps into Model-conforming types
+that can be used in Sequential composition.
+
+Usage:
+    from mojo_rl.nn.model import Sequential, LinearReLU, RSample, Min
+    from mojo_rl.nn.autodiff.combinators import Parallel, SkipConcat, DualPath
+
+    # SAC Actor: obs → [mean, log_std] → RSample → [action, log_prob]
+    comptime ActorPath = Sequential[
+        LinearReLU[17, 256],
+        LinearReLU[256, 256],
+        Parallel[Linear[256, 6], LinearTanh[256, 6]],
+        RSample[6],  # reparameterized sampling
+    ]
+
+    # Twin Critics: critic_input → DualPath → [Q1, Q2] → Min → min_Q
+    comptime CriticModel = Sequential[LinearReLU[23, 256], Linear[256, 1]]
+    comptime TwinCriticMin = Sequential[DualPath[CriticModel, CriticModel], Min[1]]
+"""
+
+from ..autodiff.chain import AutoDiffChain
+from ..autodiff.primitives.rsample import RSampleOp
+from ..autodiff.primitives.min_op import MinOp
+
+
+comptime RSample[
+    action_dim: Int,
+    log_std_min: Float64 = -5.0,
+    log_std_max: Float64 = 2.0,
+] = AutoDiffChain[RSampleOp[action_dim, log_std_min, log_std_max]]
+
+comptime Min[dim: Int] = AutoDiffChain[MinOp[dim]]

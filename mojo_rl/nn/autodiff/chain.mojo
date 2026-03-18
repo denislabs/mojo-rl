@@ -549,6 +549,11 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     ) raises:
         """GPU inference forward. Dummy cache carved from workspace — no allocation."""
 
+        # Op workspace pointer: past inter + cache region
+        var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
+            Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+        )
+
         comptime if Self.N == 1:
             var p_v = LayoutTensor[
                 dtype,
