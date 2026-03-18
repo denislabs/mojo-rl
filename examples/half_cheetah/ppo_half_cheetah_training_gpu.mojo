@@ -52,7 +52,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 50  # To profile the training
+comptime NUM_UPDATES = 50  # To profile the training
 
 comptime dtype = DType.float32
 
@@ -182,7 +182,7 @@ fn main() raises:
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
-                num_updates=NUM_EPISODES,
+                num_updates=NUM_UPDATES,
                 verbose=True,
                 print_every=10,
                 logger=UnsafePointer(to=logger),
@@ -206,11 +206,11 @@ fn main() raises:
             print("GPU Training Complete")
             print("=" * 70)
             print()
-            print("Total episodes: " + String(NUM_EPISODES))
+            print("Total updates: " + String(NUM_UPDATES))
             print("Training time: " + String(elapsed_s)[:6] + " seconds")
             print(
-                "Episodes/second: "
-                + String(Float64(NUM_EPISODES) / elapsed_s)[:7]
+                "Updates/second: "
+                + String(Float64(NUM_UPDATES) / elapsed_s)[:7]
             )
             print()
 
