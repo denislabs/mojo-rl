@@ -825,7 +825,7 @@ struct DeepTD3Agent[
         var cpu_state = Self.CPUStateType()
         var checkpoint_path = self.checkpoint_path
         var checkpoint_every = self.checkpoint_every
-        var metrics = run_offpolicy_continuous_train[E, Self, L](
+        var metrics = run_offpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
@@ -1346,12 +1346,18 @@ struct DeepTD3Agent[
             self.train_timer.mark()
 
         # GPU Diagnostic logging
-        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
             try:
                 var diag_q_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
                 var diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
                 var diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
-                var diag_done_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                var diag_done_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH
+                )
                 var diag_act_host = ctx.enqueue_create_host_buffer[dtype](
                     BATCH * ACTIONS
                 )
@@ -1382,7 +1388,7 @@ struct DeepTD3Agent[
                     critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
                 for i in range(BATCH * ACTIONS):
                     var a = Float64(diag_act_host[i])
-                    mean_abs_act += (a if a >= 0.0 else -a)
+                    mean_abs_act += a if a >= 0.0 else -a
                 mean_q /= Float64(BATCH)
                 mean_tgt /= Float64(BATCH)
                 mean_rew /= Float64(BATCH)
@@ -1530,13 +1536,15 @@ struct DeepTD3Agent[
                 perf_slot=self.actor_bwd_base,
             )
             # Log actor grad norm
-            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            if (
+                self.logger
+                and self.diag_every > 0
+                and self.train_step_count % self.diag_every == 0
+            ):
                 try:
                     comptime A_PS = Self.ActorModel.PARAM_SIZE
                     var ag_host = ctx.enqueue_create_host_buffer[dtype](A_PS)
-                    ctx.enqueue_copy(
-                        ag_host, gpu_state.actor.online.grads_buf
-                    )
+                    ctx.enqueue_copy(ag_host, gpu_state.actor.online.grads_buf)
                     ctx.synchronize()
                     var grad_norm: Float64 = 0.0
                     for i in range(A_PS):
@@ -1642,7 +1650,7 @@ struct DeepTD3Agent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
         var metrics = run_offpolicy_continuous_train_gpu[
-            E, Self, Self.profile, L
+            E, Self, Self.profile, Self.L
         ](
             self,
             ctx,
