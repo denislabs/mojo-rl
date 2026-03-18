@@ -14,8 +14,11 @@ from std.memory import UnsafePointer
 from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
+    read_metadata_section,
     save_checkpoint_file,
     read_checkpoint_file,
+    set_metadata_value_float,
+    set_metadata_value_int,
 )
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import Model, Sequential
@@ -1887,7 +1890,16 @@ struct GenericOffPolicyAgent[
             save_checkpoint_file,
         )
 
-        var content = write_checkpoint_header("generic_offpolicy", 0, 0)
+        var content = write_checkpoint_header(
+            "generic_offpolicy",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE * Self.Config.NUM_CRITICS,
+            0,
+        )
+        content += self.state.actor.write_sections("actor_")
+        content += self.state.critic.write_sections("critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            content += self.state.critic2.write_sections("critic2_")
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
         metadata.append("tau=" + String(self.tau))
@@ -1904,7 +1916,23 @@ struct GenericOffPolicyAgent[
         save_checkpoint_file(path, content)
 
     fn load_checkpoint(mut self, path: String) raises -> None:
-        pass
+        var content = read_checkpoint_file(path)
+        self.state.actor.read_sections(content, "actor_")
+        self.state.critic.read_sections(content, "critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            self.state.critic2.read_sections(content, "critic2_")
+        var metadata = read_metadata_section(content)
+        set_metadata_value_float(metadata, "gamma", self.gamma)
+        set_metadata_value_float(metadata, "tau", self.tau)
+        set_metadata_value_float(metadata, "action_scale", self.action_scale)
+        set_metadata_value_float(metadata, "noise_std", self.noise_std)
+        set_metadata_value_int(metadata, "policy_delay", self.policy_delay)
+        set_metadata_value_int(metadata, "update_count", self.update_count)
+        set_metadata_value_int(metadata, "total_steps", self.total_steps)
+        set_metadata_value_int(metadata, "train_step_count", self.train_step_count)
+        set_metadata_value_float(metadata, "alpha", self.alpha)
+        set_metadata_value_float(metadata, "log_alpha", self.log_alpha)
+        set_metadata_value_int(metadata, "alpha_adam_t", self.alpha_adam_t)
 
     fn save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
         """Save network weights and optimizer state from cpu_state.
