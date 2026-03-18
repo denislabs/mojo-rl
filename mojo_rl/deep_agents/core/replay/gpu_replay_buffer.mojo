@@ -40,9 +40,7 @@ from ..kernels import (
 )
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
 
 
 struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
@@ -412,65 +410,6 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-
-        # Sort indices for cache-friendly gather (bitonic sort, single block)
-        comptime if Self.OBS_DIM > TPB:
-            # Only worth sorting for large obs (pixel observations)
-            @always_inline
-            fn bitonic_sort_wrapper(
-                idx: LayoutTensor[
-                    DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-                ],
-            ):
-                var tid = Int(thread_idx.x)
-                if tid >= BATCH:
-                    return
-
-                # Load to shared memory
-                var smem = LayoutTensor[
-                    DType.int32,
-                    Layout.row_major(BATCH),
-                    MutAnyOrigin,
-                    address_space = AddressSpace.SHARED,
-                ].stack_allocation()
-                smem[tid] = idx[tid]
-                barrier()
-
-                # Bitonic sort network
-                var size = 2
-                while size <= BATCH:
-                    # Bitonic merge
-                    var half = size // 2
-                    var stride = half
-                    while stride > 0:
-                        var pos = tid
-                        var block_start = (pos // size) * size
-                        var local = pos % size
-                        if local < half:
-                            var partner = pos + stride
-                            if partner < BATCH:
-                                var ascending = ((pos // size) % 2) == 0
-                                var a = rebind[Scalar[DType.int32]](smem[pos])
-                                var b = rebind[Scalar[DType.int32]](
-                                    smem[partner]
-                                )
-                                if (ascending and a > b) or (
-                                    not ascending and a < b
-                                ):
-                                    smem[pos] = b
-                                    smem[partner] = a
-                        barrier()
-                        stride //= 2
-                    size *= 2
-
-                # Write back
-                idx[tid] = smem[tid]
-
-            ctx.enqueue_function[bitonic_sort_wrapper, bitonic_sort_wrapper](
-                indices_t,
-                grid_dim=(1,),
-                block_dim=(BATCH,),
-            )
 
         var sampled_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
