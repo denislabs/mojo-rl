@@ -52,7 +52,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 1_024
+comptime NUM_UPDATES = 500
 
 comptime dtype = DType.float32
 
@@ -93,14 +93,9 @@ fn main() raises:
             num_epochs=10,  # CleanRL default
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
-            anneal_lr=True,  # CleanRL uses LR annealing
-            anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
             checkpoint_path="ppo_ant.ckpt",
-            normalize_rewards=True,
-            obs_noise_std=0.0,
         )
 
         # agent.load_checkpoint("ppo_ant.ckpt")
@@ -160,9 +155,9 @@ fn main() raises:
                 # AntCurriculum,
             ](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_UPDATES,
                 verbose=True,
-                print_every=1,
+                print_every=10,
             )
 
             var end_time = perf_counter_ns()
@@ -180,11 +175,11 @@ fn main() raises:
             print("GPU Training Complete")
             print("=" * 70)
             print()
-            print("Total episodes: " + String(NUM_EPISODES))
+            print("Total updates: " + String(NUM_UPDATES))
             print("Training time: " + String(elapsed_s)[:6] + " seconds")
             print(
-                "Episodes/second: "
-                + String(Float64(NUM_EPISODES) / elapsed_s)[:7]
+                "Updates/second: "
+                + String(Float64(NUM_UPDATES) / elapsed_s)[:7]
             )
             print()
 
