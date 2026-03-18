@@ -1,31 +1,16 @@
-"""TD3 Agent GPU Training on HalfCheetah.
-
-This trains the TD3 (Twin Delayed DDPG) agent on the HalfCheetah environment
-using GPU-accelerated off-policy training with:
-- Parallel environments on GPU
-- Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx and head)
-
-TD3 key features:
-- Twin Q-networks (min of Q1, Q2 reduces overestimation)
-- Delayed policy updates (actor updated every 2 critic updates)
-- Target policy smoothing (clipped noise on target actions)
+"""TD3 Agent GPU Training on HalfCheetah (OLD custom agent for comparison).
 
 Run with:
-    pixi run -e apple mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu_old.mojo
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/td3_half_cheetah_training_gpu_old.mojo
 """
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.generic import DeepTD3Agent
+from mojo_rl.deep_agents.td3 import DeepTD3Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -36,19 +21,15 @@ from mojo_rl.envs.half_cheetah import (
 # Constants
 # =============================================================================
 
-# HalfCheetah: 17D observation, 6D continuous action
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
-# Network architecture
 comptime HIDDEN_DIM = 256
 
-# Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 64
 
-# Training duration (total env transitions across all parallel envs)
 comptime NUM_STEPS = 3_000_000
 comptime WARMUP_STEPS = 25_000
 
@@ -63,13 +44,9 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("TD3 Agent GPU Training on HalfCheetah")
+    print("TD3 Agent GPU Training on HalfCheetah (OLD custom agent)")
     print("=" * 70)
     print()
-
-    # =========================================================================
-    # Create GPU context and agent
-    # =========================================================================
 
     with DeviceContext() as ctx:
         var agent = DeepTD3Agent[
@@ -80,7 +57,7 @@ fn main() raises:
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
             critic_lr=0.0003,
-            L=RemoteLogger,
+            max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
@@ -92,54 +69,18 @@ fn main() raises:
             target_noise_std=0.2,
             target_noise_clip=0.5,
             checkpoint_every=500_000,
-            checkpoint_path="td3_half_cheetah.ckpt",
+            checkpoint_path="td3_half_cheetah_old.ckpt",
         )
 
-        # agent.load_checkpoint("td3_half_cheetah.ckpt")
-
         print("Environment: HalfCheetah Continuous (GPU)")
-        print("Agent: TD3 (Twin Delayed DDPG)")
+        print("Agent: TD3 OLD (custom implementation)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
         print("  Buffer capacity: " + String(BUFFER_CAPACITY))
         print("  Batch size: " + String(BATCH_SIZE))
         print("  Max parallel envs: " + String(MAX_N_ENVS))
-        print("  Key hyperparameters:")
-        print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 3e-4")
-        print("    - Tau (soft update): 0.005")
-        print("    - Exploration noise: 0.1 (decaying)")
-        print("    - Policy delay: 2")
-        print("    - Target noise: 0.2 (clip 0.5)")
-        print("    - Warmup transitions: " + String(WARMUP_STEPS))
         print()
-
-        # =====================================================================
-        # Setup logger
-        # =====================================================================
-
-        var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
-
-        var logger = RemoteLogger(
-            server_url=url,
-            run_name="TD3 HalfCheetah GPU (generic)",
-            buffer_size=64,
-            api_key=api_key,
-        )
-        logger.set_config("agent", "TD3 Generic")
-        logger.set_config("env", "HalfCheetah")
-        logger.set_config("hidden_dim", String(HIDDEN_DIM))
-        logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "3e-4")
-        logger.set_config("batch_size", String(BATCH_SIZE))
-        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
-
-        # =====================================================================
-        # Train using the train_gpu() method
-        # =====================================================================
 
         print("Starting GPU training...")
         print("-" * 70)
@@ -155,22 +96,14 @@ fn main() raises:
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
                 print_every=50_000,
-                logger=UnsafePointer(to=logger),
-                diag_every=100,
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
 
-            logger.close()
-
             print("-" * 70)
             print()
             print(">>> train_gpu returned successfully! <<<")
-
-            # =================================================================
-            # Summary
-            # =================================================================
 
             print("=" * 70)
             print("GPU Training Complete")
@@ -180,7 +113,6 @@ fn main() raises:
             print("Training time: " + String(elapsed_s)[:6] + " seconds")
             print()
 
-            # Print metrics summary
             print(
                 "Final average reward (last 100 episodes): "
                 + String(metrics.mean_reward_last_n(100))[:8]
@@ -188,7 +120,6 @@ fn main() raises:
             print("Best episode reward: " + String(metrics.max_reward())[:8])
             print()
 
-            # Check for successful training
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 1000.0:
                 print("EXCELLENT: Agent is running fast! (avg reward > 1000)")

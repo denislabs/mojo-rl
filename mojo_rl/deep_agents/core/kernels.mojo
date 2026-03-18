@@ -345,6 +345,42 @@ fn store_transitions_kernel[
 
 
 @always_inline
+fn store_obs_parallel_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    CAPACITY: Int,
+](
+    states: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    next_states: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    buf_next_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
+    write_idx: Scalar[DType.int32],
+):
+    """Parallel store for large observations. One thread per element.
+
+    Grid: (ceil(OBS_DIM / TPB), BATCH_SIZE)
+    block_idx.y selects the env, thread within block selects obs dimension.
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(block_idx.y)
+    if d >= OBS_DIM:
+        return
+
+    var buf_idx = (Int(write_idx) + i) % CAPACITY
+    buf_states[buf_idx, d] = states[i, d]
+    buf_next_states[buf_idx, d] = next_states[i, d]
+
+
+@always_inline
 fn sample_indices_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,

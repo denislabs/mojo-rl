@@ -28,8 +28,10 @@ Usage:
 
 from mojo_rl.nn.constants import dtype, TPB
 from .replay_buffer import HeapReplayBuffer
+from std.gpu import block_dim, block_idx, thread_idx
 from ..kernels import (
     store_transitions_kernel,
+    store_obs_parallel_kernel,
     sample_indices_kernel,
     gather_batch_kernel,
     gather_obs_parallel_kernel,
@@ -219,6 +221,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         var write_idx_s = Scalar[DType.int32](self.write_idx)
 
         comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
+        comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
 
         comptime if Self.ACTION_DIM == 1:
             var actions_t = LayoutTensor[
@@ -228,52 +231,72 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
             ](self.actions_buf.unsafe_ptr())
 
+            # Parallel obs store: 2D grid (OBS_BLOCKS, N_ENVS)
             @always_inline
-            fn store_wrapper(
+            fn store_obs_wrapper(
                 s: LayoutTensor[
                     dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
                 ],
-                a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-                r: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
                 ns: LayoutTensor[
                     dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
                 ],
-                d: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
                 bs: LayoutTensor[
                     dtype,
                     Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
                     MutAnyOrigin,
-                ],
-                ba: LayoutTensor[
-                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
-                ],
-                br: LayoutTensor[
-                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
                 ],
                 bns: LayoutTensor[
                     dtype,
                     Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
                     MutAnyOrigin,
                 ],
+                widx: Scalar[DType.int32],
+            ):
+                store_obs_parallel_kernel[
+                    dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
+                ](s, ns, bs, bns, widx)
+
+            ctx.enqueue_function[store_obs_wrapper, store_obs_wrapper](
+                states_t,
+                next_states_t,
+                buf_states_t,
+                buf_next_states_t,
+                write_idx_s,
+                grid_dim=(OBS_BLOCKS, N_ENVS),
+                block_dim=(TPB,),
+            )
+
+            # Scalar store: actions/rewards/dones (tiny, 1 thread per env)
+            @always_inline
+            fn store_scalars_wrapper(
+                a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                r: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                d: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                ba: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                br: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
                 bd: LayoutTensor[
                     dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
                 ],
                 widx: Scalar[DType.int32],
             ):
-                store_transitions_kernel[
-                    dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
-                ](s, a, r, ns, d, bs, ba, br, bns, bd, widx)
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= N_ENVS:
+                    return
+                var buf_idx = (Int(widx) + i) % Self.CAPACITY
+                ba[buf_idx] = a[i]
+                br[buf_idx] = r[i]
+                bd[buf_idx] = d[i]
 
-            ctx.enqueue_function[store_wrapper, store_wrapper](
-                states_t,
+            ctx.enqueue_function[store_scalars_wrapper, store_scalars_wrapper](
                 actions_t,
                 rewards_t,
-                next_states_t,
                 dones_t,
-                buf_states_t,
                 buf_actions_t,
                 buf_rewards_t,
-                buf_next_states_t,
                 buf_dones_t,
                 write_idx_s,
                 grid_dim=(ENV_BLOCKS,),
