@@ -55,6 +55,8 @@ trait OffPolicyConfig:
     composable strategy types.
     """
 
+    comptime NAME: String
+
     # Dimensions
     comptime obs_dim: Int
     comptime action_dim: Int
@@ -95,6 +97,7 @@ struct DDPGConfig[
 ](OffPolicyConfig):
     """DDPG: single critic, deterministic target actor, every-step updates."""
 
+    comptime NAME: String = "DDPG"
     comptime obs_dim: Int = Self.OBS
     comptime action_dim: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -140,6 +143,7 @@ struct TD3Config[
 ](OffPolicyConfig):
     """TD3: twin critics, smoothed target, delayed actor+target updates."""
 
+    comptime NAME: String = "TD3"
     comptime obs_dim: Int = Self.OBS
     comptime action_dim: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -185,6 +189,7 @@ struct SACConfig[
 ](OffPolicyConfig):
     """SAC: stochastic actor (Parallel mean+log_std), twin critics, no target actor."""
 
+    comptime NAME: String = "SAC"
     comptime obs_dim: Int = Self.OBS
     comptime action_dim: Int = Self.ACT
     comptime batch_size: Int = Self.BS

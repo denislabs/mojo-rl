@@ -2087,6 +2087,9 @@ struct GenericOffPolicyAgent[
             _ = timer.add_slot("train_step")
             _ = timer.add_slot("gpu_cpu_sync")
 
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var tgt_steps = self.target_total_steps
         var metrics = run_offpolicy_continuous_train_gpu[
             E, Self, Self.profile, Self.L, CurriculumType
         ](
@@ -2095,17 +2098,19 @@ struct GenericOffPolicyAgent[
             num_steps,
             timer,
             warmup_steps=warmup_steps,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
             logger=logger,
-            target_total_steps=self.target_total_steps,
+            target_total_steps=tgt_steps,
         )
 
         comptime if Self.profile >= 2:
             timer.merge_children(6, self.train_timer)
         comptime if Self.profile >= 1:
-            timer.print_report("GenericOffPolicy GPU Profile")
+            timer.print_report(Self.Config.NAME + " GPU Profile")
 
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^

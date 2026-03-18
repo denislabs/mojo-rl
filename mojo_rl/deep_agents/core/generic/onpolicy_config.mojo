@@ -35,6 +35,7 @@ from .epoch_schedule import EpochSchedule, SinglePass, MultiEpochMinibatch
 trait OnPolicyConfig:
     """Compile-time configuration for on-policy agents."""
 
+    comptime NAME: String
     comptime obs_dim: Int
     comptime num_actions: Int
     comptime rollout_len: Int
@@ -59,8 +60,10 @@ struct PPOConfig[
     actor_lr: Float64 = 0.00025,
     critic_lr: Float64 = 0.001,
 ](OnPolicyConfig):
-    """PPO: clipped surrogate, multi-epoch minibatch, per-minibatch normalization."""
+    """PPO: clipped surrogate, multi-epoch minibatch, per-minibatch normalization.
+    """
 
+    comptime NAME: String = "PPO"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime rollout_len: Int = Self.ROLLOUT
@@ -97,6 +100,7 @@ struct A2CConfig[
 ](OnPolicyConfig):
     """A2C: vanilla PG, single pass, per-rollout normalization."""
 
+    comptime NAME: String = "A2C"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime rollout_len: Int = Self.ROLLOUT
@@ -130,6 +134,7 @@ trait ContinuousOnPolicyConfig:
     for StochasticActor).
     """
 
+    comptime NAME: String
     comptime obs_dim: Int
     comptime action_dim: Int
     comptime rollout_len: Int
@@ -160,6 +165,7 @@ struct ContinuousPPOConfig[
     Critic: obs -> Tanh -> Tanh -> 1 (value).
     """
 
+    comptime NAME: String = "PPO Continuous"
     comptime obs_dim: Int = Self.OBS
     comptime action_dim: Int = Self.ACT
     comptime rollout_len: Int = Self.ROLLOUT
@@ -204,6 +210,7 @@ struct PPOCNNConfig[
     comptime obs_dim: Int = 4 * 84 * 84  # 28224
     comptime num_actions: Int = Self.ACT
     comptime rollout_len: Int = Self.ROLLOUT
+    comptime NAME: String = "PPO CNN"
 
     comptime ActorModel = Sequential[
         Conv2DReLU[4, 32, 8, 4, 0, 84, 84],

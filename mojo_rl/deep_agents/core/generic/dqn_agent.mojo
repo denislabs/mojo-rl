@@ -71,6 +71,7 @@ from .q_output import QOutput, DirectQ, DuelingQ
 trait DiscreteOffPolicyConfig:
     """Compile-time config for DQN family agents."""
 
+    comptime NAME: String
     comptime obs_dim: Int
     comptime num_actions: Int
     comptime batch_size: Int
@@ -97,6 +98,7 @@ struct DQNConfig[
 ](DiscreteOffPolicyConfig):
     """Standard DQN config."""
 
+    comptime NAME: String = "DQN"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -123,6 +125,7 @@ struct DoubleDQNConfig[
 ](DiscreteOffPolicyConfig):
     """Double DQN config."""
 
+    comptime NAME: String = "Double DQN"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -149,6 +152,7 @@ struct DuelingDQNConfig[
 ](DiscreteOffPolicyConfig):
     """Dueling DQN config (Double DQN target + dueling output)."""
 
+    comptime NAME: String = "Dueling DQN"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -191,6 +195,7 @@ struct DQNCNNConfig[
     Matches the Nature DQN (Mnih et al., 2015) and CleanRL's DQN Atari.
     """
 
+    comptime NAME: String = "DQN CNN"
     comptime obs_dim: Int = 4 * 84 * 84  # 28224 (4 stacked 84x84 frames)
     comptime num_actions: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -939,7 +944,7 @@ struct GenericDQNAgent[
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var ckpt_path = String(self.checkpoint_path)
-        var algo_name = String("GenericDQN")
+        var algo_name = Self.Config.NAME
         var metrics = run_offpolicy_discrete_train[E, Self, Self.L](
             self,
             cpu_state,
@@ -1395,7 +1400,7 @@ struct GenericDQNAgent[
         """
         self.logger = logger
         self.diag_every = diag_every
-        var algo_name = String("GenericDQN (GPU)")
+        var algo_name = Self.Config.NAME + " (GPU)"
         var timer = PerfTimer[False]()
         _ = timer.add_slot("copy_prev_obs")
         _ = timer.add_slot("select_actions")
@@ -1406,6 +1411,9 @@ struct GenericDQNAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var tgt_steps = self.target_total_steps
         var metrics = run_offpolicy_discrete_train_gpu[
             E, Self, 0, Self.L, CurriculumType
         ](
@@ -1416,12 +1424,14 @@ struct GenericDQNAgent[
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
             logger=logger,
-            target_total_steps=self.target_total_steps,
+            target_total_steps=tgt_steps,
         )
 
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
@@ -1447,6 +1457,7 @@ struct DQNPERConfig[
     PER is CPU-only; GPU path uses uniform replay.
     """
 
+    comptime NAME: String = "DQN PER"
     comptime obs_dim: Int = Self.OBS
     comptime num_actions: Int = Self.ACT
     comptime batch_size: Int = Self.BS
@@ -1974,7 +1985,7 @@ struct GenericDQNPERAgent[
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var ckpt_path = String(self.checkpoint_path)
-        var algo_name = String("GenericDQN+PER")
+        var algo_name = Self.Config.NAME + " +PER"
         var metrics = run_offpolicy_discrete_train[E, Self, Self.L](
             self,
             cpu_state,
@@ -2247,7 +2258,7 @@ struct GenericDQNPERAgent[
         """Train on GPU (uniform replay, no PER)."""
         self.logger = logger
         self.diag_every = diag_every
-        var algo_name = String("GenericDQN+PER (GPU, uniform)")
+        var algo_name = Self.Config.NAME + " +PER (GPU)"
         var timer = PerfTimer[False]()
         _ = timer.add_slot("copy_prev_obs")
         _ = timer.add_slot("select_actions")
@@ -2258,6 +2269,9 @@ struct GenericDQNPERAgent[
         _ = timer.add_slot("train_step")
         _ = timer.add_slot("gpu_cpu_sync")
 
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var tgt_steps = self.target_total_steps
         var metrics = run_offpolicy_discrete_train_gpu[
             E, Self, 0, Self.L, CurriculumType
         ](
@@ -2265,11 +2279,13 @@ struct GenericDQNPERAgent[
             warmup_steps=warmup_steps,
             gradient_steps=gradient_steps,
             sync_every=sync_every,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
             algorithm_name=algo_name,
-            target_total_steps=self.target_total_steps,
+            target_total_steps=tgt_steps,
             logger=logger,
         )
 

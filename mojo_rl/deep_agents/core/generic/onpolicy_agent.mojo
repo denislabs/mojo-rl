@@ -1192,7 +1192,7 @@ struct GenericOnPolicyAgent[
 
         var cpu_state = self.make_cpu_state()
         var ckpt_path = String(self.checkpoint_path)
-        var algo_name = String("GenericOnPolicy")
+        var algo_name = Self.Config.NAME
         var metrics = run_onpolicy_discrete_train(
             self,
             cpu_state,
@@ -1991,6 +1991,9 @@ struct GenericOnPolicyAgent[
     ) raises -> TrainingMetrics:
         """Train on GPU with parallel environments (PPO or A2C via strategy)."""
         var timer = PerfTimer[False]()
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var tgt_steps = self.target_total_steps
         return run_onpolicy_discrete_train_gpu[
             EnvType, Self, 0, NoOpLogger, CurriculumType
         ](
@@ -1998,7 +2001,9 @@ struct GenericOnPolicyAgent[
             ctx,
             num_updates,
             timer,
-            target_total_steps=self.target_total_steps,
+            target_total_steps=tgt_steps,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
             verbose=verbose,
             print_every=print_every,
         )

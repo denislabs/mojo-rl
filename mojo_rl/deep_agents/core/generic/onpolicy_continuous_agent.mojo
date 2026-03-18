@@ -742,7 +742,7 @@ struct GenericOnPolicyContinuousAgent[
         self.diag_every = diag_every
         var cpu_state = self.make_cpu_state()
         var ckpt_path = String(self.checkpoint_path)
-        var algo_name = String("GenericPPOContinuous")
+        var algo_name = Self.Config.NAME
         var metrics = run_onpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
@@ -1890,6 +1890,9 @@ struct GenericOnPolicyContinuousAgent[
         self.logger = logger
         self.diag_every = diag_every
         var timer = PerfTimer[False]()
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var tgt_steps = self.target_total_steps
 
         var metrics = run_onpolicy_continuous_train_gpu[
             E, Self, CurriculumType, 0, Self.L
@@ -1898,11 +1901,13 @@ struct GenericOnPolicyContinuousAgent[
             ctx,
             num_updates,
             timer,
-            target_total_steps=self.target_total_steps,
+            target_total_steps=tgt_steps,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
-            algorithm_name=String("GenericPPOContinuous (GPU)"),
+            algorithm_name=Self.Config.NAME + " (GPU)",
             logger=logger,
         )
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
