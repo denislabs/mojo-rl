@@ -1182,6 +1182,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         var half_dt = dt * Scalar[DTYPE](0.5)
 
         # ---- Pre-stage: save A[prev] and set intermediate state ----
+        # Note: when STEP_THREADS > 1, all threads run the serial phases
+        # redundantly (idempotent writes to same env). Only mass matrix
+        # is actually distributed across threads via compute_mass_matrix_full_gpu_mt.
 
         comptime if STAGE == 0:
             # Save initial state to workspace
@@ -1395,6 +1398,11 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 ](env, state, model, workspace)
         comptime if STEP_THREADS > 1:
             barrier()
+
+        # After mass matrix, only tid==0 continues (LDL, RNE, solve are serial)
+        comptime if STEP_THREADS > 1:
+            if tid != 0:
+                return
 
         # 6b. Armature only (no implicit damping for RK4)
         for j in range(NJOINT):
@@ -1794,6 +1802,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ](workspace_buf)
 
+        # Grid configuration for stage kernels
+        comptime if STEP_THREADS > 1:
+            comptime STEP_ENV_TPB = TPB // STEP_THREADS
+            comptime STEP_ENV_BLOCKS = (
+                BATCH + STEP_ENV_TPB - 1
+            ) // STEP_ENV_TPB
+
         # --- Stage 0: forward dynamics at (q0, v0) ---
         comptime stage0_kernel = Self.rk4_stage_kernel[
             DTYPE,
@@ -1811,14 +1826,24 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             0,
             NM,
             SPARSE,
+            STEP_THREADS,
         ]
-        ctx.enqueue_function[stage0_kernel, stage0_kernel](
-            state,
-            model,
-            workspace,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        comptime if STEP_THREADS > 1:
+            ctx.enqueue_function[stage0_kernel, stage0_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            ctx.enqueue_function[stage0_kernel, stage0_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
             DTYPE,
@@ -1848,99 +1873,69 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
         comptime stage1_kernel = Self.rk4_stage_kernel[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-            NGEOM,
-            SOLVER_WS,
-            1,
-            NM,
-            SPARSE,
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 1, NM, SPARSE, STEP_THREADS,
         ]
-        ctx.enqueue_function[stage1_kernel, stage1_kernel](
-            state,
-            model,
-            workspace,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        comptime if STEP_THREADS > 1:
+            ctx.enqueue_function[stage1_kernel, stage1_kernel](
+                state, model, workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            ctx.enqueue_function[stage1_kernel, stage1_kernel](
+                state, model, workspace,
+                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state,
-            model,
-            workspace,
+            state, model, workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
         comptime stage2_kernel = Self.rk4_stage_kernel[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-            NGEOM,
-            SOLVER_WS,
-            2,
-            NM,
-            SPARSE,
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 2, NM, SPARSE, STEP_THREADS,
         ]
-        ctx.enqueue_function[stage2_kernel, stage2_kernel](
-            state,
-            model,
-            workspace,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        comptime if STEP_THREADS > 1:
+            ctx.enqueue_function[stage2_kernel, stage2_kernel](
+                state, model, workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            ctx.enqueue_function[stage2_kernel, stage2_kernel](
+                state, model, workspace,
+                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state,
-            model,
-            workspace,
+            state, model, workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
         comptime stage3_kernel = Self.rk4_stage_kernel[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-            NGEOM,
-            SOLVER_WS,
-            3,
-            NM,
-            SPARSE,
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            SOLVER_WS, 3, NM, SPARSE, STEP_THREADS,
         ]
-        ctx.enqueue_function[stage3_kernel, stage3_kernel](
-            state,
-            model,
-            workspace,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        comptime if STEP_THREADS > 1:
+            ctx.enqueue_function[stage3_kernel, stage3_kernel](
+                state, model, workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            ctx.enqueue_function[stage3_kernel, stage3_kernel](
+                state, model, workspace,
+                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state,
-            model,
-            workspace,
+            state, model, workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )

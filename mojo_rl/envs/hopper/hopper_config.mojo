@@ -180,6 +180,7 @@ struct HopperConfig(Phyics3dEnvConfig):
             MAX_CONTACTS,
             BATCH_SIZE,
             NGEOM,
+            STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)
 
     # === GPU inline: Pre-step hook ===

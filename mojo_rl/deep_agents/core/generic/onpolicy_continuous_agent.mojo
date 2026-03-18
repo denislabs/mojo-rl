@@ -1507,10 +1507,11 @@ struct GenericOnPolicyContinuousAgent[
         var num_minibatches = ROLLOUT_TOTAL // MINIBATCH
 
         # Diagnostic accumulators
-        var should_diag = self.logger and (
-            self.diag_every <= 0
-            or (self.train_step_count + 1) % self.diag_every == 0
-        )
+        var should_diag = False
+        if self.logger:
+            should_diag = self.diag_every <= 0 or (
+                (update_idx + 1) % self.diag_every == 0
+            )
         var diag_kl_sum: Float64 = 0.0
         var diag_entropy_sum: Float64 = 0.0
         var diag_clip_sum: Float64 = 0.0
@@ -1833,25 +1834,22 @@ struct GenericOnPolicyContinuousAgent[
                 gpu_state.gpu_critic.optimizer_step(ctx)
                 ctx.synchronize()
 
-        # Log diagnostics
+        # Log diagnostics (approx_kl, entropy, clip_fraction, value_loss)
         if should_diag and diag_sample_count > 0:
-            try:
-                var step = self.train_step_count
-                var n = Float64(diag_sample_count)
-                self.logger[].log_scalar(
-                    "approx_kl", diag_kl_sum / n, step
-                )
-                self.logger[].log_scalar(
-                    "entropy", diag_entropy_sum / n, step
-                )
-                self.logger[].log_scalar(
-                    "clip_fraction", diag_clip_sum / n, step
-                )
-                self.logger[].log_scalar(
-                    "value_loss", diag_value_loss_sum / n, step
-                )
-            except:
-                pass
+            var n = Float64(diag_sample_count)
+            var step = update_idx
+            self.logger[].log_scalar(
+                "approx_kl", diag_kl_sum / n, step
+            )
+            self.logger[].log_scalar(
+                "entropy", diag_entropy_sum / n, step
+            )
+            self.logger[].log_scalar(
+                "clip_fraction", diag_clip_sum / n, step
+            )
+            self.logger[].log_scalar(
+                "value_loss", diag_value_loss_sum / n, step
+            )
 
         gpu_state.rollout_step = 0
         self.train_step_count += 1
