@@ -143,7 +143,7 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False], HopperCurriculum
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=True], HopperCurriculum
             ](
                 ctx,
                 num_updates=NUM_UPDATES,

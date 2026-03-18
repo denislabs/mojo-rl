@@ -180,8 +180,7 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=True],
-                HalfCheetahCurriculum,
+                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
                 num_updates=NUM_UPDATES,

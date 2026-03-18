@@ -1,22 +1,11 @@
-"""SAC Agent GPU Training on HalfCheetah.
+"""PPO Continuous Agent GPU Training on HalfCheetah (old non-generic agent).
 
-This trains the SAC (Soft Actor-Critic) agent on the HalfCheetah environment
-using GPU-accelerated off-policy training with:
-- Parallel environments on GPU
-- Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx and head)
-
-SAC key features:
-- Maximum entropy RL (reward + alpha * entropy)
-- Stochastic Gaussian policy (reparameterization trick)
-- Twin Q-networks (min of Q1, Q2 reduces overestimation)
-- Automatic entropy temperature (alpha) tuning
-- No target actor (only critic targets)
+Uses the original DeepPPOContinuousAgent from mojo_rl.deep_agents.ppo
+instead of the generic composable agent.
 
 Run with:
-    pixi run -e apple mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu_old.mojo
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu_old.mojo
 """
 
 from std.random import seed
@@ -26,12 +15,13 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.generic import DeepSACAgent
+from mojo_rl.deep_agents.ppo import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
+    HalfCheetahCurriculum,
 )
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -42,17 +32,16 @@ from mojo_rl.envs.half_cheetah import (
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
-# Network architecture
-comptime HIDDEN_DIM = 256
+# Network architecture (scaled for GPU)
+comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
 
-# Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+# GPU training parameters (GPU-optimized with CleanRL ratios)
+comptime ROLLOUT_LEN = 512  # Longer rollouts for better GAE
+comptime N_ENVS = 256  # Good GPU parallelism
+comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
-# Training duration (off-policy uses steps, not episodes)
-comptime NUM_STEPS = 2_000_000
-comptime WARMUP_STEPS = 10_000
+# Training duration
+comptime NUM_UPDATES = 500
 
 comptime dtype = DType.float32
 
@@ -65,7 +54,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Agent GPU Training on HalfCheetah")
+    print("PPO Continuous Agent GPU Test on HalfCheetah (Old Agent)")
     print("=" * 70)
     print()
 
@@ -74,49 +63,50 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
+        var agent = DeepPPOContinuousAgent[
             obs_dim=OBS_DIM,
             action_dim=ACTION_DIM,
             hidden_dim=HIDDEN_DIM,
-            buffer_capacity=BUFFER_CAPACITY,
-            batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.001,  # CleanRL default: q_lr=1e-3 (higher than actor)
+            rollout_len=ROLLOUT_LEN,
+            n_envs=N_ENVS,
+            gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            actor_lr=0.0003,  # CleanRL: 3e-4
+            critic_lr=0.0003,  # CleanRL: 3e-4
             L=RemoteLogger,
         ](
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            alpha=0.2,
-            auto_alpha=True,
-            alpha_lr=0.001,  # CleanRL uses q_lr for alpha too
-            target_entropy=-1.0,
-            checkpoint_every=100_000,
-            checkpoint_path="sac_half_cheetah.ckpt",
+            gamma=0.99,  # Standard discount
+            gae_lambda=0.95,  # Standard GAE lambda
+            clip_epsilon=0.2,  # Standard clipping
+            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo
+            value_loss_coef=0.5,
+            num_epochs=10,  # CleanRL default
+            target_kl=0.0,  # KL early stopping disabled
+            max_grad_norm=0.5,
+            anneal_lr=True,  # CleanRL uses LR annealing
+            anneal_entropy=False,
+            target_total_steps=0,  # Auto-calculate
+            norm_adv_per_minibatch=True,
+            checkpoint_every=10,
+            checkpoint_path="ppo_half_cheetah_old.ckpt",
+            normalize_rewards=True,
+            obs_noise_std=0.0,
         )
 
-        # agent.load_checkpoint("sac_half_cheetah.ckpt")
-
         print("Environment: HalfCheetah Continuous (GPU)")
-        print("Agent: SAC (Soft Actor-Critic)")
+        print("Agent: PPO Continuous OLD (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
-        print("  Buffer capacity: " + String(BUFFER_CAPACITY))
-        print("  Batch size: " + String(BATCH_SIZE))
-        print("  Max parallel envs: " + String(MAX_N_ENVS))
-        print("  Key hyperparameters:")
-        print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3 (CleanRL default)")
-        print("    - Alpha LR: 1e-3 (CleanRL default)")
-        print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
-        print("    - Warmup steps: " + String(WARMUP_STEPS))
+        print("  Rollout length: " + String(ROLLOUT_LEN))
+        print("  N envs (parallel): " + String(N_ENVS))
+        print("  Minibatch size: " + String(GPU_MINIBATCH_SIZE))
+        print(
+            "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
+        )
         print()
 
         # =====================================================================
-        # Setup logger
+        # Setup logger — posts to RL Monitor
         # =====================================================================
 
         var env_vars = load_dotenv()
@@ -125,18 +115,19 @@ fn main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC HalfCheetah GPU (generic)",
+            run_name="PPO HalfCheetah GPU (Old)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "SAC Generic")
+        logger.set_config("agent", "PPO Continuous (Old)")
         logger.set_config("env", "HalfCheetah")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "1e-3")
-        logger.set_config("batch_size", String(BATCH_SIZE))
-        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("critic_lr", "3e-4")
+        logger.set_config("gamma", "0.99")
+        logger.set_config("rollout_len", String(ROLLOUT_LEN))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("minibatch_size", String(GPU_MINIBATCH_SIZE))
 
         # =====================================================================
         # Train using the train_gpu() method
@@ -152,12 +143,11 @@ fn main() raises:
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
-                num_steps=NUM_STEPS,
-                warmup_steps=WARMUP_STEPS,
+                num_episodes=NUM_UPDATES,
                 verbose=True,
-                print_every=50_000,
+                print_every=10,
                 logger=UnsafePointer(to=logger),
-                diag_every=1_000,
+                diag_every=1,
             )
 
             var end_time = perf_counter_ns()
@@ -177,8 +167,12 @@ fn main() raises:
             print("GPU Training Complete")
             print("=" * 70)
             print()
-            print("Total steps: " + String(NUM_STEPS))
+            print("Total updates: " + String(NUM_UPDATES))
             print("Training time: " + String(elapsed_s)[:6] + " seconds")
+            print(
+                "Updates/second: "
+                + String(Float64(NUM_UPDATES) / elapsed_s)[:7]
+            )
             print()
 
             # Print metrics summary

@@ -755,6 +755,7 @@ struct GenericOffPolicyAgent[
         auto_alpha: Bool = True,
         alpha: Float64 = 0.2,
         alpha_lr: Float64 = 0.0003,
+        target_entropy: Float64 = 0.0,
         max_grad_norm: Float64 = 40.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
@@ -781,7 +782,7 @@ struct GenericOffPolicyAgent[
         self.auto_alpha = auto_alpha
         self.alpha = alpha
         self.log_alpha = log(alpha)
-        self.target_entropy = -Float64(Self.ACTIONS)
+        self.target_entropy = target_entropy if target_entropy != 0.0 else -Float64(Self.ACTIONS)
         self.alpha_lr = alpha_lr
         self.alpha_adam_m = 0.0
         self.alpha_adam_v = 0.0
