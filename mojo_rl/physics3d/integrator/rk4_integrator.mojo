@@ -1381,14 +1381,16 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
                 env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
             )
-            compute_M_inv_from_sparse_ldl_gpu[
-                DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-            ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            comptime if Self.SOLVER.NEEDS_M_INV:
+                compute_M_inv_from_sparse_ldl_gpu[
+                    DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
         else:
             ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-            compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                env, workspace
-            )
+            comptime if Self.SOLVER.NEEDS_M_INV:
+                compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, workspace
+                )
 
         # 8. Bias forces
         compute_bias_forces_rne_gpu[

@@ -43,7 +43,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 50_000
+comptime NUM_UPDATES = 500
 
 comptime dtype = DType.float32
 
@@ -72,26 +72,21 @@ fn main() raises:
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
             gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            actor_lr=0.0003,  # CleanRL: 3e-4
+            critic_lr=0.0003,  # CleanRL: 3e-4
         ](
             clip_value=True,
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # CleanRL: 3e-4
-            critic_lr=0.0003,  # CleanRL: 3e-4
             entropy_coef=0.02,  # Small entropy for exploration (was 0.0)
             value_loss_coef=0.5,
             num_epochs=10,  # CleanRL default
             target_kl=0.015,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=False,  # CleanRL uses LR annealing
-            anneal_entropy=False,  # Anneal entropy to 0 over training
-            target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
             checkpoint_path="ppo_hopper.ckpt",
-            normalize_rewards=True,
-            obs_noise_std=0.0,
         )
 
         # agent.load_checkpoint("ppo_hopper.ckpt")
@@ -148,10 +143,10 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False], HopperCurriculum
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False]
             ](
                 ctx,
-                num_episodes=NUM_EPISODES,
+                num_updates=NUM_UPDATES,
                 verbose=True,
                 print_every=1,
             )
@@ -171,11 +166,11 @@ fn main() raises:
             print("GPU Training Complete")
             print("=" * 70)
             print()
-            print("Total episodes: " + String(NUM_EPISODES))
+            print("Total updates: " + String(NUM_UPDATES))
             print("Training time: " + String(elapsed_s)[:6] + " seconds")
             print(
-                "Episodes/second: "
-                + String(Float64(NUM_EPISODES) / elapsed_s)[:7]
+                "Updates/second: "
+                + String(Float64(NUM_UPDATES) / elapsed_s)[:7]
             )
             print()
 

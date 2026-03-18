@@ -833,11 +833,12 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                     - dt * qd_val
                 )
 
-        # 7. LU factorize M_hat and compute M_inv
+        # 7. LU factorize M_hat, conditionally compute M_inv
         lu_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-        compute_M_inv_from_lu_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-            env, workspace
-        )
+        comptime if Self.SOLVER.NEEDS_M_INV:
+            compute_M_inv_from_lu_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                env, workspace
+            )
 
         # 8. Compute bias forces
         compute_bias_forces_rne_gpu[
