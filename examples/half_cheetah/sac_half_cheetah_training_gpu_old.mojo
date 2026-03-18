@@ -7,9 +7,12 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.sac import DeepSACAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -21,19 +24,15 @@ from mojo_rl.envs.half_cheetah import (
 # Constants
 # =============================================================================
 
-# HalfCheetah: 17D observation, 6D continuous action
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
-# Network architecture
 comptime HIDDEN_DIM = 256
 
-# Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
-# Training duration (off-policy uses steps, not episodes)
 comptime NUM_STEPS = 2_000_000
 comptime WARMUP_STEPS = 10_000
 
@@ -62,6 +61,7 @@ fn main() raises:
             actor_lr=0.0003,
             critic_lr=0.001,
             max_n_envs=MAX_N_ENVS,
+            L=RemoteLogger,
         ](
             gamma=0.99,
             tau=0.005,
@@ -84,7 +84,29 @@ fn main() raises:
         print()
 
         # =====================================================================
-        # Train using the train_gpu() method
+        # Setup logger
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = RemoteLogger(
+            server_url=url,
+            run_name="SAC HalfCheetah GPU (old)",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "SAC Old")
+        logger.set_config("env", "HalfCheetah")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("alpha_lr", "1e-3")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+
+        # =====================================================================
+        # Train
         # =====================================================================
 
         print("Starting GPU training...")
@@ -102,10 +124,14 @@ fn main() raises:
                 verbose=True,
                 print_every=50_000,
                 environment_name="HalfCheetah",
+                logger=UnsafePointer(to=logger),
+                diag_every=1_000,
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()

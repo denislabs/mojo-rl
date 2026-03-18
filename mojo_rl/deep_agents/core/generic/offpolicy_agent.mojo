@@ -1674,6 +1674,28 @@ struct GenericOffPolicyAgent[
                 self.alpha,
                 UInt32(self.train_step_count),
             )
+            # Log actor grad norm before optimizer step overwrites grads
+            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+                try:
+                    comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
+                    var ag_host = ctx.enqueue_create_host_buffer[dtype](A_PS)
+                    ctx.enqueue_copy(
+                        ag_host, gpu_state.actor.online.grads_buf
+                    )
+                    ctx.synchronize()
+                    var grad_norm: Float64 = 0.0
+                    for i in range(A_PS):
+                        var g = Float64(ag_host[i])
+                        grad_norm += g * g
+                    grad_norm = sqrt(grad_norm)
+                    self.logger[].log_scalar(
+                        "actor_grad_norm",
+                        grad_norm,
+                        self.train_step_count,
+                    )
+                except:
+                    pass
+
             gpu_state.actor.online.optimizer_step(ctx)
 
             # Alpha auto-tuning (SAC only): copy log_probs GPU→CPU, Adam update

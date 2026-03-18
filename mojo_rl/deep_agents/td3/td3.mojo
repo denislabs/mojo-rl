@@ -1345,6 +1345,63 @@ struct DeepTD3Agent[
             self.train_timer.sync_and_accumulate(3, ctx)
             self.train_timer.mark()
 
+        # GPU Diagnostic logging
+        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            try:
+                var diag_q_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                var diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                var diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                var diag_done_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                var diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * ACTIONS
+                )
+                var diag_nq_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+                ctx.enqueue_copy(diag_q_host, gpu_state.q1_out)
+                ctx.enqueue_copy(diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(diag_nq_host, gpu_state.nq1)
+                ctx.synchronize()
+
+                var mean_q: Float64 = 0.0
+                var mean_tgt: Float64 = 0.0
+                var mean_rew: Float64 = 0.0
+                var mean_done: Float64 = 0.0
+                var critic_loss: Float64 = 0.0
+                var mean_nq: Float64 = 0.0
+                var mean_abs_act: Float64 = 0.0
+                for b in range(BATCH):
+                    var q_val = Float64(diag_q_host[b])
+                    var tgt_val = Float64(diag_tgt_host[b])
+                    mean_q += q_val
+                    mean_tgt += tgt_val
+                    mean_rew += Float64(diag_rew_host[b])
+                    mean_done += Float64(diag_done_host[b])
+                    mean_nq += Float64(diag_nq_host[b])
+                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
+                for i in range(BATCH * ACTIONS):
+                    var a = Float64(diag_act_host[i])
+                    mean_abs_act += (a if a >= 0.0 else -a)
+                mean_q /= Float64(BATCH)
+                mean_tgt /= Float64(BATCH)
+                mean_rew /= Float64(BATCH)
+                mean_done /= Float64(BATCH)
+                mean_nq /= Float64(BATCH)
+                critic_loss /= Float64(BATCH)
+                mean_abs_act /= Float64(BATCH * ACTIONS)
+
+                var step = self.train_step_count
+                self.logger[].log_scalar("critic_loss", critic_loss, step)
+                self.logger[].log_scalar("mean_q", mean_q, step)
+                self.logger[].log_scalar("mean_target", mean_tgt, step)
+                self.logger[].log_scalar("mean_reward", mean_rew, step)
+                self.logger[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger[].log_scalar("mean_done", mean_done, step)
+                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+            except:
+                pass
+
         # ----- Phase 10+: Delayed actor update (TD3 Innovation #2) -----
         if self.update_count % self.policy_delay == 0:
             var actor_act_t = LayoutTensor[
@@ -1472,6 +1529,28 @@ struct DeepTD3Agent[
                 perf=self._perf_ptr(),
                 perf_slot=self.actor_bwd_base,
             )
+            # Log actor grad norm
+            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+                try:
+                    comptime A_PS = Self.ActorModel.PARAM_SIZE
+                    var ag_host = ctx.enqueue_create_host_buffer[dtype](A_PS)
+                    ctx.enqueue_copy(
+                        ag_host, gpu_state.actor.online.grads_buf
+                    )
+                    ctx.synchronize()
+                    var grad_norm: Float64 = 0.0
+                    for i in range(A_PS):
+                        var g = Float64(ag_host[i])
+                        grad_norm += g * g
+                    grad_norm = sqrt(grad_norm)
+                    self.logger[].log_scalar(
+                        "actor_grad_norm",
+                        grad_norm,
+                        self.train_step_count,
+                    )
+                except:
+                    pass
+
             gpu_state.actor.online.optimizer_step(ctx)
             comptime if Self.profile >= 2:
                 self.train_timer.sync_and_accumulate(4, ctx)

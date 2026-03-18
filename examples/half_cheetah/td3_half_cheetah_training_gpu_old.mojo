@@ -7,9 +7,12 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.td3 import DeepTD3Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -58,6 +61,7 @@ fn main() raises:
             actor_lr=0.0003,
             critic_lr=0.0003,
             max_n_envs=MAX_N_ENVS,
+            L=RemoteLogger,
         ](
             gamma=0.99,
             tau=0.005,
@@ -82,6 +86,31 @@ fn main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print()
 
+        # =====================================================================
+        # Setup logger
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = RemoteLogger(
+            server_url=url,
+            run_name="TD3 HalfCheetah GPU (old)",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "TD3 Old")
+        logger.set_config("env", "HalfCheetah")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("critic_lr", "3e-4")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+
+        # =====================================================================
+        # Train
+        # =====================================================================
+
         print("Starting GPU training...")
         print("-" * 70)
 
@@ -96,10 +125,14 @@ fn main() raises:
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
                 print_every=50_000,
+                logger=UnsafePointer(to=logger),
+                diag_every=1_000,
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()
