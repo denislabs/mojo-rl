@@ -14,6 +14,9 @@ networks. Key use case for SAC:
 
 The split point divides the input into left (dims 0..split-1) and
 right (dims split..IN_DIM-1) portions.
+
+Param layout uses 4-element alignment padding between Left and Right params
+to guarantee GPU matmul alignment (16 bytes for float32).
 """
 
 from ...constants import dtype, TPB
@@ -24,18 +27,29 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 
+# GPU matmul requires 16-byte alignment = 4 float32 elements
+@always_inline
+fn _align4(x: Int) -> Int:
+    """Round up to next multiple of 4 for GPU alignment."""
+    return (x + 3) & ~3
+
+
 @fieldwise_init
 struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     """Split input at `split`, apply Left to [:split] and Right to [split:].
 
     IN_DIM = Left.IN_DIM + Right.IN_DIM  (= split + remaining)
     OUT_DIM = Left.OUT_DIM + Right.OUT_DIM
-    PARAM_SIZE = Left.PARAM_SIZE + Right.PARAM_SIZE
+    PARAM_SIZE includes alignment padding between Left and Right params.
     """
 
     comptime IN_DIM: Int = Self.Left.IN_DIM + Self.Right.IN_DIM
     comptime OUT_DIM: Int = Self.Left.OUT_DIM + Self.Right.OUT_DIM
-    comptime PARAM_SIZE: Int = Self.Left.PARAM_SIZE + Self.Right.PARAM_SIZE
+
+    # Aligned param layout: [Left_params (padded to 4) | Right_params]
+    comptime _RIGHT_PARAM_OFF: Int = _align4(Self.Left.PARAM_SIZE)
+    comptime PARAM_SIZE: Int = Self._RIGHT_PARAM_OFF + Self.Right.PARAM_SIZE
+
     comptime CACHE_SIZE: Int = Self.Left.CACHE_SIZE + Self.Right.CACHE_SIZE
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self.Left.WORKSPACE_SIZE_PER_SAMPLE
@@ -57,13 +71,17 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        # Zero padding region
+        for i in range(Self.Left.PARAM_SIZE, Self._RIGHT_PARAM_OFF):
+            params.ptr[i] = Scalar[dtype](0.0)
+
         var pl = LayoutTensor[
             dtype, Layout.row_major(Self.Left.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
         Self.Left.initialize_params[INIT](pl)
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self.Left.PARAM_SIZE)
+        ](params.ptr + Self._RIGHT_PARAM_OFF)
         Self.Right.initialize_params[INIT](pr)
 
     # =========================================================================
@@ -134,7 +152,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](right_out_buf.unsafe_ptr())
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self.Left.PARAM_SIZE)
+        ](params.ptr + Self._RIGHT_PARAM_OFF)
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
@@ -211,7 +229,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](right_out_buf.unsafe_ptr())
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self.Left.PARAM_SIZE)
+        ](params.ptr + Self._RIGHT_PARAM_OFF)
         Self.Right.forward[BATCH](right_in, right_out, pr)
 
         for b in range(BATCH):
@@ -298,13 +316,13 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](gi_r_buf.unsafe_ptr())
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self.Left.PARAM_SIZE)
+        ](params.ptr + Self._RIGHT_PARAM_OFF)
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
         var grads_r = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](grads.ptr + Self.Left.PARAM_SIZE)
+        ](grads.ptr + Self._RIGHT_PARAM_OFF)
         Self.Right.backward[BATCH](gr, gi_r, pr, cr, grads_r)
 
         # Assemble grad_input from left + right
@@ -418,6 +436,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
         ](right_out_buf.unsafe_ptr())
 
+        # Left: params at offset 0 (always aligned)
         var pl = LayoutTensor[
             dtype, Layout.row_major(Self.Left.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
@@ -428,71 +447,18 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             ctx, left_out_t, left_t, pl, cl, workspace
         )
 
-        # Right params/cache: copy to aligned buffers to avoid misalignment
-        # (Left.PARAM_SIZE may not be a multiple of 4, causing misaligned matmul)
+        # Right: params at aligned offset — safe for direct pointer access
         comptime R_PS = Self.Right.PARAM_SIZE
-
-        var pr_buf = ctx.enqueue_create_buffer[dtype](max(1, R_PS))
         var pr = LayoutTensor[
             dtype, Layout.row_major(R_PS), MutAnyOrigin
-        ](pr_buf.unsafe_ptr())
-
-        comptime if R_PS > 0:
-            comptime RP_BLOCKS = (R_PS + TPB - 1) // TPB
-
-            @always_inline
-            fn _sa_fwd_copy_params(
-                dst: LayoutTensor[
-                    dtype, Layout.row_major(R_PS), MutAnyOrigin
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-                ],
-            ):
-                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if i < R_PS:
-                    dst.ptr[i] = src.ptr[Self.Left.PARAM_SIZE + i]
-
-            ctx.enqueue_function[_sa_fwd_copy_params, _sa_fwd_copy_params](
-                pr, params, grid_dim=(RP_BLOCKS,), block_dim=(TPB,)
-            )
-
-        var cr_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * Self.Right.CACHE_SIZE)
-        )
+        ](params.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
-        ](cr_buf.unsafe_ptr())
+        ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
 
         Self.Right.forward_gpu[BATCH](
             ctx, right_out_t, right_t, pr, cr, workspace
         )
-
-        # Copy Right cache back to parent cache buffer at correct offset
-        comptime R_CS_TOTAL = BATCH * Self.Right.CACHE_SIZE
-        if R_CS_TOTAL > 0:
-            comptime RC_BLOCKS = (R_CS_TOTAL + TPB - 1) // TPB
-
-            @always_inline
-            fn _sa_fwd_copy_cache_back(
-                dst: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-                src: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Right.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-            ):
-                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if i < R_CS_TOTAL:
-                    dst.ptr[BATCH * Self.Left.CACHE_SIZE + i] = src.ptr[i]
-
-            ctx.enqueue_function[
-                _sa_fwd_copy_cache_back, _sa_fwd_copy_cache_back
-            ](cache, cr, grid_dim=(RC_BLOCKS,), block_dim=(TPB,))
 
         # Concat outputs
         var lo_immut = LayoutTensor[
@@ -654,7 +620,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             gr_t, go_immut, grid_dim=(gr_grid,), block_dim=(TPB,)
         )
 
-        # Backward Left
+        # Backward Left — params/cache/grads at offset 0 (always aligned)
         var gi_l_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.LEFT_IN)
         var gi_l_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
@@ -672,105 +638,24 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             ctx, gi_l_t, gl_t, pl, cl, grads_l, workspace
         )
 
-        # Backward Right — copy params, cache, grads to aligned buffers
+        # Backward Right — params/grads at aligned offset
         var gi_r_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.RIGHT_IN)
         var gi_r_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
         ](gi_r_buf.unsafe_ptr())
 
-        comptime R_PS = Self.Right.PARAM_SIZE
-        comptime R_CS_TOTAL = BATCH * Self.Right.CACHE_SIZE
-
-        # Copy Right params to aligned buffer
-        var pr_buf = ctx.enqueue_create_buffer[dtype](max(1, R_PS))
         var pr = LayoutTensor[
-            dtype, Layout.row_major(R_PS), MutAnyOrigin
-        ](pr_buf.unsafe_ptr())
-
-        comptime if R_PS > 0:
-            comptime RP_BLOCKS = (R_PS + TPB - 1) // TPB
-
-            @always_inline
-            fn _sa_bwd_copy_params(
-                dst: LayoutTensor[
-                    dtype, Layout.row_major(R_PS), MutAnyOrigin
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-                ],
-            ):
-                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if i < R_PS:
-                    dst.ptr[i] = src.ptr[Self.Left.PARAM_SIZE + i]
-
-            ctx.enqueue_function[_sa_bwd_copy_params, _sa_bwd_copy_params](
-                pr, params, grid_dim=(RP_BLOCKS,), block_dim=(TPB,)
-            )
-
-        # Copy Right cache to aligned buffer
-        var cr_buf = ctx.enqueue_create_buffer[dtype](max(1, R_CS_TOTAL))
+            dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
+        ](params.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
-        ](cr_buf.unsafe_ptr())
-        if R_CS_TOTAL > 0:
-            comptime RC_BLOCKS = (R_CS_TOTAL + TPB - 1) // TPB
-
-            @always_inline
-            fn _sa_bwd_copy_cache(
-                dst: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Right.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-                src: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.CACHE_SIZE),
-                    MutAnyOrigin,
-                ],
-            ):
-                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if i < R_CS_TOTAL:
-                    dst.ptr[i] = src.ptr[BATCH * Self.Left.CACHE_SIZE + i]
-
-            ctx.enqueue_function[_sa_bwd_copy_cache, _sa_bwd_copy_cache](
-                cr, cache, grid_dim=(RC_BLOCKS,), block_dim=(TPB,)
-            )
-
-        # Aligned grads buffer for Right, zeroed
-        var grads_r_buf = ctx.enqueue_create_buffer[dtype](max(1, R_PS))
+        ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
         var grads_r = LayoutTensor[
-            dtype, Layout.row_major(R_PS), MutAnyOrigin
-        ](grads_r_buf.unsafe_ptr())
-        comptime if R_PS > 0:
-            var zero_r = ctx.enqueue_create_host_buffer[dtype](R_PS)
-            for i in range(R_PS):
-                zero_r[i] = Scalar[dtype](0.0)
-            ctx.enqueue_copy(grads_r_buf, zero_r)
-
+            dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
+        ](grads.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
         Self.Right.backward_gpu[BATCH](
             ctx, gi_r_t, gr_t, pr, cr, grads_r, workspace
         )
-
-        # Copy Right grads back to parent grads buffer at correct offset
-        comptime if R_PS > 0:
-            comptime RP_BLOCKS = (R_PS + TPB - 1) // TPB
-
-            @always_inline
-            fn _sa_bwd_scatter_grads(
-                dst: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(R_PS), MutAnyOrigin
-                ],
-            ):
-                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if i < R_PS:
-                    dst.ptr[Self.Left.PARAM_SIZE + i] = src.ptr[i]
-
-            ctx.enqueue_function[
-                _sa_bwd_scatter_grads, _sa_bwd_scatter_grads
-            ](grads, grads_r, grid_dim=(RP_BLOCKS,), block_dim=(TPB,))
 
         # Assemble grad_input
         var gi_l_immut = LayoutTensor[

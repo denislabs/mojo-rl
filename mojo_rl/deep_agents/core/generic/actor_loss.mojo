@@ -1265,6 +1265,13 @@ from mojo_rl.nn.model import (
 from mojo_rl.nn.autodiff.combinators import SkipConcat, DualPath, SplitApply
 
 
+# GPU matmul requires 16-byte alignment = 4 float32 elements
+@always_inline
+fn _align4(x: Int) -> Int:
+    """Round up to next multiple of 4 for GPU alignment."""
+    return (x + 3) & ~3
+
+
 struct AutodiffMaxEntLoss[
     log_std_scale: Float64 = 3.5,
 ](ActorLoss):
@@ -1404,18 +1411,24 @@ struct AutodiffMaxEntLoss[
         # SACGraph: IN=OBS, OUT=2 (min_Q, log_prob)
 
         # =====================================================================
-        # Assemble combined params: [actor | critic1 | critic2]
+        # Assemble combined params: [actor | critic1 (padded) | critic2]
+        # Offsets must match DualPath/SplitApply alignment padding.
         # =====================================================================
-        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+        comptime CRITIC1_OFF = ACTOR_PS
+        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        comptime TOTAL_PS = SACGraph.PARAM_SIZE
         var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
             uninitialized=True
         )
+        # Zero padding regions
+        for i in range(TOTAL_PS):
+            combined_params[i] = Scalar[dtype](0.0)
         for i in range(ACTOR_PS):
             combined_params[i] = actor_params.ptr[i]
         for i in range(CRITIC_PS):
-            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+            combined_params[CRITIC1_OFF + i] = critic_params.ptr[i]
         for i in range(CRITIC_PS):
-            combined_params[ACTOR_PS + CRITIC_PS + i] = critic2_params.ptr[i]
+            combined_params[CRITIC2_OFF + i] = critic2_params.ptr[i]
 
         var params_t = LayoutTensor[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
@@ -1482,9 +1495,9 @@ struct AutodiffMaxEntLoss[
         for i in range(ACTOR_PS):
             actor_grads.ptr[i] = combined_grads[i]
         for i in range(CRITIC_PS):
-            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+            critic_grads.ptr[i] = combined_grads[CRITIC1_OFF + i]
         for i in range(CRITIC_PS):
-            critic2_grads.ptr[i] = combined_grads[ACTOR_PS + CRITIC_PS + i]
+            critic2_grads.ptr[i] = combined_grads[CRITIC2_OFF + i]
 
         # =====================================================================
         # Return mean log_prob for alpha update
@@ -1549,7 +1562,6 @@ struct AutodiffMaxEntLoss[
         comptime OBS = ActorModel.IN_DIM
         comptime ACTOR_PS = ActorModel.PARAM_SIZE
         comptime CRITIC_PS = CriticModel.PARAM_SIZE
-        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
 
         # =================================================================
         # Build the composed SAC graph type (same as CPU)
@@ -1567,8 +1579,13 @@ struct AutodiffMaxEntLoss[
         comptime GRAPH_CS = SACGraph.CACHE_SIZE
         comptime GRAPH_WS = SACGraph.WORKSPACE_SIZE_PER_SAMPLE
 
+        # Aligned offsets matching DualPath/SplitApply padding
+        comptime CRITIC1_OFF = ACTOR_PS
+        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        comptime TOTAL_PS = SACGraph.PARAM_SIZE
+
         # =================================================================
-        # 1. Concat params on GPU: [actor | critic1 | critic2]
+        # 1. Concat params on GPU: [actor | critic1 (padded) | critic2]
         # =================================================================
         var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
         var params_t = LayoutTensor[
@@ -1598,10 +1615,13 @@ struct AutodiffMaxEntLoss[
                 return
             if i < ACTOR_PS:
                 dst.ptr[i] = ap.ptr[i]
-            elif i < ACTOR_PS + CRITIC_PS:
-                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+            elif i >= CRITIC1_OFF and i < CRITIC1_OFF + CRITIC_PS:
+                dst.ptr[i] = cp.ptr[i - CRITIC1_OFF]
+            elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
+                dst.ptr[i] = c2p.ptr[i - CRITIC2_OFF]
             else:
-                dst.ptr[i] = c2p.ptr[i - ACTOR_PS - CRITIC_PS]
+                # Padding region — zero it
+                dst.ptr[i] = 0.0
 
         # Rebind critic2_params to CriticModel.PARAM_SIZE layout
         var c2p_rb = LayoutTensor[
@@ -1730,10 +1750,10 @@ struct AutodiffMaxEntLoss[
                 return
             if i < ACTOR_PS:
                 ag.ptr[i] = src.ptr[i]
-            elif i < ACTOR_PS + CRITIC_PS:
-                cg.ptr[i - ACTOR_PS] = src.ptr[i]
-            else:
-                c2g.ptr[i - ACTOR_PS - CRITIC_PS] = src.ptr[i]
+            elif i >= CRITIC1_OFF and i < CRITIC1_OFF + CRITIC_PS:
+                cg.ptr[i - CRITIC1_OFF] = src.ptr[i]
+            elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
+                c2g.ptr[i - CRITIC2_OFF] = src.ptr[i]
 
         ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
             grads_t,
@@ -2299,18 +2319,24 @@ struct AutodiffTD3Loss(ActorLoss):
         # TD3Graph: IN=OBS, OUT=1 (-min_Q)
 
         # =================================================================
-        # Assemble combined params: [actor | critic1 | critic2]
+        # Assemble combined params: [actor | critic1 (padded) | critic2]
+        # Offsets must match DualPath alignment padding.
         # =================================================================
-        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+        comptime CRITIC1_OFF = ACTOR_PS
+        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        comptime TOTAL_PS = TD3Graph.PARAM_SIZE
         var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
             uninitialized=True
         )
+        # Zero padding regions
+        for i in range(TOTAL_PS):
+            combined_params[i] = Scalar[dtype](0.0)
         for i in range(ACTOR_PS):
             combined_params[i] = actor_params.ptr[i]
         for i in range(CRITIC_PS):
-            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+            combined_params[CRITIC1_OFF + i] = critic_params.ptr[i]
         for i in range(CRITIC_PS):
-            combined_params[ACTOR_PS + CRITIC_PS + i] = critic2_params.ptr[i]
+            combined_params[CRITIC2_OFF + i] = critic2_params.ptr[i]
 
         var params_t = LayoutTensor[
             dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
@@ -2371,9 +2397,9 @@ struct AutodiffTD3Loss(ActorLoss):
         for i in range(ACTOR_PS):
             actor_grads.ptr[i] = combined_grads[i]
         for i in range(CRITIC_PS):
-            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+            critic_grads.ptr[i] = combined_grads[CRITIC1_OFF + i]
         for i in range(CRITIC_PS):
-            critic2_grads.ptr[i] = combined_grads[ACTOR_PS + CRITIC_PS + i]
+            critic2_grads.ptr[i] = combined_grads[CRITIC2_OFF + i]
 
         return 0.0  # No log_probs for TD3
 
@@ -2419,7 +2445,7 @@ struct AutodiffTD3Loss(ActorLoss):
         """GPU TD3 deterministic policy gradient via composed autodiff graph.
 
         Steps:
-        1. Concat params [actor | critic1 | critic2] on GPU
+        1. Concat params [actor | critic1 (padded) | critic2] on GPU
         2. Forward graph on GPU
         3. Backward graph on GPU with seed 1/BS
         4. Scatter grads back to separate buffers
@@ -2427,7 +2453,6 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime OBS = ActorModel.IN_DIM
         comptime ACTOR_PS = ActorModel.PARAM_SIZE
         comptime CRITIC_PS = CriticModel.PARAM_SIZE
-        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
 
         # =================================================================
         # Build the composed TD3 graph type (same as CPU)
@@ -2440,8 +2465,13 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime GRAPH_CS = TD3Graph.CACHE_SIZE
         comptime GRAPH_WS = TD3Graph.WORKSPACE_SIZE_PER_SAMPLE
 
+        # Aligned offsets matching DualPath padding
+        comptime CRITIC1_OFF = ACTOR_PS
+        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        comptime TOTAL_PS = TD3Graph.PARAM_SIZE
+
         # =================================================================
-        # 1. Concat params on GPU: [actor | critic1 | critic2]
+        # 1. Concat params on GPU: [actor | critic1 (padded) | critic2]
         # =================================================================
         var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
         var params_t = LayoutTensor[
@@ -2470,10 +2500,13 @@ struct AutodiffTD3Loss(ActorLoss):
                 return
             if i < ACTOR_PS:
                 dst.ptr[i] = ap.ptr[i]
-            elif i < ACTOR_PS + CRITIC_PS:
-                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+            elif i >= CRITIC1_OFF and i < CRITIC1_OFF + CRITIC_PS:
+                dst.ptr[i] = cp.ptr[i - CRITIC1_OFF]
+            elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
+                dst.ptr[i] = c2p.ptr[i - CRITIC2_OFF]
             else:
-                dst.ptr[i] = c2p.ptr[i - ACTOR_PS - CRITIC_PS]
+                # Padding region — zero it
+                dst.ptr[i] = 0.0
 
         var c2p_rb = LayoutTensor[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
@@ -2597,10 +2630,10 @@ struct AutodiffTD3Loss(ActorLoss):
                 return
             if i < ACTOR_PS:
                 ag.ptr[i] = src.ptr[i]
-            elif i < ACTOR_PS + CRITIC_PS:
-                cg.ptr[i - ACTOR_PS] = src.ptr[i]
-            else:
-                c2g.ptr[i - ACTOR_PS - CRITIC_PS] = src.ptr[i]
+            elif i >= CRITIC1_OFF and i < CRITIC1_OFF + CRITIC_PS:
+                cg.ptr[i - CRITIC1_OFF] = src.ptr[i]
+            elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
+                c2g.ptr[i - CRITIC2_OFF] = src.ptr[i]
 
         ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
             grads_t,
