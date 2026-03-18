@@ -437,10 +437,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
         ](self.dones_buf.unsafe_ptr())
 
-        # For large OBS_DIM (pixel observations), use parallel gather:
-        # 2D grid (OBS_DIM_blocks, BATCH) — one thread per element instead of
-        # one thread per sample. ~900x more parallelism for 28224-dim obs.
-        comptime if Self.OBS_DIM > TPB:
+        # Parallel gather: 2D grid (OBS_DIM_blocks, BATCH) — one thread per
+        # element. Works for all OBS_DIM sizes.
+        comptime if True:
             comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
 
             @always_inline
