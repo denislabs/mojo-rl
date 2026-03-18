@@ -1260,6 +1260,7 @@ from mojo_rl.nn.model import (
     RSample,
     Min,
     Slice,
+    Negate,
 )
 from mojo_rl.nn.autodiff.combinators import SkipConcat, DualPath, SplitApply
 
@@ -1790,3 +1791,824 @@ struct AutodiffMaxEntLoss[
         )
 
         return 0.0
+
+
+# =============================================================================
+# AutodiffDPGLoss — composed autodiff replacement for DPGLoss (DDPG)
+# =============================================================================
+
+
+struct AutodiffDPGLoss(ActorLoss):
+    """Deterministic policy gradient using composed autodiff graph.
+
+    Replaces the manual forward/backward in DPGLoss with automatic
+    differentiation via composed Model primitives:
+
+        obs → SkipConcat[Actor] → [obs, action]
+            → Critic → Q
+            → Negate → -Q
+
+    Single critic (DDPG). The backward pass is fully automatic.
+    Produces identical gradients to DPGLoss but with fewer lines of code.
+    """
+
+    comptime HAS_ALPHA: Bool = False
+
+    @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+    ]() -> Int:
+        """No log_probs for DPG."""
+        return 0
+
+    @staticmethod
+    fn ws_size[
+        BATCH: Int,
+        OBS: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+        CRITIC_IN: Int,
+        CRITIC_OUT: Int,
+        CRITIC_CS: Int,
+    ]() -> Int:
+        # Same workspace size as DPGLoss
+        return (
+            BATCH * ACTIONS
+            + BATCH * ACTOR_CS
+            + BATCH * CRITIC_IN
+            + BATCH * CRITIC_OUT
+            + BATCH * CRITIC_CS
+            + BATCH * CRITIC_OUT
+            + BATCH * CRITIC_IN
+            + BATCH * ACTIONS
+            + BATCH * OBS
+        )
+
+    @staticmethod
+    fn update_actor_cpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        alpha: Float64,
+    ) -> Float64:
+        """Compute deterministic policy gradient using composed autodiff graph.
+
+        Returns 0.0 (no log_probs for DPG).
+        critic2_params/critic2_grads are ignored (DDPG uses single critic).
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+
+        # =================================================================
+        # Build the composed DDPG graph type
+        # =================================================================
+        comptime ActorSkip = SkipConcat[ActorModel]
+        # ActorSkip: IN=OBS, OUT=OBS+ACTIONS
+
+        comptime DDPGGraph = Sequential[ActorSkip, CriticModel, Negate[1]]
+        # DDPGGraph: IN=OBS, OUT=1 (-Q)
+
+        # =================================================================
+        # Assemble combined params: [actor | critic]
+        # =================================================================
+        comptime TOTAL_PS = ACTOR_PS + CRITIC_PS
+        var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(ACTOR_PS):
+            combined_params[i] = actor_params.ptr[i]
+        for i in range(CRITIC_PS):
+            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params.unsafe_ptr())
+
+        # =================================================================
+        # Forward: obs → -Q
+        # =================================================================
+        var output = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](output.unsafe_ptr())
+
+        var cache = InlineArray[Scalar[dtype], BATCH * DDPGGraph.CACHE_SIZE](
+            uninitialized=True
+        )
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DDPGGraph.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+
+        DDPGGraph.forward[BATCH](obs, output_t, params_t, cache_t)
+
+        # =================================================================
+        # Backward: gradient seed = 1/BS (minimize -Q = maximize Q)
+        # =================================================================
+        var grad_out = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out[b] = inv_batch
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_out.unsafe_ptr())
+
+        var grad_obs = InlineArray[Scalar[dtype], BATCH * OBS](
+            uninitialized=True
+        )
+        var grad_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](grad_obs.unsafe_ptr())
+
+        var combined_grads = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(TOTAL_PS):
+            combined_grads[i] = Scalar[dtype](0.0)
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads.unsafe_ptr())
+
+        DDPGGraph.backward[BATCH](
+            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+        )
+
+        # =================================================================
+        # Scatter gradients back to separate actor/critic grad buffers
+        # =================================================================
+        for i in range(ACTOR_PS):
+            actor_grads.ptr[i] = combined_grads[i]
+        for i in range(CRITIC_PS):
+            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+
+        return 0.0  # No log_probs for DPG
+
+    @staticmethod
+    fn update_actor_gpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        ctx: DeviceContext,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        actor_ws: DeviceBuffer[dtype],
+        critic_ws: DeviceBuffer[dtype],
+        critic2_ws: DeviceBuffer[dtype],
+        strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
+        alpha: Float64,
+        rng_seed: UInt32,
+    ) raises -> Float64:
+        """GPU deterministic policy gradient via composed autodiff graph.
+
+        Steps:
+        1. Concat params [actor | critic] on GPU
+        2. Forward graph on GPU
+        3. Backward graph on GPU with seed 1/BS
+        4. Scatter grads back to separate buffers
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+        comptime TOTAL_PS = ACTOR_PS + CRITIC_PS
+
+        # =================================================================
+        # Build the composed DDPG graph type (same as CPU)
+        # =================================================================
+        comptime ActorSkip = SkipConcat[ActorModel]
+        comptime DDPGGraph = Sequential[ActorSkip, CriticModel, Negate[1]]
+        comptime GRAPH_CS = DDPGGraph.CACHE_SIZE
+        comptime GRAPH_WS = DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE
+
+        # =================================================================
+        # 1. Concat params on GPU: [actor | critic]
+        # =================================================================
+        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+
+        comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
+
+        @always_inline
+        fn concat_params_kernel(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ap: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cp: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                dst.ptr[i] = ap.ptr[i]
+            else:
+                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+
+        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+            params_t,
+            actor_params,
+            critic_params,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # =================================================================
+        # 2. Allocate output, cache, workspace on GPU
+        # =================================================================
+        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 1)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+
+        var cache_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_CS)
+        )
+
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_WS)
+        )
+
+        # =================================================================
+        # 3. Forward: obs → -Q
+        # =================================================================
+        var graph_params = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+        var graph_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var graph_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DDPGGraph.IN_DIM), MutAnyOrigin
+        ](obs.ptr)
+
+        DDPGGraph.forward_gpu[BATCH](
+            ctx,
+            output_t,
+            graph_obs,
+            graph_params,
+            graph_cache,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 4. Backward with gradient seed 1/BS
+        # =================================================================
+        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out_host[b] = inv_batch
+
+        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
+        ctx.enqueue_copy(grad_out_buf, grad_out_host)
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_out_buf.unsafe_ptr())
+
+        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+
+        # Combined grads buffer (zeroed)
+        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
+        for i in range(TOTAL_PS):
+            zero_host[i] = Scalar[dtype](0.0)
+        ctx.enqueue_copy(combined_grads_buf, zero_host)
+
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+        var graph_grad_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DDPGGraph.IN_DIM), MutAnyOrigin
+        ](grad_obs_buf.unsafe_ptr())
+
+        DDPGGraph.backward_gpu[BATCH](
+            ctx,
+            graph_grad_obs,
+            grad_out_t,
+            graph_params,
+            graph_cache,
+            graph_grads,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 5. Scatter grads back to separate actor/critic grad buffers
+        # =================================================================
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+
+        @always_inline
+        fn scatter_grads_kernel(
+            src: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ag: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cg: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                ag.ptr[i] = src.ptr[i]
+            else:
+                cg.ptr[i - ACTOR_PS] = src.ptr[i]
+
+        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+            grads_t,
+            actor_grads,
+            critic_grads,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        return 0.0  # No log_probs for DPG
+
+
+# =============================================================================
+# AutodiffTD3Loss — composed autodiff replacement for DPGLoss (TD3)
+# =============================================================================
+
+
+struct AutodiffTD3Loss(ActorLoss):
+    """TD3 deterministic policy gradient using composed autodiff graph.
+
+    Replaces the manual forward/backward in DPGLoss (twin-critic path) with
+    automatic differentiation via composed Model primitives:
+
+        obs → SkipConcat[Actor] → [obs, action]
+            → DualPath[Critic, Critic] → [Q1, Q2]
+            → Min → min_Q
+            → Negate → -min_Q
+
+    Twin critics (TD3). The backward pass is fully automatic.
+    """
+
+    comptime HAS_ALPHA: Bool = False
+
+    @staticmethod
+    fn gpu_lp_offset[
+        BATCH: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+    ]() -> Int:
+        """No log_probs for TD3."""
+        return 0
+
+    @staticmethod
+    fn ws_size[
+        BATCH: Int,
+        OBS: Int,
+        ACTIONS: Int,
+        ACTOR_OUT: Int,
+        ACTOR_CS: Int,
+        CRITIC_IN: Int,
+        CRITIC_OUT: Int,
+        CRITIC_CS: Int,
+    ]() -> Int:
+        # Same workspace size as DPGLoss
+        return (
+            BATCH * ACTIONS
+            + BATCH * ACTOR_CS
+            + BATCH * CRITIC_IN
+            + BATCH * CRITIC_OUT
+            + BATCH * CRITIC_CS
+            + BATCH * CRITIC_OUT
+            + BATCH * CRITIC_IN
+            + BATCH * ACTIONS
+            + BATCH * OBS
+        )
+
+    @staticmethod
+    fn update_actor_cpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        alpha: Float64,
+    ) -> Float64:
+        """Compute TD3 deterministic policy gradient using composed autodiff graph.
+
+        Returns 0.0 (no log_probs for TD3).
+        Uses both critics via DualPath + Min.
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+
+        # =================================================================
+        # Build the composed TD3 graph type
+        # =================================================================
+        comptime ActorSkip = SkipConcat[ActorModel]
+        # ActorSkip: IN=OBS, OUT=OBS+ACTIONS
+
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime TD3Graph = Sequential[ActorSkip, TwinCriticMin, Negate[1]]
+        # TD3Graph: IN=OBS, OUT=1 (-min_Q)
+
+        # =================================================================
+        # Assemble combined params: [actor | critic1 | critic2]
+        # =================================================================
+        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+        var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(ACTOR_PS):
+            combined_params[i] = actor_params.ptr[i]
+        for i in range(CRITIC_PS):
+            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+        for i in range(CRITIC_PS):
+            combined_params[ACTOR_PS + CRITIC_PS + i] = critic2_params.ptr[i]
+
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params.unsafe_ptr())
+
+        # =================================================================
+        # Forward: obs → -min_Q
+        # =================================================================
+        var output = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](output.unsafe_ptr())
+
+        var cache = InlineArray[Scalar[dtype], BATCH * TD3Graph.CACHE_SIZE](
+            uninitialized=True
+        )
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, TD3Graph.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+
+        TD3Graph.forward[BATCH](obs, output_t, params_t, cache_t)
+
+        # =================================================================
+        # Backward: gradient seed = 1/BS (minimize -min_Q = maximize min_Q)
+        # =================================================================
+        var grad_out = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out[b] = inv_batch
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_out.unsafe_ptr())
+
+        var grad_obs = InlineArray[Scalar[dtype], BATCH * OBS](
+            uninitialized=True
+        )
+        var grad_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](grad_obs.unsafe_ptr())
+
+        var combined_grads = InlineArray[Scalar[dtype], TOTAL_PS](
+            uninitialized=True
+        )
+        for i in range(TOTAL_PS):
+            combined_grads[i] = Scalar[dtype](0.0)
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads.unsafe_ptr())
+
+        TD3Graph.backward[BATCH](
+            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+        )
+
+        # =================================================================
+        # Scatter gradients back to separate actor/critic grad buffers
+        # =================================================================
+        for i in range(ACTOR_PS):
+            actor_grads.ptr[i] = combined_grads[i]
+        for i in range(CRITIC_PS):
+            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+        for i in range(CRITIC_PS):
+            critic2_grads.ptr[i] = combined_grads[ACTOR_PS + CRITIC_PS + i]
+
+        return 0.0  # No log_probs for TD3
+
+    @staticmethod
+    fn update_actor_gpu[
+        BATCH: Int,
+        ACTIONS: Int,
+        ActorModel: Model,
+        ActorOpt: Optimizer,
+        CriticModel: Model,
+        CriticOpt: Optimizer,
+    ](
+        ctx: DeviceContext,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut actor_grads: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        critic2_params: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut critic2_grads: LayoutTensor[
+            dtype, Layout.row_major(CriticModel.PARAM_SIZE), MutAnyOrigin
+        ],
+        actor_ws: DeviceBuffer[dtype],
+        critic_ws: DeviceBuffer[dtype],
+        critic2_ws: DeviceBuffer[dtype],
+        strat_ws: DeviceBuffer[dtype],
+        dq_buf: DeviceBuffer[dtype],
+        alpha: Float64,
+        rng_seed: UInt32,
+    ) raises -> Float64:
+        """GPU TD3 deterministic policy gradient via composed autodiff graph.
+
+        Steps:
+        1. Concat params [actor | critic1 | critic2] on GPU
+        2. Forward graph on GPU
+        3. Backward graph on GPU with seed 1/BS
+        4. Scatter grads back to separate buffers
+        """
+        comptime OBS = ActorModel.IN_DIM
+        comptime ACTOR_PS = ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = CriticModel.PARAM_SIZE
+        comptime TOTAL_PS = ACTOR_PS + 2 * CRITIC_PS
+
+        # =================================================================
+        # Build the composed TD3 graph type (same as CPU)
+        # =================================================================
+        comptime ActorSkip = SkipConcat[ActorModel]
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime TD3Graph = Sequential[ActorSkip, TwinCriticMin, Negate[1]]
+        comptime GRAPH_CS = TD3Graph.CACHE_SIZE
+        comptime GRAPH_WS = TD3Graph.WORKSPACE_SIZE_PER_SAMPLE
+
+        # =================================================================
+        # 1. Concat params on GPU: [actor | critic1 | critic2]
+        # =================================================================
+        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+
+        comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
+
+        @always_inline
+        fn concat_params_kernel(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ap: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cp: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+            c2p: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                dst.ptr[i] = ap.ptr[i]
+            elif i < ACTOR_PS + CRITIC_PS:
+                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+            else:
+                dst.ptr[i] = c2p.ptr[i - ACTOR_PS - CRITIC_PS]
+
+        var c2p_rb = LayoutTensor[
+            dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+        ](critic2_params.ptr)
+
+        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+            params_t,
+            actor_params,
+            critic_params,
+            c2p_rb,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # =================================================================
+        # 2. Allocate output, cache, workspace on GPU
+        # =================================================================
+        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 1)
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+
+        var cache_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_CS)
+        )
+
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * GRAPH_WS)
+        )
+
+        # =================================================================
+        # 3. Forward: obs → -min_Q
+        # =================================================================
+        var graph_params = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
+        ](combined_params_buf.unsafe_ptr())
+        var graph_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var graph_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, TD3Graph.IN_DIM), MutAnyOrigin
+        ](obs.ptr)
+
+        TD3Graph.forward_gpu[BATCH](
+            ctx,
+            output_t,
+            graph_obs,
+            graph_params,
+            graph_cache,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 4. Backward with gradient seed 1/BS
+        # =================================================================
+        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            grad_out_host[b] = inv_batch
+
+        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
+        ctx.enqueue_copy(grad_out_buf, grad_out_host)
+
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_out_buf.unsafe_ptr())
+
+        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+
+        # Combined grads buffer (zeroed)
+        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
+        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
+        for i in range(TOTAL_PS):
+            zero_host[i] = Scalar[dtype](0.0)
+        ctx.enqueue_copy(combined_grads_buf, zero_host)
+
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+        var graph_grad_obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, TD3Graph.IN_DIM), MutAnyOrigin
+        ](grad_obs_buf.unsafe_ptr())
+
+        TD3Graph.backward_gpu[BATCH](
+            ctx,
+            graph_grad_obs,
+            grad_out_t,
+            graph_params,
+            graph_cache,
+            graph_grads,
+            workspace_buf,
+        )
+
+        # =================================================================
+        # 5. Scatter grads back to separate actor/critic grad buffers
+        # =================================================================
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+        ](combined_grads_buf.unsafe_ptr())
+        var c2g_rb = LayoutTensor[
+            dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+        ](critic2_grads.ptr)
+
+        @always_inline
+        fn scatter_grads_kernel(
+            src: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+            ag: LayoutTensor[
+                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
+            ],
+            cg: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+            c2g: LayoutTensor[
+                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= TOTAL_PS:
+                return
+            if i < ACTOR_PS:
+                ag.ptr[i] = src.ptr[i]
+            elif i < ACTOR_PS + CRITIC_PS:
+                cg.ptr[i - ACTOR_PS] = src.ptr[i]
+            else:
+                c2g.ptr[i - ACTOR_PS - CRITIC_PS] = src.ptr[i]
+
+        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+            grads_t,
+            actor_grads,
+            critic_grads,
+            c2g_rb,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        return 0.0  # No log_probs for TD3

@@ -29,4 +29,4 @@ from .pool_layer import MaxPoolLayer, AvgPoolLayer
 from .flatten_layer import FlattenLayer
 
 # Combinators (canonical home: nn.autodiff.combinators, re-exported here)
-from ..autodiff.combinators import Parallel, Residual, Repeat, SkipConcat, DualPath, SplitApply
+from ..autodiff.combinators import Parallel, Residual, Repeat, SkipConcat, DualPath, SplitApply, FanOut

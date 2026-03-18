@@ -39,7 +39,7 @@ from .target_action import (
     SmoothedTarget,
     ReparamTarget,
 )
-from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss, AutodiffMaxEntLoss
+from .actor_loss import ActorLoss, DPGLoss, MaxEntLoss, AutodiffMaxEntLoss, AutodiffDPGLoss, AutodiffTD3Loss
 
 
 # =============================================================================
@@ -275,3 +275,115 @@ struct AutodiffSACConfig[
     comptime TargetAction = ReparamTarget
     comptime TargetValue = EntropicTwinQTarget
     comptime ActorLoss = AutodiffMaxEntLoss[]
+
+
+# =============================================================================
+# AutodiffDDPGConfig
+# =============================================================================
+
+
+struct AutodiffDDPGConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 256,
+    CAP: Int = 100000,
+    BS: Int = 64,
+    actor_lr: Float64 = 0.001,
+    critic_lr: Float64 = 0.001,
+](OffPolicyConfig):
+    """DDPG with autodiff-composed actor loss (no manual backward code).
+
+    Identical to DDPGConfig but uses AutodiffDPGLoss for the actor update.
+    The actor loss is expressed as a composed Model graph with automatic
+    forward/backward via the autodiff system.
+
+    Usage:
+        from mojo_rl.deep_agents.core.generic import (
+            GenericOffPolicyAgent, AutodiffDDPGConfig
+        )
+        var agent = GenericOffPolicyAgent[AutodiffDDPGConfig[3, 1]](action_scale=2.0)
+    """
+
+    comptime NAME: String = "AutodiffDDPG"
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime NUM_CRITICS: Int = 1
+    comptime HAS_TARGET_ACTOR: Bool = True
+
+    comptime Explore = GaussianNoise[]
+    comptime Schedule = EveryStep
+    comptime TargetAction = DeterministicTarget
+    comptime TargetValue = SingleQTarget
+    comptime ActorLoss = AutodiffDPGLoss
+
+
+# =============================================================================
+# AutodiffTD3Config
+# =============================================================================
+
+
+struct AutodiffTD3Config[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 256,
+    CAP: Int = 100000,
+    BS: Int = 64,
+    actor_lr: Float64 = 0.001,
+    critic_lr: Float64 = 0.001,
+](OffPolicyConfig):
+    """TD3 with autodiff-composed actor loss (no manual backward code).
+
+    Identical to TD3Config but uses AutodiffTD3Loss for the actor update.
+    The actor loss is expressed as a composed Model graph with automatic
+    forward/backward via the autodiff system.
+
+    Usage:
+        from mojo_rl.deep_agents.core.generic import (
+            GenericOffPolicyAgent, AutodiffTD3Config
+        )
+        var agent = GenericOffPolicyAgent[AutodiffTD3Config[17, 6]](action_scale=1.0)
+    """
+
+    comptime NAME: String = "AutodiffTD3"
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime NUM_CRITICS: Int = 2
+    comptime HAS_TARGET_ACTOR: Bool = True
+
+    comptime Explore = GaussianNoise[]
+    comptime Schedule = DelayedAll
+    comptime TargetAction = SmoothedTarget[]
+    comptime TargetValue = TwinQTarget
+    comptime ActorLoss = AutodiffTD3Loss

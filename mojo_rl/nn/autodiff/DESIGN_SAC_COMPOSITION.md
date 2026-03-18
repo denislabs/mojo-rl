@@ -340,10 +340,13 @@ graph definitions — no manual backward code needed.
 | 2a | `SplitApply` | ✅ Done | Split input, apply different Models |
 | 2a | `AutodiffMaxEntLoss` | ✅ Done | SAC actor loss via composed graph |
 | 2a | `AutodiffSACConfig` | ✅ Done | Drop-in SAC config using autodiff loss |
-| 2b | `FanOut` | TODO | General fan-out combinator |
-| 2c | `ComputeGraph` | TODO | Full compile-time DAG builder |
-| 3 | DDPG/TD3 losses | TODO | Rewrite as graph defs |
-| 3 | GPU autodiff path | TODO | GPU forward/backward for composed graph |
+| 2b | `FanOut` | ✅ Done | N copies of same Model, concat outputs |
+| 3 | `AutodiffDPGLoss` | ✅ Done | DDPG actor loss via composed graph |
+| 3 | `AutodiffTD3Loss` | ✅ Done | TD3 actor loss via composed graph |
+| 3 | `AutodiffDDPGConfig` | ✅ Done | Drop-in DDPG config using autodiff |
+| 3 | `AutodiffTD3Config` | ✅ Done | Drop-in TD3 config using autodiff |
+| 3 | GPU autodiff path | ✅ Done | GPU forward/backward (CUDA; Metal has nested generic limits) |
+| 2c | `ComputeGraph` | Future | Full compile-time DAG builder |
 
 ## Benefits
 
