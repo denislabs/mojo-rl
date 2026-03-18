@@ -21,7 +21,7 @@ Both CPU and GPU supported. GPU uses 9 kernel launches per step:
 
 from std.math import sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from layout import LayoutTensor, Layout
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
@@ -1136,10 +1136,11 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         parallelize mass matrix computation across threads.
         """
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        var tid: Int
         comptime if STEP_THREADS > 1:
-            var tid = Int(thread_idx.y)
+            tid = Int(thread_idx.y)
         else:
-            var tid = 0
+            tid = 0
         var valid_env = env < BATCH
         comptime if STEP_THREADS <= 1:
             if not valid_env:
@@ -1355,7 +1356,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     MODEL_SIZE,
                     BATCH,
                     WS_SIZE,
-                ](env, state, model, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    sp_row_nnz,
+                    sp_row_adr,
+                    sp_col_ind,
+                )
         else:
             comptime if STEP_THREADS > 1:
                 if valid_env:
@@ -2055,25 +2064,55 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](workspace_buf)
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ]
 
         # ---- Stage 0 ----
         timer.sync_and_mark(ctx)
 
         comptime stage0_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 0, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            0,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage0_kernel, stage0_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -2084,16 +2123,33 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime stage1_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 1, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            1,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage1_kernel, stage1_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -2104,16 +2160,33 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime stage2_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 2, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            2,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage2_kernel, stage2_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -2124,16 +2197,33 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime stage3_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 3, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            3,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[stage3_kernel, stage3_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -2144,12 +2234,24 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime combine_kernel = Self.rk4_combine_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, SOLVER_WS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            SOLVER_WS,
         ]
         ctx.enqueue_function[combine_kernel, combine_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         timer.sync_and_accumulate(base + 4, ctx)
