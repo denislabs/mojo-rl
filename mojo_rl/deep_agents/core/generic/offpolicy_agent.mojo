@@ -1374,9 +1374,10 @@ struct GenericOffPolicyAgent[
         comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
 
         # Phase 1: Sample batch
+        self.train_step_count += 1
         gpu_state.buffer.sample[BS](
             ctx,
-            rng_seed=UInt32(self.total_steps) * UInt32(BS + 1),
+            rng_seed=UInt32(self.train_step_count) * UInt32(BS + 1),
             sampled_obs=gpu_state.s_obs,
             sampled_actions=gpu_state.s_act,
             sampled_rewards=gpu_state.s_rew,
@@ -1397,7 +1398,7 @@ struct GenericOffPolicyAgent[
         var p_critic_t = gpu_state.critic.target.params_view()
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critic.online.params_view()
-        var rng_seed = UInt32(self.total_steps) * UInt32(BS * Self.ACTIONS + 7)
+        var rng_seed = UInt32(self.train_step_count) * UInt32(BS * Self.ACTIONS + 7)
 
         comptime if Self.profile >= 2:
             self.train_timer.sync_and_accumulate(0, ctx)
@@ -1610,7 +1611,7 @@ struct GenericOffPolicyAgent[
                 c2_ws,
                 gpu_state.strat_ws,
                 self.alpha,
-                UInt32(self.total_steps),
+                UInt32(self.train_step_count),
             )
             gpu_state.actor.online.optimizer_step(ctx)
 
