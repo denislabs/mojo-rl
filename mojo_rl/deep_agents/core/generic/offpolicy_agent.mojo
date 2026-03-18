@@ -384,8 +384,8 @@ struct GenericGPUState[
         ctx.enqueue_copy(self.dq, dq_host)
 
         # Gradient clipping partial sums buffer (sized for largest network)
-        comptime ACTOR_PS = Self.Config.ActorModel.PARAM_SIZE
-        comptime CRITIC_PS = Self.Config.CriticModel.PARAM_SIZE
+        comptime ACTOR_PS = Self.ActorModel.PARAM_SIZE
+        comptime CRITIC_PS = Self.CriticModel.PARAM_SIZE
         comptime MAX_PS = ACTOR_PS if ACTOR_PS > CRITIC_PS else CRITIC_PS
         comptime MAX_BLOCKS = (MAX_PS + TPB - 1) // TPB
         self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](MAX_BLOCKS)
