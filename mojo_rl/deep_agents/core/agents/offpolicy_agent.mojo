@@ -37,7 +37,7 @@ from mojo_rl.nn.model.stochastic_actor import (
     get_deterministic_action,
 )
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.deep_agents.core import (
     OffPolicyState,
@@ -323,6 +323,16 @@ struct GenericGPUState[
     var q2_cache: DeviceBuffer[dtype]
     var critic2_ws: DeviceBuffer[dtype]
 
+    # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
+    var diag_q_host: HostBuffer[dtype]    # [batch_size]
+    var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
+    var diag_rew_host: HostBuffer[dtype]  # [batch_size]
+    var diag_done_host: HostBuffer[dtype] # [batch_size]
+    var diag_act_host: HostBuffer[dtype]  # [batch_size * action_dim]
+    var diag_nq_host: HostBuffer[dtype]   # [batch_size]
+    var diag_ag_host: HostBuffer[dtype]   # [ActorModel.PARAM_SIZE]
+    var diag_lp_host: HostBuffer[dtype]   # [batch_size]
+
     fn __init__(out self, ctx: DeviceContext) raises:
         self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
         self.critic = GPUNetworkPair[Self.CriticModel, Self.CriticOpt](ctx)
@@ -402,6 +412,20 @@ struct GenericGPUState[
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
+
+        # Diagnostic host buffers
+        self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            BS * Self.ACTIONS
+        )
+        self.diag_nq_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_ag_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.ActorModel.PARAM_SIZE
+        )
+        self.diag_lp_host = ctx.enqueue_create_host_buffer[dtype](BS)
 
     # =========================================================================
     # LayoutTensor views (zero-copy pointer casts over DeviceBuffers)
@@ -1614,22 +1638,20 @@ struct GenericOffPolicyAgent[
         # GPU Diagnostic logging (every diag_every train steps)
         if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             try:
-                # Sync Q-values and targets from GPU to CPU for diagnostics
-                var diag_q_host = ctx.enqueue_create_host_buffer[dtype](BS)
-                var diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BS)
-                var diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BS)
-                var diag_done_host = ctx.enqueue_create_host_buffer[dtype](BS)
-                var diag_act_host = ctx.enqueue_create_host_buffer[dtype](
-                    BS * Self.ACTIONS
-                )
-                var diag_nq_host = ctx.enqueue_create_host_buffer[dtype](BS)
-                ctx.enqueue_copy(diag_q_host, gpu_state.q_out)
-                ctx.enqueue_copy(diag_tgt_host, gpu_state.targets)
-                ctx.enqueue_copy(diag_rew_host, gpu_state.s_rew)
-                ctx.enqueue_copy(diag_done_host, gpu_state.s_done)
-                ctx.enqueue_copy(diag_act_host, gpu_state.s_act)
-                ctx.enqueue_copy(diag_nq_host, gpu_state.next_q)
+                # Reuse pre-allocated host buffers
+                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
+                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
                 ctx.synchronize()
+                var diag_q_host = gpu_state.diag_q_host
+                var diag_tgt_host = gpu_state.diag_tgt_host
+                var diag_rew_host = gpu_state.diag_rew_host
+                var diag_done_host = gpu_state.diag_done_host
+                var diag_act_host = gpu_state.diag_act_host
+                var diag_nq_host = gpu_state.diag_nq_host
 
                 # Compute mean Q, mean target, critic loss, mean reward
                 var mean_q: Float64 = 0.0
@@ -1718,7 +1740,7 @@ struct GenericOffPolicyAgent[
             if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
                 try:
                     comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
-                    var ag_host = ctx.enqueue_create_host_buffer[dtype](A_PS)
+                    var ag_host = gpu_state.diag_ag_host
                     ctx.enqueue_copy(
                         ag_host, gpu_state.actor.online.grads_buf
                     )
@@ -1826,7 +1848,7 @@ struct GenericOffPolicyAgent[
                     )
 
                     # GPU → CPU copy
-                    var lp_host = ctx.enqueue_create_host_buffer[dtype](BS)
+                    var lp_host = gpu_state.diag_lp_host
                     ctx.enqueue_copy(lp_host, gpu_state.curr_lp)
                     ctx.synchronize()
 

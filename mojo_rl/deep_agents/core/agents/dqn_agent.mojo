@@ -10,7 +10,7 @@ GPU support via GPUOffPolicyAgent trait + run_offpolicy_discrete_train_gpu.
 from std.math import exp
 from std.random import random_float64
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 from mojo_rl.deep_agents.core import (
@@ -411,6 +411,11 @@ struct DQNGPUStateGeneric[
     var train_ws: DeviceBuffer[dtype]  # [max(1, batch_size * WS_PER_SAMPLE)]
     var loss_ws: DeviceBuffer[dtype]  # [max(1, grad_ws_size)] — QGradient workspace
 
+    # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
+    var diag_q_host: HostBuffer[dtype]    # [batch_size * num_actions]
+    var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
+    var diag_act_host: HostBuffer[dtype]  # [batch_size]
+
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
         self.online = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
@@ -467,6 +472,15 @@ struct DQNGPUStateGeneric[
         self.train_ws = ctx.enqueue_create_buffer[dtype](train_ws_size)
         self.loss_ws = ctx.enqueue_create_buffer[dtype](
             max(1, Self.grad_ws_size)
+        )
+        self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size * Self.num_actions
+        )
+        self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
         )
 
     # -------------------------------------------------------------------------
@@ -1338,19 +1352,14 @@ struct GenericDQNAgent[
         # ---- GPU Diagnostic logging ----
         if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             try:
-                var diag_q_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * Self.ACTIONS
-                )
-                var diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH
-                )
-                var diag_act_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH
-                )
-                ctx.enqueue_copy(diag_q_host, gpu_state.q_values)
-                ctx.enqueue_copy(diag_tgt_host, gpu_state.targets)
-                ctx.enqueue_copy(diag_act_host, gpu_state.s_act)
+                # Reuse pre-allocated host buffers
+                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_values)
+                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
                 ctx.synchronize()
+                var diag_q_host = gpu_state.diag_q_host
+                var diag_tgt_host = gpu_state.diag_tgt_host
+                var diag_act_host = gpu_state.diag_act_host
 
                 var step = self.train_step_count
 
