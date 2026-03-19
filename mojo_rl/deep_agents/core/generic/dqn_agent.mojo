@@ -18,7 +18,7 @@ from mojo_rl.deep_agents.core import (
     PerfTimer,
 )
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel, Conv2DReLU, FlattenLayer
+from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel, Conv2DReLU, FlattenLayer, HuberLoss
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import (
     Network,
@@ -250,7 +250,48 @@ struct AutodiffDQNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DirectQ
-    comptime QGradStrat = AutodiffQGradient
+    comptime QGradStrat = AutodiffQGradient[]
+
+
+# =============================================================================
+# HuberDQNConfig -- Double DQN with Huber loss (robust to outliers)
+# =============================================================================
+
+
+struct HuberDQNConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 120,
+    HIDDEN2: Int = 84,
+    CAP: Int = 10000,
+    BS: Int = 128,
+    lr: Float64 = 2.5e-4,
+    huber_delta: Float64 = 1.0,
+](DiscreteOffPolicyConfig):
+    """Double DQN with Huber loss — robust to large TD errors.
+
+    Swapping MSE for Huber is a one-line change in the loss graph:
+        AutodiffQGradient[MSELoss]    → standard DQN
+        AutodiffQGradient[HuberLoss]  → robust DQN
+
+    This demonstrates the composability of the autodiff system.
+    """
+
+    comptime NAME: String = "Huber DQN"
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN2],
+        Linear[Self.HIDDEN2, Self.ACT],
+    ]
+    comptime QOpt = Adam[Self.lr]
+    comptime QTargetStrat = DoubleQTarget
+    comptime QOutputStrat = DirectQ
+    comptime QGradStrat = AutodiffQGradient[HuberLoss[Self.huber_delta]]
 
 
 # =============================================================================
@@ -1313,6 +1354,84 @@ struct GenericDQNAgent[
         gpu_state.online.optimizer_step(ctx)
 
         self.train_step_count += 1
+
+        # ---- GPU Diagnostic logging ----
+        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            try:
+                var diag_q_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * Self.ACTIONS
+                )
+                var diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH
+                )
+                var diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH
+                )
+                ctx.enqueue_copy(diag_q_host, gpu_state.q_values)
+                ctx.enqueue_copy(diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(diag_act_host, gpu_state.s_act)
+                ctx.synchronize()
+
+                var step = self.train_step_count
+
+                # Q-value stats
+                var q_min: Float64 = Float64(diag_q_host[0])
+                var q_max: Float64 = Float64(diag_q_host[0])
+                var q_sum: Float64 = 0.0
+                for i in range(BATCH * Self.ACTIONS):
+                    var v = Float64(diag_q_host[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean",
+                    q_sum / Float64(BATCH * Self.ACTIONS),
+                    step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # TD target stats
+                var tgt_sum: Float64 = 0.0
+                for i in range(BATCH):
+                    tgt_sum += Float64(diag_tgt_host[i])
+                self.logger[].log_scalar(
+                    "td_target_mean",
+                    tgt_sum / Float64(BATCH),
+                    step,
+                )
+
+                # TD error stats
+                var td_err_abs_sum: Float64 = 0.0
+                var td_err_max_abs: Float64 = 0.0
+                var total_loss: Float64 = 0.0
+                for b in range(BATCH):
+                    var act = Int(Float64(diag_act_host[b]))
+                    var q_val = Float64(
+                        diag_q_host[b * Self.ACTIONS + act]
+                    )
+                    var tgt_val = Float64(diag_tgt_host[b])
+                    var td_err = q_val - tgt_val
+                    var abs_err = td_err if td_err >= 0.0 else -td_err
+                    td_err_abs_sum += abs_err
+                    total_loss += td_err * td_err
+                    if abs_err > td_err_max_abs:
+                        td_err_max_abs = abs_err
+                self.logger[].log_scalar(
+                    "td_error_abs_mean",
+                    td_err_abs_sum / Float64(BATCH),
+                    step,
+                )
+                self.logger[].log_scalar(
+                    "td_error_max", td_err_max_abs, step
+                )
+                self.logger[].log_scalar(
+                    "loss", total_loss / Float64(BATCH), step
+                )
+            except:
+                pass
 
     fn soft_update_targets_gpu(
         mut self,

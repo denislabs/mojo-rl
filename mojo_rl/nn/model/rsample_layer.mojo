@@ -56,3 +56,7 @@ comptime ClipSurrogate[eps: Float64 = 0.2] = AutoDiffChain[ClipSurrogateOp[eps]]
 comptime GaussianLogProb[action_dim: Int] = AutoDiffChain[GaussianLogProbOp[action_dim]]
 
 comptime MSELoss = AutoDiffChain[MSEOp]
+
+from ..autodiff.primitives.huber_op import HuberOp
+
+comptime HuberLoss[delta: Float64 = 1.0] = AutoDiffChain[HuberOp[delta]]

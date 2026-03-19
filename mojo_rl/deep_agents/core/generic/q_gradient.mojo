@@ -19,7 +19,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.autodiff.primitives.gather import GatherOp
-from mojo_rl.nn.model import Sequential, Gather, Slice, MSELoss
+from mojo_rl.nn.model import Model, Sequential, Gather, Slice, MSELoss, HuberLoss
 from mojo_rl.nn.autodiff.combinators import SplitApply
 
 
@@ -183,7 +183,7 @@ struct ManualQGradient(QGradient):
 # =============================================================================
 
 
-struct AutodiffQGradient(QGradient):
+struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
     """Autodiff Q-gradient using composed loss graph.
 
     The DQN loss is expressed as a composed Model:
@@ -191,8 +191,11 @@ struct AutodiffQGradient(QGradient):
 
         LossGraph = Sequential[
             SplitApply[Gather[A], Slice[1,0,1], A+1],  → [Q(s,a), target]
-            MSELoss,                                     → (Q(s,a) - target)^2
+            LossOp,                                      → loss(Q(s,a), target)
         ]
+
+    LossOp defaults to MSELoss. Use HuberLoss[delta] for robust DQN:
+        AutodiffQGradient[HuberLoss[1.0]]
 
     Forward packs Q-values, action index, and target into one tensor.
     Backward produces sparse gradient in Q-space via automatic VJP.
@@ -203,7 +206,7 @@ struct AutodiffQGradient(QGradient):
         comptime LOSS_IN = ACTIONS + 2
         comptime LossGraph = Sequential[
             SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
-            MSELoss,
+            Self.LossOp,
         ]
         return BATCH * LOSS_IN + BATCH * LossGraph.CACHE_SIZE + BATCH * 2
 
@@ -221,7 +224,7 @@ struct AutodiffQGradient(QGradient):
         comptime LOSS_IN = ACTIONS + 2
         comptime LossGraph = Sequential[
             SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
-            MSELoss,
+            Self.LossOp,
         ]
         comptime LOSS_CS = LossGraph.CACHE_SIZE
 
@@ -242,7 +245,7 @@ struct AutodiffQGradient(QGradient):
         # Forward
         var loss_out = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
         var loss_out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
         ](loss_out.unsafe_ptr())
         var cache = InlineArray[Scalar[dtype], BATCH * LOSS_CS](
             uninitialized=True
@@ -271,7 +274,7 @@ struct AutodiffQGradient(QGradient):
         for b in range(BATCH):
             grad_seed[b] = inv_batch
         var grad_seed_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
         ](grad_seed.unsafe_ptr())
 
         var grad_in = InlineArray[Scalar[dtype], BATCH * LOSS_IN](
@@ -317,7 +320,7 @@ struct AutodiffQGradient(QGradient):
         comptime LOSS_IN = ACTIONS + 2
         comptime LossGraph = Sequential[
             SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
-            MSELoss,
+            Self.LossOp,
         ]
         comptime LOSS_CS = LossGraph.CACHE_SIZE
         comptime LOSS_WS = max(
@@ -372,7 +375,7 @@ struct AutodiffQGradient(QGradient):
 
         # Forward
         var loss_out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
         ](loss_out_buf.unsafe_ptr())
         var cache_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LOSS_CS), MutAnyOrigin
@@ -393,7 +396,7 @@ struct AutodiffQGradient(QGradient):
         ctx.enqueue_copy(grad_seed_buf, seed_host)
 
         var grad_seed_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
         ](grad_seed_buf.unsafe_ptr())
         var grad_in_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
