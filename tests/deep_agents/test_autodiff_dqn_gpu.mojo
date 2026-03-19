@@ -1,13 +1,7 @@
-"""Test Huber DQN Agent GPU Training on CartPole.
+"""Test Autodiff DQN Agent GPU Training on CartPole.
 
-Uses the composed autodiff loss graph with Huber loss instead of MSE:
-    [Q_values || action_idx || target] → Gather → [Q(s,a), target] → HuberLoss
-
-Huber loss (Smooth L1) is more robust to large TD errors than MSE,
-which is common in early DQN training. The loss function is a pluggable
-Model type in the graph — swapping MSE for Huber is a one-parameter change:
-    AutodiffQGradient[MSELoss]       → standard DQN
-    AutodiffQGradient[HuberLoss[1.0]] → robust DQN (this test)
+Same as test_dqn_gpu.mojo but using AutodiffDQNAgent which uses GatherOp-based
+gradient computation instead of the hand-written sparse MSE kernel.
 
 Run with:
     pixi run -e apple mojo run -I . tests/deep_agents/test_autodiff_dqn_gpu.mojo
@@ -21,7 +15,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.deep_agents.core.generic import GenericDQNAgent, HuberDQNConfig
+from mojo_rl.deep_agents.core.generic import AutodiffDQNAgent
 from mojo_rl.envs import CartPoleEnv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -54,23 +48,23 @@ comptime TARGET_UPDATE_FREQ = 50
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("Huber DQN Agent GPU Test on CartPole")
+    print("Autodiff DQN Agent GPU Test on CartPole")
     print("=" * 70)
     print()
 
     with DeviceContext() as ctx:
         var env = CartPoleEnv[DType.float32]()
-        comptime Config = HuberDQNConfig[
+        var agent = AutodiffDQNAgent[
             OBS_DIM,
             NUM_ACTIONS,
             HIDDEN_DIM,
             HIDDEN_DIM2,
             BUFFER_CAPACITY,
             BATCH_SIZE,
+            N_ENVS,
             lr=2.5e-4,
-            huber_delta=1.0,
-        ]
-        var agent = GenericDQNAgent[Config, N_ENVS, RemoteLogger](
+            L=RemoteLogger,
+        ](
             gamma=0.99,
             tau=1.0,
             epsilon_min=0.05,
@@ -78,8 +72,7 @@ fn main() raises:
         )
 
         print("Environment: CartPole")
-        print("Agent: Huber DQN (GPU, Gather → HuberLoss autodiff graph)")
-        print("  Loss: HuberLoss[delta=1.0] (robust to large TD errors)")
+        print("Agent: Autodiff DQN (GPU, GatherOp-based gradient)")
         print(
             "  Network: "
             + String(HIDDEN_DIM)
@@ -109,11 +102,11 @@ fn main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Huber DQN CartPole GPU",
+            run_name="Autodiff DQN CartPole GPU",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Huber DQN")
+        logger.set_config("agent", "Autodiff DQN")
         logger.set_config("env", "CartPole")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("hidden_dim2", String(HIDDEN_DIM2))
@@ -153,7 +146,7 @@ fn main() raises:
         print()
 
         print("=" * 70)
-        print("Huber DQN GPU Training Complete")
+        print("Autodiff DQN GPU Training Complete")
         print("=" * 70)
         print()
         print("Total steps: " + String(NUM_STEPS))
