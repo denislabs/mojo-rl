@@ -27,6 +27,7 @@ from ..autodiff.primitives.slice_op import SliceOp
 from ..autodiff.primitives.negate import NegateOp
 from ..autodiff.primitives.gather import GatherOp
 from ..autodiff.primitives.ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
+from ..autodiff.primitives.gaussian_log_prob import GaussianLogProbOp
 
 
 comptime RSample[
@@ -50,3 +51,5 @@ comptime CategoricalLogProb[num_actions: Int] = AutoDiffChain[CategoricalLogProb
 comptime Ratio[dim: Int = 1] = AutoDiffChain[RatioOp[dim]]
 
 comptime ClipSurrogate[eps: Float64 = 0.2] = AutoDiffChain[ClipSurrogateOp[eps]]
+
+comptime GaussianLogProb[action_dim: Int] = AutoDiffChain[GaussianLogProbOp[action_dim]]

@@ -150,6 +150,7 @@ trait ContinuousOnPolicyConfig:
     comptime CriticOpt: Optimizer
     comptime PolicyGrad: PolicyGradient
     comptime EpochSched: EpochSchedule
+    comptime USE_AUTODIFF_GRAD: Bool
 
 
 # =============================================================================
@@ -191,6 +192,7 @@ struct ContinuousPPOConfig[
 
     comptime PolicyGrad = ClippedSurrogate
     comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = False
 
 
 # =============================================================================
@@ -323,3 +325,50 @@ struct AutodiffA2CConfig[
 
     comptime PolicyGrad = AutodiffVanillaPG
     comptime EpochSched = SinglePass
+
+
+# =============================================================================
+# AutodiffContinuousPPOConfig
+# =============================================================================
+
+
+struct AutodiffContinuousPPOConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 256,
+    ROLLOUT: Int = 128,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.001,
+    clip_eps: Float64 = 0.2,
+](ContinuousOnPolicyConfig):
+    """PPO for continuous actions using autodiff-composed policy gradient.
+
+    Identical architecture to ContinuousPPOConfig but uses the autodiff
+    continuous actor gradient kernel (GaussianLogProbOp + RatioOp +
+    ClipSurrogateOp chained vjps) instead of hand-derived gradients.
+
+    Actor: obs -> Tanh -> Tanh -> StochasticActor (mean + state-independent log_std).
+    Critic: obs -> Tanh -> Tanh -> 1 (value).
+    """
+
+    comptime NAME: String = "PPO Continuous (Autodiff)"
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT
+    comptime rollout_len: Int = Self.ROLLOUT
+
+    comptime ActorModel = Sequential[
+        LinearTanh[Self.OBS, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.HIDDEN],
+        StochasticActor[Self.HIDDEN, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        LinearTanh[Self.OBS, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime PolicyGrad = AutodiffClippedSurrogate[Self.clip_eps]
+    comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = True

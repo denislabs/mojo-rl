@@ -15,7 +15,7 @@ Strategy building blocks (stateless, compile-time parameterized):
 Configs and agents:
   - offpolicy_config: OffPolicyConfig, DDPGConfig, TD3Config, SACConfig
   - offpolicy_agent: GenericOffPolicyAgent (handles DDPG, TD3, SAC)
-  - onpolicy_config: OnPolicyConfig, PPOConfig, A2CConfig, ContinuousPPOConfig, AutodiffPPOConfig, AutodiffA2CConfig
+  - onpolicy_config: OnPolicyConfig, PPOConfig, A2CConfig, ContinuousPPOConfig, AutodiffPPOConfig, AutodiffA2CConfig, AutodiffContinuousPPOConfig
   - onpolicy_agent: GenericOnPolicyAgent (discrete PPO, A2C)
   - onpolicy_continuous_agent: GenericOnPolicyContinuousAgent (continuous PPO)
   - dqn_agent: DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, GenericDQNAgent
@@ -36,7 +36,7 @@ from .q_gradient import QGradient, ManualQGradient, AutodiffQGradient
 # Configs and agents
 from .offpolicy_config import OffPolicyConfig, DDPGConfig, TD3Config, SACConfig, AutodiffSACConfig, AutodiffDDPGConfig, AutodiffTD3Config
 from .offpolicy_agent import GenericOffPolicyAgent
-from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig, AutodiffPPOConfig, AutodiffA2CConfig
+from .onpolicy_config import OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig, AutodiffPPOConfig, AutodiffA2CConfig, AutodiffContinuousPPOConfig
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric

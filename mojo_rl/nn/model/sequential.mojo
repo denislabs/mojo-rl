@@ -7,6 +7,13 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.builtin.variadics import Variadic
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
+
+# GPU matmul requires 16-byte alignment = 4 float32 elements
+@always_inline
+fn _seq_align4(x: Int) -> Int:
+    """Round up to next multiple of 4 for GPU alignment."""
+    return (x + 3) & ~3
+
 # =============================================================================
 # Variadic Sequential Container
 # =============================================================================
@@ -42,10 +49,19 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     fn _sum_param_size() -> Int:
+        """Total param size with alignment padding between layers.
+
+        Each layer except the last is padded to 4-element alignment so that
+        the next layer's params start at a GPU-aligned address. This prevents
+        CUDA_ERROR_MISALIGNED_ADDRESS in matmul when Sequential composes
+        models with odd PARAM_SIZE (e.g., Linear[256,6] has PARAM_SIZE=1542).
+        """
         var total = 0
 
-        comptime for i in range(Self.N):
-            total += Self.model_types[i].PARAM_SIZE
+        comptime for i in range(Self.N - 1):
+            total += _seq_align4(Self.model_types[i].PARAM_SIZE)
+        # Last layer: no padding needed after it
+        total += Self.model_types[Self.N - 1].PARAM_SIZE
         return total
 
     @staticmethod
@@ -82,10 +98,14 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     fn _param_offset[idx: Int]() -> Int:
+        """Aligned param offset for layer idx.
+
+        Each preceding layer's PARAM_SIZE is rounded up to 4-element alignment.
+        """
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.model_types[j].PARAM_SIZE
+            total += _seq_align4(Self.model_types[j].PARAM_SIZE)
         return total
 
     @staticmethod
@@ -123,7 +143,14 @@ struct Sequential[*LAYERS: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Initialize each layer with its own fan_in/fan_out dimensions."""
+        """Initialize each layer with its own fan_in/fan_out dimensions.
+
+        Zeros alignment padding regions between layers.
+        """
+        # Zero the entire buffer first (covers padding between layers)
+        for i in range(Self.PARAM_SIZE):
+            params.ptr[i] = Scalar[dtype](0.0)
+
         comptime for i in range(Self.N):
             comptime if Self.model_types[i].PARAM_SIZE > 0:
                 var layer_params = LayoutTensor[

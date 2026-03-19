@@ -1,16 +1,17 @@
 """Autodiff PPO Continuous Agent GPU Training on HalfCheetah.
 
-Same as ppo_half_cheetah_training_gpu.mojo but using the autodiff-composed
-policy gradient (AutodiffClippedSurrogate) instead of manual gradient code.
+Uses the autodiff-composed continuous policy gradient kernel that chains
+GaussianLogProbOp + RatioOp + ClipSurrogateOp vjps for the actor gradient,
+instead of hand-derived gradient code.
 
-The policy gradient backward chains DiffOp vjps:
-    ClipSurrogateOp.vjp → grad_ratio
-    RatioOp.vjp         → grad_log_prob = grad_ratio * ratio
-    (Gaussian log_prob backward for continuous actions)
+The backward chain:
+    GaussianLogProbOp forward -> new_log_prob
+    ClipSurrogateOp.vjp       -> grad_ratio
+    RatioOp.vjp               -> grad_log_prob = grad_ratio * ratio
+    GaussianLogProbOp.vjp     -> grad_mean, grad_log_std
 
-Note: Continuous PPO uses a Gaussian policy, not CategoricalLogProbOp.
-The AutodiffClippedSurrogate handles the ratio + clipping part; the
-Gaussian log_prob backward is in the continuous agent's training loop.
+This is mathematically equivalent to the standard continuous PPO kernel but
+structures the backward pass as chained DiffOp vjps.
 
 Run with:
     pixi run -e nvidia mojo run -I . examples/half_cheetah/autodiff_ppo_half_cheetah_training_gpu.mojo
@@ -26,7 +27,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.core.generic import (
     GenericOnPolicyContinuousAgent,
-    ContinuousPPOConfig,
+    AutodiffContinuousPPOConfig,
 )
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -69,16 +70,9 @@ fn main() raises:
     print("=" * 70)
     print()
 
-    # Note: Continuous PPO uses ContinuousPPOConfig which already has
-    # ClippedSurrogate for the discrete policy gradient part.
-    # The continuous actor uses Gaussian log_prob which is handled
-    # separately in the continuous agent's training loop.
-    # For a full autodiff continuous PPO, we would need a
-    # GaussianLogProbOp — currently using the standard config.
-
     with DeviceContext() as ctx:
         var agent = GenericOnPolicyContinuousAgent[
-            ContinuousPPOConfig[OBS_DIM, ACTION_DIM, HIDDEN_DIM, ROLLOUT_LEN],
+            AutodiffContinuousPPOConfig[OBS_DIM, ACTION_DIM, HIDDEN_DIM, ROLLOUT_LEN],
             N_ENVS,
             GPU_MINIBATCH_SIZE,
             RemoteLogger,
@@ -98,9 +92,9 @@ fn main() raises:
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")
-        print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
-        print("  Policy gradient: ClippedSurrogate (standard)")
-        print("  Note: Full autodiff continuous PPO needs GaussianLogProbOp")
+        print("Agent: PPO Continuous (GPU) - Autodiff actor gradient")
+        print("  Policy gradient: AutodiffContinuousPPOConfig")
+        print("  Actor grad: GaussianLogProbOp + RatioOp + ClipSurrogateOp vjps")
         print()
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))

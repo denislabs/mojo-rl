@@ -60,6 +60,7 @@ from mojo_rl.deep_agents.ppo.kernels import (
     ppo_continuous_gather_minibatch_kernel,
     ppo_gather_minibatch_obs_parallel_kernel,
     ppo_continuous_actor_grad_kernel,
+    autodiff_ppo_continuous_actor_grad_kernel,
     ppo_critic_grad_kernel,
     ppo_critic_grad_clipped_kernel,
     normalize_advantages_kernel,
@@ -1478,6 +1479,9 @@ struct GenericOnPolicyContinuousAgent[
         comptime actor_grad_k = ppo_continuous_actor_grad_kernel[
             dtype, MINIBATCH, Self.ACTIONS
         ]
+        comptime actor_grad_autodiff_k = autodiff_ppo_continuous_actor_grad_kernel[
+            dtype, MINIBATCH, Self.ACTIONS
+        ]
         comptime critic_grad_k = ppo_critic_grad_kernel[dtype, MINIBATCH]
         comptime critic_grad_clipped_k = ppo_critic_grad_clipped_kernel[
             dtype, MINIBATCH
@@ -1626,21 +1630,40 @@ struct GenericOnPolicyContinuousAgent[
                 ctx.synchronize()
 
                 # Continuous PPO actor gradient kernel
-                ctx.enqueue_function[actor_grad_k, actor_grad_k](
-                    actor_grad_output_t,
-                    kl_divergences_t,
-                    diag_entropy_t,
-                    diag_clip_t,
-                    actor_logits_t,
-                    mb_old_log_probs_t,
-                    mb_advantages_t,
-                    mb_actions_t,
-                    Scalar[dtype](self.clip_epsilon),
-                    Scalar[dtype](self.entropy_coef),
-                    MINIBATCH,
-                    grid_dim=(MINIBATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                comptime if Self.Config.USE_AUTODIFF_GRAD:
+                    ctx.enqueue_function[
+                        actor_grad_autodiff_k, actor_grad_autodiff_k
+                    ](
+                        actor_grad_output_t,
+                        kl_divergences_t,
+                        diag_entropy_t,
+                        diag_clip_t,
+                        actor_logits_t,
+                        mb_old_log_probs_t,
+                        mb_advantages_t,
+                        mb_actions_t,
+                        Scalar[dtype](self.clip_epsilon),
+                        Scalar[dtype](self.entropy_coef),
+                        MINIBATCH,
+                        grid_dim=(MINIBATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                else:
+                    ctx.enqueue_function[actor_grad_k, actor_grad_k](
+                        actor_grad_output_t,
+                        kl_divergences_t,
+                        diag_entropy_t,
+                        diag_clip_t,
+                        actor_logits_t,
+                        mb_old_log_probs_t,
+                        mb_advantages_t,
+                        mb_actions_t,
+                        Scalar[dtype](self.clip_epsilon),
+                        Scalar[dtype](self.entropy_coef),
+                        MINIBATCH,
+                        grid_dim=(MINIBATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
                 ctx.synchronize()
 
                 # KL early stopping + diagnostic readback
