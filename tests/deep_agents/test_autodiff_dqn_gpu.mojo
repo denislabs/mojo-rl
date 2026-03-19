@@ -153,7 +153,7 @@ fn main() raises:
         print()
 
         print("=" * 70)
-        print("Autodiff DQN GPU Training Complete")
+        print("Huber DQN GPU Training Complete")
         print("=" * 70)
         print()
         print("Total steps: " + String(NUM_STEPS))
