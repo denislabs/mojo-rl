@@ -25,7 +25,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOnPolicyContinuousAgent,
     AutodiffContinuousPPOConfig,
 )

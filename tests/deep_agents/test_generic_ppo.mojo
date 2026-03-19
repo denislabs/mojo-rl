@@ -2,12 +2,12 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOnPolicyAgent,
     PPOConfig,
     A2CConfig,
 )
-from mojo_rl.deep_agents.core.generic import DeepPPOAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOAgent
 from mojo_rl.envs import CartPoleEnv
 
 

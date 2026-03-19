@@ -17,7 +17,7 @@ Run with:
     pixi run mojo run -I . examples/pendulum_deep_td3.mojo
 """
 
-from mojo_rl.deep_agents.core.generic import DeepTD3Agent
+from mojo_rl.deep_agents.core.agents import DeepTD3Agent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

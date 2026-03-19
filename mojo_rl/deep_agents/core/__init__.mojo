@@ -1,5 +1,5 @@
 from .checkpoint_trait import Checkpointable
-from .offpolicy_helpers import (
+from .training.offpolicy_helpers import (
     deterministic_select_action,
     greedy_continuous_action,
     store_continuous_transition,
@@ -11,7 +11,7 @@ from .utils import (
     concat_obs_action,
     concat_obs_action_batch,
 )
-from .offpolicy_train import (
+from .training.offpolicy_train import (
     OffPolicyState,
     OffPolicyContinuousAgent,
     OffPolicyDiscreteState,
@@ -28,7 +28,7 @@ from .eval import (
     run_onpolicy_continuous_eval,
 )
 
-from .onpolicy_train import (
+from .training.onpolicy_train import (
     OnPolicyAgent,
     OnPolicyDiscreteState,
     OnPolicyContinuousState,
@@ -37,20 +37,20 @@ from .onpolicy_train import (
     run_onpolicy_discrete_train,
     run_onpolicy_continuous_train,
 )
-from .onpolicy_helpers import (
+from .training.onpolicy_helpers import (
     compute_gae_list,
     normalize_advantages_list,
     fisher_yates_shuffle,
 )
 
-from .gpu_offpolicy_train import (
+from .training.gpu_offpolicy_train import (
     GPUOffPolicyState,
     GPUOffPolicyAgent,
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_discrete_train_gpu,
 )
 
-from .gpu_onpolicy_train import (
+from .training.gpu_onpolicy_train import (
     GPUOnPolicyState,
     GPUOnPolicyDiscreteAgent,
     GPUOnPolicyContinuousAgent,

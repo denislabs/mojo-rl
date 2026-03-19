@@ -11,7 +11,7 @@ Run with:
 from std.math import sqrt, pi, abs
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.nn.constants import dtype
 from mojo_rl.envs.half_cheetah import HalfCheetah
 from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig

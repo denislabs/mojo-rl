@@ -2,12 +2,12 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOffPolicyAgent,
     DDPGConfig,
     TD3Config,
 )
-from mojo_rl.deep_agents.core.generic import DeepTD3Agent
+from mojo_rl.deep_agents.core.agents import DeepTD3Agent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

@@ -3,7 +3,7 @@
 from std.random import seed
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, DDPGConfig
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, DDPGConfig
 from mojo_rl.envs.pendulum import PendulumV2
 
 

@@ -4,7 +4,7 @@ Verifies that the autodiff-composed actor loss produces a working SAC agent
 that can train and improve on the Pendulum environment.
 """
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOffPolicyAgent,
     AutodiffSACConfig,
 )

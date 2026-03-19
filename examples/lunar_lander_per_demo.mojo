@@ -15,7 +15,7 @@ Expected results:
 """
 
 from mojo_rl.envs import LunarLanderEnv
-from mojo_rl.deep_agents.core.generic import DQNAgent, DQNPERAgent
+from mojo_rl.deep_agents.core.agents import DQNAgent, DQNPERAgent
 
 
 fn main() raises:

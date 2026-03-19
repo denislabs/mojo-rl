@@ -11,7 +11,7 @@ from std.random import seed
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
 from mojo_rl.nn import dtype as gpu_dtype
 

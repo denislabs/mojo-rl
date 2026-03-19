@@ -2,7 +2,7 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, TD3Config
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, TD3Config
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

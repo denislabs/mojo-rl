@@ -14,7 +14,7 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.envs.car_racing import CarRacing, CarRacingAction
 from mojo_rl.render import Renderer2D
 

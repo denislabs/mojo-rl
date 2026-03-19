@@ -8,7 +8,7 @@ Run with:
     pixi run mojo run -I . examples/deep_sac_demo.mojo
 """
 
-from mojo_rl.deep_agents.core.generic import DeepSACAgent
+from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs import PendulumEnv
 
 

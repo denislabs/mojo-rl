@@ -29,12 +29,12 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from .offpolicy_train import (
+from .training.offpolicy_train import (
     OffPolicyAgent,
     OffPolicyContinuousAgent,
     OffPolicyDiscreteAgent,
 )
-from .onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAgent
+from .training.onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAgent
 
 
 # =============================================================================

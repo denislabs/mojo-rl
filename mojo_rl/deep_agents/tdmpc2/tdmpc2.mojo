@@ -48,15 +48,13 @@ from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
 )
 from mojo_rl.deep_agents.core.kernels import (
     copy_buffer_kernel,
+    gradient_norm_kernel,
+    gradient_reduce_apply_fused_kernel,
 )
 from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
-)
-from mojo_rl.deep_agents.ppo.kernels import (
-    gradient_norm_kernel,
-    gradient_reduce_apply_fused_kernel,
 )
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,

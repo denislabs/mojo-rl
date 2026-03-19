@@ -11,7 +11,7 @@ from std.random import seed
 from std.time import perf_counter_ns
 from std.memory import UnsafePointer
 
-from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.envs.lunar_lander import LunarLander, LLConstants
 from mojo_rl.render import Renderer2D
 from mojo_rl.nn import dtype

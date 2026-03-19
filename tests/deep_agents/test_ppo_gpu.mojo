@@ -15,7 +15,7 @@ from std.random import seed
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.generic import DeepPPOAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOAgent
 from mojo_rl.envs import CartPoleEnv
 
 

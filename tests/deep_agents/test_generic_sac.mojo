@@ -2,8 +2,8 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
-from mojo_rl.deep_agents.core.generic import DeepSACAgent
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, SACConfig
+from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

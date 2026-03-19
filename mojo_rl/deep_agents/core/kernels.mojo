@@ -26,9 +26,51 @@
 - scale_clip_actions_kernel: Scale tanh output and clip to action range
 - ddpg_exploration_kernel: Scale + Gaussian noise (DDPG/TD3 exploration)
 - td_mse_grad_kernel: MSE gradient for TD critic
+
+## DQN Operations
+- dqn_td_target_kernel: Standard DQN TD target — r + γ * max_a Q(s',a) * (1-done)
+- dqn_double_td_target_kernel: Double DQN TD target — r + γ * Q_t(s', argmax_a Q_o(s',a)) * (1-done)
+
+## Dueling DQN Operations
+- dueling_combine_kernel: Combine V(s) + A(s,a) - mean(A) into Q-values
+- dueling_grad_kernel: Transform dQ gradients to dueling [V, A] gradients
+
+## TD3 Noise
+- add_gaussian_noise_kernel: Clipped Gaussian noise for TD3 target smoothing
+
+## SAC Reparameterization
+- sac_sample_actions_kernel: Inference — sample from stochastic actor output
+- sac_rsample_with_cache_kernel: Training forward — sample + log_prob + save eps
+- sac_rsample_bwd_kernel: Training backward — grad through reparameterization trick
+- min_q_dq_kernel: Masked dq gradients based on min(Q1, Q2)
+- add_ci_grads_kernel: Elementwise add critic input gradients
+
+## PPO Operations (Continuous)
+- _sample_continuous_actions_kernel: Sample from unbounded Gaussian policy
+- _store_continuous_pre_step_kernel: Store pre-step data for continuous actions
+- _store_post_step_kernel: Store post-step rewards and dones
+- ppo_continuous_gather_minibatch_kernel: Gather continuous action minibatch
+- ppo_continuous_actor_grad_kernel: PPO actor gradient (unbounded Gaussian)
+- ppo_critic_grad_kernel: PPO critic MSE gradient
+- ppo_critic_grad_clipped_kernel: PPO critic gradient with value clipping
+- normalize_advantages_kernel: Normalize advantages with pre-computed stats
+- clamp_log_std_params_kernel: Clamp log_std parameters to valid range
+
+## PPO Operations (Discrete)
+- ppo_gather_minibatch_kernel: Gather discrete action minibatch
+- ppo_actor_grad_with_kl_kernel: PPO discrete actor gradient with KL tracking
+- _store_pre_step_kernel: Store pre-step data for discrete actions
+- _store_pre_step_obs_parallel_kernel: Parallel obs store (one thread per element)
+- ppo_gather_minibatch_obs_parallel_kernel: Parallel obs gather (one thread per element)
+
+## Gradient Clipping
+- gradient_norm_kernel: Partial sum of squared gradients
+- gradient_reduce_and_compute_scale_kernel: Reduce partials and compute clip scale
+- gradient_apply_scale_kernel: Apply precomputed scale to gradients
+- gradient_reduce_apply_fused_kernel: Fused reduce + apply (2 kernels instead of 3)
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu import block_dim, block_idx, thread_idx, barrier
 from layout import Layout, LayoutTensor
 from std.math import exp, log, tanh, sqrt, max, min, pi, cos
 from std.memory import UnsafePointer
@@ -1147,3 +1189,1617 @@ fn td_mse_grad_kernel[
     q_grad[i, 0] = (
         Scalar[dtype](2.0) * (q[i, 0] - targets[i]) / Scalar[dtype](BATCH)
     )
+
+
+# =============================================================================
+# DQN TD Target Kernels
+# =============================================================================
+
+
+@always_inline
+fn dqn_td_target_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+](
+    # Outputs
+    targets: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs
+    next_q_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    gamma: Scalar[dtype],
+):
+    """Compute TD targets for standard DQN: target = r + gamma * max_a Q(s', a) * (1 - done).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH_SIZE:
+        return
+
+    var max_q = next_q_values[b, 0]
+    for a in range(1, NUM_ACTIONS):
+        var q = next_q_values[b, a]
+        if q > max_q:
+            max_q = q
+
+    var done_mask = Scalar[dtype](1.0) - dones[b]
+    targets[b] = rewards[b] + gamma * max_q * done_mask
+
+
+@always_inline
+fn dqn_double_td_target_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+](
+    # Outputs
+    targets: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs
+    online_next_q: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    target_next_q: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    gamma: Scalar[dtype],
+):
+    """Compute TD targets for Double DQN: target = r + gamma * Q_target(s', argmax_a Q_online(s', a)) * (1 - done).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH_SIZE:
+        return
+
+    var best_action = 0
+    var best_q = online_next_q[b, 0]
+    for a in range(1, NUM_ACTIONS):
+        var q = online_next_q[b, a]
+        if q > best_q:
+            best_q = q
+            best_action = a
+
+    var target_q = target_next_q[b, best_action]
+    var done_mask = Scalar[dtype](1.0) - dones[b]
+    targets[b] = rewards[b] + gamma * target_q * done_mask
+
+
+# =============================================================================
+# Dueling DQN Kernels
+# =============================================================================
+
+
+@always_inline
+fn dueling_combine_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+    DUELING_OUT: Int,
+](
+    # Outputs
+    q_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    # Inputs
+    dueling_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, DUELING_OUT), MutAnyOrigin
+    ],
+):
+    """Combine dueling output [V, A1..An] into Q-values: Q(s,a) = V(s) + (A(s,a) - mean(A)).
+
+    Each thread handles one batch sample.
+
+    Parameters:
+        dtype: Data type.
+        BATCH_SIZE: Batch size.
+        NUM_ACTIONS: Number of discrete actions.
+        DUELING_OUT: Dueling model output dimension (1 + NUM_ACTIONS).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH_SIZE:
+        return
+
+    # V(s) is the first element
+    var v_s = dueling_output[b, 0]
+
+    # Compute mean advantage
+    var mean_adv: dueling_output.element_type = 0.0
+    for a in range(NUM_ACTIONS):
+        mean_adv += dueling_output[b, 1 + a]
+    mean_adv /= Scalar[dtype](NUM_ACTIONS)
+
+    # Q(s,a) = V(s) + (A(s,a) - mean(A))
+    for a in range(NUM_ACTIONS):
+        var adv = dueling_output[b, 1 + a]
+        q_values[b, a] = v_s + (adv - mean_adv)
+
+
+@always_inline
+fn dueling_grad_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+    DUELING_OUT: Int,
+](
+    # Outputs
+    dueling_grad: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, DUELING_OUT), MutAnyOrigin
+    ],
+    # Inputs
+    dq_grad: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+):
+    """Transform dQ gradients to dueling output gradients.
+
+    dV = sum(dQ_j)
+    dA_i = dQ_i - (1/n) * sum(dQ_j)
+
+    Each thread handles one batch sample.
+
+    Parameters:
+        dtype: Data type.
+        BATCH_SIZE: Batch size.
+        NUM_ACTIONS: Number of discrete actions.
+        DUELING_OUT: Dueling model output dimension (1 + NUM_ACTIONS).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH_SIZE:
+        return
+
+    # Compute sum of dQ gradients
+    var sum_dq: dq_grad.element_type = 0.0
+    for a in range(NUM_ACTIONS):
+        sum_dq += dq_grad[b, a]
+
+    # dV = sum(dQ)
+    dueling_grad[b, 0] = sum_dq
+
+    # dA_i = dQ_i - (1/n) * sum(dQ)
+    var one_over_n = Scalar[dtype](1.0) / Scalar[dtype](NUM_ACTIONS)
+    for a in range(NUM_ACTIONS):
+        dueling_grad[b, 1 + a] = dq_grad[b, a] - one_over_n * sum_dq
+
+
+# =============================================================================
+# TD3 Gaussian Noise Kernel
+# =============================================================================
+
+
+@always_inline
+fn add_gaussian_noise_kernel[
+    dtype: DType,
+    BATCH: Int,
+    ACTION_DIM: Int,
+](
+    noisy_actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    noise_std: Scalar[dtype],
+    noise_clip: Scalar[dtype],
+    action_min: Scalar[dtype],
+    action_max: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Add clipped Gaussian exploration noise to actions (TD3-style).
+
+    Each element gets independent noise from N(0, noise_std²), clipped to
+    [-noise_clip, noise_clip], then the result is clipped to [action_min, action_max].
+
+    Uses PhiloxRandom for GPU-safe noise generation (no Float64).
+    One thread per (batch, action_dim) element.
+
+    Args:
+        noisy_actions: Output noisy actions [BATCH, ACTION_DIM].
+        actions:       Clean actions from actor [BATCH, ACTION_DIM].
+        noise_std:     Noise standard deviation.
+        noise_clip:    Maximum absolute noise value.
+        action_min:    Minimum action value (e.g. -action_scale).
+        action_max:    Maximum action value (e.g. +action_scale).
+        rng_seed:      Random seed (should vary per call).
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * ACTION_DIM:
+        return
+
+    var b = tid // ACTION_DIM
+    var a = tid % ACTION_DIM
+
+    # PhiloxRandom Box-Muller for Gaussian noise
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u1 = Float32(rand_vals[0]) + Float32(1e-8)
+    var u2 = Float32(rand_vals[1])
+    var mag = sqrt(Float32(-2.0) * log(u1))
+    var z = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
+
+    # Scale and clip noise
+    var noise = z * noise_std
+    if noise < -noise_clip:
+        noise = -noise_clip
+    if noise > noise_clip:
+        noise = noise_clip
+
+    # Apply noise and clip to action range
+    var noisy = actions[b, a] + noise
+    if noisy < action_min:
+        noisy = action_min
+    if noisy > action_max:
+        noisy = action_max
+
+    noisy_actions[b, a] = noisy
+
+
+# =============================================================================
+# SAC Reparameterization Kernels
+# =============================================================================
+
+
+@always_inline
+fn sac_sample_actions_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    N: Int,
+    ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
+](
+    actions: LayoutTensor[dtype, Layout.row_major(N, ACTION_DIM), MutAnyOrigin],
+    actor_out: LayoutTensor[
+        dtype, Layout.row_major(N, ACTOR_OUT_DIM), MutAnyOrigin
+    ],
+    action_scale: Scalar[dtype],
+    log_std_min: Scalar[dtype],
+    log_std_max: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """SAC inference: sample actions from stochastic actor output, scaled by action_scale.
+
+    Takes actor_out[N, 2*ACTION_DIM] where columns [0, ACTION_DIM) are mean
+    and columns [ACTION_DIM, 2*ACTION_DIM) are log_std.
+
+    Computes: a = tanh(mean + exp(clamp(log_std)) * ε) * action_scale
+
+    Uses PhiloxRandom for GPU-safe noise generation.
+    No eps_cache saved (inference only).
+    One thread per environment.
+
+    Args:
+        actions:     Output scaled actions in [-action_scale, action_scale] [N, ACTION_DIM].
+        actor_out:   Actor network output [N, 2*ACTION_DIM] (mean || log_std).
+        action_scale: Action range bound (output clipped to [-scale, scale]).
+        log_std_min: Minimum log_std clamp value.
+        log_std_max: Maximum log_std clamp value.
+        rng_seed:    Random seed (should vary per call).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= N:
+        return
+
+    var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
+
+    for a in range(ACTION_DIM):
+        var mean_val = actor_out[b, a]
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
+
+        var std_val = exp(ls)
+
+        # Sample ε ~ N(0, 1) using PhiloxRandom Box-Muller
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
+        var mag = sqrt(Scalar[dtype](-2.0) * log(u1))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
+
+        # Reparameterize, squash, scale
+        var z = mean_val + std_val * eps
+        var act = tanh(z) * action_scale
+        actions[b, a] = act
+
+
+@always_inline
+fn sac_rsample_with_cache_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
+](
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    eps_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    actor_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
+    ],
+    log_std_min: Scalar[dtype],
+    log_std_max: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """SAC training forward: reparameterize, compute log_prob, save eps for backward.
+
+    Actions are in [-1, 1] (NOT scaled by action_scale) — the scale is
+    factored out during actor gradient computation.
+
+    eps_cache[b, a] saves the noise epsilon used to sample action a for batch b.
+    It is needed by sac_rsample_bwd_kernel to backpropagate through log_std.
+
+    Computes:
+        ε ~ N(0, 1)
+        σ = exp(clamp(log_std))
+        z = mean + σ * ε
+        a = tanh(z)
+        log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - a_j²)]
+
+    Uses PhiloxRandom for GPU-safe noise generation.
+    One thread per batch sample.
+
+    Args:
+        actions:    Output actions in (-1, 1) [BATCH, ACTION_DIM].
+        log_probs:  Output log-probabilities (summed over action dims) [BATCH].
+        eps_cache:  Output saved noise ε [BATCH, ACTION_DIM] (for backward).
+        actor_out:  Actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
+        log_std_min: Minimum log_std clamp value.
+        log_std_max: Maximum log_std clamp value.
+        rng_seed:   Random seed (should vary per call).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var half_log_2pi = Scalar[dtype](0.9189385332046727)
+    var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
+    var lp: log_probs.element_type = 0.0
+
+    for a in range(ACTION_DIM):
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
+
+        var std_val = exp(ls)
+
+        # Sample ε ~ N(0, 1) using PhiloxRandom Box-Muller
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
+        var mag = sqrt(Scalar[dtype](-2.0) * log(u1))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
+
+        # Save eps for backward pass
+        eps_cache[b, a] = eps
+
+        # Reparameterize: z = mean + σ * ε, a = tanh(z)
+        var z = actor_out[b, a] + std_val * eps
+        var act = tanh(z)
+        actions[b, a] = act
+
+        # Log-prob contribution from this dimension
+        var one_minus_tanh2 = one - act * act
+        if one_minus_tanh2 < Scalar[dtype](1e-6):
+            one_minus_tanh2 = Scalar[dtype](1e-6)
+
+        lp += (
+            -Scalar[dtype](0.5) * eps * eps
+            - half_log_2pi
+            - ls
+            - log(one_minus_tanh2)
+        )
+
+    log_probs[b] = lp
+
+
+@always_inline
+fn sac_rsample_bwd_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
+](
+    actor_grad: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
+    ],
+    grad_act: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    alpha_per_sample: Scalar[dtype],
+    curr_act: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    eps_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    actor_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTOR_OUT_DIM), MutAnyOrigin
+    ],
+    log_std_min: Scalar[dtype],
+    log_std_max: Scalar[dtype],
+):
+    """SAC backward through the reparameterization trick.
+
+    Computes the full actor gradient actor_grad[BATCH, 2*ACTION_DIM] from:
+      - grad_act[b, j]: ∂(-mean(Q))/∂a_j from critic backward with dq=-1/BATCH
+      - alpha_per_sample = alpha/BATCH: entropy coefficient per sample
+
+    Derivation for each (b, j):
+        a      = curr_act[b, j]             (tanh-squashed action from forward)
+        ls     = clamp(actor_out[b, ACTION_DIM+j])
+        σ      = exp(ls)
+        ε      = eps_cache[b, j]            (noise saved during forward)
+
+        d_z    = grad_act[b,j] * (1 - a²)  # backward through tanh
+               + alpha_per_sample * 2*a    # entropy term: d(-log(1-tanh²))/da * (1-a²)
+
+        actor_grad[b, j]            = d_z                           # grad wrt mean
+        actor_grad[b, ACTION_DIM+j] = d_z * σ * ε - alpha_per_sample  # grad wrt log_std
+
+    One thread per batch sample.
+
+    Args:
+        actor_grad:        Output gradient [BATCH, 2*ACTION_DIM] for network backward.
+        grad_act:          ∂(-mean(Q))/∂a from critic backward [BATCH, ACTION_DIM].
+        alpha_per_sample:  Alpha / BATCH (entropy coefficient, scalar).
+        curr_act:          Tanh-squashed actions from forward pass [BATCH, ACTION_DIM].
+        eps_cache:         Saved noise ε from forward pass [BATCH, ACTION_DIM].
+        actor_out:         Raw actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
+        log_std_min:       Lower clamp for log_std (same as forward).
+        log_std_max:       Upper clamp for log_std (same as forward).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var one = Scalar[dtype](1.0)
+    var two = Scalar[dtype](2.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
+
+    for a in range(ACTION_DIM):
+        var act_val = curr_act[b, a]
+        # Affine rescale: tanh already applied by LinearTanh head
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
+
+        var sigma = exp(ls)
+        var eps = eps_cache[b, a]
+
+        # d_z: gradient through tanh(z) from critic + entropy contribution
+        var one_minus_a2 = one - act_val * act_val
+        var d_z = (
+            grad_act[b, a] * one_minus_a2 + alpha_per_sample * two * act_val
+        )
+
+        # Grad wrt mean: z = mean + σ*ε, so ∂z/∂mean = 1
+        actor_grad[b, a] = d_z
+
+        # Grad wrt log_std: ∂z/∂log_std = σ*ε, plus entropy term -1
+        # Chain rule for affine: d(ls)/d(tanh_out) = 0.5 * range (constant)
+        # tanh derivative is handled by LinearTanh in model backward
+        var d_ls = d_z * sigma * eps - alpha_per_sample
+        var d_ls_d_tanh_out = half * ls_range
+        actor_grad[b, ACTION_DIM + a] = d_ls * d_ls_d_tanh_out
+
+
+# =============================================================================
+# SAC min(Q1, Q2) Masked Gradient Kernels
+# =============================================================================
+
+
+@always_inline
+fn min_q_dq_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    Q_DIM: Int = 1,
+](
+    dq1: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    dq2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    q1: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+    q2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
+):
+    """Create masked dq gradients based on min(Q1, Q2).
+
+    For each sample b:
+        if Q1[b] <= Q2[b]: dq1[b] = -1/BATCH, dq2[b] = 0
+        else:              dq1[b] = 0,         dq2[b] = -1/BATCH
+
+    The actor loss is: L = alpha * log_pi - min(Q1, Q2)
+    Minimizing L maximizes Q and entropy. The gradient of -min(Q1,Q2)
+    routes through whichever critic has the lower Q value.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+    var zero = Scalar[dtype](0.0)
+
+    if q1[b, 0] <= q2[b, 0]:
+        dq1[b, 0] = neg_inv_batch
+        dq2[b, 0] = zero
+    else:
+        dq1[b, 0] = zero
+        dq2[b, 0] = neg_inv_batch
+
+
+@always_inline
+fn add_ci_grads_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    DIM: Int,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    """Add src to dst elementwise: dst[b,d] += src[b,d].
+
+    Used to combine action gradients from Q1 and Q2 backward passes.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * DIM:
+        return
+
+    var b = idx // DIM
+    var d = idx % DIM
+    dst[b, d] = dst[b, d] + src[b, d]
+
+
+# =============================================================================
+# PPO Continuous Action Kernels
+# =============================================================================
+
+
+@always_inline
+fn _sample_continuous_actions_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    ACTION_DIM: Int,
+](
+    # Actor network output (mean and log_std concatenated)
+    actor_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, ACTION_DIM * 2), MutAnyOrigin
+    ],
+    # Outputs
+    actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
+    ],
+    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Random seed
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Sample continuous actions from unbounded Gaussian policy on GPU (CleanRL-style).
+
+    Actor output layout: [mean (ACTION_DIM) | log_std (ACTION_DIM)]
+    Uses reparameterization trick: action = mean + exp(log_std) * noise
+
+    NO TANH SQUASHING - actions are unbounded, clipping happens at environment boundary.
+    This matches CleanRL's PPO continuous implementation and avoids train/eval mismatch.
+
+    Log probability is simple Gaussian (no Jacobian correction):
+    log_prob = sum(-0.5 * (log(2*pi) + 2*log_std + ((action-mean)/std)^2))
+    """
+    comptime EPS: Scalar[dtype] = 1e-6
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0  # Match StochasticActor
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+    comptime LOG_2PI: Scalar[dtype] = 1.8378770664093453
+
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    var total_log_prob: log_probs.element_type = 0.0
+
+    for j in range(ACTION_DIM):
+        # Extract tensor elements using [0] pattern and convert to Scalar[dtype]
+        var mean_raw = actor_output[i, j]
+        var log_std_raw = actor_output[i, ACTION_DIM + j]
+        var mean = Scalar[dtype](mean_raw[0])
+        var log_std = Scalar[dtype](log_std_raw[0])
+
+        # Clamp log_std for numerical stability (must match gradient kernel)
+        if log_std < LOG_STD_MIN:
+            log_std = LOG_STD_MIN
+        elif log_std > LOG_STD_MAX:
+            log_std = LOG_STD_MAX
+
+        # Sample Gaussian noise using Box-Muller transform with PhiloxRandom
+        # Each (i, j) pair gets unique seed and offset for independent random streams
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0]
+        var u2 = rand_vals[1]
+
+        # Box-Muller transform for standard normal
+        # log() requires Float32
+        var u1_for_log = Float32(u1) + Float32(1e-8)
+        var u2_for_cos = Float32(u2)
+
+        var mag = sqrt(Float32(-2.0) * log(u1_for_log))
+        var noise = Scalar[dtype](
+            mag * cos(u2_for_cos * Float32(6.283185307179586))
+        )
+
+        # Reparameterization: action = mean + std * noise (unbounded Gaussian)
+        var std = exp(log_std)
+        var action = mean + std * noise
+
+        # Store unbounded action directly (no tanh squashing)
+        actions[i, j] = action
+
+        # Simple Gaussian log probability (no squashing correction)
+        var action_normalized = (action - mean) / (std + EPS)
+
+        var neg_half: Scalar[dtype] = -0.5
+        var log_gaussian = neg_half * (
+            LOG_2PI
+            + Scalar[dtype](2.0) * log_std
+            + action_normalized * action_normalized
+        )
+
+        total_log_prob = total_log_prob + log_gaussian
+
+    log_probs[i] = total_log_prob
+
+
+@always_inline
+fn _store_continuous_pre_step_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+](
+    # Outputs - rollout buffer at timestep t
+    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    r_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
+    ],
+    r_log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Inputs - current step data
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
+    ],
+    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Store pre-step data to rollout buffer for continuous actions.
+
+    Stores unbounded actions directly (CleanRL-style, no tanh squashing).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    for d in range(OBS_DIM):
+        r_obs[i, d] = obs[i, d]
+    for a in range(ACTION_DIM):
+        r_actions[i, a] = actions[i, a]
+    r_log_probs[i] = log_probs[i]
+    r_values[i] = values[i]
+
+
+@always_inline
+fn _store_post_step_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+](
+    # Outputs - rollout buffer at timestep t
+    r_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Inputs - current step data
+    rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Store post-step data (rewards, dones) to rollout buffer."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    r_rewards[i] = rewards[i]
+    r_dones[i] = dones[i]
+
+
+@always_inline
+fn ppo_continuous_gather_minibatch_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    TOTAL_SIZE: Int,
+](
+    # Outputs - minibatch buffers
+    mb_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    mb_actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    mb_advantages: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    mb_old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_old_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    # Inputs - rollout buffers and indices
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_actions: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    batch_size: Int,
+):
+    """Gather samples from rollout buffer using shuffled indices for continuous actions.
+
+    Uses unbounded actions directly (CleanRL-style, no tanh squashing).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= batch_size:
+        return
+
+    var src_idx = Int(indices[i])
+
+    # Gather observation
+    for d in range(OBS_DIM):
+        mb_obs[i, d] = rollout_obs[src_idx, d]
+
+    # Gather unbounded actions directly
+    for a in range(ACTION_DIM):
+        mb_actions[i, a] = rollout_actions[src_idx, a]
+
+    mb_advantages[i] = advantages[src_idx]
+    mb_returns[i] = returns[src_idx]
+    mb_old_log_probs[i] = rollout_log_probs[src_idx]
+    mb_old_values[i] = rollout_values[src_idx]
+
+
+@always_inline
+fn ppo_continuous_actor_grad_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+](
+    # Outputs
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+    ],
+    kl_divergences: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    entropies: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_flags: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs
+    actor_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM * 2), MutAnyOrigin
+    ],
+    old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+    ],
+    clip_epsilon: Scalar[dtype],
+    entropy_coef: Scalar[dtype],
+    batch_size: Int,
+) where dtype.is_floating_point():
+    """Compute gradient for PPO actor with unbounded Gaussian policy (CleanRL-style).
+
+    For unbounded Gaussian policy (no tanh squashing):
+    - log_prob = sum_j(-0.5 * (LOG_2PI + 2*log_std[j] + ((action[j]-mean[j])/std[j])^2))
+    - d_log_prob/d_mean = (action - mean) / std^2
+    - d_log_prob/d_log_std = ((action - mean)^2 / std^2 - 1)
+
+    Uses unbounded actions directly (stored from collection).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    # Local constants
+    var eps: Scalar[dtype] = 1e-6
+    var log_2pi: Scalar[dtype] = 1.8378770664093453
+    var one: Scalar[dtype] = 1.0
+    var two: Scalar[dtype] = 2.0
+    var half: Scalar[dtype] = 0.5
+    var neg_half: Scalar[dtype] = -0.5
+
+    # Numerical stability constants
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0  # Match StochasticActor
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+    comptime LOG_PROB_DIFF_MAX: Scalar[dtype] = 20.0  # Prevent ratio explosion
+    comptime GRAD_CLIP: Scalar[dtype] = 10.0  # Clip individual gradients
+
+    var advantage = advantages[b]
+    var old_log_prob = old_log_probs[b]
+
+    # Compute new log_prob using stored actions
+    var new_log_prob: Scalar[dtype] = 0.0
+    var entropy_sum: Scalar[dtype] = 0.0
+
+    # Arrays to store intermediate values for gradient computation
+    var action_vals = InlineArray[Scalar[dtype], ACTION_DIM](
+        fill=Scalar[dtype](0.0)
+    )
+    var mean_vals = InlineArray[Scalar[dtype], ACTION_DIM](
+        fill=Scalar[dtype](0.0)
+    )
+    var std_vals = InlineArray[Scalar[dtype], ACTION_DIM](
+        fill=Scalar[dtype](0.0)
+    )
+
+    for j in range(ACTION_DIM):
+        # Extract tensor elements using [0] pattern and wrap in Scalar[dtype]
+        var mean_val_raw = actor_output[b, j]
+        var log_std_val_raw = actor_output[b, ACTION_DIM + j]
+        var action_val_raw = actions[b, j]
+
+        # Convert to Scalar[dtype] using [0] extraction
+        var mean_val = Scalar[dtype](mean_val_raw[0])
+        var log_std_val = Scalar[dtype](log_std_val_raw[0])
+        var action_val = Scalar[dtype](action_val_raw[0])
+
+        # Clamp log_std for numerical stability
+        if log_std_val < LOG_STD_MIN:
+            log_std_val = LOG_STD_MIN
+        elif log_std_val > LOG_STD_MAX:
+            log_std_val = LOG_STD_MAX
+
+        var std_val = exp(log_std_val)
+        # Compute normalized action for log_prob
+        var action_normalized = (action_val - mean_val) / (std_val + eps)
+
+        # Store for gradient computation
+        action_vals[j] = action_val
+        mean_vals[j] = mean_val
+        std_vals[j] = std_val
+
+        # Simple Gaussian log probability (no squashing correction)
+        var log_gaussian = neg_half * (
+            log_2pi + two * log_std_val + action_normalized * action_normalized
+        )
+
+        new_log_prob = new_log_prob + log_gaussian
+
+        # Entropy: H = 0.5 * (LOG_2PI + 1 + 2*log_std)
+        entropy_sum = entropy_sum + half * (log_2pi + one + two * log_std_val)
+
+    # Clamp log_prob difference to prevent ratio explosion
+    var log_prob_diff = new_log_prob - old_log_prob
+    if log_prob_diff > LOG_PROB_DIFF_MAX:
+        log_prob_diff = LOG_PROB_DIFF_MAX
+    elif log_prob_diff < -LOG_PROB_DIFF_MAX:
+        log_prob_diff = -LOG_PROB_DIFF_MAX
+
+    # Probability ratio with clamped difference
+    var ratio = exp(log_prob_diff)
+
+    # KL divergence approximation: (ratio - 1) - log(ratio)
+    var kl = (ratio - one) - log_prob_diff
+    # Clamp KL to reasonable range
+    if kl < Scalar[dtype](0.0):
+        kl = Scalar[dtype](0.0)
+    elif kl > Scalar[dtype](100.0):
+        kl = Scalar[dtype](100.0)
+    kl_divergences[b] = kl
+    entropies[b] = entropy_sum
+
+    # Clip ratio for clipped objective
+    var clipped_ratio = ratio
+    if clipped_ratio < one - clip_epsilon:
+        clipped_ratio = one - clip_epsilon
+    elif clipped_ratio > one + clip_epsilon:
+        clipped_ratio = one + clip_epsilon
+
+    # PPO clipped objective: min(ratio * A, clipped_ratio * A)
+    # Gradient is 0 when we use the clipped objective (i.e., clipped_ratio * A < ratio * A)
+    var unclipped_obj = ratio * advantage
+    var clipped_obj = clipped_ratio * advantage
+    var is_clipped = clipped_obj < unclipped_obj
+    clip_flags[b] = Scalar[dtype](1.0) if is_clipped else Scalar[dtype](0.0)
+
+    # Compute gradients for mean and log_std
+    var batch_size_scalar = Scalar[dtype](BATCH_SIZE)
+    for j in range(ACTION_DIM):
+        if is_clipped:
+            grad_output[b, j] = Scalar[dtype](0.0)
+            grad_output[b, ACTION_DIM + j] = Scalar[dtype](0.0)
+        else:
+            var action = action_vals[j]
+            var mean = mean_vals[j]
+            var std = std_vals[j]
+
+            var action_normalized = (action - mean) / (std + eps)
+
+            # d_log_prob/d_mean = action_normalized / std
+            var d_log_prob_d_mean = action_normalized / (std + eps)
+
+            # d_log_prob/d_log_std = (action_normalized^2 - 1)
+            var d_log_prob_d_log_std = (
+                action_normalized * action_normalized - one
+            )
+
+            # Entropy gradient: d_entropy/d_log_std = 1
+            var d_entropy_d_log_std: Scalar[dtype] = 1.0
+
+            # PPO gradient (negative because we maximize)
+            var grad_mean = (
+                -advantage * ratio * d_log_prob_d_mean
+            ) / batch_size_scalar
+
+            var grad_log_std = (
+                -advantage * ratio * d_log_prob_d_log_std
+                - entropy_coef * d_entropy_d_log_std
+            ) / batch_size_scalar
+
+            # Clip gradients to prevent explosion
+            if grad_mean > GRAD_CLIP:
+                grad_mean = GRAD_CLIP
+            elif grad_mean < -GRAD_CLIP:
+                grad_mean = -GRAD_CLIP
+
+            if grad_log_std > GRAD_CLIP:
+                grad_log_std = GRAD_CLIP
+            elif grad_log_std < -GRAD_CLIP:
+                grad_log_std = -GRAD_CLIP
+
+            grad_output[b, j] = grad_mean
+            grad_output[b, ACTION_DIM + j] = grad_log_std
+
+
+# =============================================================================
+# PPO Critic Gradient Kernels
+# =============================================================================
+
+
+@always_inline
+fn ppo_critic_grad_kernel[
+    dtype: DType, BATCH_SIZE: Int
+](
+    # Outputs
+    grad_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin
+    ],
+    # Inputs
+    values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    value_loss_coef: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for PPO critic (MSE loss scaled by value_loss_coef).
+
+    Gradient: value_loss_coef * d(0.5 * mean((value - target)^2)) / d_value
+            = value_loss_coef * (value - target) / BATCH_SIZE
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    var value = values[b, 0]
+    var target = returns[b]
+
+    grad_values[b, 0] = (
+        value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+    )
+
+
+@always_inline
+fn ppo_critic_grad_clipped_kernel[
+    dtype: DType, BATCH_SIZE: Int
+](
+    # Outputs
+    grad_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin
+    ],
+    # Inputs
+    values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    old_values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_epsilon: Scalar[dtype],
+    value_loss_coef: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for PPO critic with value clipping, scaled by value_loss_coef.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    var value = values[b, 0]
+    var target = returns[b]
+    var old_value = old_values[b]
+
+    # Clip value prediction
+    var value_clipped = old_value + max(
+        min(value - old_value, clip_epsilon), -clip_epsilon
+    )
+
+    # Unclipped loss
+    var loss_unclipped = (value - target) * (value - target)
+    # Clipped loss
+    var loss_clipped = (value_clipped - target) * (value_clipped - target)
+
+    # Use max of clipped and unclipped
+    if loss_clipped > loss_unclipped:
+        # Use clipped gradient
+        var clip_sign = Scalar[dtype](1.0)
+        if value - old_value > clip_epsilon:
+            clip_sign = Scalar[dtype](0.0)  # Gradient is 0 at boundary
+        elif value - old_value < -clip_epsilon:
+            clip_sign = Scalar[dtype](0.0)
+        grad_values[b, 0] = (
+            value_loss_coef
+            * clip_sign
+            * (value_clipped - target)
+            / Scalar[dtype](BATCH_SIZE)
+        )
+    else:
+        grad_values[b, 0] = (
+            value_loss_coef * (value - target) / Scalar[dtype](BATCH_SIZE)
+        )
+
+
+# =============================================================================
+# PPO Advantage Normalization
+# =============================================================================
+
+
+@always_inline
+fn normalize_advantages_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+](
+    # In/Out
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs (pre-computed on CPU and passed in)
+    mean: Scalar[dtype],
+    std: Scalar[dtype],
+    batch_size: Int,
+):
+    """Normalize advantages in-place using pre-computed mean and std."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    advantages[b] = (advantages[b] - mean) / (std + Scalar[dtype](1e-8))
+
+
+# =============================================================================
+# PPO Gradient Clipping Kernels
+# =============================================================================
+
+
+@always_inline
+fn gradient_norm_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    """Compute partial sum of squared gradients for gradient norm."""
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    if idx < PARAM_SIZE:
+        var g = grads[idx]
+        shared[thread_id] = g * g
+    else:
+        shared[thread_id] = Scalar[dtype](0.0)
+
+    barrier()
+
+    # Reduction within block
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    if thread_id == 0:
+        partial_sums[block_id] = shared[0]
+
+
+@always_inline
+fn gradient_reduce_and_compute_scale_kernel[
+    dtype: DType, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    scale_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
+    max_grad_norm: Scalar[dtype],
+):
+    """Reduce partial sums and compute clipping scale entirely on GPU.
+
+    This kernel runs with a single block. It:
+    1. Loads all partial sums into shared memory
+    2. Reduces them to get total squared gradient norm
+    3. Computes scale = min(1.0, max_grad_norm / norm)
+    4. Stores scale to global memory for the next kernel
+    """
+    var thread_id = Int(thread_idx.x)
+
+    # Shared memory for reduction (size = BLOCK_SIZE)
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Load partial sums (handle case where NUM_BLOCKS > BLOCK_SIZE by striding)
+    var local_sum = Scalar[dtype](0.0)
+    var idx = thread_id
+    while idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums[idx])
+        idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+
+    barrier()
+
+    # Reduction within block
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    # Thread 0 computes and stores the scale
+    if thread_id == 0:
+        var total_sq_sum = rebind[Scalar[dtype]](shared[0])
+        var norm = Scalar[dtype](sqrt(total_sq_sum))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        scale_out[0] = scale
+
+
+@always_inline
+fn gradient_apply_scale_kernel[
+    dtype: DType, PARAM_SIZE: Int
+](
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    scale_in: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+):
+    """Apply precomputed scale to all gradients.
+
+    This kernel reads the scale computed by gradient_reduce_and_compute_scale_kernel
+    and applies it to all gradients. Always runs (no conditional), but when no
+    clipping is needed, scale=1.0 so it's a no-op multiply.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= PARAM_SIZE:
+        return
+
+    var scale = scale_in[0]
+    grads[i] = grads[i] * scale
+
+
+@always_inline
+fn gradient_reduce_apply_fused_kernel[
+    dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
+](
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
+    max_grad_norm: Scalar[dtype],
+):
+    """Fused kernel: reduce partial sums AND apply gradient clipping.
+
+    Each block redundantly computes the total gradient norm by reducing
+    all partial_sums (small array, ~NUM_BLOCKS elements), then applies
+    the computed scale to its portion of gradients.
+
+    This eliminates the single-block bottleneck of the 3-kernel approach.
+    The redundant reduction across blocks is much cheaper than kernel
+    launch overhead.
+    """
+    var block_id = Int(block_idx.x)
+    var thread_id = Int(thread_idx.x)
+    var idx = block_id * BLOCK_SIZE + thread_id
+
+    # Shared memory for reduction (each block reduces ALL partial_sums)
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Step 1: Each thread loads and sums multiple partial_sums elements
+    # (striding through the partial_sums array)
+    var local_sum = Scalar[dtype](0.0)
+    var ps_idx = thread_id
+    while ps_idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums[ps_idx])
+        ps_idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+
+    barrier()
+
+    # Step 2: Block reduction to get total squared gradient norm
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    # Step 3: Thread 0 computes scale, broadcasts via shared memory
+    # (reuse shared[1] for scale since reduction is done)
+    if thread_id == 0:
+        var total_sq_sum = rebind[Scalar[dtype]](shared[0])
+        var norm = Scalar[dtype](sqrt(total_sq_sum))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        shared[1] = scale  # Broadcast via shared memory
+
+    barrier()
+
+    # Step 4: All threads read the scale and apply to their gradient
+    if idx < PARAM_SIZE:
+        var scale = rebind[Scalar[dtype]](shared[1])
+        grads[idx] = grads[idx] * scale
+
+
+# =============================================================================
+# PPO Log_std Parameter Clamping
+# =============================================================================
+
+
+@always_inline
+fn clamp_log_std_params_kernel[
+    dtype: DType,
+    PARAM_SIZE: Int,
+    LOG_STD_OFFSET: Int,
+    ACTION_DIM: Int,
+](params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],):
+    """Clamp log_std parameters to valid range [-5.0, 2.0].
+
+    This kernel should be called after each optimizer step to prevent
+    log_std from drifting to extreme values during training.
+
+    Parameters:
+        dtype: Data type of the parameters.
+        PARAM_SIZE: Total number of parameters.
+        LOG_STD_OFFSET: Offset to log_std parameters within actor params.
+        ACTION_DIM: Number of action dimensions (number of log_std params).
+
+    Args:
+        params: Actor network parameters.
+    """
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= ACTION_DIM:
+        return
+
+    var param_idx = LOG_STD_OFFSET + i
+    var val = params[param_idx]
+
+    if val < LOG_STD_MIN:
+        params[param_idx] = LOG_STD_MIN
+    elif val > LOG_STD_MAX:
+        params[param_idx] = LOG_STD_MAX
+
+
+# =============================================================================
+# PPO Discrete Action Kernels
+# =============================================================================
+
+
+@always_inline
+fn ppo_gather_minibatch_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    TOTAL_SIZE: Int,
+](
+    # Outputs - minibatch buffers
+    mb_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    mb_actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    mb_advantages: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    mb_old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    mb_old_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    # Inputs - rollout buffers and indices
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_actions: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    batch_size: Int,
+):
+    """Gather samples from rollout buffer using shuffled indices."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= batch_size:
+        return
+
+    var src_idx = Int(indices[i])
+
+    # Gather observation
+    for d in range(OBS_DIM):
+        mb_obs[i, d] = rollout_obs[src_idx, d]
+
+    mb_actions[i] = rollout_actions[src_idx]
+    mb_advantages[i] = advantages[src_idx]
+    mb_returns[i] = returns[src_idx]
+    mb_old_log_probs[i] = rollout_log_probs[src_idx]
+    mb_old_values[i] = rollout_values[src_idx]
+
+
+@always_inline
+fn ppo_actor_grad_with_kl_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH_SIZE: Int,
+    NUM_ACTIONS: Int,
+](
+    # Outputs
+    grad_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    kl_divergences: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    entropies: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_flags: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+    ],
+    old_log_probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    clip_epsilon: Scalar[dtype],
+    entropy_coef: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for PPO actor with clipped surrogate objective.
+
+    Also computes approximate KL divergence for early stopping:
+    KL ≈ old_log_prob - new_log_prob (approximation)
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    var action = Int(actions[b])
+    var advantage = advantages[b]
+
+    # Compute softmax probabilities
+    var max_logit = logits[b, 0]
+    for a in range(1, NUM_ACTIONS):
+        if logits[b, a] > max_logit:
+            max_logit = logits[b, a]
+
+    var sum_exp = max_logit - max_logit  # Initialize to zero with correct type
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        sum_exp = sum_exp + exp(logit_val)
+
+    var probs = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0.0))
+    for a in range(NUM_ACTIONS):
+        var l = logits[b, a]
+        var logit_val = l - max_logit
+        var prob_val = exp(logit_val) / sum_exp
+        probs[a] = Scalar[dtype](prob_val[0])
+
+    # Compute new log probability
+    var log_eps = Float32(1e-8)
+    var prob_for_log = Float32(probs[action]) + log_eps
+    var new_log_prob = Scalar[dtype](log(prob_for_log))
+
+    # Probability ratio
+    var ratio = exp(new_log_prob - old_log_probs[b])
+
+    # Compute approximate KL divergence: (ratio - 1) - log(ratio)
+    var log_ratio = new_log_prob - old_log_probs[b]
+    var kl = (ratio - Scalar[dtype](1.0)) - log_ratio
+    if kl < Scalar[dtype](0.0):
+        kl = Scalar[dtype](0.0)
+    kl_divergences[b] = kl
+
+    # Compute entropy: H = -sum(p * log(p))
+    var ent: Scalar[dtype] = 0.0
+    for a in range(NUM_ACTIONS):
+        if probs[a] > Scalar[dtype](1e-10):
+            var p_log = Float32(probs[a]) + Float32(1e-8)
+            ent = ent - probs[a] * Scalar[dtype](log(p_log))
+    entropies[b] = ent
+
+    # Clip ratio for clipped objective
+    var clipped_ratio = ratio
+    if clipped_ratio < Scalar[dtype](1.0) - clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) - clip_epsilon
+    elif clipped_ratio > Scalar[dtype](1.0) + clip_epsilon:
+        clipped_ratio = Scalar[dtype](1.0) + clip_epsilon
+
+    # PPO clipped objective: min(ratio * A, clipped_ratio * A)
+    # Gradient is 0 when we use the clipped objective
+    var unclipped_obj = ratio * advantage
+    var clipped_obj = clipped_ratio * advantage
+    var is_clipped = clipped_obj < unclipped_obj
+    clip_flags[b] = Scalar[dtype](1.0) if is_clipped else Scalar[dtype](0.0)
+
+    # Compute gradients
+    for a in range(NUM_ACTIONS):
+        if is_clipped:
+            grad_logits[b, a] = Scalar[dtype](0.0)
+        else:
+            # d_log_prob / d_logits for softmax
+            var d_log_prob: Scalar[dtype]
+            if a == action:
+                d_log_prob = Scalar[dtype](1.0) - probs[a]
+            else:
+                d_log_prob = -probs[a]
+
+            # Entropy gradient: d(-p * log(p)) / d_logits
+            var prob_for_log_ent = Float32(probs[a]) + Float32(1e-8)
+            var log_prob_ent = Scalar[dtype](log(prob_for_log_ent))
+            var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log_prob_ent)
+
+            # PPO gradient (negative because we maximize)
+            grad_logits[b, a] = (
+                -advantage * ratio * d_log_prob - entropy_coef * d_entropy
+            ) / Scalar[dtype](BATCH_SIZE)
+
+
+# =============================================================================
+# PPO Rollout Storage Kernels (Discrete)
+# =============================================================================
+
+
+@always_inline
+fn _store_pre_step_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    # Outputs - rollout buffer at timestep t
+    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    r_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    r_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Inputs - current step data
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Store pre-step data (obs, action, log_prob, value) to rollout buffer."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    for d in range(OBS_DIM):
+        r_obs[i, d] = obs[i, d]
+    r_actions[i] = actions[i]
+    r_log_probs[i] = log_probs[i]
+    r_values[i] = values[i]
+
+
+@always_inline
+fn _store_pre_step_obs_parallel_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+):
+    """Parallel obs store for pre-step. One thread per element.
+
+    Grid: (ceil(OBS_DIM / TPB), N_ENVS)
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(block_idx.y)
+    if d >= OBS_DIM:
+        return
+    r_obs[i, d] = obs[i, d]
+
+
+@always_inline
+fn ppo_gather_minibatch_obs_parallel_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    OBS_DIM: Int,
+    TOTAL_SIZE: Int,
+](
+    mb_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    rollout_obs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
+    batch_size: Int,
+):
+    """Parallel gather obs from rollout. One thread per element.
+
+    Grid: (ceil(OBS_DIM / TPB), batch_size)
+    """
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(block_idx.y)
+    if d >= OBS_DIM or i >= batch_size:
+        return
+    var src_idx = Int(indices[i])
+    mb_obs[i, d] = rollout_obs[src_idx, d]

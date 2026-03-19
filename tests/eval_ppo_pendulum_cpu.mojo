@@ -17,7 +17,7 @@ Requirements:
 from std.random import seed
 from std.time import perf_counter_ns, sleep
 
-from mojo_rl.deep_agents.core.generic import DeepPPOContinuousAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.envs.pendulum import PendulumV2, PConstants
 from mojo_rl.render import Renderer2D
 

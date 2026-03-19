@@ -25,8 +25,8 @@ CartPole is solved when average reward > 475 over 100 episodes.
 from std.random import seed
 
 from mojo_rl.envs import CartPoleEnv
-from mojo_rl.deep_agents.core.generic import DeepA2CAgent
-from mojo_rl.deep_agents.core.generic import DeepPPOAgent
+from mojo_rl.deep_agents.core.agents import DeepA2CAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOAgent
 
 
 fn main() raises:

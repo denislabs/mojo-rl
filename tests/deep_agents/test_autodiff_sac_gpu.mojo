@@ -10,7 +10,7 @@ from std.random import seed
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOffPolicyAgent,
     AutodiffSACConfig,
 )

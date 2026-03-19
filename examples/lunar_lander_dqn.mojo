@@ -20,7 +20,7 @@ LunarLander is solved when average reward > 200 over 100 episodes.
 from std.random import seed
 
 from mojo_rl.envs.lunar_lander import LunarLander
-from mojo_rl.deep_agents.core.generic import DQNAgent
+from mojo_rl.deep_agents.core.agents import DQNAgent
 
 
 fn main() raises:

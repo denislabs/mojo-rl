@@ -1,6 +1,6 @@
 """Test: GenericOffPolicyAgent[Config] compiles with OffPolicyConfig trait."""
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericOffPolicyAgent,
     DDPGConfig,
     TD3Config,

@@ -3,7 +3,7 @@
 from std.random import seed
 from std.math import abs
 
-from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, SACConfig
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

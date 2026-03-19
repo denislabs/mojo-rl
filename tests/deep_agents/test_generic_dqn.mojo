@@ -2,7 +2,7 @@
 
 from std.random import seed
 
-from mojo_rl.deep_agents.core.generic import (
+from mojo_rl.deep_agents.core.agents import (
     GenericDQNAgent,
     DQNConfig,
     DoubleDQNConfig,

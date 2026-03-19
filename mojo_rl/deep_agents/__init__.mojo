@@ -18,7 +18,7 @@ Available agents:
 - DreamerV3Agent: DreamerV3 world model-based agent
 """
 
-from .core.generic import (
+from .core.agents import (
     DQNAgent,
     DQNCNNAgent,
     DQNPERAgent,

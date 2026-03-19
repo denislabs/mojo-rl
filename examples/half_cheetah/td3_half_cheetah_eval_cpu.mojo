@@ -11,7 +11,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.deep_agents.core.generic import DeepTD3Agent
+from mojo_rl.deep_agents.core.agents import DeepTD3Agent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahModel,

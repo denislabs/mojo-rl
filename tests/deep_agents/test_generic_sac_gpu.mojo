@@ -1,7 +1,7 @@
 """Test: SAC GPU training via unified GenericOffPolicyAgent."""
 from std.random import seed
 from std.gpu.host import DeviceContext
-from mojo_rl.deep_agents.core.generic import GenericOffPolicyAgent, SACConfig
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, SACConfig
 from mojo_rl.envs.pendulum import PendulumV2
 
 fn main() raises:

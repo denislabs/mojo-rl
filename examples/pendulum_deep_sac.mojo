@@ -26,7 +26,7 @@ Requirements:
 """
 
 from mojo_rl.envs import PendulumEnv
-from mojo_rl.deep_agents.core.generic import DeepSACAgent
+from mojo_rl.deep_agents.core.agents import DeepSACAgent
 
 
 fn main() raises:
