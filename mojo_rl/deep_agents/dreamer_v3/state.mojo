@@ -663,6 +663,26 @@ struct DreamerV3GPUState[
     var host_rew_symlog_step_buf: HostBuffer[dtype]  # [BATCH]
     var host_cont_target_step_buf: HostBuffer[dtype]  # [BATCH]
 
+    # ── Pre-allocated host buffers for training diagnostics ────────────
+    var host_dec_diag_buf: HostBuffer[dtype]  # [BATCH * OBS]
+    var host_rew_diag_buf: HostBuffer[dtype]  # [BATCH * NUM_BINS]
+    var host_cont_diag_buf: HostBuffer[dtype]  # [BATCH]
+    var host_kl_diag_buf: HostBuffer[dtype]  # [BATCH]
+    var host_minmax_buf: HostBuffer[dtype]  # [2]
+
+    # ── Pre-allocated host buffers for batch upload ────────────────────
+    var host_upload_obs_buf: HostBuffer[dtype]  # [BATCH * (BL+1) * OBS]
+    var host_upload_act_buf: HostBuffer[dtype]  # [BATCH * BL * ACT]
+    var host_upload_rew_buf: HostBuffer[dtype]  # [BATCH * BL]
+    var host_upload_done_buf: HostBuffer[dtype]  # [BATCH * BL]
+
+    # ── Pre-allocated host buffers for imagination diagnostics ──────
+    var host_diag_imag_buf: HostBuffer[dtype]  # [HORIZON * IB] (reused for rew/ret/val)
+    var host_diag_actor_buf: HostBuffer[dtype]  # [ActorModel.PARAM_SIZE] (reused for grads/params)
+
+    # ── Pre-allocated host buffer for bins upload ─────────────────────
+    var host_bins_buf: HostBuffer[dtype]  # [NUM_BINS]
+
     # ── Decoder backward scratch ─────────────────────────────────────────
     var dec_cache_buf: DeviceBuffer[dtype]  # [BATCH * DecModel.CACHE_SIZE]
     var dec_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
@@ -895,6 +915,26 @@ struct DreamerV3GPUState[
         self.host_target_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
         self.host_rew_symlog_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
         self.host_cont_target_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+
+        # ── Pre-allocated host buffers for training diagnostics ───────
+        self.host_dec_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
+        self.host_rew_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BINS)
+        self.host_cont_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+        self.host_kl_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+        self.host_minmax_buf = ctx.enqueue_create_host_buffer[dtype](2)
+
+        # ── Pre-allocated host buffers for batch upload ───────────────
+        self.host_upload_obs_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
+        self.host_upload_act_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
+        self.host_upload_rew_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL)
+        self.host_upload_done_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL)
+
+        # ── Pre-allocated host buffers for imagination diagnostics ────
+        self.host_diag_imag_buf = ctx.enqueue_create_host_buffer[dtype](Self.HORIZON * Self.IB)
+        self.host_diag_actor_buf = ctx.enqueue_create_host_buffer[dtype](Self.ActorModel.PARAM_SIZE)
+
+        # ── Pre-allocated host buffer for bins upload ─────────────────
+        self.host_bins_buf = ctx.enqueue_create_host_buffer[dtype](Self.BINS)
 
         # ── Decoder backward scratch ─────────────────────────────────────
         self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE)
@@ -1137,6 +1177,18 @@ struct DreamerV3GPUState[
         self.host_target_buf = take.host_target_buf^
         self.host_rew_symlog_step_buf = take.host_rew_symlog_step_buf^
         self.host_cont_target_step_buf = take.host_cont_target_step_buf^
+        self.host_dec_diag_buf = take.host_dec_diag_buf^
+        self.host_rew_diag_buf = take.host_rew_diag_buf^
+        self.host_cont_diag_buf = take.host_cont_diag_buf^
+        self.host_kl_diag_buf = take.host_kl_diag_buf^
+        self.host_minmax_buf = take.host_minmax_buf^
+        self.host_upload_obs_buf = take.host_upload_obs_buf^
+        self.host_upload_act_buf = take.host_upload_act_buf^
+        self.host_upload_rew_buf = take.host_upload_rew_buf^
+        self.host_upload_done_buf = take.host_upload_done_buf^
+        self.host_diag_imag_buf = take.host_diag_imag_buf^
+        self.host_diag_actor_buf = take.host_diag_actor_buf^
+        self.host_bins_buf = take.host_bins_buf^
         self.dec_cache_buf = take.dec_cache_buf^
         self.dec_grad_out_buf = take.dec_grad_out_buf^
         self.dec_grad_in_buf = take.dec_grad_in_buf^

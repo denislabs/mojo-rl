@@ -642,6 +642,10 @@ struct TDMPC2GPUState[
     var env_rew_host: HostBuffer[dtype]
     var env_done_host: HostBuffer[dtype]
 
+    # ── Reusable host buffers (avoid per-step allocations) ──
+    var qt_upload_host: HostBuffer[dtype]  # [Q_P] reused for each Q-target upload
+    var q_vals_host: HostBuffer[dtype]  # [BATCH] for Q-value diagnostic readback
+
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
 
@@ -833,6 +837,10 @@ struct TDMPC2GPUState[
         self.env_done_host = ctx.enqueue_create_host_buffer[dtype](
             Self.max_n_envs
         )
+
+        # ── Reusable host buffers ──
+        self.qt_upload_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        self.q_vals_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
 
 
 # =============================================================================

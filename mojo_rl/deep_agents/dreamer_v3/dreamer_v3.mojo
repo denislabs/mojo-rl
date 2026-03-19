@@ -1707,7 +1707,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             # Step 2b: Compute diagnostic losses (CPU, from downloaded outputs)
             # ══════════════════════════════════════════════════════════════
-            var dec_host = ctx.enqueue_create_host_buffer[dtype](B * OBS)
+            var dec_host = gpu_state.host_dec_diag_buf
             ctx.enqueue_copy(dec_host, gpu_state.dec_out_buf)
             ctx.synchronize()
 
@@ -1719,7 +1719,7 @@ struct DreamerV3Agent[
                     obs_loss += (pred - target) * (pred - target)
 
             if t > 0:
-                var rew_host = ctx.enqueue_create_host_buffer[dtype](B * BINS)
+                var rew_host = gpu_state.host_rew_diag_buf
                 ctx.enqueue_copy(rew_host, gpu_state.rew_logits_buf)
                 ctx.synchronize()
 
@@ -1747,7 +1747,7 @@ struct DreamerV3Agent[
                             rew_loss -= t_k * (Float64(rew_host[b * BINS + k]) - lse)
 
             if t > 0:
-                var cont_host = ctx.enqueue_create_host_buffer[dtype](B)
+                var cont_host = gpu_state.host_cont_diag_buf
                 ctx.enqueue_copy(cont_host, gpu_state.cont_out_buf)
                 ctx.synchronize()
                 for b in range(B):
@@ -1765,7 +1765,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
 
             # -- Decoder: MSE gradient against symlog(obs[t+1]) --
-            var host_target = ctx.enqueue_create_host_buffer[dtype](B * OBS)
+            var host_target = gpu_state.host_target_buf
             for b in range(B):
                 for i in range(OBS):
                     var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
@@ -1813,7 +1813,7 @@ struct DreamerV3Agent[
             # -- Reward: two-hot CE gradient (t > 0 only) --
             if t > 0:
                 # Upload symlog(reward[t])
-                var host_rew_symlog = ctx.enqueue_create_host_buffer[dtype](B)
+                var host_rew_symlog = gpu_state.host_rew_symlog_step_buf
                 for b in range(B):
                     var r = batch_rewards[b * BL + t]
                     host_rew_symlog[b] = Scalar[dtype](symlog(Float32(r)))
@@ -1913,7 +1913,7 @@ struct DreamerV3Agent[
                 )
 
                 # Upload 1.0 - done[t] as target
-                var host_cont_target = ctx.enqueue_create_host_buffer[dtype](B)
+                var host_cont_target = gpu_state.host_cont_target_step_buf
                 for b in range(B):
                     host_cont_target[b] = Scalar[dtype](
                         1.0 - Float64(batch_dones[b * BL + t])
@@ -2227,7 +2227,7 @@ struct DreamerV3Agent[
             )
 
             # Accumulate KL loss (download from GPU for diagnostics)
-            var kl_host = ctx.enqueue_create_host_buffer[dtype](B)
+            var kl_host = gpu_state.host_kl_diag_buf
             ctx.enqueue_copy(kl_host, gpu_state.kl_buf)
             ctx.synchronize()
             var kl_sum = Float64(0.0)
@@ -2904,7 +2904,7 @@ struct DreamerV3Agent[
         gpu_state.slow_critic.upload_from(self.state.critic, ctx)
 
         # Upload symlog bins
-        var bins_host = ctx.enqueue_create_host_buffer[dtype](Self.num_bins)
+        var bins_host = gpu_state.host_bins_buf
         for i in range(Self.num_bins):
             bins_host[i] = Scalar[dtype](self.state.rssm.bins[i])
         ctx.enqueue_copy(gpu_state.bins_buf, bins_host)
@@ -2991,22 +2991,22 @@ struct DreamerV3Agent[
         comptime ACT_SIZE = B * BL * ACT
         comptime SCALAR_SIZE = B * BL
 
-        var host_obs = ctx.enqueue_create_host_buffer[dtype](OBS_SIZE)
+        var host_obs = gpu_state.host_upload_obs_buf
         for i in range(OBS_SIZE):
             host_obs[i] = Scalar[dtype](batch_obs[i])
         ctx.enqueue_copy(gpu_state.batch_obs, host_obs)
 
-        var host_act = ctx.enqueue_create_host_buffer[dtype](ACT_SIZE)
+        var host_act = gpu_state.host_upload_act_buf
         for i in range(ACT_SIZE):
             host_act[i] = Scalar[dtype](batch_actions[i])
         ctx.enqueue_copy(gpu_state.batch_actions, host_act)
 
-        var host_rew = ctx.enqueue_create_host_buffer[dtype](SCALAR_SIZE)
+        var host_rew = gpu_state.host_upload_rew_buf
         for i in range(SCALAR_SIZE):
             host_rew[i] = Scalar[dtype](batch_rewards[i])
         ctx.enqueue_copy(gpu_state.batch_rewards, host_rew)
 
-        var host_done = ctx.enqueue_create_host_buffer[dtype](SCALAR_SIZE)
+        var host_done = gpu_state.host_upload_done_buf
         for i in range(SCALAR_SIZE):
             host_done[i] = Scalar[dtype](batch_dones[i])
         ctx.enqueue_copy(gpu_state.batch_dones, host_done)
@@ -3036,8 +3036,8 @@ struct DreamerV3Agent[
             # Copy obs slice: batch_obs[b*(BL+1)*OBS + t*OBS : ... + (t+1)*OBS]
             # For simplicity, we do this on CPU and upload per timestep.
             # A more optimized version would use gather kernels.
-            var host_obs_step = ctx.enqueue_create_host_buffer[dtype](B * OBS)
-            var host_act_step = ctx.enqueue_create_host_buffer[dtype](B * ACT)
+            var host_obs_step = gpu_state.host_obs_step_buf
+            var host_act_step = gpu_state.host_act_step_buf
             for b in range(B):
                 for i in range(OBS):
                     host_obs_step[b * OBS + i] = Scalar[dtype](
@@ -4460,7 +4460,7 @@ struct DreamerV3Agent[
             block_dim=(TPB,),
         )
 
-        var host_minmax = ctx.enqueue_create_host_buffer[dtype](2)
+        var host_minmax = gpu_state.host_minmax_buf
         ctx.enqueue_copy(host_minmax, gpu_state.returns_minmax_buf)
         ctx.synchronize()
 
@@ -4833,14 +4833,12 @@ struct DreamerV3Agent[
         # ── Diagnostics ──────────────────────────────────────────────────
         if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             # Download a few diagnostic values
-            var diag_rew = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
+            var diag_imag = gpu_state.host_diag_imag_buf
+
+            # Download advantages (stored in imag_rewards_buf after actor step)
             ctx.enqueue_copy(
-                diag_rew, gpu_state.imag_rewards_buf
+                diag_imag, gpu_state.imag_rewards_buf
             )  # now has advantages
-            var diag_ret = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-            ctx.enqueue_copy(diag_ret, gpu_state.imag_returns_buf)
-            var diag_val = ctx.enqueue_create_host_buffer[dtype](HORIZON * IB)
-            ctx.enqueue_copy(diag_val, gpu_state.imag_values_buf)
             ctx.synchronize()
 
             # Compute stats across ALL advantages (not just h=0)
@@ -4849,7 +4847,7 @@ struct DreamerV3Agent[
             var adv_min = Float64(1e30)
             var adv_max = Float64(-1e30)
             for i in range(DIAG_ADV_N):
-                var v = Float64(diag_rew[i])
+                var v = Float64(diag_imag[i])
                 avg_adv += v
                 if v < adv_min:
                     adv_min = v
@@ -4858,35 +4856,37 @@ struct DreamerV3Agent[
             avg_adv /= Float64(DIAG_ADV_N)
             var adv_var = Float64(0)
             for i in range(DIAG_ADV_N):
-                var d = Float64(diag_rew[i]) - avg_adv
+                var d = Float64(diag_imag[i]) - avg_adv
                 adv_var += d * d
             adv_var /= Float64(DIAG_ADV_N)
 
+            # Download values and compute avg before buffer is reused
+            ctx.enqueue_copy(diag_imag, gpu_state.imag_values_buf)
+            ctx.synchronize()
+            var avg_val = Float64(0)
+            for i in range(IB):
+                avg_val += Float64(diag_imag[i])
+            avg_val /= Float64(IB)
+
             # Check actor gradient L2 norm
             comptime ACTOR_PS = Self.StateType.ActorModel.PARAM_SIZE
-            var diag_ag = ctx.enqueue_create_host_buffer[dtype](ACTOR_PS)
-            ctx.enqueue_copy(diag_ag, gpu_state.actor.grads_buf)
+            var diag_actor = gpu_state.host_diag_actor_buf
+            ctx.enqueue_copy(diag_actor, gpu_state.actor.grads_buf)
             ctx.synchronize()
             var actor_grad_norm = Float64(0)
             for i in range(ACTOR_PS):
-                var g = Float64(diag_ag[i])
+                var g = Float64(diag_actor[i])
                 actor_grad_norm += g * g
             actor_grad_norm = sqrt(actor_grad_norm)
 
             # Check actor first layer weights L2 norm (to see if they change)
-            var diag_ap = ctx.enqueue_create_host_buffer[dtype](ACTOR_PS)
-            ctx.enqueue_copy(diag_ap, gpu_state.actor.params_buf)
+            ctx.enqueue_copy(diag_actor, gpu_state.actor.params_buf)
             ctx.synchronize()
             var actor_param_norm = Float64(0)
             for i in range(min(FEAT * Self.units, ACTOR_PS)):
-                var p = Float64(diag_ap[i])
+                var p = Float64(diag_actor[i])
                 actor_param_norm += p * p
             actor_param_norm = sqrt(actor_param_norm)
-
-            var avg_val = Float64(0)
-            for i in range(IB):
-                avg_val += Float64(diag_val[i])
-            avg_val /= Float64(IB)
 
             print(
                 "  [diag] step="

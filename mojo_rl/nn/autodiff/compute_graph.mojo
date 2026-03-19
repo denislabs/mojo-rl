@@ -42,10 +42,11 @@ Memory layout:
     activations: node_0_out(OUT_DIM_0) | ... | node_{N-1}_out(OUT_DIM_{N-1})
     node_caches: node_0_cache(CS_0) | ... | node_{N-1}_cache(CS_{N-1})
 
-  Workspace (per sample, temporary during backward):
-    grad_activations: same layout as activations
-    concat_buffer: max across all dual-input nodes of their concat_dim
+  Workspace (per sample, reused across forward/backward):
+    grad_activations: same layout as activations (backward only)
+    scratch_buffer: max(concat_dim, node_in_dim) — concat (forward) / gi (backward)
     op_workspace: max across all nodes of their WORKSPACE_SIZE_PER_SAMPLE
+    dummy_cache: CACHE_SIZE — for forward_no_cache inference path
 """
 
 from ..constants import dtype, TPB
@@ -446,6 +447,22 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return m
 
     @staticmethod
+    fn _max_node_in_dim() -> Int:
+        """Max OP_IN_DIM across all nodes (for backward gi scratch)."""
+        var m = 0
+        comptime for i in range(Self.N):
+            if Self.node_types[i].OP_IN_DIM > m:
+                m = Self.node_types[i].OP_IN_DIM
+        return m
+
+    @staticmethod
+    fn _max_scratch_dim() -> Int:
+        """Max scratch per sample: max(concat_dim, node_in_dim)."""
+        comptime c = Self._max_concat_dim()
+        comptime n = Self._max_node_in_dim()
+        return c if c > n else n
+
+    @staticmethod
     fn _max_ws() -> Int:
         """Max per-node workspace across all nodes."""
         var m = 0
@@ -459,11 +476,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     comptime PARAM_SIZE: Int = Self._sum_param_size()
 
-    # Workspace: grad_activations + concat buffer + op workspace
+    # Workspace: grad_activations + scratch buffer + op workspace + dummy cache
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self._total_act_size()  # grad_activations (same size as activations)
-        + Self._max_concat_dim()  # reusable concat buffer
+        + Self._max_scratch_dim()  # reusable scratch (concat / gi_node)
         + Self._max_ws()  # reusable op workspace
+        + Self.CACHE_SIZE  # dummy cache for forward_no_cache
     )
 
     # =========================================================================
@@ -884,8 +902,16 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         """GPU forward pass: execute nodes in topological order.
 
         Each node's activation is stored in cache (same layout as CPU).
-        Dual-input nodes get a temporary concat buffer on device.
+        Dual-input nodes use workspace scratch for concat buffer.
         """
+        comptime OP_WS_OFF = Self._total_act_size() + Self._max_scratch_dim()
+        comptime OP_WS_SIZE = max(1, Self._max_ws())
+        var op_ws = DeviceBuffer[dtype](
+            ctx,
+            workspace.unsafe_ptr() + BATCH * OP_WS_OFF,
+            BATCH * OP_WS_SIZE,
+            owning=False,
+        )
         comptime for i in range(Self.N):
             # Activation buffer in cache for this node
             var act_t = LayoutTensor[
@@ -920,7 +946,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         MutAnyOrigin,
                     ](input.ptr)
                     Self.node_types[i].op_forward_gpu[BATCH](
-                        ctx, act_t, node_in, node_p, node_c, workspace
+                        ctx, act_t, node_in, node_p, node_c, op_ws
                     )
                 else:
                     comptime src0 = Self.node_types[i].IN0
@@ -934,7 +960,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         cache.ptr + BATCH * Self._act_offset[src0]()
                     )
                     Self.node_types[i].op_forward_gpu[BATCH](
-                        ctx, act_t, node_in, node_p, node_c, workspace
+                        ctx, act_t, node_in, node_p, node_c, op_ws
                     )
             else:
                 # Dual input: concat on GPU using two copy kernels
@@ -944,14 +970,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 comptime dim1 = Self._source_dim[src1]()
                 comptime NI = Self.node_types[i].OP_IN_DIM
 
-                var concat_buf = ctx.enqueue_create_buffer[dtype](
-                    BATCH * NI
-                )
+                var concat_ptr = workspace.unsafe_ptr() + BATCH * Self._total_act_size()
                 var concat_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, NI),
                     MutAnyOrigin,
-                ](concat_buf.unsafe_ptr())
+                ](concat_ptr)
 
                 # Copy source 0 into concat[:dim0]
                 comptime S0_COPY = BATCH * dim0
@@ -1119,7 +1143,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
                 # Forward through node
                 Self.node_types[i].op_forward_gpu[BATCH](
-                    ctx, act_t, concat_t, node_p, node_c, workspace
+                    ctx, act_t, concat_t, node_p, node_c, op_ws
                 )
 
         # Copy last node's activation to output
@@ -1176,16 +1200,14 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU inference forward — allocate dummy cache from workspace."""
-        # Use workspace tail as dummy cache
-        var cache_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
-        )
+        """GPU inference forward — use workspace tail as dummy cache."""
+        comptime CACHE_OFF = Self._total_act_size() + Self._max_scratch_dim() + Self._max_ws()
+        var cache_ptr = workspace.unsafe_ptr() + BATCH * CACHE_OFF
         var cache_t = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](cache_buf.unsafe_ptr())
+        ](cache_ptr)
         Self.forward_gpu[BATCH](
             ctx, output, input, params, cache_t, workspace
         )
@@ -1247,9 +1269,8 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         """
         comptime TOTAL_ACT = Self._total_act_size()
 
-        # Allocate zero-initialized grad activation buffer on GPU
-        var ga_buf = ctx.enqueue_create_buffer[dtype](BATCH * TOTAL_ACT)
-        var ga_ptr = ga_buf.unsafe_ptr()
+        # Use workspace offset 0 for grad activation buffer
+        var ga_ptr = workspace.unsafe_ptr()
 
         # Zero the buffer
         comptime GA_TOTAL = BATCH * TOTAL_ACT
@@ -1340,6 +1361,19 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             grad_input, grid_dim=(gi_grid,), block_dim=(TPB,)
         )
 
+        # Op workspace slice for backward node calls
+        comptime OP_WS_OFF = Self._total_act_size() + Self._max_scratch_dim()
+        comptime OP_WS_SIZE = max(1, Self._max_ws())
+        var op_ws = DeviceBuffer[dtype](
+            ctx,
+            workspace.unsafe_ptr() + BATCH * OP_WS_OFF,
+            BATCH * OP_WS_SIZE,
+            owning=False,
+        )
+
+        # Scratch pointer for per-node gi buffer (reused each iteration)
+        var gi_scratch_ptr = workspace.unsafe_ptr() + BATCH * Self._total_act_size()
+
         # Reverse iteration
         comptime for _ri in range(Self.N):
             comptime i = Self.N - 1 - _ri
@@ -1372,20 +1406,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](grads.ptr + Self._param_offset[i]())
 
-            # Allocate grad_input buffer for this node
+            # Use workspace scratch for grad_input buffer (reused each iteration)
             comptime NODE_IN = Self.node_types[i].OP_IN_DIM
-            var gi_node_buf = ctx.enqueue_create_buffer[dtype](
-                BATCH * NODE_IN
-            )
             var gi_t = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, NODE_IN),
                 MutAnyOrigin,
-            ](gi_node_buf.unsafe_ptr())
+            ](gi_scratch_ptr)
 
             # Run VJP on GPU
             Self.node_types[i].op_backward_gpu[BATCH](
-                ctx, gi_t, gi_go, node_p, node_c, node_g, workspace
+                ctx, gi_t, gi_go, node_p, node_c, node_g, op_ws
             )
 
             # --- Scatter grad_input to predecessors (GPU add kernels) ---
@@ -1400,7 +1431,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, Self.IN_DIM),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
 
                     @always_inline
                     fn add_to_gi_single(
@@ -1444,7 +1475,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, dst_dim),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
 
                     @always_inline
                     fn add_to_pred_single(
@@ -1515,7 +1546,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
                     ctx.enqueue_function[
                         scatter_to_gi_s0, scatter_to_gi_s0
                     ](
@@ -1563,7 +1594,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
                     ctx.enqueue_function[
                         scatter_to_pred_s0, scatter_to_pred_s0
                     ](
@@ -1607,7 +1638,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
                     ctx.enqueue_function[
                         scatter_to_gi_s1, scatter_to_gi_s1
                     ](
@@ -1655,7 +1686,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
-                    ](gi_node_buf.unsafe_ptr())
+                    ](gi_scratch_ptr)
                     ctx.enqueue_function[
                         scatter_to_pred_s1, scatter_to_pred_s1
                     ](

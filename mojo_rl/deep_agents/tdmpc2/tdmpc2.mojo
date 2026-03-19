@@ -2206,26 +2206,22 @@ struct TDMPC2Agent[
         gs.q5.upload_from(self.state.world_model.q5, ctx)
 
         # Target Q networks (params only — soft-updated on GPU, no optimizer state)
-        var _q1t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+        # Reuse single pre-allocated host buffer for all 5 uploads sequentially
         for i in range(Self.Q_P):
-            _q1t_host[i] = (self.state.world_model.q1_target.params + i)[]
-        ctx.enqueue_copy(gs.q1t_params_buf, _q1t_host)
-        var _q2t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+            gs.qt_upload_host[i] = (self.state.world_model.q1_target.params + i)[]
+        ctx.enqueue_copy(gs.q1t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            _q2t_host[i] = (self.state.world_model.q2_target.params + i)[]
-        ctx.enqueue_copy(gs.q2t_params_buf, _q2t_host)
-        var _q3t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+            gs.qt_upload_host[i] = (self.state.world_model.q2_target.params + i)[]
+        ctx.enqueue_copy(gs.q2t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            _q3t_host[i] = (self.state.world_model.q3_target.params + i)[]
-        ctx.enqueue_copy(gs.q3t_params_buf, _q3t_host)
-        var _q4t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+            gs.qt_upload_host[i] = (self.state.world_model.q3_target.params + i)[]
+        ctx.enqueue_copy(gs.q3t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            _q4t_host[i] = (self.state.world_model.q4_target.params + i)[]
-        ctx.enqueue_copy(gs.q4t_params_buf, _q4t_host)
-        var _q5t_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
+            gs.qt_upload_host[i] = (self.state.world_model.q4_target.params + i)[]
+        ctx.enqueue_copy(gs.q4t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            _q5t_host[i] = (self.state.world_model.q5_target.params + i)[]
-        ctx.enqueue_copy(gs.q5t_params_buf, _q5t_host)
+            gs.qt_upload_host[i] = (self.state.world_model.q5_target.params + i)[]
+        ctx.enqueue_copy(gs.q5t_params_buf, gs.qt_upload_host)
 
         # Upload fixed bins to GPU
         var bins_host = ctx.enqueue_create_host_buffer[dtype](Self.BINS)
@@ -3232,17 +3228,14 @@ struct TDMPC2Agent[
                         block_dim=(TPB,),
                     )
                     # Download Q-values to CPU for percentile computation
-                    var q_vals_host = ctx.enqueue_create_host_buffer[dtype](
-                        Self.BATCH
-                    )
-                    ctx.enqueue_copy(q_vals_host, gs.q_min_buf)
+                    ctx.enqueue_copy(gs.q_vals_host, gs.q_min_buf)
                     ctx.synchronize()
 
                     # Sort Q-values to compute 5th and 95th percentiles
                     # Simple insertion sort (BATCH=256, negligible cost)
                     var sorted_q = List[Float64](capacity=Self.BATCH)
                     for b in range(Self.BATCH):
-                        sorted_q.append(Float64(q_vals_host[b]))
+                        sorted_q.append(Float64(gs.q_vals_host[b]))
                     for i in range(1, Self.BATCH):
                         var key = sorted_q[i]
                         var j = i - 1
