@@ -46,11 +46,11 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 64
+comptime MAX_N_ENVS = 32
 
 # Training duration (total env transitions across all parallel envs)
 comptime NUM_STEPS = 3_000_000
-comptime WARMUP_STEPS = 25_000
+comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
 
@@ -78,7 +78,9 @@ fn main() raises:
             critic_lr=0.0003,
         ]
 
-        var agent = GenericOffPolicyAgent[Config, L=RemoteLogger, max_n_envs=MAX_N_ENVS](
+        var agent = GenericOffPolicyAgent[
+            Config, L=RemoteLogger, max_n_envs=MAX_N_ENVS
+        ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
