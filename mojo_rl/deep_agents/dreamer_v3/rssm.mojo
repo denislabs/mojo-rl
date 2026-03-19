@@ -28,10 +28,12 @@ from std.memory import alloc, memset
 
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel
+from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel, Identity, Model
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming
 from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.nn.autodiff.compute_graph import ComputeGraph, GNode
+from mojo_rl.nn.autodiff.composite_params import CompositeParams
 from mojo_rl.nn.loss.two_hot import (
     compute_symlog_bins,
     two_hot_encode,
@@ -966,3 +968,1305 @@ struct RSSM[
         self.action_proj.optimizer_step()
         self.gru_hidden.optimizer_step()
         self.gru_gates.optimizer_step()
+
+    # =========================================================================
+    # Autodiff Prediction Heads (ComputeGraph-based)
+    # =========================================================================
+    #
+    # The prediction heads share feat as input with a 3-way fan-out:
+    #
+    #   feat ──→ Decoder     → obs_hat       (OBS_DIM)
+    #        ├─→ RewardHead  → rew_logits    (NUM_BINS)
+    #        └─→ ContHead    → cont_logit    (1, pre-sigmoid)
+    #
+    # ComputeGraph handles the fan-out topology and automatic gradient
+    # accumulation at the feat fan-out point during backward. This replaces
+    # the manual backward that only had decoder and discarded grad_feat.
+    #
+    # Output: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
+    # =========================================================================
+
+    comptime _DEC_REW_DIM: Int = Self.OBS_DIM + Self.NUM_BINS
+    comptime HEADS_OUT_DIM: Int = Self._DEC_REW_DIM + 1
+
+    comptime HeadsGraph = ComputeGraph[
+        GNode[Self.DecModel, -1],                      # 0: feat → obs_hat
+        GNode[Self.RewModel, -1],                      # 1: feat → rew_logits
+        GNode[Self.ContModel, -1],                     # 2: feat → cont_logit
+        GNode[Identity[Self._DEC_REW_DIM], 0, 1],     # 3: concat [dec, rew]
+        GNode[Identity[Self.HEADS_OUT_DIM], 3, 2],     # 4: concat all
+    ]
+
+    comptime HeadsCP = CompositeParams[
+        Self.DecModel, Self.RewModel, Self.ContModel
+    ]
+
+    comptime HEADS_CACHE_SIZE: Int = Self.HeadsGraph.CACHE_SIZE
+
+    fn predict_all_heads[
+        BATCH: Int
+    ](
+        self,
+        feat: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.FEAT_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HEADS_OUT_DIM), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.HEADS_CACHE_SIZE),
+            MutAnyOrigin,
+        ],
+    ):
+        """Forward all prediction heads via ComputeGraph.
+
+        Output layout: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
+
+        The cache must be preserved for the subsequent backward call.
+        Allocate as: BATCH * HEADS_CACHE_SIZE elements.
+        """
+        # Assemble params from separate network states
+        var combined = InlineArray[
+            Scalar[dtype], Self.HeadsCP.TOTAL_SIZE
+        ](uninitialized=True)
+        Self.HeadsCP.assemble(
+            combined.unsafe_ptr(),
+            self.decoder.params_view().ptr,
+            self.reward_head.params_view().ptr,
+            self.continue_head.params_view().ptr,
+        )
+        var params_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.HeadsGraph.PARAM_SIZE),
+            MutAnyOrigin,
+        ](combined.unsafe_ptr())
+
+        Self.HeadsGraph.forward[BATCH](feat, output, params_t, cache)
+
+    fn backward_all_heads[
+        BATCH: Int
+    ](
+        mut self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HEADS_OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_feat: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.FEAT_DIM), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.HEADS_CACHE_SIZE),
+            MutAnyOrigin,
+        ],
+    ):
+        """Backward all prediction heads via ComputeGraph.
+
+        Computes grad_feat = d(loss)/d(feat) from ALL three head losses,
+        and accumulates parameter gradients into decoder, reward_head,
+        and continue_head gradient buffers.
+
+        Args:
+            grad_output: Gradient seeds for each head output, concatenated as
+                [d_obs_hat(OBS_DIM), d_rew_logits(NUM_BINS), d_cont_logit(1)].
+            grad_feat: Output gradient w.r.t. feat [BATCH, FEAT_DIM] (written).
+                This should be backpropagated through encoder/GRU for full BPTT.
+            cache: Cache from predict_all_heads forward pass.
+        """
+        # Re-assemble params (needed for backward)
+        var combined = InlineArray[
+            Scalar[dtype], Self.HeadsCP.TOTAL_SIZE
+        ](uninitialized=True)
+        Self.HeadsCP.assemble(
+            combined.unsafe_ptr(),
+            self.decoder.params_view().ptr,
+            self.reward_head.params_view().ptr,
+            self.continue_head.params_view().ptr,
+        )
+        var params_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.HeadsGraph.PARAM_SIZE),
+            MutAnyOrigin,
+        ](combined.unsafe_ptr())
+
+        # Combined grads buffer
+        var combined_grads = InlineArray[
+            Scalar[dtype], Self.HeadsCP.TOTAL_SIZE
+        ](uninitialized=True)
+        for i in range(Self.HeadsCP.TOTAL_SIZE):
+            combined_grads[i] = Scalar[dtype](0.0)
+        var grads_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.HeadsGraph.PARAM_SIZE),
+            MutAnyOrigin,
+        ](combined_grads.unsafe_ptr())
+
+        # Backward: computes grad_feat + param grads for all heads
+        Self.HeadsGraph.backward[BATCH](
+            grad_output, grad_feat, params_t, cache, grads_t
+        )
+
+        # Scatter param grads back to individual networks (accumulate)
+        Self.HeadsCP.scatter_add(
+            combined_grads.unsafe_ptr(),
+            self.decoder.grads_view().ptr,
+            self.reward_head.grads_view().ptr,
+            self.continue_head.grads_view().ptr,
+        )
+
+    # =========================================================================
+    # Backward from feat through encoder (Step 1 of BPTT)
+    # =========================================================================
+    #
+    # Gradient path:
+    #   grad_feat → split [grad_deter, grad_stoch]
+    #            → straight-through categorical → grad_post_logits
+    #            → Posterior.backward → [grad_deter_from_post, grad_embed]
+    #            → Encoder.backward → encoder param grads
+    #   grad_deter_total = grad_deter + grad_deter_from_post
+    #
+    # This method re-forwards encoder and posterior with cache (since
+    # observe_step used inference-mode forward without caching).
+    # =========================================================================
+
+    fn backward_feat_to_encoder[
+        BATCH: Int
+    ](
+        mut self,
+        grad_feat: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.FEAT_DIM), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ],
+        deter: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+        post_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ],
+        mut grad_deter_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+    ):
+        """Backpropagate from grad_feat through posterior and encoder.
+
+        Computes:
+        1. grad_deter (direct from feat split)
+        2. grad_stoch → straight-through → grad_post_logits
+        3. Posterior backward → grad_post_input = [grad_deter_from_post, grad_embed]
+        4. Encoder backward → encoder param grads
+        5. grad_deter_out = grad_deter + grad_deter_from_post
+
+        Accumulates param grads for posterior and encoder networks.
+
+        Args:
+            grad_feat: Gradient w.r.t. feat from backward_all_heads.
+            obs: Original observation (for encoder re-forward with cache).
+            deter: Deterministic state at this timestep.
+            post_probs: Posterior probabilities (from observe_step, for straight-through).
+            grad_deter_out: Output total gradient w.r.t. deter (for GRU BPTT).
+        """
+        comptime POST_IN = Self.DETER_DIM + Self.STOCH_FLAT
+
+        # =====================================================================
+        # 1. Split grad_feat → grad_deter + grad_stoch
+        # =====================================================================
+        # feat = concat(deter, stoch), so:
+        #   grad_deter = grad_feat[:, :DETER_DIM]
+        #   grad_stoch = grad_feat[:, DETER_DIM:]
+
+        # =====================================================================
+        # 2. Straight-through gradient through categorical sampling
+        # =====================================================================
+        # Forward: logits → softmax → probs (with unimix) → sample → one_hot
+        # Straight-through: treat output = probs, so grad_probs = grad_stoch
+        # Then: grad_softmax = (1 - UNIMIX) * grad_probs
+        # Then: grad_logits = softmax_vjp(grad_softmax)
+        #   where softmax_vjp(g, s) = s * (g - sum(g * s)) per group
+        var grad_logits = InlineArray[
+            Scalar[dtype], BATCH * Self.STOCH_FLAT
+        ](uninitialized=True)
+
+        comptime ONE_MINUS_UNIMIX = 1.0 - Self.UNIMIX
+
+        for b in range(BATCH):
+            for s in range(Self.STOCH_DIM):
+                var base = s * Self.CLASSES
+
+                # grad_probs = grad_stoch (straight-through)
+                # grad_softmax = (1 - UNIMIX) * grad_probs
+                # Compute dot(grad_softmax, softmax_p) per group
+                # softmax_p = (probs - UNIMIX/CLASSES) / (1 - UNIMIX)
+                var dot_gs: Float64 = 0.0
+                for c in range(Self.CLASSES):
+                    var grad_stoch_c = Float64(
+                        grad_feat.ptr[
+                            b * Self.FEAT_DIM + Self.DETER_DIM + base + c
+                        ]
+                    )
+                    var prob_c = Float64(
+                        rebind[Scalar[dtype]](post_probs[b, base + c])
+                    )
+                    # softmax_c = (prob_c - UNIMIX/CLASSES) / (1-UNIMIX)
+                    var softmax_c = (
+                        prob_c - Self.UNIMIX / Float64(Self.CLASSES)
+                    ) / ONE_MINUS_UNIMIX
+                    if softmax_c < 0.0:
+                        softmax_c = 0.0
+                    var grad_sm_c = ONE_MINUS_UNIMIX * grad_stoch_c
+                    dot_gs += grad_sm_c * softmax_c
+
+                # grad_logits[c] = softmax_c * (grad_softmax_c - dot_gs)
+                for c in range(Self.CLASSES):
+                    var grad_stoch_c = Float64(
+                        grad_feat.ptr[
+                            b * Self.FEAT_DIM + Self.DETER_DIM + base + c
+                        ]
+                    )
+                    var prob_c = Float64(
+                        rebind[Scalar[dtype]](post_probs[b, base + c])
+                    )
+                    var softmax_c = (
+                        prob_c - Self.UNIMIX / Float64(Self.CLASSES)
+                    ) / ONE_MINUS_UNIMIX
+                    if softmax_c < 0.0:
+                        softmax_c = 0.0
+                    var grad_sm_c = ONE_MINUS_UNIMIX * grad_stoch_c
+                    grad_logits[
+                        b * Self.STOCH_FLAT + base + c
+                    ] = Scalar[dtype](softmax_c * (grad_sm_c - dot_gs))
+
+        var grad_logits_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ](grad_logits.unsafe_ptr())
+
+        # =====================================================================
+        # 3. Re-forward encoder with cache (for backward)
+        # =====================================================================
+        var symlog_obs = InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM](
+            uninitialized=True
+        )
+        for b in range(BATCH):
+            for i in range(Self.OBS_DIM):
+                var val = Float32(rebind[Scalar[dtype]](obs[b, i]))
+                symlog_obs[b * Self.OBS_DIM + i] = Scalar[dtype](
+                    symlog(val)
+                )
+        var symlog_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ](symlog_obs.unsafe_ptr())
+
+        var embed = InlineArray[Scalar[dtype], BATCH * Self.STOCH_FLAT](
+            uninitialized=True
+        )
+        var embed_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ](embed.unsafe_ptr())
+
+        comptime ENC_CS = Self.EncModel.CACHE_SIZE
+        var enc_cache = InlineArray[Scalar[dtype], BATCH * ENC_CS](
+            uninitialized=True
+        )
+        var enc_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ENC_CS), MutAnyOrigin
+        ](enc_cache.unsafe_ptr())
+
+        Self.EncNet.forward_with_cache[BATCH](
+            symlog_obs_t, embed_t, self.encoder.params_view(), enc_cache_t
+        )
+
+        # =====================================================================
+        # 4. Re-forward posterior with cache (for backward)
+        # =====================================================================
+        var post_in = InlineArray[Scalar[dtype], BATCH * POST_IN](
+            uninitialized=True
+        )
+        for b in range(BATCH):
+            for i in range(Self.DETER_DIM):
+                post_in[b * POST_IN + i] = rebind[Scalar[dtype]](
+                    deter[b, i]
+                )
+            for i in range(Self.STOCH_FLAT):
+                post_in[b * POST_IN + Self.DETER_DIM + i] = embed[
+                    b * Self.STOCH_FLAT + i
+                ]
+        var post_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, POST_IN), MutAnyOrigin
+        ](post_in.unsafe_ptr())
+
+        var post_logits = InlineArray[
+            Scalar[dtype], BATCH * Self.STOCH_FLAT
+        ](uninitialized=True)
+        var post_logits_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ](post_logits.unsafe_ptr())
+
+        comptime POST_CS = Self.PostModel.CACHE_SIZE
+        var post_cache = InlineArray[Scalar[dtype], BATCH * POST_CS](
+            uninitialized=True
+        )
+        var post_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, POST_CS), MutAnyOrigin
+        ](post_cache.unsafe_ptr())
+
+        Self.PostNet.forward_with_cache[BATCH](
+            post_in_t,
+            post_logits_t,
+            self.posterior.params_view(),
+            post_cache_t,
+        )
+
+        # =====================================================================
+        # 5. Posterior backward: grad_logits → grad_post_input
+        # =====================================================================
+        var grad_post_in = InlineArray[Scalar[dtype], BATCH * POST_IN](
+            uninitialized=True
+        )
+        for i in range(BATCH * POST_IN):
+            grad_post_in[i] = Scalar[dtype](0.0)
+        var grad_post_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, POST_IN), MutAnyOrigin
+        ](grad_post_in.unsafe_ptr())
+
+        var post_grads = self.posterior.grads_view()
+        Self.PostNet.backward[BATCH](
+            grad_logits_t,
+            grad_post_in_t,
+            self.posterior.params_view(),
+            post_cache_t,
+            post_grads,
+        )
+
+        # =====================================================================
+        # 6. Extract grad_embed from grad_post_input and encoder backward
+        # =====================================================================
+        # grad_post_input = [grad_deter_from_post, grad_embed]
+        var grad_embed = InlineArray[
+            Scalar[dtype], BATCH * Self.STOCH_FLAT
+        ](uninitialized=True)
+        for b in range(BATCH):
+            for i in range(Self.STOCH_FLAT):
+                grad_embed[b * Self.STOCH_FLAT + i] = grad_post_in[
+                    b * POST_IN + Self.DETER_DIM + i
+                ]
+        var grad_embed_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ](grad_embed.unsafe_ptr())
+
+        # Encoder backward: grad_embed → encoder param grads
+        var grad_obs = InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM](
+            uninitialized=True
+        )
+        var grad_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ](grad_obs.unsafe_ptr())
+
+        var enc_grads = self.encoder.grads_view()
+        Self.EncNet.backward[BATCH](
+            grad_embed_t,
+            grad_obs_t,
+            self.encoder.params_view(),
+            enc_cache_t,
+            enc_grads,
+        )
+
+        # =====================================================================
+        # 7. Combine grad_deter contributions
+        # =====================================================================
+        # grad_deter_out = grad_deter (from feat split) + grad_deter_from_post
+        for b in range(BATCH):
+            for i in range(Self.DETER_DIM):
+                # Direct contribution from feat split
+                var gd_feat = Float64(
+                    grad_feat.ptr[b * Self.FEAT_DIM + i]
+                )
+                # Contribution from posterior backward
+                var gd_post = Float64(
+                    grad_post_in[b * POST_IN + i]
+                )
+                grad_deter_out.ptr[b * Self.DETER_DIM + i] = Scalar[
+                    dtype
+                ](gd_feat + gd_post)
+
+    # =========================================================================
+    # KL Loss Backward (Step 2 of BPTT)
+    # =========================================================================
+    #
+    # DreamerV3 dual KL balancing:
+    #   dyn_kl (weight 0.5): stop-grad on posterior → trains PRIOR
+    #     d_KL/d_prior_probs = -p/q → softmax_vjp → Prior.backward
+    #   rep_kl (weight 0.1): stop-grad on prior → trains POSTERIOR
+    #     d_KL/d_post_probs = log(p) - log(q) + 1 → straight-through → Posterior.backward → Encoder.backward
+    #
+    # Free nats: if KL < FREE_NATS, gradient is zero (clamped).
+    #
+    # Gradient contributions:
+    #   - Prior params (from dyn_kl)
+    #   - Posterior params (from rep_kl)
+    #   - Encoder params (from rep_kl → posterior → embed → encoder)
+    #   - grad_deter += contributions from both KL terms through posterior/prior backward
+    # =========================================================================
+
+    fn backward_kl_loss[
+        BATCH: Int
+    ](
+        mut self,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+        ],
+        deter: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+        post_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ],
+        prior_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ],
+        dyn_scale: Float64,
+        rep_scale: Float64,
+        mut grad_deter_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+    ):
+        """Backward pass for KL loss with dual KL balancing.
+
+        Implements DreamerV3's KL loss gradients:
+        - dyn_kl (dyn_scale, typically 0.5): trains prior to match posterior
+        - rep_kl (rep_scale, typically 0.1): trains posterior to match prior
+
+        Free nats: if KL < FREE_NATS, no gradient is applied.
+
+        ACCUMULATES into grad_deter_out (add to existing values).
+        ACCUMULATES into prior/posterior/encoder param grads.
+
+        Args:
+            obs: Original observation (for encoder re-forward if rep_kl > 0).
+            deter: Deterministic state at this timestep.
+            post_probs: Posterior probabilities (from observe_step).
+            prior_probs: Prior probabilities (from observe_step).
+            dyn_scale: Weight for dynamics KL (typically 0.5).
+            rep_scale: Weight for representation KL (typically 0.1).
+            grad_deter_out: Accumulated gradient w.r.t. deter (ADDED to).
+        """
+        var eps = Float64(1e-8)
+
+        # Compute KL to check free nats threshold
+        var kl_val = Float64(0.0)
+        for b in range(BATCH):
+            for k in range(Self.STOCH_FLAT):
+                var p = Float64(rebind[Scalar[dtype]](post_probs[b, k]))
+                var q = Float64(rebind[Scalar[dtype]](prior_probs[b, k]))
+                if p > eps:
+                    kl_val += p * (log(p + eps) - log(q + eps))
+        kl_val /= Float64(BATCH)
+
+        # Free nats: if KL below threshold, no gradient
+        if kl_val < Self.FREE_NATS:
+            return
+
+        # Normalization factor
+        var inv_batch = 1.0 / Float64(BATCH)
+
+        # =================================================================
+        # dyn_kl: trains PRIOR (stop-grad on posterior)
+        # d_KL/d_prior_probs[k] = -p[k] / q[k] (per sample, then /BATCH)
+        # =================================================================
+        if dyn_scale > 0.0:
+            # Compute d_KL/d_prior_probs
+            var grad_prior_probs = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            for b in range(BATCH):
+                for k in range(Self.STOCH_FLAT):
+                    var p = Float64(
+                        rebind[Scalar[dtype]](post_probs[b, k])
+                    )
+                    var q = Float64(
+                        rebind[Scalar[dtype]](prior_probs[b, k])
+                    )
+                    # d_KL/d_q = -p/q, scaled by dyn_scale / BATCH
+                    var dkl_dq = -p / (q + eps) * dyn_scale * inv_batch
+                    grad_prior_probs[
+                        b * Self.STOCH_FLAT + k
+                    ] = Scalar[dtype](dkl_dq)
+
+            # Softmax VJP through unimix to get grad_prior_logits
+            var grad_prior_logits = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+
+            comptime ONE_MINUS_UNIMIX = 1.0 - Self.UNIMIX
+
+            for b in range(BATCH):
+                for s in range(Self.STOCH_DIM):
+                    var base = s * Self.CLASSES
+                    # dot(grad_softmax, softmax) per group
+                    var dot_gs: Float64 = 0.0
+                    for c in range(Self.CLASSES):
+                        var gp = Float64(
+                            grad_prior_probs[
+                                b * Self.STOCH_FLAT + base + c
+                            ]
+                        )
+                        var prob_c = Float64(
+                            rebind[Scalar[dtype]](
+                                prior_probs[b, base + c]
+                            )
+                        )
+                        var sm_c = (
+                            prob_c
+                            - Self.UNIMIX / Float64(Self.CLASSES)
+                        ) / ONE_MINUS_UNIMIX
+                        if sm_c < 0.0:
+                            sm_c = 0.0
+                        var g_sm = ONE_MINUS_UNIMIX * gp
+                        dot_gs += g_sm * sm_c
+
+                    for c in range(Self.CLASSES):
+                        var gp = Float64(
+                            grad_prior_probs[
+                                b * Self.STOCH_FLAT + base + c
+                            ]
+                        )
+                        var prob_c = Float64(
+                            rebind[Scalar[dtype]](
+                                prior_probs[b, base + c]
+                            )
+                        )
+                        var sm_c = (
+                            prob_c
+                            - Self.UNIMIX / Float64(Self.CLASSES)
+                        ) / ONE_MINUS_UNIMIX
+                        if sm_c < 0.0:
+                            sm_c = 0.0
+                        var g_sm = ONE_MINUS_UNIMIX * gp
+                        grad_prior_logits[
+                            b * Self.STOCH_FLAT + base + c
+                        ] = Scalar[dtype](sm_c * (g_sm - dot_gs))
+
+            var grad_prior_logits_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](grad_prior_logits.unsafe_ptr())
+
+            # Re-forward prior with cache
+            comptime PRIOR_CS = Self.PriorModel.CACHE_SIZE
+            var prior_cache = InlineArray[
+                Scalar[dtype], BATCH * PRIOR_CS
+            ](uninitialized=True)
+            var prior_cache_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, PRIOR_CS), MutAnyOrigin
+            ](prior_cache.unsafe_ptr())
+
+            var prior_logits_tmp = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            var prior_logits_tmp_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](prior_logits_tmp.unsafe_ptr())
+
+            Self.PriorNet.forward_with_cache[BATCH](
+                deter,
+                prior_logits_tmp_t,
+                self.prior.params_view(),
+                prior_cache_t,
+            )
+
+            # Prior backward → grad_deter_from_prior
+            var grad_deter_prior = InlineArray[
+                Scalar[dtype], BATCH * Self.DETER_DIM
+            ](uninitialized=True)
+            for i in range(BATCH * Self.DETER_DIM):
+                grad_deter_prior[i] = Scalar[dtype](0.0)
+            var grad_deter_prior_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.DETER_DIM),
+                MutAnyOrigin,
+            ](grad_deter_prior.unsafe_ptr())
+
+            var prior_grads = self.prior.grads_view()
+            Self.PriorNet.backward[BATCH](
+                grad_prior_logits_t,
+                grad_deter_prior_t,
+                self.prior.params_view(),
+                prior_cache_t,
+                prior_grads,
+            )
+
+            # Accumulate into grad_deter_out
+            for i in range(BATCH * Self.DETER_DIM):
+                grad_deter_out.ptr[i] = (
+                    grad_deter_out.ptr[i] + grad_deter_prior[i]
+                )
+
+        # =================================================================
+        # rep_kl: trains POSTERIOR (stop-grad on prior)
+        # d_KL/d_post_probs[k] = log(p[k]) - log(q[k]) + 1
+        # =================================================================
+        if rep_scale > 0.0:
+            comptime POST_IN = Self.DETER_DIM + Self.STOCH_FLAT
+            comptime ONE_MINUS_UNIMIX_R = 1.0 - Self.UNIMIX
+
+            # Compute d_KL/d_post_probs
+            var grad_post_probs = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            for b in range(BATCH):
+                for k in range(Self.STOCH_FLAT):
+                    var p = Float64(
+                        rebind[Scalar[dtype]](post_probs[b, k])
+                    )
+                    var q = Float64(
+                        rebind[Scalar[dtype]](prior_probs[b, k])
+                    )
+                    # d_KL/d_p = log(p) - log(q) + 1, scaled
+                    var dkl_dp: Float64 = 0.0
+                    if p > eps:
+                        dkl_dp = (
+                            (log(p + eps) - log(q + eps) + 1.0)
+                            * rep_scale
+                            * inv_batch
+                        )
+                    grad_post_probs[
+                        b * Self.STOCH_FLAT + k
+                    ] = Scalar[dtype](dkl_dp)
+
+            # Softmax VJP through unimix → grad_post_logits
+            var grad_post_logits = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+
+            for b in range(BATCH):
+                for s in range(Self.STOCH_DIM):
+                    var base = s * Self.CLASSES
+                    var dot_gs: Float64 = 0.0
+                    for c in range(Self.CLASSES):
+                        var gp = Float64(
+                            grad_post_probs[
+                                b * Self.STOCH_FLAT + base + c
+                            ]
+                        )
+                        var prob_c = Float64(
+                            rebind[Scalar[dtype]](
+                                post_probs[b, base + c]
+                            )
+                        )
+                        var sm_c = (
+                            prob_c
+                            - Self.UNIMIX / Float64(Self.CLASSES)
+                        ) / ONE_MINUS_UNIMIX_R
+                        if sm_c < 0.0:
+                            sm_c = 0.0
+                        var g_sm = ONE_MINUS_UNIMIX_R * gp
+                        dot_gs += g_sm * sm_c
+
+                    for c in range(Self.CLASSES):
+                        var gp = Float64(
+                            grad_post_probs[
+                                b * Self.STOCH_FLAT + base + c
+                            ]
+                        )
+                        var prob_c = Float64(
+                            rebind[Scalar[dtype]](
+                                post_probs[b, base + c]
+                            )
+                        )
+                        var sm_c = (
+                            prob_c
+                            - Self.UNIMIX / Float64(Self.CLASSES)
+                        ) / ONE_MINUS_UNIMIX_R
+                        if sm_c < 0.0:
+                            sm_c = 0.0
+                        var g_sm = ONE_MINUS_UNIMIX_R * gp
+                        grad_post_logits[
+                            b * Self.STOCH_FLAT + base + c
+                        ] = Scalar[dtype](sm_c * (g_sm - dot_gs))
+
+            var grad_post_logits_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](grad_post_logits.unsafe_ptr())
+
+            # Re-forward encoder + posterior with cache
+            var symlog_obs = InlineArray[
+                Scalar[dtype], BATCH * Self.OBS_DIM
+            ](uninitialized=True)
+            for b in range(BATCH):
+                for i in range(Self.OBS_DIM):
+                    var val = Float32(rebind[Scalar[dtype]](obs[b, i]))
+                    symlog_obs[b * Self.OBS_DIM + i] = Scalar[dtype](
+                        symlog(val)
+                    )
+            var symlog_obs_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
+            ](symlog_obs.unsafe_ptr())
+
+            var embed = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            var embed_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](embed.unsafe_ptr())
+
+            comptime ENC_CS = Self.EncModel.CACHE_SIZE
+            var enc_cache = InlineArray[Scalar[dtype], BATCH * ENC_CS](
+                uninitialized=True
+            )
+            var enc_cache_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ENC_CS), MutAnyOrigin
+            ](enc_cache.unsafe_ptr())
+
+            Self.EncNet.forward_with_cache[BATCH](
+                symlog_obs_t,
+                embed_t,
+                self.encoder.params_view(),
+                enc_cache_t,
+            )
+
+            # Build posterior input: concat(deter, embed)
+            var post_in = InlineArray[
+                Scalar[dtype], BATCH * POST_IN
+            ](uninitialized=True)
+            for b in range(BATCH):
+                for i in range(Self.DETER_DIM):
+                    post_in[b * POST_IN + i] = rebind[Scalar[dtype]](
+                        deter[b, i]
+                    )
+                for i in range(Self.STOCH_FLAT):
+                    post_in[b * POST_IN + Self.DETER_DIM + i] = embed[
+                        b * Self.STOCH_FLAT + i
+                    ]
+            var post_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, POST_IN), MutAnyOrigin
+            ](post_in.unsafe_ptr())
+
+            var post_logits_tmp = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            var post_logits_tmp_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](post_logits_tmp.unsafe_ptr())
+
+            comptime POST_CS = Self.PostModel.CACHE_SIZE
+            var post_cache = InlineArray[
+                Scalar[dtype], BATCH * POST_CS
+            ](uninitialized=True)
+            var post_cache_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, POST_CS), MutAnyOrigin
+            ](post_cache.unsafe_ptr())
+
+            Self.PostNet.forward_with_cache[BATCH](
+                post_in_t,
+                post_logits_tmp_t,
+                self.posterior.params_view(),
+                post_cache_t,
+            )
+
+            # Posterior backward → grad_post_input
+            var grad_post_in = InlineArray[
+                Scalar[dtype], BATCH * POST_IN
+            ](uninitialized=True)
+            for i in range(BATCH * POST_IN):
+                grad_post_in[i] = Scalar[dtype](0.0)
+            var grad_post_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, POST_IN), MutAnyOrigin
+            ](grad_post_in.unsafe_ptr())
+
+            var post_grads = self.posterior.grads_view()
+            Self.PostNet.backward[BATCH](
+                grad_post_logits_t,
+                grad_post_in_t,
+                self.posterior.params_view(),
+                post_cache_t,
+                post_grads,
+            )
+
+            # Extract grad_embed and encoder backward
+            var grad_embed = InlineArray[
+                Scalar[dtype], BATCH * Self.STOCH_FLAT
+            ](uninitialized=True)
+            for b in range(BATCH):
+                for i in range(Self.STOCH_FLAT):
+                    grad_embed[b * Self.STOCH_FLAT + i] = grad_post_in[
+                        b * POST_IN + Self.DETER_DIM + i
+                    ]
+            var grad_embed_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.STOCH_FLAT),
+                MutAnyOrigin,
+            ](grad_embed.unsafe_ptr())
+
+            var grad_obs = InlineArray[
+                Scalar[dtype], BATCH * Self.OBS_DIM
+            ](uninitialized=True)
+            var grad_obs_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.OBS_DIM),
+                MutAnyOrigin,
+            ](grad_obs.unsafe_ptr())
+
+            var enc_grads = self.encoder.grads_view()
+            Self.EncNet.backward[BATCH](
+                grad_embed_t,
+                grad_obs_t,
+                self.encoder.params_view(),
+                enc_cache_t,
+                enc_grads,
+            )
+
+            # Accumulate grad_deter from posterior input
+            for b in range(BATCH):
+                for i in range(Self.DETER_DIM):
+                    grad_deter_out.ptr[b * Self.DETER_DIM + i] = (
+                        grad_deter_out.ptr[b * Self.DETER_DIM + i]
+                        + grad_post_in[b * POST_IN + i]
+                    )
+
+    # =========================================================================
+    # GRU Core Backward (Step 3 of BPTT)
+    # =========================================================================
+    #
+    # Backpropagates grad_new_deter through the GRU core to produce
+    # grad_prev_deter and grad_prev_stoch for the previous timestep.
+    #
+    # Forward was:
+    #   proj_d = DeterProj(prev_deter)
+    #   proj_s = StochProj(prev_stoch)
+    #   proj_a = ActionProj(norm_action)
+    #   concat = [prev_deter, proj_d, proj_s, proj_a]
+    #   hidden = GRUHidden(concat)
+    #   gates = GRUGates(hidden) → [reset, cand, update] logits
+    #   new_deter = update * tanh(reset * cand) + (1-update) * prev_deter
+    #
+    # Backward:
+    #   7. Gate application backward → d_gates, d_prev_deter_direct
+    #   6. GRUGates.backward(d_gates) → d_hidden
+    #   5. GRUHidden.backward(d_hidden) → d_concat
+    #   4. Split d_concat → d_prev_deter_concat, d_proj_d, d_proj_s, d_proj_a
+    #   3. ActionProj.backward(d_proj_a) → action param grads
+    #   2. StochProj.backward(d_proj_s) → d_prev_stoch + stoch param grads
+    #   1. DeterProj.backward(d_proj_d) → d_prev_deter_proj + deter param grads
+    #   Total: d_prev_deter = direct + concat + proj contributions
+    # =========================================================================
+
+    fn backward_gru_core[
+        BATCH: Int
+    ](
+        mut self,
+        grad_new_deter: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+        prev_deter: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+        prev_stoch: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ],
+        prev_action: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTION_DIM), MutAnyOrigin
+        ],
+        mut grad_prev_deter: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DETER_DIM), MutAnyOrigin
+        ],
+        mut grad_prev_stoch: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
+        ],
+    ):
+        """Backward through GRU core for BPTT.
+
+        Re-forwards all GRU sub-networks with cache, then backward through
+        gate application and all sub-networks.
+
+        Accumulates param grads for DeterProj, StochProj, ActionProj,
+        GRUHidden, GRUGates.
+
+        Args:
+            grad_new_deter: Gradient w.r.t. new_deter (from prediction heads + KL).
+            prev_deter: Previous deterministic state (input to GRU).
+            prev_stoch: Previous stochastic state (input to GRU).
+            prev_action: Previous action (input to GRU).
+            grad_prev_deter: Output gradient w.r.t. prev_deter (WRITTEN, for t-1).
+            grad_prev_stoch: Output gradient w.r.t. prev_stoch (WRITTEN, for t-1).
+        """
+        comptime DETER = Self.DETER_DIM
+        comptime GRU_CONCAT = DETER + 3 * Self.HIDDEN
+
+        # =================================================================
+        # 1. Normalize action (same as forward)
+        # =================================================================
+        var norm_action = InlineArray[
+            Scalar[dtype], BATCH * Self.ACTION_DIM
+        ](uninitialized=True)
+        for b in range(BATCH):
+            for i in range(Self.ACTION_DIM):
+                var a = rebind[Scalar[dtype]](prev_action[b, i])
+                var abs_a = abs(a)
+                var one = Scalar[dtype](1.0)
+                if abs_a > one:
+                    norm_action[b * Self.ACTION_DIM + i] = a / abs_a
+                else:
+                    norm_action[b * Self.ACTION_DIM + i] = a
+        var norm_action_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTION_DIM), MutAnyOrigin
+        ](norm_action.unsafe_ptr())
+
+        # =================================================================
+        # 2. Re-forward projections with cache
+        # =================================================================
+        comptime DP_CS = Self.DeterProj.CACHE_SIZE
+        comptime SP_CS = Self.StochProj.CACHE_SIZE
+        comptime AP_CS = Self.ActionProj.CACHE_SIZE
+        comptime GH_CS = Self.GRUHiddenModel.CACHE_SIZE
+        comptime GG_CS = Self.GRUGateModel.CACHE_SIZE
+
+        var proj_d = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        var proj_d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](proj_d.unsafe_ptr())
+        var dp_cache = InlineArray[Scalar[dtype], BATCH * DP_CS](
+            uninitialized=True
+        )
+        var dp_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DP_CS), MutAnyOrigin
+        ](dp_cache.unsafe_ptr())
+        Self.DeterProjNet.forward_with_cache[BATCH](
+            prev_deter, proj_d_t, self.deter_proj.params_view(), dp_cache_t
+        )
+
+        var proj_s = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        var proj_s_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](proj_s.unsafe_ptr())
+        var sp_cache = InlineArray[Scalar[dtype], BATCH * SP_CS](
+            uninitialized=True
+        )
+        var sp_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, SP_CS), MutAnyOrigin
+        ](sp_cache.unsafe_ptr())
+        Self.StochProjNet.forward_with_cache[BATCH](
+            prev_stoch, proj_s_t, self.stoch_proj.params_view(), sp_cache_t
+        )
+
+        var proj_a = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        var proj_a_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](proj_a.unsafe_ptr())
+        var ap_cache = InlineArray[Scalar[dtype], BATCH * AP_CS](
+            uninitialized=True
+        )
+        var ap_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, AP_CS), MutAnyOrigin
+        ](ap_cache.unsafe_ptr())
+        Self.ActionProjNet.forward_with_cache[BATCH](
+            norm_action_t, proj_a_t, self.action_proj.params_view(), ap_cache_t
+        )
+
+        # =================================================================
+        # 3. Re-forward GRU concat → hidden → gates with cache
+        # =================================================================
+        var concat_buf = InlineArray[Scalar[dtype], BATCH * GRU_CONCAT](
+            uninitialized=True
+        )
+        for b in range(BATCH):
+            for i in range(DETER):
+                concat_buf[b * GRU_CONCAT + i] = rebind[Scalar[dtype]](
+                    prev_deter[b, i]
+                )
+            for i in range(Self.HIDDEN):
+                concat_buf[b * GRU_CONCAT + DETER + i] = proj_d[
+                    b * Self.HIDDEN + i
+                ]
+                concat_buf[
+                    b * GRU_CONCAT + DETER + Self.HIDDEN + i
+                ] = proj_s[b * Self.HIDDEN + i]
+                concat_buf[
+                    b * GRU_CONCAT + DETER + 2 * Self.HIDDEN + i
+                ] = proj_a[b * Self.HIDDEN + i]
+        var concat_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GRU_CONCAT), MutAnyOrigin
+        ](concat_buf.unsafe_ptr())
+
+        var hidden_out = InlineArray[Scalar[dtype], BATCH * DETER](
+            uninitialized=True
+        )
+        var hidden_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+        ](hidden_out.unsafe_ptr())
+        var gh_cache = InlineArray[Scalar[dtype], BATCH * GH_CS](
+            uninitialized=True
+        )
+        var gh_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GH_CS), MutAnyOrigin
+        ](gh_cache.unsafe_ptr())
+        Self.GRUHiddenNet.forward_with_cache[BATCH](
+            concat_t, hidden_t, self.gru_hidden.params_view(), gh_cache_t
+        )
+
+        var gate_out = InlineArray[Scalar[dtype], BATCH * 3 * DETER](
+            uninitialized=True
+        )
+        var gate_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 3 * DETER), MutAnyOrigin
+        ](gate_out.unsafe_ptr())
+        var gg_cache = InlineArray[Scalar[dtype], BATCH * GG_CS](
+            uninitialized=True
+        )
+        var gg_cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GG_CS), MutAnyOrigin
+        ](gg_cache.unsafe_ptr())
+        Self.GRUGateNet.forward_with_cache[BATCH](
+            hidden_t, gate_t, self.gru_gates.params_view(), gg_cache_t
+        )
+
+        # =================================================================
+        # 4. Gate application backward
+        # =================================================================
+        # Forward was:
+        #   reset = sigmoid(gate[i])
+        #   cand = tanh(reset * gate[DETER+i])
+        #   update = sigmoid(gate[2*DETER+i] - 1)
+        #   new_deter[i] = update * cand + (1 - update) * old_d[i]
+        var d_gate_out = InlineArray[Scalar[dtype], BATCH * 3 * DETER](
+            uninitialized=True
+        )
+        for i in range(BATCH * 3 * DETER):
+            d_gate_out[i] = Scalar[dtype](0.0)
+
+        # Initialize grad_prev_deter with direct contribution
+        for i in range(BATCH * DETER):
+            grad_prev_deter.ptr[i] = Scalar[dtype](0.0)
+
+        for b in range(BATCH):
+            for i in range(DETER):
+                var d_nd = Float64(
+                    grad_new_deter.ptr[b * DETER + i]
+                )
+
+                var reset_logit = Float64(
+                    gate_out[b * 3 * DETER + i]
+                )
+                var cand_logit = Float64(
+                    gate_out[b * 3 * DETER + DETER + i]
+                )
+                var update_logit = Float64(
+                    gate_out[b * 3 * DETER + 2 * DETER + i]
+                )
+
+                var one = 1.0
+
+                # Recompute gate values
+                var reset_val = one / (one + exp(-reset_logit))
+                var rc = reset_val * cand_logit
+                var cand_val = (exp(rc) - exp(-rc)) / (
+                    exp(rc) + exp(-rc)
+                )  # tanh(rc)
+                var update_val = one / (
+                    one + exp(-(update_logit - one))
+                )
+                var old_d = Float64(
+                    rebind[Scalar[dtype]](prev_deter[b, i])
+                )
+
+                # Backward through: new_d = update * cand + (1-update) * old_d
+                var d_update = d_nd * (cand_val - old_d)
+                var d_cand = d_nd * update_val
+                var d_old_d = d_nd * (one - update_val)
+
+                # update = sigmoid(update_logit - 1)
+                var d_update_logit = d_update * update_val * (
+                    one - update_val
+                )
+
+                # cand = tanh(rc), d_tanh = 1 - tanh^2
+                var d_rc = d_cand * (one - cand_val * cand_val)
+
+                # rc = reset * cand_logit
+                var d_reset = d_rc * cand_logit
+                var d_cand_logit = d_rc * reset_val
+
+                # reset = sigmoid(reset_logit)
+                var d_reset_logit = d_reset * reset_val * (
+                    one - reset_val
+                )
+
+                d_gate_out[b * 3 * DETER + i] = Scalar[dtype](
+                    d_reset_logit
+                )
+                d_gate_out[b * 3 * DETER + DETER + i] = Scalar[dtype](
+                    d_cand_logit
+                )
+                d_gate_out[b * 3 * DETER + 2 * DETER + i] = Scalar[
+                    dtype
+                ](d_update_logit)
+
+                # Direct contribution to prev_deter
+                grad_prev_deter.ptr[b * DETER + i] = Scalar[dtype](
+                    d_old_d
+                )
+
+        var d_gate_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 3 * DETER), MutAnyOrigin
+        ](d_gate_out.unsafe_ptr())
+
+        # =================================================================
+        # 5. GRUGates backward: d_gate_out → d_hidden
+        # =================================================================
+        var d_hidden = InlineArray[Scalar[dtype], BATCH * DETER](
+            uninitialized=True
+        )
+        for i in range(BATCH * DETER):
+            d_hidden[i] = Scalar[dtype](0.0)
+        var d_hidden_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+        ](d_hidden.unsafe_ptr())
+
+        var gg_grads = self.gru_gates.grads_view()
+        Self.GRUGateNet.backward[BATCH](
+            d_gate_t,
+            d_hidden_t,
+            self.gru_gates.params_view(),
+            gg_cache_t,
+            gg_grads,
+        )
+
+        # =================================================================
+        # 6. GRUHidden backward: d_hidden → d_concat
+        # =================================================================
+        var d_concat = InlineArray[Scalar[dtype], BATCH * GRU_CONCAT](
+            uninitialized=True
+        )
+        for i in range(BATCH * GRU_CONCAT):
+            d_concat[i] = Scalar[dtype](0.0)
+        var d_concat_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GRU_CONCAT), MutAnyOrigin
+        ](d_concat.unsafe_ptr())
+
+        var gh_grads = self.gru_hidden.grads_view()
+        Self.GRUHiddenNet.backward[BATCH](
+            d_hidden_t,
+            d_concat_t,
+            self.gru_hidden.params_view(),
+            gh_cache_t,
+            gh_grads,
+        )
+
+        # =================================================================
+        # 7. Split d_concat → d_prev_deter_concat, d_proj_d/s/a
+        # =================================================================
+        # concat = [prev_deter, proj_d, proj_s, proj_a]
+        # Accumulate d_prev_deter from concat portion
+        for b in range(BATCH):
+            for i in range(DETER):
+                grad_prev_deter.ptr[b * DETER + i] = (
+                    grad_prev_deter.ptr[b * DETER + i]
+                    + d_concat[b * GRU_CONCAT + i]
+                )
+
+        # Extract projection gradients
+        var d_proj_d = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        var d_proj_s = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        var d_proj_a = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
+            uninitialized=True
+        )
+        for b in range(BATCH):
+            for i in range(Self.HIDDEN):
+                d_proj_d[b * Self.HIDDEN + i] = d_concat[
+                    b * GRU_CONCAT + DETER + i
+                ]
+                d_proj_s[b * Self.HIDDEN + i] = d_concat[
+                    b * GRU_CONCAT + DETER + Self.HIDDEN + i
+                ]
+                d_proj_a[b * Self.HIDDEN + i] = d_concat[
+                    b * GRU_CONCAT + DETER + 2 * Self.HIDDEN + i
+                ]
+
+        # =================================================================
+        # 8. Projection backwards → param grads + grad_prev_deter/stoch
+        # =================================================================
+        var d_proj_d_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](d_proj_d.unsafe_ptr())
+        var d_proj_s_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](d_proj_s.unsafe_ptr())
+        var d_proj_a_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HIDDEN), MutAnyOrigin
+        ](d_proj_a.unsafe_ptr())
+
+        # DeterProj backward → d_prev_deter_proj
+        var d_prev_deter_proj = InlineArray[
+            Scalar[dtype], BATCH * DETER
+        ](uninitialized=True)
+        for i in range(BATCH * DETER):
+            d_prev_deter_proj[i] = Scalar[dtype](0.0)
+        var d_prev_deter_proj_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+        ](d_prev_deter_proj.unsafe_ptr())
+
+        var dp_grads = self.deter_proj.grads_view()
+        Self.DeterProjNet.backward[BATCH](
+            d_proj_d_t,
+            d_prev_deter_proj_t,
+            self.deter_proj.params_view(),
+            dp_cache_t,
+            dp_grads,
+        )
+
+        # Accumulate into grad_prev_deter
+        for i in range(BATCH * DETER):
+            grad_prev_deter.ptr[i] = (
+                grad_prev_deter.ptr[i] + d_prev_deter_proj[i]
+            )
+
+        # StochProj backward → grad_prev_stoch
+        for i in range(BATCH * Self.STOCH_FLAT):
+            grad_prev_stoch.ptr[i] = Scalar[dtype](0.0)
+
+        var sp_grads = self.stoch_proj.grads_view()
+        Self.StochProjNet.backward[BATCH](
+            d_proj_s_t,
+            grad_prev_stoch,
+            self.stoch_proj.params_view(),
+            sp_cache_t,
+            sp_grads,
+        )
+
+        # ActionProj backward → d_action (not needed for training, but
+        # accumulates param grads for ActionProj)
+        var d_action = InlineArray[
+            Scalar[dtype], BATCH * Self.ACTION_DIM
+        ](uninitialized=True)
+        for i in range(BATCH * Self.ACTION_DIM):
+            d_action[i] = Scalar[dtype](0.0)
+        var d_action_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.ACTION_DIM), MutAnyOrigin
+        ](d_action.unsafe_ptr())
+
+        var ap_grads = self.action_proj.grads_view()
+        Self.ActionProjNet.backward[BATCH](
+            d_proj_a_t,
+            d_action_t,
+            self.action_proj.params_view(),
+            ap_cache_t,
+            ap_grads,
+        )
