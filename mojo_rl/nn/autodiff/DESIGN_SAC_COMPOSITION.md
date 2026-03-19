@@ -416,15 +416,15 @@ passed via the workspace/cache mechanism or as additional DiffOp parameters.
 
 ### Algorithm Coverage Summary
 
-| Algorithm Family | Graph Shape | Missing DiffOps | Combinators Sufficient? |
-|-----------------|-------------|-----------------|------------------------|
-| DDPG | Chain | None | ✅ Yes (done) |
-| TD3 | Chain + twin fan-out | None | ✅ Yes (done) |
-| SAC | Chain + twin fan-out + split | None | ✅ Yes (done) |
-| DQN / Double DQN | Chain | `GatherOp` | ✅ Yes |
-| Dueling DQN | Parallel branches | `DuelingCombineOp` | ✅ Yes |
-| PPO (discrete) | Chain + external inputs | `LogProbOp`, `RatioOp`, `ClipSurrogateOp` | ✅ Yes |
-| PPO (continuous) | Chain + external inputs | Same as discrete + `RSampleOp` | ✅ Yes |
+| Algorithm Family | Graph Shape | DiffOps | Status |
+|-----------------|-------------|---------|--------|
+| DDPG | Chain | `SkipConcat`, `Negate` | ✅ Done |
+| TD3 | Chain + twin fan-out | + `DualPath`, `Min` | ✅ Done |
+| SAC | Chain + twin fan-out + split | + `RSample`, `SplitApply` | ✅ Done |
+| DQN / Double DQN | Chain + gather | `GatherOp` | ✅ Primitives done |
+| Dueling DQN | Parallel branches | `DuelingCombineOp` | TODO (1 op) |
+| PPO (discrete) | Chain + external inputs | `CategoricalLogProbOp`, `RatioOp`, `ClipSurrogateOp` | ✅ Primitives done |
+| PPO (continuous) | Chain + external inputs | Same + `RSampleOp` | ✅ Primitives done |
 | Dreamer / TD-MPC2 | Multi-head + recurrent | Recurrent ops, multi-loss | Needs ComputeGraph |
 
 ### When ComputeGraph Becomes Necessary

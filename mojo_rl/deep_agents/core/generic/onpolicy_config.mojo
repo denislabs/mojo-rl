@@ -23,7 +23,13 @@ from mojo_rl.nn.model import (
     FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam
-from .policy_gradient import PolicyGradient, VanillaPG, ClippedSurrogate
+from .policy_gradient import (
+    PolicyGradient,
+    VanillaPG,
+    ClippedSurrogate,
+    AutodiffVanillaPG,
+    AutodiffClippedSurrogate,
+)
 from .epoch_schedule import EpochSchedule, SinglePass, MultiEpochMinibatch
 
 
@@ -233,3 +239,87 @@ struct PPOCNNConfig[
 
     comptime PolicyGrad = ClippedSurrogate
     comptime EpochSched = MultiEpochMinibatch
+
+
+# =============================================================================
+# AutodiffPPOConfig
+# =============================================================================
+
+
+struct AutodiffPPOConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 64,
+    ROLLOUT: Int = 128,
+    actor_lr: Float64 = 0.00025,
+    critic_lr: Float64 = 0.001,
+    clip_eps: Float64 = 0.2,
+](OnPolicyConfig):
+    """PPO using AutodiffClippedSurrogate: chained DiffOp vjps for actor gradient.
+
+    Identical architecture to PPOConfig but uses AutodiffClippedSurrogate
+    instead of ClippedSurrogate. The clip_eps parameter is forwarded to
+    AutodiffClippedSurrogate as a compile-time parameter.
+    """
+
+    comptime NAME: String = "PPO (Autodiff)"
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime rollout_len: Int = Self.ROLLOUT
+
+    comptime ActorModel = Sequential[
+        LinearTanh[Self.OBS, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        LinearTanh[Self.OBS, Self.HIDDEN],
+        LinearTanh[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime PolicyGrad = AutodiffClippedSurrogate[Self.clip_eps]
+    comptime EpochSched = MultiEpochMinibatch
+
+
+# =============================================================================
+# AutodiffA2CConfig
+# =============================================================================
+
+
+struct AutodiffA2CConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 128,
+    ROLLOUT: Int = 128,
+    actor_lr: Float64 = 0.001,
+    critic_lr: Float64 = 0.001,
+](OnPolicyConfig):
+    """A2C using AutodiffVanillaPG: CategoricalLogProbOp vjp for actor gradient.
+
+    Identical architecture to A2CConfig but uses AutodiffVanillaPG
+    instead of VanillaPG.
+    """
+
+    comptime NAME: String = "A2C (Autodiff)"
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime rollout_len: Int = Self.ROLLOUT
+
+    comptime ActorModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime PolicyGrad = AutodiffVanillaPG
+    comptime EpochSched = SinglePass

@@ -61,6 +61,7 @@ from mojo_rl.deep_agents.core.eval import (
 
 from .q_target import QTarget, StandardQTarget, DoubleQTarget
 from .q_output import QOutput, DirectQ, DuelingQ
+from .q_gradient import QGradient, ManualQGradient, AutodiffQGradient
 
 
 # =============================================================================
@@ -80,6 +81,7 @@ trait DiscreteOffPolicyConfig:
     comptime QOpt: Optimizer
     comptime QTargetStrat: QTarget
     comptime QOutputStrat: QOutput
+    comptime QGradStrat: QGradient
 
 
 # =============================================================================
@@ -112,6 +114,7 @@ struct DQNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = StandardQTarget
     comptime QOutputStrat = DirectQ
+    comptime QGradStrat = ManualQGradient
 
 
 struct DoubleDQNConfig[
@@ -139,6 +142,7 @@ struct DoubleDQNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DirectQ
+    comptime QGradStrat = ManualQGradient
 
 
 struct DuelingDQNConfig[
@@ -174,6 +178,7 @@ struct DuelingDQNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DuelingQ
+    comptime QGradStrat = ManualQGradient
 
 
 # =============================================================================
@@ -212,6 +217,40 @@ struct DQNCNNConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DirectQ
+    comptime QGradStrat = ManualQGradient
+
+
+# =============================================================================
+# AutodiffDQNConfig -- Double DQN with AutodiffQGradient
+# =============================================================================
+
+
+struct AutodiffDQNConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 120,
+    HIDDEN2: Int = 84,
+    CAP: Int = 10000,
+    BS: Int = 128,
+    lr: Float64 = 2.5e-4,
+](DiscreteOffPolicyConfig):
+    """Double DQN config using AutodiffQGradient (GatherOp-based gradient)."""
+
+    comptime NAME: String = "Autodiff DQN"
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN2],
+        Linear[Self.HIDDEN2, Self.ACT],
+    ]
+    comptime QOpt = Adam[Self.lr]
+    comptime QTargetStrat = DoubleQTarget
+    comptime QOutputStrat = DirectQ
+    comptime QGradStrat = AutodiffQGradient
 
 
 # =============================================================================
@@ -682,24 +721,13 @@ struct GenericDQNAgent[
             self.gamma,
         )
 
-        # Gradient (MSE, masked to taken action) -- in Q-space
+        # Gradient (MSE, masked to taken action) -- in Q-space via strategy
         var grad_q_arr = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
-        var total_loss: Float64 = 0.0
-        for b in range(Self.BATCH):
-            var action = Int(b_act1[b])
-            var q_pred = q_arr[b * Self.ACTIONS + action]
-            var td_err = q_pred - targets[b]
-            total_loss += Float64(td_err * td_err)
-            for a in range(Self.ACTIONS):
-                if a == action:
-                    grad_q_arr[b * Self.ACTIONS + a] = (
-                        Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
-                    )
-                else:
-                    grad_q_arr[b * Self.ACTIONS + a] = Scalar[dtype](0.0)
-        total_loss /= Float64(Self.BATCH)
+        var total_loss = Self.Config.QGradStrat.compute_grad_cpu[
+            Self.BATCH, Self.ACTIONS
+        ](q_arr, targets, b_act1, grad_q_arr)
 
         # Log DQN diagnostics
         if self.logger and (
@@ -1260,39 +1288,9 @@ struct GenericDQNAgent[
             self.gamma,
         )
 
-        # ---- Phase 5: Gradient kernel (masked MSE grad in Q-space) ----
-        @always_inline
-        fn grad_wrapper(
-            grd: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-            ],
-            qv: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-            ],
-            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            act: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        ):
-            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if b >= BATCH:
-                return
-            var action = Int(act[b])
-            var q_pred = qv[b, action]
-            var td_error = q_pred - tgt[b]
-            for a in range(Self.ACTIONS):
-                if a == action:
-                    grd[b, a] = (
-                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
-                    )
-                else:
-                    grd[b, a] = Scalar[dtype](0.0)
-
-        ctx.enqueue_function[grad_wrapper, grad_wrapper](
-            grad_q_t,
-            q_t,
-            targets_t,
-            actions_t,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
+        # ---- Phase 5: Gradient via QGradient strategy ----
+        Self.Config.QGradStrat.compute_grad_gpu[BATCH, Self.ACTIONS](
+            ctx, q_t, targets_t, actions_t, grad_q_t
         )
 
         # ---- Phase 5b: Transform grad from Q-space to raw output space ----
@@ -1471,6 +1469,7 @@ struct DQNPERConfig[
     comptime QOpt = Adam[Self.lr]
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DirectQ
+    comptime QGradStrat = ManualQGradient
 
 
 # =============================================================================
@@ -2186,28 +2185,9 @@ struct GenericDQNPERAgent[
             ctx, targets_t, online_next_q_t, next_q_t, rewards_t, dones_t, self.gamma
         )
 
-        # Gradient kernel
-        @always_inline
-        fn grad_wrapper(
-            grd: LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin],
-            qv: LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin],
-            tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            act: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        ):
-            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if b >= BATCH:
-                return
-            var action = Int(act[b])
-            var td_error = qv[b, action] - tgt[b]
-            for a in range(Self.ACTIONS):
-                if a == action:
-                    grd[b, a] = Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
-                else:
-                    grd[b, a] = Scalar[dtype](0.0)
-
-        ctx.enqueue_function[grad_wrapper, grad_wrapper](
-            grad_q_t, q_t, targets_t, actions_t,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+        # Gradient via QGradient strategy
+        Self.Config.QGradStrat.compute_grad_gpu[BATCH, Self.ACTIONS](
+            ctx, q_t, targets_t, actions_t, grad_q_t
         )
 
         # Grad transform + backward

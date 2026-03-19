@@ -19,6 +19,7 @@ from .dqn_agent import (
     DuelingDQNConfig,
     DQNCNNConfig,
     DQNPERConfig,
+    AutodiffDQNConfig,
 )
 from .offpolicy_agent import GenericOffPolicyAgent
 from .offpolicy_config import DDPGConfig, TD3Config, SACConfig
@@ -93,6 +94,23 @@ comptime DQNCNNAgent[
     L: Logger = NoOpLogger,
 ] = GenericDQNAgent[
     DQNCNNConfig[num_actions, buffer_capacity, batch_size, lr],
+    n_envs,
+    L,
+]
+
+
+comptime AutodiffDQNAgent[
+    obs_dim: Int,
+    num_actions: Int,
+    hidden_dim: Int = 120,
+    hidden_dim2: Int = 84,
+    buffer_capacity: Int = 10000,
+    batch_size: Int = 128,
+    n_envs: Int = 1024,
+    lr: Float64 = 2.5e-4,
+    L: Logger = NoOpLogger,
+] = GenericDQNAgent[
+    AutodiffDQNConfig[obs_dim, num_actions, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
     n_envs,
     L,
 ]

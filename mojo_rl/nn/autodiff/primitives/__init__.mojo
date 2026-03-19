@@ -18,3 +18,5 @@ from .rsample import RSampleOp
 from .min_op import MinOp
 from .slice_op import SliceOp
 from .negate import NegateOp
+from .gather import GatherOp
+from .ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp

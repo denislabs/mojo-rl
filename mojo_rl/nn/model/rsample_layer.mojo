@@ -25,6 +25,8 @@ from ..autodiff.primitives.rsample import RSampleOp
 from ..autodiff.primitives.min_op import MinOp
 from ..autodiff.primitives.slice_op import SliceOp
 from ..autodiff.primitives.negate import NegateOp
+from ..autodiff.primitives.gather import GatherOp
+from ..autodiff.primitives.ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 
 
 comptime RSample[
@@ -40,3 +42,11 @@ comptime Slice[in_dim: Int, start: Int, end: Int] = AutoDiffChain[
 ]
 
 comptime Negate[dim: Int] = AutoDiffChain[NegateOp[dim]]
+
+comptime Gather[dim: Int] = AutoDiffChain[GatherOp[dim]]
+
+comptime CategoricalLogProb[num_actions: Int] = AutoDiffChain[CategoricalLogProbOp[num_actions]]
+
+comptime Ratio[dim: Int = 1] = AutoDiffChain[RatioOp[dim]]
+
+comptime ClipSurrogate[eps: Float64 = 0.2] = AutoDiffChain[ClipSurrogateOp[eps]]
