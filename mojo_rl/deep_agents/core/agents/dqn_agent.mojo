@@ -344,6 +344,7 @@ struct DQNGPUStateGeneric[
     num_actions: Int,
     batch_size: Int,
     max_n_envs: Int,
+    grad_ws_size: Int = 0,
 ](GPUOffPolicyState):
     """GPU-resident state for generic DQN training.
 
@@ -408,6 +409,7 @@ struct DQNGPUStateGeneric[
     var grad_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
     var grad_input: DeviceBuffer[dtype]  # [batch_size * obs_dim]
     var train_ws: DeviceBuffer[dtype]  # [max(1, batch_size * WS_PER_SAMPLE)]
+    var loss_ws: DeviceBuffer[dtype]  # [max(1, grad_ws_size)] — QGradient workspace
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
@@ -463,6 +465,9 @@ struct DQNGPUStateGeneric[
         )
         var train_ws_size = max(1, Self.batch_size * Self.WS_PER_SAMPLE)
         self.train_ws = ctx.enqueue_create_buffer[dtype](train_ws_size)
+        self.loss_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.grad_ws_size)
+        )
 
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods
@@ -529,6 +534,9 @@ struct GenericDQNAgent[
     comptime ACTION_DIM: Int = 1  # discrete action stored as float scalar index
     comptime BUFFER_CAPACITY: Int = Self.Config.buffer_capacity
     comptime MAX_N_ENVS: Int = Self.n_envs
+    comptime GRAD_WS_SIZE: Int = Self.Config.QGradStrat.gpu_ws_size[
+        Self.Config.batch_size, Self.Config.num_actions
+    ]()
     comptime GPUStateType = DQNGPUStateGeneric[
         Self.Config.QModel,
         Self.Config.QOpt,
@@ -537,6 +545,7 @@ struct GenericDQNAgent[
         Self.Config.num_actions,
         Self.Config.batch_size,
         Self.n_envs,
+        Self.GRAD_WS_SIZE,
     ]
 
     # Persistent CPU state (for evaluate() after train/train_gpu)
@@ -1302,7 +1311,7 @@ struct GenericDQNAgent[
 
         # ---- Phase 5: Gradient via QGradient strategy ----
         Self.Config.QGradStrat.compute_grad_gpu[BATCH, Self.ACTIONS](
-            ctx, q_t, targets_t, actions_t, grad_q_t
+            ctx, q_t, targets_t, actions_t, grad_q_t, gpu_state.loss_ws
         )
 
         # ---- Phase 5b: Transform grad from Q-space to raw output space ----
@@ -1675,6 +1684,9 @@ struct GenericDQNPERAgent[
     comptime ACTION_DIM: Int = 1
     comptime BUFFER_CAPACITY: Int = Self.Config.buffer_capacity
     comptime MAX_N_ENVS: Int = Self.n_envs
+    comptime GRAD_WS_SIZE: Int = Self.Config.QGradStrat.gpu_ws_size[
+        Self.Config.batch_size, Self.Config.num_actions
+    ]()
     comptime GPUStateType = DQNGPUStateGeneric[
         Self.Config.QModel,
         Self.Config.QOpt,
@@ -1683,6 +1695,7 @@ struct GenericDQNPERAgent[
         Self.Config.num_actions,
         Self.Config.batch_size,
         Self.n_envs,
+        Self.GRAD_WS_SIZE,
     ]
 
     # Persistent CPU state
@@ -2277,7 +2290,7 @@ struct GenericDQNPERAgent[
 
         # Gradient via QGradient strategy
         Self.Config.QGradStrat.compute_grad_gpu[BATCH, Self.ACTIONS](
-            ctx, q_t, targets_t, actions_t, grad_q_t
+            ctx, q_t, targets_t, actions_t, grad_q_t, gpu_state.loss_ws
         )
 
         # Grad transform + backward

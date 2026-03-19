@@ -51,8 +51,14 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     comptime PARAM_SIZE: Int = Self._RIGHT_PARAM_OFF + Self.Right.PARAM_SIZE
 
     comptime CACHE_SIZE: Int = Self.Left.CACHE_SIZE + Self.Right.CACHE_SIZE
+    # Own scratch: split/concat temporaries shared between forward and backward
+    comptime _OWN_WS: Int = (
+        Self.Left.IN_DIM + Self.Right.IN_DIM  # split input / grad_input
+        + Self.Left.OUT_DIM + Self.Right.OUT_DIM  # branch outputs / grad_outputs
+    )
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.Left.WORKSPACE_SIZE_PER_SAMPLE
+        Self._OWN_WS
+        + Self.Left.WORKSPACE_SIZE_PER_SAMPLE
         + Self.Right.WORKSPACE_SIZE_PER_SAMPLE
     )
 
@@ -361,10 +367,26 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        # Extract left/right slices via kernels
-        var left_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.LEFT_IN)
-        var right_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.RIGHT_IN)
+        # Slice workspace: [left_in | right_in | left_out | right_out | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var left_ptr = ws_ptr
+        var right_ptr = ws_ptr + BATCH * Self.LEFT_IN
+        var left_out_ptr = right_ptr + BATCH * Self.RIGHT_IN
+        var right_out_ptr = left_out_ptr + BATCH * Self.LEFT_OUT
+        var child_ws_ptr = right_out_ptr + BATCH * Self.RIGHT_OUT
+        comptime CHILD_WS_SIZE = max(
+            1,
+            BATCH
+            * (
+                Self.Left.WORKSPACE_SIZE_PER_SAMPLE
+                + Self.Right.WORKSPACE_SIZE_PER_SAMPLE
+            ),
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
 
+        # Extract left/right slices via kernels
         comptime L_TOTAL = BATCH * Self.LEFT_IN
         comptime R_TOTAL = BATCH * Self.RIGHT_IN
         var l_grid = (L_TOTAL + TPB - 1) // TPB
@@ -376,7 +398,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
 
         var left_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
-        ](left_buf.unsafe_ptr())
+        ](left_ptr)
 
         @always_inline
         fn extract_left(
@@ -400,7 +422,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
 
         var right_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
-        ](right_buf.unsafe_ptr())
+        ](right_ptr)
 
         @always_inline
         fn extract_right(
@@ -423,18 +445,12 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         )
 
         # Forward Left and Right
-        var left_out_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.LEFT_OUT
-        )
-        var right_out_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.RIGHT_OUT
-        )
         var left_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_OUT), MutAnyOrigin
-        ](left_out_buf.unsafe_ptr())
+        ](left_out_ptr)
         var right_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
-        ](right_out_buf.unsafe_ptr())
+        ](right_out_ptr)
 
         # Left: params at offset 0 (always aligned)
         var pl = LayoutTensor[
@@ -444,7 +460,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(BATCH, Self.Left.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
         Self.Left.forward_gpu[BATCH](
-            ctx, left_out_t, left_t, pl, cl, workspace
+            ctx, left_out_t, left_t, pl, cl, child_ws
         )
 
         # Right: params at aligned offset — safe for direct pointer access
@@ -457,16 +473,16 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
 
         Self.Right.forward_gpu[BATCH](
-            ctx, right_out_t, right_t, pr, cr, workspace
+            ctx, right_out_t, right_t, pr, cr, child_ws
         )
 
         # Concat outputs
         var lo_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_OUT), ImmutAnyOrigin
-        ](left_out_buf.unsafe_ptr())
+        ](left_out_ptr)
         var ro_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), ImmutAnyOrigin
-        ](right_out_buf.unsafe_ptr())
+        ](right_out_ptr)
         comptime OUT_TOTAL = BATCH * Self.OUT_DIM
         var o_grid = (OUT_TOTAL + TPB - 1) // TPB
 
@@ -561,16 +577,34 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
+        # Slice workspace: reuse same layout as forward
+        # [left_in/gi_l | right_in/gi_r | left_out/gl | right_out/gr | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var gi_l_ptr = ws_ptr
+        var gi_r_ptr = ws_ptr + BATCH * Self.LEFT_IN
+        var gl_ptr = gi_r_ptr + BATCH * Self.RIGHT_IN
+        var gr_ptr = gl_ptr + BATCH * Self.LEFT_OUT
+        var child_ws_ptr = gr_ptr + BATCH * Self.RIGHT_OUT
+        comptime CHILD_WS_SIZE = max(
+            1,
+            BATCH
+            * (
+                Self.Left.WORKSPACE_SIZE_PER_SAMPLE
+                + Self.Right.WORKSPACE_SIZE_PER_SAMPLE
+            ),
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
         # Extract per-branch grad_outputs
-        var gl_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.LEFT_OUT)
-        var gr_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.RIGHT_OUT)
         var go_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output.ptr)
 
         var gl_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_OUT), MutAnyOrigin
-        ](gl_buf.unsafe_ptr())
+        ](gl_ptr)
         comptime GL_TOTAL = BATCH * Self.LEFT_OUT
         var gl_grid = (GL_TOTAL + TPB - 1) // TPB
 
@@ -596,7 +630,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
 
         var gr_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
-        ](gr_buf.unsafe_ptr())
+        ](gr_ptr)
         comptime GR_TOTAL = BATCH * Self.RIGHT_OUT
         var gr_grid = (GR_TOTAL + TPB - 1) // TPB
 
@@ -621,10 +655,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         )
 
         # Backward Left — params/cache/grads at offset 0 (always aligned)
-        var gi_l_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.LEFT_IN)
         var gi_l_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
-        ](gi_l_buf.unsafe_ptr())
+        ](gi_l_ptr)
         var pl = LayoutTensor[
             dtype, Layout.row_major(Self.Left.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
@@ -635,14 +668,13 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(Self.Left.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
         Self.Left.backward_gpu[BATCH](
-            ctx, gi_l_t, gl_t, pl, cl, grads_l, workspace
+            ctx, gi_l_t, gl_t, pl, cl, grads_l, child_ws
         )
 
         # Backward Right — params/grads at aligned offset
-        var gi_r_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.RIGHT_IN)
         var gi_r_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
-        ](gi_r_buf.unsafe_ptr())
+        ](gi_r_ptr)
 
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
@@ -654,16 +686,16 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
         Self.Right.backward_gpu[BATCH](
-            ctx, gi_r_t, gr_t, pr, cr, grads_r, workspace
+            ctx, gi_r_t, gr_t, pr, cr, grads_r, child_ws
         )
 
         # Assemble grad_input
         var gi_l_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), ImmutAnyOrigin
-        ](gi_l_buf.unsafe_ptr())
+        ](gi_l_ptr)
         var gi_r_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), ImmutAnyOrigin
-        ](gi_r_buf.unsafe_ptr())
+        ](gi_r_ptr)
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 

@@ -40,12 +40,13 @@ trait QGradient:
       - grad_q    [BATCH, ACTIONS]  dLoss/dQ  (sparse: only taken action is nonzero)
 
     Implementations may need workspace for caching (AutodiffQGradient uses
-    GatherOp cache).  The workspace size is declared via ws_size.
+    GatherOp cache).  The workspace size is declared via gpu_ws_size.
+    The caller pre-allocates a DeviceBuffer of that size and passes it in.
     """
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
-        """Workspace floats needed per call (0 for ManualQGradient)."""
+    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+        """GPU workspace floats needed per call (0 for ManualQGradient)."""
         ...
 
     @staticmethod
@@ -75,8 +76,9 @@ trait QGradient:
         grad_q: LayoutTensor[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ],
+        workspace: DeviceBuffer[dtype],
     ) raises -> None:
-        """Compute dMSE/dQ on GPU."""
+        """Compute dMSE/dQ on GPU using pre-allocated workspace."""
         ...
 
 
@@ -93,7 +95,7 @@ struct ManualQGradient(QGradient):
     """
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
         return 0
 
     @staticmethod
@@ -138,6 +140,7 @@ struct ManualQGradient(QGradient):
         grad_q: LayoutTensor[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ],
+        workspace: DeviceBuffer[dtype],
     ) raises -> None:
         """Hand-written sparse MSE gradient on GPU. One thread per sample."""
 
@@ -202,13 +205,37 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
     """
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+        """Total GPU workspace floats for compute_grad_gpu (pre-allocated once).
+
+        Layout within the workspace buffer:
+          [0]                          loss_in    BATCH * LOSS_IN
+          [BATCH*LOSS_IN]              loss_out   BATCH
+          [...]                        cache      max(1, BATCH * LOSS_CS)
+          [...]                        params     max(1, PARAM_SIZE)
+          [...]                        grads      max(1, PARAM_SIZE)
+          [...]                        grad_seed  BATCH
+          [...]                        grad_in    BATCH * LOSS_IN
+          [...]                        fwd_ws     max(1, BATCH * WS_PER_SAMPLE)
+        """
         comptime LOSS_IN = ACTIONS + 2
         comptime LossGraph = Sequential[
             SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
             Self.LossOp,
         ]
-        return BATCH * LOSS_IN + BATCH * LossGraph.CACHE_SIZE + BATCH * 2
+        comptime LOSS_CS = LossGraph.CACHE_SIZE
+        comptime PS = max(1, LossGraph.PARAM_SIZE)
+        comptime FWD_WS = max(1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
+        return (
+            BATCH * LOSS_IN      # loss_in
+            + BATCH              # loss_out
+            + max(1, BATCH * LOSS_CS)  # cache
+            + PS                 # params
+            + PS                 # grads
+            + BATCH              # grad_seed
+            + BATCH * LOSS_IN    # grad_in
+            + FWD_WS             # fwd/bwd workspace
+        )
 
     @staticmethod
     fn compute_grad_cpu[
@@ -315,40 +342,64 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         grad_q: LayoutTensor[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ],
+        workspace: DeviceBuffer[dtype],
     ) raises -> None:
-        """Autodiff Q-gradient on GPU via composed loss graph."""
+        """Autodiff Q-gradient on GPU via composed loss graph.
+
+        Uses pre-allocated workspace buffer (see gpu_ws_size for layout).
+        """
         comptime LOSS_IN = ACTIONS + 2
         comptime LossGraph = Sequential[
             SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
             Self.LossOp,
         ]
         comptime LOSS_CS = LossGraph.CACHE_SIZE
-        comptime LOSS_WS = max(
-            1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE
-        )
+        comptime PS = max(1, LossGraph.PARAM_SIZE)
+        comptime FWD_WS = max(1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
+        comptime CACHE_SZ = max(1, BATCH * LOSS_CS)
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
-        # Allocate buffers
-        var loss_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * LOSS_IN)
-        var loss_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        var cache_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * LOSS_CS)
-        )
-        var params_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, LossGraph.PARAM_SIZE)
-        )
-        var grads_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, LossGraph.PARAM_SIZE)
-        )
-        var grad_seed_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        var grad_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * LOSS_IN)
-        var ws_buf = ctx.enqueue_create_buffer[dtype](LOSS_WS)
+        # Slice pre-allocated workspace into sub-buffers
+        var ptr = workspace.unsafe_ptr()
+        var off = 0
 
-        # Pack: [Q_values(A) || action_idx(1) || target(1)]
+        # loss_in: [BATCH * LOSS_IN]
+        var loss_in_ptr = ptr + off
+        off += BATCH * LOSS_IN
+
+        # loss_out: [BATCH]
+        var loss_out_ptr = ptr + off
+        off += BATCH
+
+        # cache: [max(1, BATCH * LOSS_CS)]
+        var cache_ptr = ptr + off
+        off += CACHE_SZ
+
+        # params: [PS]
+        var params_ptr = ptr + off
+        off += PS
+
+        # grads: [PS]
+        var grads_ptr = ptr + off
+        off += PS
+
+        # grad_seed: [BATCH]
+        var grad_seed_ptr = ptr + off
+        off += BATCH
+
+        # grad_in: [BATCH * LOSS_IN]
+        var grad_in_ptr = ptr + off
+        off += BATCH * LOSS_IN
+
+        # fwd_ws: [FWD_WS] — reuse workspace tail as forward/backward ws
+        var ws_buf = DeviceBuffer[dtype](ctx, ptr + off, FWD_WS, owning=False)
+
+        # Create LayoutTensor views
         var loss_in_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
-        ](loss_in_buf.unsafe_ptr())
+        ](loss_in_ptr)
 
+        # Pack: [Q_values(A) || action_idx(1) || target(1)]
         @always_inline
         fn pack_k(
             dst: LayoutTensor[
@@ -376,34 +427,45 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         # Forward
         var loss_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
-        ](loss_out_buf.unsafe_ptr())
+        ](loss_out_ptr)
         var cache_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LOSS_CS), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](cache_ptr)
         var params_t = LayoutTensor[
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
-        ](params_buf.unsafe_ptr())
+        ](params_ptr)
 
         LossGraph.forward_gpu[BATCH](
             ctx, loss_out_t, loss_in_t, params_t, cache_t, ws_buf
         )
 
-        # Seed 1/BATCH
-        var seed_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
-        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
-        for b in range(BATCH):
-            seed_host[b] = inv_batch
-        ctx.enqueue_copy(grad_seed_buf, seed_host)
-
+        # Fill grad_seed with 1/BATCH on GPU (no host alloc needed)
         var grad_seed_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
-        ](grad_seed_buf.unsafe_ptr())
+        ](grad_seed_ptr)
+
+        @always_inline
+        fn fill_seed_k(
+            seed: LayoutTensor[
+                dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
+            ],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= BATCH:
+                return
+            seed[b, 0] = Scalar[dtype](1.0 / Float64(BATCH))
+
+        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+            grad_seed_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+        )
+
         var grad_in_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
-        ](grad_in_buf.unsafe_ptr())
+        ](grad_in_ptr)
         var grads_t = LayoutTensor[
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
-        ](grads_buf.unsafe_ptr())
+        ](grads_ptr)
 
         # Backward
         LossGraph.backward_gpu[BATCH](

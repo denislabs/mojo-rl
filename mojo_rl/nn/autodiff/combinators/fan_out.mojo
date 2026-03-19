@@ -45,8 +45,10 @@ struct FanOut[Inner: Model, N: Int](Model):
     comptime PARAM_SIZE: Int = (Self.N - 1) * Self._ALIGNED_INNER_PS + Self.Inner.PARAM_SIZE
 
     comptime CACHE_SIZE: Int = Self.N * Self.Inner.CACHE_SIZE
+    # Own scratch: go_buf (Inner.OUT_DIM) + gi_buf (IN_DIM) reused across iterations
+    comptime _OWN_WS: Int = Self.Inner.OUT_DIM + Self.IN_DIM
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.N * Self.Inner.OUT_DIM
+        Self._OWN_WS
         + Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
     )
 
@@ -287,12 +289,22 @@ struct FanOut[Inner: Model, N: Int](Model):
     ) raises:
         comptime I_OUT = Self.Inner.OUT_DIM
 
+        # Slice workspace: [i_out_buf (I_OUT) | gi_buf (IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var i_out_ptr = ws_ptr  # Reused each iteration
+        var child_ws_ptr = ws_ptr + BATCH * Self._OWN_WS
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
         # Forward each copy — params at aligned offsets, direct pointer access
         comptime for i in range(Self.N):
-            var i_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * I_OUT)
             var i_out_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
-            ](i_out_buf.unsafe_ptr())
+            ](i_out_ptr)
 
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
@@ -310,13 +322,13 @@ struct FanOut[Inner: Model, N: Int](Model):
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._cache_offset[i]())
             Self.Inner.forward_gpu[BATCH](
-                ctx, i_out_t, input_i, pi, ci, workspace
+                ctx, i_out_t, input_i, pi, ci, child_ws
             )
 
             # Scatter copy i's output into the concat output
             var i_immut = LayoutTensor[
                 dtype, Layout.row_major(BATCH, I_OUT), ImmutAnyOrigin
-            ](i_out_buf.unsafe_ptr())
+            ](i_out_ptr)
             comptime I_TOTAL = BATCH * I_OUT
             var i_grid = (I_TOTAL + TPB - 1) // TPB
 
@@ -407,16 +419,27 @@ struct FanOut[Inner: Model, N: Int](Model):
     ) raises:
         comptime I_OUT = Self.Inner.OUT_DIM
 
+        # Slice workspace: [go_buf (I_OUT) | gi_buf (IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var go_ws_ptr = ws_ptr  # Reused each iteration
+        var gi_ws_ptr = ws_ptr + BATCH * I_OUT  # Reused each iteration
+        var child_ws_ptr = ws_ptr + BATCH * Self._OWN_WS
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
         var go_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output.ptr)
 
         comptime for i in range(Self.N):
             # Extract grad_output slice for copy i
-            var go_buf = ctx.enqueue_create_buffer[dtype](BATCH * I_OUT)
             var go_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
-            ](go_buf.unsafe_ptr())
+            ](go_ws_ptr)
 
             comptime I_TOTAL = BATCH * I_OUT
             var i_grid = (I_TOTAL + TPB - 1) // TPB
@@ -465,20 +488,17 @@ struct FanOut[Inner: Model, N: Int](Model):
             comptime if i == 0:
                 # First copy: backward directly into grad_input
                 Self.Inner.backward_gpu[BATCH](
-                    ctx, grad_input, go_t, pi, ci, grads_i, workspace
+                    ctx, grad_input, go_t, pi, ci, grads_i, child_ws
                 )
             else:
-                # Subsequent copies: backward into temp, then accumulate
-                var gi_buf = ctx.enqueue_create_buffer[dtype](
-                    BATCH * Self.IN_DIM
-                )
+                # Subsequent copies: backward into workspace temp, then accumulate
                 var gi_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.Inner.IN_DIM),
                     MutAnyOrigin,
-                ](gi_buf.unsafe_ptr())
+                ](gi_ws_ptr)
                 Self.Inner.backward_gpu[BATCH](
-                    ctx, gi_t, go_t, pi, ci, grads_i, workspace
+                    ctx, gi_t, go_t, pi, ci, grads_i, child_ws
                 )
 
                 # Add to grad_input
@@ -486,7 +506,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     dtype,
                     Layout.row_major(BATCH, Self.IN_DIM),
                     ImmutAnyOrigin,
-                ](gi_buf.unsafe_ptr())
+                ](gi_ws_ptr)
                 comptime GI_TOTAL = BATCH * Self.IN_DIM
                 var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 

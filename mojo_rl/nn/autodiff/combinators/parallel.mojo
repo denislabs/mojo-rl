@@ -70,8 +70,10 @@ struct Parallel[*BRANCHES: Model](Model):
     comptime OUT_DIM: Int = Self._sum_out_dim()
     comptime PARAM_SIZE: Int = Self._sum_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
-    # Workspace: branch output buffers + per-branch workspace
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._sum_out_dim() + Self._sum_ws()
+    # Own scratch: N * IN_DIM for per-branch grad_input buffers in backward
+    comptime _OWN_WS: Int = Self.N * Self.IN_DIM
+    # Workspace: own scratch + branch output buffers + per-branch workspace
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._OWN_WS + Self._sum_out_dim() + Self._sum_ws()
 
     # --- Offset helpers ---
 
@@ -102,8 +104,8 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     fn _ws_branch_offset[idx: Int]() -> Int:
-        """Workspace offset for branch idx, after all output buffers."""
-        var total = Self._sum_out_dim()
+        """Workspace offset for branch idx, after own scratch + output buffers."""
+        var total = Self._OWN_WS + Self._sum_out_dim()
 
         comptime for j in range(idx):
             total += Self.branch_types[j].WORKSPACE_SIZE_PER_SAMPLE
@@ -371,7 +373,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
             var pi = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
@@ -412,7 +414,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 ImmutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
             fn copy_branch_fwd(
@@ -471,7 +473,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
             var pi = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
@@ -506,7 +508,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 ImmutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
             fn copy_branch_fwd_nc(
@@ -600,7 +602,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
             fn split_branch(
@@ -630,11 +632,8 @@ struct Parallel[*BRANCHES: Model](Model):
                 block_dim=(TPB,),
             )
 
-        # Allocate N grad_input buffers on device
-        var gi_buf = ctx.enqueue_create_buffer[dtype](
-            Self.N * BATCH * Self.IN_DIM
-        )
-        var gi_buf_ptr = gi_buf.unsafe_ptr()
+        # Slice N grad_input buffers from workspace (at offset 0)
+        var gi_buf_ptr = ws_ptr
 
         # Run backward for each branch
         comptime for i in range(Self.N):
@@ -642,7 +641,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * Self._out_offset[i]())
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
             var gi_i = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.IN_DIM),

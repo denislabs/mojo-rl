@@ -48,9 +48,12 @@ struct DualPath[A: Model, B: Model](Model):
     comptime PARAM_SIZE: Int = Self._B_PARAM_OFF + Self.B.PARAM_SIZE
 
     comptime CACHE_SIZE: Int = Self.A.CACHE_SIZE + Self.B.CACHE_SIZE
+    # Own scratch: shared between forward and backward
+    # Forward:  a_out(A.OUT_DIM) + b_out(B.OUT_DIM)
+    # Backward: ga(A.OUT_DIM) + gb(B.OUT_DIM) + gi_b(IN_DIM)  ← larger
+    comptime _OWN_WS: Int = Self.A.OUT_DIM + Self.B.OUT_DIM + Self.IN_DIM
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.A.OUT_DIM
-        + Self.B.OUT_DIM
+        Self._OWN_WS
         + Self.A.WORKSPACE_SIZE_PER_SAMPLE
         + Self.B.WORKSPACE_SIZE_PER_SAMPLE
     )
@@ -311,16 +314,29 @@ struct DualPath[A: Model, B: Model](Model):
         comptime A_OUT = Self.A.OUT_DIM
         comptime B_OUT = Self.B.OUT_DIM
 
-        # Allocate temp output buffers
-        var a_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * A_OUT)
-        var b_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * B_OUT)
+        # Slice workspace: [a_out(A_OUT) | b_out(B_OUT) | gi_b(IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var a_out_ptr = ws_ptr
+        var b_out_ptr = ws_ptr + BATCH * A_OUT
+        var child_ws_ptr = b_out_ptr + BATCH * B_OUT + BATCH * Self.IN_DIM
+        comptime CHILD_WS_SIZE = max(
+            1,
+            BATCH
+            * (
+                Self.A.WORKSPACE_SIZE_PER_SAMPLE
+                + Self.B.WORKSPACE_SIZE_PER_SAMPLE
+            ),
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
 
         var a_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, A_OUT), MutAnyOrigin
-        ](a_out_buf.unsafe_ptr())
+        ](a_out_ptr)
         var b_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, B_OUT), MutAnyOrigin
-        ](b_out_buf.unsafe_ptr())
+        ](b_out_ptr)
 
         # Params at aligned offsets — safe for direct pointer access
         var pa = LayoutTensor[
@@ -338,19 +354,19 @@ struct DualPath[A: Model, B: Model](Model):
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
 
         # Forward both
-        Self.A.forward_gpu[BATCH](ctx, a_out_t, input, pa, ca, workspace)
+        Self.A.forward_gpu[BATCH](ctx, a_out_t, input, pa, ca, child_ws)
         var input_b = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
         ](input.ptr)
-        Self.B.forward_gpu[BATCH](ctx, b_out_t, input_b, pb, cb, workspace)
+        Self.B.forward_gpu[BATCH](ctx, b_out_t, input_b, pb, cb, child_ws)
 
         # Concat into output
         var a_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, A_OUT), ImmutAnyOrigin
-        ](a_out_buf.unsafe_ptr())
+        ](a_out_ptr)
         var b_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, B_OUT), ImmutAnyOrigin
-        ](b_out_buf.unsafe_ptr())
+        ](b_out_ptr)
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
@@ -450,16 +466,30 @@ struct DualPath[A: Model, B: Model](Model):
         comptime A_OUT = Self.A.OUT_DIM
         comptime B_OUT = Self.B.OUT_DIM
 
-        # Extract per-branch grads
-        var ga_buf = ctx.enqueue_create_buffer[dtype](BATCH * A_OUT)
-        var gb_buf = ctx.enqueue_create_buffer[dtype](BATCH * B_OUT)
+        # Slice workspace: [ga(A_OUT) | gb(B_OUT) | gi_b(IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var ga_ptr = ws_ptr
+        var gb_ptr = ws_ptr + BATCH * A_OUT
+        var gi_b_ptr = gb_ptr + BATCH * B_OUT
+        var child_ws_ptr = gi_b_ptr + BATCH * Self.IN_DIM
+        comptime CHILD_WS_SIZE = max(
+            1,
+            BATCH
+            * (
+                Self.A.WORKSPACE_SIZE_PER_SAMPLE
+                + Self.B.WORKSPACE_SIZE_PER_SAMPLE
+            ),
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
 
         var ga_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, A_OUT), MutAnyOrigin
-        ](ga_buf.unsafe_ptr())
+        ](ga_ptr)
         var gb_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, B_OUT), MutAnyOrigin
-        ](gb_buf.unsafe_ptr())
+        ](gb_ptr)
 
         var go_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
@@ -524,14 +554,13 @@ struct DualPath[A: Model, B: Model](Model):
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
         Self.A.backward_gpu[BATCH](
-            ctx, grad_input, ga_t, pa, ca, grads_a, workspace
+            ctx, grad_input, ga_t, pa, ca, grads_a, child_ws
         )
 
         # Backward B — params/grads at aligned offset
-        var gi_b_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.IN_DIM)
         var gi_b_rb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
-        ](gi_b_buf.unsafe_ptr())
+        ](gi_b_ptr)
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
         ](params.ptr + Self._B_PARAM_OFF)  # Aligned!
@@ -542,13 +571,13 @@ struct DualPath[A: Model, B: Model](Model):
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr + Self._B_PARAM_OFF)  # Aligned!
         Self.B.backward_gpu[BATCH](
-            ctx, gi_b_rb, gb_t, pb, cb, grads_b, workspace
+            ctx, gi_b_rb, gb_t, pb, cb, grads_b, child_ws
         )
 
         # Add B's grad_input to A's
         var gi_b_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](gi_b_buf.unsafe_ptr())
+        ](gi_b_ptr)
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 

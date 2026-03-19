@@ -34,8 +34,9 @@ struct SkipConcat[Inner: Model](Model):
     comptime OUT_DIM: Int = Self.Inner.IN_DIM + Self.Inner.OUT_DIM
     comptime PARAM_SIZE: Int = Self.Inner.PARAM_SIZE
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE
+    # Own scratch: inner_out / grad_inner buffer (shared between fwd/bwd)
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        Self.Inner.OUT_DIM + Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
     )
 
     # =========================================================================
@@ -222,17 +223,24 @@ struct SkipConcat[Inner: Model](Model):
     ) raises:
         comptime INNER_OUT = Self.Inner.OUT_DIM
 
-        # Allocate temp buffer for inner output (contiguous)
-        var inner_out_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * INNER_OUT
+        # Slice workspace: [inner_out (BATCH * INNER_OUT) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var inner_out_ptr = ws_ptr  # BATCH * INNER_OUT
+        var child_ws_ptr = ws_ptr + BATCH * INNER_OUT
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
         )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
         var inner_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
-        ](inner_out_buf.unsafe_ptr())
+        ](inner_out_ptr)
 
         # Forward Inner
         Self.Inner.forward_gpu[BATCH](
-            ctx, inner_out_t, input, params, cache, workspace
+            ctx, inner_out_t, input, params, cache, child_ws
         )
 
         # Copy input + inner_output → output (interleaved)
@@ -241,7 +249,7 @@ struct SkipConcat[Inner: Model](Model):
         ](input.ptr)
         var inner_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), ImmutAnyOrigin
-        ](inner_out_buf.unsafe_ptr())
+        ](inner_out_ptr)
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
@@ -300,15 +308,24 @@ struct SkipConcat[Inner: Model](Model):
         perf_slot: Int = 0,
     ) raises:
         comptime INNER_OUT = Self.Inner.OUT_DIM
-        var inner_out_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * INNER_OUT
+
+        # Slice workspace: [inner_out (BATCH * INNER_OUT) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var inner_out_ptr = ws_ptr  # BATCH * INNER_OUT
+        var child_ws_ptr = ws_ptr + BATCH * INNER_OUT
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
         )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
         var inner_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
-        ](inner_out_buf.unsafe_ptr())
+        ](inner_out_ptr)
 
         Self.Inner.forward_gpu_no_cache[BATCH](
-            ctx, inner_out_t, input, params, workspace
+            ctx, inner_out_t, input, params, child_ws
         )
 
         var input_immut = LayoutTensor[
@@ -316,7 +333,7 @@ struct SkipConcat[Inner: Model](Model):
         ](input.ptr)
         var inner_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), ImmutAnyOrigin
-        ](inner_out_buf.unsafe_ptr())
+        ](inner_out_ptr)
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
@@ -401,13 +418,21 @@ struct SkipConcat[Inner: Model](Model):
     ) raises:
         comptime INNER_OUT = Self.Inner.OUT_DIM
 
-        # Extract grad_inner from grad_output[:, IN_DIM:]
-        var grad_inner_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * INNER_OUT
+        # Slice workspace: [grad_inner (BATCH * INNER_OUT) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var grad_inner_ptr = ws_ptr  # BATCH * INNER_OUT
+        var child_ws_ptr = ws_ptr + BATCH * INNER_OUT
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
         )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
+        # Extract grad_inner from grad_output[:, IN_DIM:]
         var grad_inner_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
-        ](grad_inner_buf.unsafe_ptr())
+        ](grad_inner_ptr)
 
         comptime INNER_TOTAL = BATCH * INNER_OUT
         var inner_grid = (INNER_TOTAL + TPB - 1) // TPB
@@ -447,7 +472,7 @@ struct SkipConcat[Inner: Model](Model):
             params,
             cache,
             grads,
-            workspace,
+            child_ws,
         )
 
         # Add skip gradient: grad_input += grad_output[:, :IN_DIM]

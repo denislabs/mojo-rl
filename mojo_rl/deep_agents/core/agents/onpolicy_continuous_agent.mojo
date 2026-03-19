@@ -135,6 +135,27 @@ struct GenericOnPolicyContinuousAgent[
     comptime ROLLOUT_LEN: Int = Self.ROLLOUT
     comptime MAX_N_ENVS: Int = Self.n_envs
 
+    # Autodiff loss graph for continuous PPO (pre-compute workspace size)
+    comptime _LOSS_IN: Int = 3 * Self.ACTIONS + 2
+    comptime _LossGraph = Sequential[
+        SplitApply[GaussianLogProb[Self.ACTIONS], Slice[2, 0, 2], 3 * Self.ACTIONS],
+        SplitApply[Ratio[1], Slice[1, 0, 1], 2],
+        ClipSurrogate[0.2],
+    ]
+    comptime _LOSS_OUT: Int = Self._LossGraph.OUT_DIM
+    comptime _LOSS_CS: Int = Self._LossGraph.CACHE_SIZE
+    comptime _LOSS_WS: Int = max(1, Self.GPU_MINIBATCH * Self._LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
+    comptime _LOSS_WS_TOTAL: Int = (
+        Self.GPU_MINIBATCH * Self._LOSS_IN          # loss_input
+        + Self.GPU_MINIBATCH * Self._LOSS_OUT       # loss_output
+        + max(1, Self.GPU_MINIBATCH * Self._LOSS_CS)  # loss_cache
+        + max(1, Self._LossGraph.PARAM_SIZE)        # loss_params
+        + max(1, Self._LossGraph.PARAM_SIZE)        # loss_grads
+        + Self.GPU_MINIBATCH * Self._LOSS_IN        # loss_grad_input
+        + Self.GPU_MINIBATCH * Self._LOSS_OUT       # loss_grad_output
+        + Self._LOSS_WS                             # loss_workspace
+    )
+
     comptime GPUStateType = PPOContinuousGPUState[
         Self.Config.ActorModel,
         Self.Config.ActorOpt,
@@ -145,6 +166,7 @@ struct GenericOnPolicyContinuousAgent[
         Self.ROLLOUT,
         Self.n_envs,
         Self.GPU_MINIBATCH,
+        Self._LOSS_WS_TOTAL if Self.Config.USE_AUTODIFF_GRAD else 0,
     ]
 
     # Persistent CPU state
@@ -1781,30 +1803,25 @@ struct GenericOnPolicyContinuousAgent[
                         1, MINIBATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE
                     )
 
-                    # Allocate buffers
-                    var loss_input_buf = ctx.enqueue_create_buffer[dtype](
-                        MINIBATCH * LOSS_IN
-                    )
-                    var loss_output_buf = ctx.enqueue_create_buffer[dtype](
-                        MINIBATCH * LOSS_OUT
-                    )
-                    var loss_cache_buf = ctx.enqueue_create_buffer[dtype](
-                        max(1, MINIBATCH * LOSS_CS)
-                    )
-                    var loss_params_buf = ctx.enqueue_create_buffer[dtype](
-                        max(1, LossGraph.PARAM_SIZE)
-                    )
-                    var loss_grads_buf = ctx.enqueue_create_buffer[dtype](
-                        max(1, LossGraph.PARAM_SIZE)
-                    )
-                    var loss_grad_input_buf = ctx.enqueue_create_buffer[dtype](
-                        MINIBATCH * LOSS_IN
-                    )
-                    var loss_grad_output_buf = ctx.enqueue_create_buffer[dtype](
-                        MINIBATCH * LOSS_OUT
-                    )
-                    var loss_workspace_buf = ctx.enqueue_create_buffer[dtype](
-                        LOSS_WS
+                    # Slice pre-allocated loss workspace (avoids per-minibatch GPU allocs)
+                    var _lp = gpu_state.loss_ws.unsafe_ptr()
+                    var _lo = 0
+                    var loss_input_ptr = _lp + _lo
+                    _lo += MINIBATCH * LOSS_IN
+                    var loss_output_ptr = _lp + _lo
+                    _lo += MINIBATCH * LOSS_OUT
+                    var loss_cache_ptr = _lp + _lo
+                    _lo += max(1, MINIBATCH * LOSS_CS)
+                    var loss_params_ptr = _lp + _lo
+                    _lo += max(1, LossGraph.PARAM_SIZE)
+                    var loss_grads_ptr = _lp + _lo
+                    _lo += max(1, LossGraph.PARAM_SIZE)
+                    var loss_grad_input_ptr = _lp + _lo
+                    _lo += MINIBATCH * LOSS_IN
+                    var loss_grad_output_ptr = _lp + _lo
+                    _lo += MINIBATCH * LOSS_OUT
+                    var loss_workspace_buf = DeviceBuffer[dtype](
+                        ctx, _lp + _lo, LOSS_WS, owning=False
                     )
 
                     # Pack input: [mean(A) || log_std(A) || action(A) || old_lp(1) || adv(1)]
@@ -1812,7 +1829,7 @@ struct GenericOnPolicyContinuousAgent[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_IN),
                         MutAnyOrigin,
-                    ](loss_input_buf.unsafe_ptr())
+                    ](loss_input_ptr)
 
                     @always_inline
                     fn pack_loss_input_k(
@@ -1900,17 +1917,17 @@ struct GenericOnPolicyContinuousAgent[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_OUT),
                         MutAnyOrigin,
-                    ](loss_output_buf.unsafe_ptr())
+                    ](loss_output_ptr)
                     var loss_cache_t = LayoutTensor[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_CS),
                         MutAnyOrigin,
-                    ](loss_cache_buf.unsafe_ptr())
+                    ](loss_cache_ptr)
                     var loss_params_t = LayoutTensor[
                         dtype,
                         Layout.row_major(LossGraph.PARAM_SIZE),
                         MutAnyOrigin,
-                    ](loss_params_buf.unsafe_ptr())
+                    ](loss_params_ptr)
 
                     LossGraph.forward_gpu[MINIBATCH](
                         ctx,
@@ -1927,7 +1944,7 @@ struct GenericOnPolicyContinuousAgent[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_OUT),
                         MutAnyOrigin,
-                    ](loss_grad_output_buf.unsafe_ptr())
+                    ](loss_grad_output_ptr)
 
                     @always_inline
                     fn seed_grad_k(
@@ -1957,12 +1974,12 @@ struct GenericOnPolicyContinuousAgent[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_IN),
                         MutAnyOrigin,
-                    ](loss_grad_input_buf.unsafe_ptr())
+                    ](loss_grad_input_ptr)
                     var loss_grads_t = LayoutTensor[
                         dtype,
                         Layout.row_major(LossGraph.PARAM_SIZE),
                         MutAnyOrigin,
-                    ](loss_grads_buf.unsafe_ptr())
+                    ](loss_grads_ptr)
 
                     LossGraph.backward_gpu[MINIBATCH](
                         ctx,
@@ -1980,7 +1997,7 @@ struct GenericOnPolicyContinuousAgent[
                         dtype,
                         Layout.row_major(MINIBATCH, LOSS_IN),
                         ImmutAnyOrigin,
-                    ](loss_grad_input_buf.unsafe_ptr())
+                    ](loss_grad_input_ptr)
 
                     @always_inline
                     fn extract_and_entropy_k(

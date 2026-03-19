@@ -1312,22 +1312,10 @@ struct AutodiffMaxEntLoss[
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
     ]() -> Int:
-        # Workspace for the composed graph: we need space for the combined
-        # params buffer, cache, output, grad_output, grad_input, and grad_params.
-        # The graph bundles actor + critic1 + critic2 params.
-
-        # Build the graph type to get its sizes
-        comptime ActorGraph = Sequential[
-            SkipConcat[
-                Sequential[
-                    # Placeholder: the actual actor model will be passed at call time.
-                    # For workspace sizing, we use the maximum cache/workspace sizes.
-                    Slice[ACTOR_OUT, 0, ACTOR_OUT],  # identity placeholder
-                    RSample[ACTIONS],
-                ]
-            ],
-        ]
-        # Conservative workspace estimate — same as MaxEntLoss
+        # Conservative workspace estimate — same as MaxEntLoss for CPU path.
+        # GPU path slices this buffer for its own needs; the CPU workspace
+        # (which includes BATCH * CRITIC_CS * 2) is always larger than the
+        # GPU-specific needs (which are dominated by 2 * TOTAL_PS << BATCH * CRITIC_CS).
         return (
             BATCH * ACTOR_OUT  # raw_out
             + BATCH * ACTOR_CS  # actor_cache
@@ -1581,14 +1569,37 @@ struct AutodiffMaxEntLoss[
         comptime TOTAL_PS = SACGraph.PARAM_SIZE
 
         # =================================================================
+        # Workspace layout in strat_ws (all sliced from pre-allocated buffer):
+        #   [0]                    combined_params   [TOTAL_PS]
+        #   [TOTAL_PS]             output            [BATCH * 2]
+        #   [+ BATCH * 2]          cache             [max(1, BATCH * GRAPH_CS)]
+        #   [+ cache_sz]           workspace         [max(1, BATCH * GRAPH_WS)]
+        #   [+ ws_sz]              grad_out (seed)   [BATCH * 2]
+        #   [+ BATCH * 2]          grad_obs          [BATCH * OBS]
+        #   [+ BATCH * OBS]        combined_grads    [TOTAL_PS]
+        #   [+ TOTAL_PS]           lp_buf            [BATCH]
+        # =================================================================
+        comptime CACHE_SZ = max(1, BATCH * GRAPH_CS)
+        comptime WS_SZ = max(1, BATCH * GRAPH_WS)
+
+        comptime W_PARAMS = 0
+        comptime W_OUTPUT = W_PARAMS + TOTAL_PS
+        comptime W_CACHE = W_OUTPUT + BATCH * 2
+        comptime W_WORKSPACE = W_CACHE + CACHE_SZ
+        comptime W_GRAD_OUT = W_WORKSPACE + WS_SZ
+        comptime W_GRAD_OBS = W_GRAD_OUT + BATCH * 2
+        comptime W_GRADS = W_GRAD_OBS + BATCH * OBS
+        comptime W_LP = W_GRADS + TOTAL_PS
+
+        var ws_ptr = strat_ws.unsafe_ptr()
+
+        # =================================================================
         # 1. Concat params on GPU: [actor | critic1 (padded) | critic2]
         # =================================================================
-        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
         var params_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
 
-        # Copy via GPU kernel (params are already in device memory)
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
         @always_inline
@@ -1634,31 +1645,25 @@ struct AutodiffMaxEntLoss[
         )
 
         # =================================================================
-        # 2. Allocate output, cache, workspace on GPU
+        # 2. Set up output, cache, workspace views into strat_ws
         # =================================================================
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 2)
         var output_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
+        ](ws_ptr + W_OUTPUT)
 
-        var cache_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_CS)
-        )
-
-        var workspace_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_WS)
+        var workspace_buf = DeviceBuffer[dtype](
+            ctx, ws_ptr + W_WORKSPACE, WS_SZ, owning=False
         )
 
         # =================================================================
         # 3. Forward: obs → [min_Q, log_prob]
         # =================================================================
-        # Rebind params/cache to SACGraph's expected layout dimensions
         var graph_params = LayoutTensor[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
         var graph_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](ws_ptr + W_CACHE)
         var graph_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, SACGraph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
@@ -1675,36 +1680,60 @@ struct AutodiffMaxEntLoss[
         # =================================================================
         # 4. Backward with gradient seed [-1/BS, alpha/BS]
         # =================================================================
-        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH * 2)
-        var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
-        var alpha_inv_batch = Scalar[dtype](alpha / Float64(BATCH))
-        for b in range(BATCH):
-            grad_out_host[b * 2] = neg_inv_batch
-            grad_out_host[b * 2 + 1] = alpha_inv_batch
-
-        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * 2)
-        ctx.enqueue_copy(grad_out_buf, grad_out_host)
-
+        # Fill seed directly on GPU
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
-        ](grad_out_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OUT)
+        var neg_inv_batch_s = Scalar[dtype](-1.0 / Float64(BATCH))
+        var alpha_inv_batch_s = Scalar[dtype](alpha / Float64(BATCH))
 
-        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
-        # Combined grads buffer (zeroed)
-        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
-        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
-        for i in range(TOTAL_PS):
-            zero_host[i] = Scalar[dtype](0.0)
-        ctx.enqueue_copy(combined_grads_buf, zero_host)
+        @always_inline
+        fn fill_seed_k(
+            seed: LayoutTensor[
+                dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+            ],
+            neg_inv_batch: Scalar[dtype],
+            alpha_inv_batch: Scalar[dtype],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b < BATCH:
+                seed[b, 0] = neg_inv_batch
+                seed[b, 1] = alpha_inv_batch
 
-        # Rebind to graph's expected layout types
-        var graph_grads = LayoutTensor[
-            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+            grad_out_t,
+            neg_inv_batch_s,
+            alpha_inv_batch_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         var graph_grad_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, SACGraph.IN_DIM), MutAnyOrigin
-        ](grad_obs_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OBS)
+
+        # Zero combined grads on GPU
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
+        ](ws_ptr + W_GRADS)
+
+        @always_inline
+        fn zero_grads_k(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < TOTAL_PS:
+                dst.ptr[i] = 0.0
+
+        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+            graph_grads,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         SACGraph.backward_gpu[BATCH](
             ctx,
@@ -1721,7 +1750,7 @@ struct AutodiffMaxEntLoss[
         # =================================================================
         var grads_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ](ws_ptr + W_GRADS)
         var c2g_rb = LayoutTensor[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)
@@ -1763,45 +1792,29 @@ struct AutodiffMaxEntLoss[
         # =================================================================
         # 6. Extract log_probs for alpha auto-tuning
         # =================================================================
+        # Extract log_prob (2nd column of output) directly on GPU into
+        # strat_ws at LP_OFF, avoiding GPU→CPU→GPU round-trip.
         comptime LP_OFF = Self.gpu_lp_offset[
             BATCH, ACTIONS, ActorModel.OUT_DIM, ActorModel.CACHE_SIZE
         ]()
-
-        # Extract log_probs from output_buf (every 2nd element starting at 1)
-        var lp_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
-        var out_host = ctx.enqueue_create_host_buffer[dtype](BATCH * 2)
-        ctx.enqueue_copy(out_host, output_buf)
-        ctx.synchronize()
-
-        for b in range(BATCH):
-            lp_host[b] = out_host[b * 2 + 1]
-
-        # Copy log_probs to strat_ws at LP_OFF for the agent to read
-        var lp_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        ctx.enqueue_copy(lp_buf, lp_host)
-
-        # Copy to strat_ws at the right offset
         var strat_lp_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](strat_ws.unsafe_ptr() + LP_OFF)
-        var src_lp_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](lp_buf.unsafe_ptr())
-
-        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn copy_lp_kernel(
+        fn extract_lp_k(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            src: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            src: LayoutTensor[
+                dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
+            ],
         ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i < BATCH:
-                dst.ptr[i] = src.ptr[i]
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b < BATCH:
+                dst[b] = src[b, 1]  # log_prob is 2nd column
 
-        ctx.enqueue_function[copy_lp_kernel, copy_lp_kernel](
+        ctx.enqueue_function[extract_lp_k, extract_lp_k](
             strat_lp_t,
-            src_lp_t,
+            output_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -2054,12 +2067,34 @@ struct AutodiffDPGLoss(ActorLoss):
         comptime GRAPH_WS = DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE
 
         # =================================================================
+        # Workspace layout in strat_ws (all sliced from pre-allocated buffer):
+        #   [0]                    combined_params   [TOTAL_PS]
+        #   [TOTAL_PS]             output            [BATCH]
+        #   [+ BATCH]              cache             [max(1, BATCH * GRAPH_CS)]
+        #   [+ cache_sz]           workspace         [max(1, BATCH * GRAPH_WS)]
+        #   [+ ws_sz]              grad_out (seed)   [BATCH]
+        #   [+ BATCH]              grad_obs          [BATCH * OBS]
+        #   [+ BATCH * OBS]        combined_grads    [TOTAL_PS]
+        # =================================================================
+        comptime CACHE_SZ = max(1, BATCH * GRAPH_CS)
+        comptime WS_SZ = max(1, BATCH * GRAPH_WS)
+
+        comptime W_PARAMS = 0
+        comptime W_OUTPUT = W_PARAMS + TOTAL_PS
+        comptime W_CACHE = W_OUTPUT + BATCH
+        comptime W_WORKSPACE = W_CACHE + CACHE_SZ
+        comptime W_GRAD_OUT = W_WORKSPACE + WS_SZ
+        comptime W_GRAD_OBS = W_GRAD_OUT + BATCH
+        comptime W_GRADS = W_GRAD_OBS + BATCH * OBS
+
+        var ws_ptr = strat_ws.unsafe_ptr()
+
+        # =================================================================
         # 1. Concat params on GPU: [actor | critic]
         # =================================================================
-        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
         var params_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
@@ -2092,19 +2127,14 @@ struct AutodiffDPGLoss(ActorLoss):
         )
 
         # =================================================================
-        # 2. Allocate output, cache, workspace on GPU
+        # 2. Set up output, cache, workspace views into strat_ws
         # =================================================================
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 1)
         var output_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
+        ](ws_ptr + W_OUTPUT)
 
-        var cache_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_CS)
-        )
-
-        var workspace_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_WS)
+        var workspace_buf = DeviceBuffer[dtype](
+            ctx, ws_ptr + W_WORKSPACE, WS_SZ, owning=False
         )
 
         # =================================================================
@@ -2112,10 +2142,10 @@ struct AutodiffDPGLoss(ActorLoss):
         # =================================================================
         var graph_params = LayoutTensor[
             dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
         var graph_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](ws_ptr + W_CACHE)
         var graph_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, DDPGGraph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
@@ -2132,33 +2162,56 @@ struct AutodiffDPGLoss(ActorLoss):
         # =================================================================
         # 4. Backward with gradient seed 1/BS
         # =================================================================
-        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
-        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
-        for b in range(BATCH):
-            grad_out_host[b] = inv_batch
-
-        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        ctx.enqueue_copy(grad_out_buf, grad_out_host)
-
+        # Fill seed directly on GPU
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](grad_out_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OUT)
+        var inv_batch_s = Scalar[dtype](1.0 / Float64(BATCH))
 
-        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
-        # Combined grads buffer (zeroed)
-        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
-        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
-        for i in range(TOTAL_PS):
-            zero_host[i] = Scalar[dtype](0.0)
-        ctx.enqueue_copy(combined_grads_buf, zero_host)
+        @always_inline
+        fn fill_seed_k(
+            seed: LayoutTensor[
+                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            ],
+            inv_batch: Scalar[dtype],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b < BATCH:
+                seed[b, 0] = inv_batch
 
-        var graph_grads = LayoutTensor[
-            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+            grad_out_t,
+            inv_batch_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         var graph_grad_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, DDPGGraph.IN_DIM), MutAnyOrigin
-        ](grad_obs_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OBS)
+
+        # Zero combined grads on GPU
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
+        ](ws_ptr + W_GRADS)
+
+        @always_inline
+        fn zero_grads_k(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < TOTAL_PS:
+                dst.ptr[i] = 0.0
+
+        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+            graph_grads,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         DDPGGraph.backward_gpu[BATCH](
             ctx,
@@ -2175,7 +2228,7 @@ struct AutodiffDPGLoss(ActorLoss):
         # =================================================================
         var grads_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ](ws_ptr + W_GRADS)
 
         @always_inline
         fn scatter_grads_kernel(
@@ -2465,12 +2518,34 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime TOTAL_PS = TD3Graph.PARAM_SIZE
 
         # =================================================================
+        # Workspace layout in strat_ws (all sliced from pre-allocated buffer):
+        #   [0]                    combined_params   [TOTAL_PS]
+        #   [TOTAL_PS]             output            [BATCH]
+        #   [+ BATCH]              cache             [max(1, BATCH * GRAPH_CS)]
+        #   [+ cache_sz]           workspace         [max(1, BATCH * GRAPH_WS)]
+        #   [+ ws_sz]              grad_out (seed)   [BATCH]
+        #   [+ BATCH]              grad_obs          [BATCH * OBS]
+        #   [+ BATCH * OBS]        combined_grads    [TOTAL_PS]
+        # =================================================================
+        comptime CACHE_SZ = max(1, BATCH * GRAPH_CS)
+        comptime WS_SZ = max(1, BATCH * GRAPH_WS)
+
+        comptime W_PARAMS = 0
+        comptime W_OUTPUT = W_PARAMS + TOTAL_PS
+        comptime W_CACHE = W_OUTPUT + BATCH
+        comptime W_WORKSPACE = W_CACHE + CACHE_SZ
+        comptime W_GRAD_OUT = W_WORKSPACE + WS_SZ
+        comptime W_GRAD_OBS = W_GRAD_OUT + BATCH
+        comptime W_GRADS = W_GRAD_OBS + BATCH * OBS
+
+        var ws_ptr = strat_ws.unsafe_ptr()
+
+        # =================================================================
         # 1. Concat params on GPU: [actor | critic1 (padded) | critic2]
         # =================================================================
-        var combined_params_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
         var params_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
@@ -2516,19 +2591,14 @@ struct AutodiffTD3Loss(ActorLoss):
         )
 
         # =================================================================
-        # 2. Allocate output, cache, workspace on GPU
+        # 2. Set up output, cache, workspace views into strat_ws
         # =================================================================
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * 1)
         var output_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
+        ](ws_ptr + W_OUTPUT)
 
-        var cache_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_CS)
-        )
-
-        var workspace_buf = ctx.enqueue_create_buffer[dtype](
-            max(1, BATCH * GRAPH_WS)
+        var workspace_buf = DeviceBuffer[dtype](
+            ctx, ws_ptr + W_WORKSPACE, WS_SZ, owning=False
         )
 
         # =================================================================
@@ -2536,10 +2606,10 @@ struct AutodiffTD3Loss(ActorLoss):
         # =================================================================
         var graph_params = LayoutTensor[
             dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
-        ](combined_params_buf.unsafe_ptr())
+        ](ws_ptr + W_PARAMS)
         var graph_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, GRAPH_CS), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
+        ](ws_ptr + W_CACHE)
         var graph_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, TD3Graph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
@@ -2556,33 +2626,56 @@ struct AutodiffTD3Loss(ActorLoss):
         # =================================================================
         # 4. Backward with gradient seed 1/BS
         # =================================================================
-        var grad_out_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
-        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
-        for b in range(BATCH):
-            grad_out_host[b] = inv_batch
-
-        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        ctx.enqueue_copy(grad_out_buf, grad_out_host)
-
+        # Fill seed directly on GPU
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](grad_out_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OUT)
+        var inv_batch_s = Scalar[dtype](1.0 / Float64(BATCH))
 
-        var grad_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH * OBS)
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
-        # Combined grads buffer (zeroed)
-        var combined_grads_buf = ctx.enqueue_create_buffer[dtype](TOTAL_PS)
-        var zero_host = ctx.enqueue_create_host_buffer[dtype](TOTAL_PS)
-        for i in range(TOTAL_PS):
-            zero_host[i] = Scalar[dtype](0.0)
-        ctx.enqueue_copy(combined_grads_buf, zero_host)
+        @always_inline
+        fn fill_seed_k(
+            seed: LayoutTensor[
+                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+            ],
+            inv_batch: Scalar[dtype],
+        ):
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b < BATCH:
+                seed[b, 0] = inv_batch
 
-        var graph_grads = LayoutTensor[
-            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+            grad_out_t,
+            inv_batch_s,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         var graph_grad_obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, TD3Graph.IN_DIM), MutAnyOrigin
-        ](grad_obs_buf.unsafe_ptr())
+        ](ws_ptr + W_GRAD_OBS)
+
+        # Zero combined grads on GPU
+        var graph_grads = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
+        ](ws_ptr + W_GRADS)
+
+        @always_inline
+        fn zero_grads_k(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < TOTAL_PS:
+                dst.ptr[i] = 0.0
+
+        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+            graph_grads,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         TD3Graph.backward_gpu[BATCH](
             ctx,
@@ -2599,7 +2692,7 @@ struct AutodiffTD3Loss(ActorLoss):
         # =================================================================
         var grads_t = LayoutTensor[
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-        ](combined_grads_buf.unsafe_ptr())
+        ](ws_ptr + W_GRADS)
         var c2g_rb = LayoutTensor[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)

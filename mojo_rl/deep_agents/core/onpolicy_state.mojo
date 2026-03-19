@@ -192,6 +192,7 @@ struct PPOContinuousGPUState[
     rollout_len: Int,
     n_envs: Int,
     gpu_minibatch: Int,
+    loss_ws_size: Int = 0,
 ](GPUOnPolicyState, Movable):
     """GPU-resident state for continuous-action PPO training.
 
@@ -298,6 +299,9 @@ struct PPOContinuousGPUState[
     var values_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
     var log_probs_env_buf: DeviceBuffer[dtype]  # [N_ENVS]
     var sampled_actions_buf: DeviceBuffer[dtype]  # [N_ENVS * ACTION_DIM]
+
+    # Pre-allocated loss workspace for autodiff gradient (avoids per-minibatch allocs)
+    var loss_ws: DeviceBuffer[dtype]  # [loss_ws_size]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU device and pinned host buffers."""
@@ -431,6 +435,9 @@ struct PPOContinuousGPUState[
         self.sampled_actions_buf = ctx.enqueue_create_buffer[dtype](
             Self.N * Self.ACTIONS
         )
+
+        comptime _loss_ws = Self.loss_ws_size if Self.loss_ws_size > 0 else 1
+        self.loss_ws = ctx.enqueue_create_buffer[dtype](_loss_ws)
 
     # -------------------------------------------------------------------------
     # GPUOnPolicyState trait methods
