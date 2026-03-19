@@ -35,6 +35,7 @@ from .fused import (
 from .auto_fused import AutoFused
 from .combinators import Residual, Parallel, Repeat
 from .compute_graph import ComputeGraph, GNode, GraphNode
+from .composite_params import CompositeParams
 
 # Fusion-aware aliases: AutoFused automatically detects and fuses patterns.
 # Dense/DenseReLU/etc. are identical to Linear/LinearReLU from mojo_rl.nn.model.

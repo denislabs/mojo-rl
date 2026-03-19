@@ -225,21 +225,62 @@ All base configs now use autodiff strategies by default. Old `Autodiff`-prefixed
 
 ---
 
-## Execution Order
+## Follow-up: Post-validation Cleanup
 
-1. **Phase 0** — Kernel consolidation (prerequisite, no behavior change)
-2. **Phase 1** — Delete old agents (major cleanup, ~1.2MB removed)
-3. **Phase 2** — Reorganize folders (structural, many import changes)
-4. **Phase 3** — Rename rsample_layer.mojo (trivial)
-5. **Phase 4** — Autodiff as default (requires benchmarking)
+Once all agents are tested and confirmed working with autodiff defaults:
 
-Each phase should be a separate commit/PR. Test after each phase.
+### Phase 5: Remove Autodiff-prefixed aliases
+
+The `Autodiff*` names are now redundant since base configs ARE autodiff.
+
+- [ ] Remove `AutodiffSACConfig`, `AutodiffDDPGConfig`, `AutodiffTD3Config` aliases from `configs/offpolicy_config.mojo`
+- [ ] Remove `AutodiffPPOConfig`, `AutodiffA2CConfig`, `AutodiffContinuousPPOConfig` aliases from `configs/onpolicy_config.mojo`
+- [ ] Remove `AutodiffDQNConfig` alias from `agents/dqn_agent.mojo`
+- [ ] Remove `AutodiffDQNAgent` alias from `agents/aliases.mojo`
+- [ ] Update 5 test files to use base config names:
+  - `tests/deep_agents/test_autodiff_dqn_gpu.mojo` → use `DQNAgent` or `DoubleDQNConfig`
+  - `tests/deep_agents/test_autodiff_sac_gpu.mojo` → use `SACConfig`
+  - `tests/deep_agents/test_autodiff_sac.mojo` → use `SACConfig`
+  - `tests/deep_agents/test_autodiff_ppo_gpu.mojo` → use `PPOConfig`
+  - Consider renaming these test files (drop `autodiff_` prefix) or merging with base tests
+- [ ] Remove re-exports from `agents/__init__.mojo` and `configs/__init__.mojo`
+
+### Phase 6: Remove manual gradient strategies
+
+Once autodiff is fully validated and no configs reference manual strategies:
+
+- [ ] Remove `ManualQGradient` from `strategies/q_gradient.mojo`
+- [ ] Remove `DPGLoss` from `strategies/actor_loss.mojo`
+- [ ] Remove `MaxEntLoss` from `strategies/actor_loss.mojo`
+- [ ] Remove `VanillaPG` from `strategies/policy_gradient.mojo`
+- [ ] Remove `ClippedSurrogate` from `strategies/policy_gradient.mojo`
+- [ ] Remove dead manual kernels from `core/kernels.mojo`:
+  - `sac_rsample_with_cache_kernel`, `sac_rsample_bwd_kernel` (used by `MaxEntLoss`)
+  - `min_q_dq_kernel`, `add_ci_grads_kernel` (used by `MaxEntLoss`)
+  - `ppo_continuous_actor_grad_kernel` (used by `ClippedSurrogate` continuous)
+  - `ppo_actor_grad_with_kl_kernel` (used by `ClippedSurrogate` discrete)
+- [ ] Update `strategies/__init__.mojo` to remove manual strategy exports
+- [ ] Verify TDMPC2/Dreamer don't depend on any of these (they shouldn't — they have their own gradient code)
+
+### Phase 7: Update documentation
+
+- [ ] Update `deep_agents/README.md` for new directory structure
+- [ ] Update `CLAUDE.md` — directory tree, generic agent table, import paths
+- [ ] Archive or delete `REFACTORING_PLAN.md`
 
 ---
+
+## Completed Phases Summary
+
+| Phase | Status | Impact |
+|-------|--------|--------|
+| **0** Kernel consolidation | ✅ | Decoupled generic agents from old directories |
+| **1** Delete old agents | ✅ | ~23,800 lines removed |
+| **2** Reorganize folders | ✅ | `agents/`, `configs/`, `strategies/`, `training/` |
+| **3** Rename rsample_layer | ✅ | → `autodiff_layers.mojo` |
+| **4** Autodiff as default | ✅ | All configs use autodiff strategies |
 
 ## Files NOT touched
 
 - `deep_agents/tdmpc2/` — model-based, can't autodiff yet
 - `deep_agents/dreamer_v3/` — world model, can't autodiff yet
-- `nn/` structure (except rsample_layer rename)
-- All examples and tests using generic imports (just work)

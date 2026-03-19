@@ -23,3 +23,4 @@ from .ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 from .gaussian_log_prob import GaussianLogProbOp
 from .mse_op import MSEOp
 from .huber_op import HuberOp
+from .identity import IdentityOp

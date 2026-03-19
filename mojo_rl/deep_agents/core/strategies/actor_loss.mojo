@@ -1263,6 +1263,7 @@ from mojo_rl.nn.model import (
     Negate,
 )
 from mojo_rl.nn.autodiff.combinators import SkipConcat, DualPath, SplitApply
+from mojo_rl.nn.autodiff.composite_params import CompositeParams
 
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
@@ -1412,23 +1413,18 @@ struct AutodiffMaxEntLoss[
 
         # =====================================================================
         # Assemble combined params: [actor | critic1 (padded) | critic2]
-        # Offsets must match DualPath/SplitApply alignment padding.
         # =====================================================================
-        comptime CRITIC1_OFF = ACTOR_PS
-        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
-        comptime TOTAL_PS = SACGraph.PARAM_SIZE
+        comptime CP = CompositeParams[ActorModel, CriticModel, CriticModel]
+        comptime TOTAL_PS = CP.TOTAL_SIZE
         var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
             uninitialized=True
         )
-        # Zero padding regions
-        for i in range(TOTAL_PS):
-            combined_params[i] = Scalar[dtype](0.0)
-        for i in range(ACTOR_PS):
-            combined_params[i] = actor_params.ptr[i]
-        for i in range(CRITIC_PS):
-            combined_params[CRITIC1_OFF + i] = critic_params.ptr[i]
-        for i in range(CRITIC_PS):
-            combined_params[CRITIC2_OFF + i] = critic2_params.ptr[i]
+        CP.assemble(
+            combined_params.unsafe_ptr(),
+            actor_params.ptr,
+            critic_params.ptr,
+            critic2_params.ptr,
+        )
 
         var params_t = LayoutTensor[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
@@ -1492,12 +1488,12 @@ struct AutodiffMaxEntLoss[
         # =====================================================================
         # Scatter gradients back to separate actor/critic grad buffers
         # =====================================================================
-        for i in range(ACTOR_PS):
-            actor_grads.ptr[i] = combined_grads[i]
-        for i in range(CRITIC_PS):
-            critic_grads.ptr[i] = combined_grads[CRITIC1_OFF + i]
-        for i in range(CRITIC_PS):
-            critic2_grads.ptr[i] = combined_grads[CRITIC2_OFF + i]
+        CP.scatter(
+            combined_grads.unsafe_ptr(),
+            actor_grads.ptr,
+            critic_grads.ptr,
+            critic2_grads.ptr,
+        )
 
         # =====================================================================
         # Return mean log_prob for alpha update
@@ -1922,14 +1918,16 @@ struct AutodiffDPGLoss(ActorLoss):
         # =================================================================
         # Assemble combined params: [actor | critic]
         # =================================================================
-        comptime TOTAL_PS = ACTOR_PS + CRITIC_PS
+        comptime CP = CompositeParams[ActorModel, CriticModel]
+        comptime TOTAL_PS = CP.TOTAL_SIZE
         var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
             uninitialized=True
         )
-        for i in range(ACTOR_PS):
-            combined_params[i] = actor_params.ptr[i]
-        for i in range(CRITIC_PS):
-            combined_params[ACTOR_PS + i] = critic_params.ptr[i]
+        CP.assemble(
+            combined_params.unsafe_ptr(),
+            actor_params.ptr,
+            critic_params.ptr,
+        )
 
         var params_t = LayoutTensor[
             dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
@@ -1987,10 +1985,11 @@ struct AutodiffDPGLoss(ActorLoss):
         # =================================================================
         # Scatter gradients back to separate actor/critic grad buffers
         # =================================================================
-        for i in range(ACTOR_PS):
-            actor_grads.ptr[i] = combined_grads[i]
-        for i in range(CRITIC_PS):
-            critic_grads.ptr[i] = combined_grads[ACTOR_PS + i]
+        CP.scatter(
+            combined_grads.unsafe_ptr(),
+            actor_grads.ptr,
+            critic_grads.ptr,
+        )
 
         return 0.0  # No log_probs for DPG
 
@@ -2320,23 +2319,18 @@ struct AutodiffTD3Loss(ActorLoss):
 
         # =================================================================
         # Assemble combined params: [actor | critic1 (padded) | critic2]
-        # Offsets must match DualPath alignment padding.
         # =================================================================
-        comptime CRITIC1_OFF = ACTOR_PS
-        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
-        comptime TOTAL_PS = TD3Graph.PARAM_SIZE
+        comptime CP = CompositeParams[ActorModel, CriticModel, CriticModel]
+        comptime TOTAL_PS = CP.TOTAL_SIZE
         var combined_params = InlineArray[Scalar[dtype], TOTAL_PS](
             uninitialized=True
         )
-        # Zero padding regions
-        for i in range(TOTAL_PS):
-            combined_params[i] = Scalar[dtype](0.0)
-        for i in range(ACTOR_PS):
-            combined_params[i] = actor_params.ptr[i]
-        for i in range(CRITIC_PS):
-            combined_params[CRITIC1_OFF + i] = critic_params.ptr[i]
-        for i in range(CRITIC_PS):
-            combined_params[CRITIC2_OFF + i] = critic2_params.ptr[i]
+        CP.assemble(
+            combined_params.unsafe_ptr(),
+            actor_params.ptr,
+            critic_params.ptr,
+            critic2_params.ptr,
+        )
 
         var params_t = LayoutTensor[
             dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
@@ -2394,12 +2388,12 @@ struct AutodiffTD3Loss(ActorLoss):
         # =================================================================
         # Scatter gradients back to separate actor/critic grad buffers
         # =================================================================
-        for i in range(ACTOR_PS):
-            actor_grads.ptr[i] = combined_grads[i]
-        for i in range(CRITIC_PS):
-            critic_grads.ptr[i] = combined_grads[CRITIC1_OFF + i]
-        for i in range(CRITIC_PS):
-            critic2_grads.ptr[i] = combined_grads[CRITIC2_OFF + i]
+        CP.scatter(
+            combined_grads.unsafe_ptr(),
+            actor_grads.ptr,
+            critic_grads.ptr,
+            critic2_grads.ptr,
+        )
 
         return 0.0  # No log_probs for TD3
 

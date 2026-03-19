@@ -18,6 +18,7 @@ from mojo_rl.nn.model import (
     Slice,
     Min,
     RSample,
+    Identity,
 )
 from mojo_rl.nn.autodiff.compute_graph import ComputeGraph, GNode
 from mojo_rl.nn.initializer import Xavier
@@ -227,10 +228,10 @@ fn test_tdmpc2_single_step() raises:
         GNode[TermHead, 4],                 # 5: z_t → term_prob(1)
 
         # Concat chain: merge all outputs → single output tensor
-        GNode[Slice[D_PLUS_R, 0, D_PLUS_R], 0, 1],         # 6: [z_pred, rew](13)
-        GNode[Slice[D_R_Q1, 0, D_R_Q1], 6, 2],             # 7: [z_pred, rew, q1](18)
-        GNode[Slice[D_R_Q1_Q2, 0, D_R_Q1_Q2], 7, 3],       # 8: [z_pred, rew, q1, q2](23)
-        GNode[Slice[ALL_OUT, 0, ALL_OUT], 8, 5],             # 9: [z_pred, rew, q1, q2, term](24)
+        GNode[Identity[D_PLUS_R], 0, 1],          # 6: [z_pred, rew](13)
+        GNode[Identity[D_R_Q1], 6, 2],            # 7: [z_pred, rew, q1](18)
+        GNode[Identity[D_R_Q1_Q2], 7, 3],         # 8: [z_pred, rew, q1, q2](23)
+        GNode[Identity[ALL_OUT], 8, 5],            # 9: [z_pred, rew, q1, q2, term](24)
     ]
 
     print(
@@ -348,8 +349,8 @@ fn test_dreamer_heads() raises:
         GNode[RewardHead, -1],           # 1: feat → rew_logits(5)  (fan-out)
         GNode[ContinueHead, -1],         # 2: feat → cont(1)        (fan-out)
         # Concat all outputs
-        GNode[Slice[DEC_REW, 0, DEC_REW], 0, 1],  # 3: [obs_hat, rew](11)
-        GNode[Slice[ALL_OUT, 0, ALL_OUT], 3, 2],   # 4: [obs_hat, rew, cont](12)
+        GNode[Identity[DEC_REW], 0, 1],    # 3: [obs_hat, rew](11)
+        GNode[Identity[ALL_OUT], 3, 2],  # 4: [obs_hat, rew, cont](12)
     ]
 
     print(
@@ -477,7 +478,7 @@ fn test_sac_actor_loss() raises:
         GNode[CriticModel, -1, 2],                       # 5: [obs(4), action(2)] → Q2 (fan-out from concat)
         GNode[Min[1], 4, 5],                              # 6: → min_Q(1)
         # Concat min_Q and log_prob for final output
-        GNode[Slice[2, 0, 2], 6, 3],                     # 7: [min_Q(1), log_prob(1)] = output(2)
+        GNode[Identity[2], 6, 3],                         # 7: [min_Q(1), log_prob(1)] = output(2)
     ]
 
     print(

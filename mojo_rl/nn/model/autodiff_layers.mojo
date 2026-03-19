@@ -58,5 +58,8 @@ comptime GaussianLogProb[action_dim: Int] = AutoDiffChain[GaussianLogProbOp[acti
 comptime MSELoss = AutoDiffChain[MSEOp]
 
 from ..autodiff.primitives.huber_op import HuberOp
+from ..autodiff.primitives.identity import IdentityOp
 
 comptime HuberLoss[delta: Float64 = 1.0] = AutoDiffChain[HuberOp[delta]]
+
+comptime Identity[dim: Int] = AutoDiffChain[IdentityOp[dim]]

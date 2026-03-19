@@ -420,7 +420,8 @@ graph definitions — no manual backward code needed.
 | 3 | `AutodiffTD3Config` | ✅ Done | Drop-in TD3 config using autodiff |
 | 3 | GPU autodiff path | ✅ Done | GPU forward/backward (CUDA; Metal has nested generic limits) |
 | 2c | `ComputeGraph` | ✅ Done (CPU + GPU) | Full compile-time DAG builder |
-| — | `CompositeParams` | Future | Reduce param assembly/scatter boilerplate |
+| — | `CompositeParams` | ✅ Done | Reduce param assembly/scatter boilerplate |
+| — | `Identity` | ✅ Done | Pass-through DiffOp for ComputeGraph concat nodes |
 
 ## CompositeParams — Boilerplate Reduction (Future)
 

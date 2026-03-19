@@ -17,7 +17,7 @@ from .stochastic_actor import (
 from .mish import Mish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
-from .autodiff_layers import RSample, Min, Slice, Negate, Gather, CategoricalLogProb, Ratio, ClipSurrogate, GaussianLogProb, MSELoss, HuberLoss
+from .autodiff_layers import RSample, Min, Slice, Negate, Gather, CategoricalLogProb, Ratio, ClipSurrogate, GaussianLogProb, MSELoss, HuberLoss, Identity
 from .conv2d_layer import (
     Conv2DLayer,
     Conv2DReLU,
