@@ -21,3 +21,4 @@ from .negate import NegateOp
 from .gather import GatherOp
 from .ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 from .gaussian_log_prob import GaussianLogProbOp
+from .mse_op import MSEOp

@@ -28,6 +28,7 @@ from ..autodiff.primitives.negate import NegateOp
 from ..autodiff.primitives.gather import GatherOp
 from ..autodiff.primitives.ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 from ..autodiff.primitives.gaussian_log_prob import GaussianLogProbOp
+from ..autodiff.primitives.mse_op import MSEOp
 
 
 comptime RSample[
@@ -53,3 +54,5 @@ comptime Ratio[dim: Int = 1] = AutoDiffChain[RatioOp[dim]]
 comptime ClipSurrogate[eps: Float64 = 0.2] = AutoDiffChain[ClipSurrogateOp[eps]]
 
 comptime GaussianLogProb[action_dim: Int] = AutoDiffChain[GaussianLogProbOp[action_dim]]
+
+comptime MSELoss = AutoDiffChain[MSEOp]

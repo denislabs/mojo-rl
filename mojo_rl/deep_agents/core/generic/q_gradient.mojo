@@ -14,11 +14,13 @@ auxiliary losses only requires changing the scalar gradient fed into GatherOp.vj
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.autodiff.primitives.gather import GatherOp
+from mojo_rl.nn.model import Sequential, Gather, Slice, MSELoss
+from mojo_rl.nn.autodiff.combinators import SplitApply
 
 
 # =============================================================================
@@ -177,31 +179,33 @@ struct ManualQGradient(QGradient):
 
 
 # =============================================================================
-# AutodiffQGradient -- uses GatherOp backward for sparse scatter
+# AutodiffQGradient -- true composed loss graph (Gather → MSE)
 # =============================================================================
 
 
 struct AutodiffQGradient(QGradient):
-    """Autodiff-based Q-gradient using GatherOp.
+    """Autodiff Q-gradient using composed loss graph.
 
-    Conceptually performs:
-        1. GatherOp.eval([Q_values || action_idx]) -> Q(s,a)  [forward, cached]
-        2. dMSE/dQ(s,a) = 2 * (Q(s,a) - target) / BATCH     [scalar grad]
-        3. GatherOp.vjp(dMSE/dQ(s,a)) -> sparse grad in Q-space [backward]
+    The DQN loss is expressed as a composed Model:
+        Input: [Q_values(A) || action_idx(1) || target(1)] = A + 2
 
-    Steps 1-3 produce the same result as ManualQGradient, but the backward
-    pass is delegated to GatherOp.vjp which can be reused / composed.
+        LossGraph = Sequential[
+            SplitApply[Gather[A], Slice[1,0,1], A+1],  → [Q(s,a), target]
+            MSELoss,                                     → (Q(s,a) - target)^2
+        ]
 
-    Workspace: BATCH * GatherOp[ACTIONS].CACHE_SIZE (= BATCH * 1) for the
-    GatherOp cache, plus BATCH * GatherOp[ACTIONS].IN_DIM for the packed input,
-    plus BATCH * 1 for the scalar grad_output.
+    Forward packs Q-values, action index, and target into one tensor.
+    Backward produces sparse gradient in Q-space via automatic VJP.
     """
 
     @staticmethod
     fn ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
-        """Workspace = gather_input + gather_cache + grad_output."""
-        # gather_input: [BATCH, ACTIONS+1], cache: [BATCH, 1], grad_out: [BATCH, 1]
-        return BATCH * (ACTIONS + 1) + BATCH * 1 + BATCH * 1
+        comptime LOSS_IN = ACTIONS + 2
+        comptime LossGraph = Sequential[
+            SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
+            MSELoss,
+        ]
+        return BATCH * LOSS_IN + BATCH * LossGraph.CACHE_SIZE + BATCH * 2
 
     @staticmethod
     fn compute_grad_cpu[
@@ -213,79 +217,84 @@ struct AutodiffQGradient(QGradient):
         actions: InlineArray[Scalar[dtype], BATCH],
         mut grad_q: InlineArray[Scalar[dtype], BATCH * ACTIONS],
     ) -> Float64:
-        """Autodiff Q-gradient on CPU using GatherOp.eval + GatherOp.vjp."""
-        comptime GATHER_IN = ACTIONS + 1
+        """Autodiff Q-gradient on CPU via composed loss graph."""
+        comptime LOSS_IN = ACTIONS + 2
+        comptime LossGraph = Sequential[
+            SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
+            MSELoss,
+        ]
+        comptime LOSS_CS = LossGraph.CACHE_SIZE
 
-        # -- Step 1: Pack [Q_values || action_idx] and run GatherOp.eval --
-        var gather_input = InlineArray[Scalar[dtype], BATCH * GATHER_IN](
+        # Pack: [Q_values(A) || action_idx(1) || target(1)]
+        var loss_in = InlineArray[Scalar[dtype], BATCH * LOSS_IN](
             uninitialized=True
         )
         for b in range(BATCH):
             for a in range(ACTIONS):
-                gather_input[b * GATHER_IN + a] = q_values[b * ACTIONS + a]
-            gather_input[b * GATHER_IN + ACTIONS] = actions[b]
+                loss_in[b * LOSS_IN + a] = q_values[b * ACTIONS + a]
+            loss_in[b * LOSS_IN + ACTIONS] = actions[b]
+            loss_in[b * LOSS_IN + ACTIONS + 1] = targets[b]
 
-        # Wrap as LayoutTensors for GatherOp
-        var gi_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
-        ](gather_input.unsafe_ptr())
+        var loss_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
+        ](loss_in.unsafe_ptr())
 
-        var gathered = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
-        var go_t = LayoutTensor[
+        # Forward
+        var loss_out = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
+        var loss_out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](gathered.unsafe_ptr())
-
-        var cache = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
-        var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](cache.unsafe_ptr())
-
-        # Dummy params (GatherOp has PARAM_SIZE=0, but trait needs the tensor)
-        var dummy_p = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](0.0))
-        var dp_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-            dummy_p.unsafe_ptr()
+        ](loss_out.unsafe_ptr())
+        var cache = InlineArray[Scalar[dtype], BATCH * LOSS_CS](
+            uninitialized=True
         )
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_CS), MutAnyOrigin
+        ](cache.unsafe_ptr())
+        var params = InlineArray[Scalar[dtype], max(1, LossGraph.PARAM_SIZE)](
+            fill=Scalar[dtype](0.0)
+        )
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+        ](params.unsafe_ptr())
 
-        GatherOp[ACTIONS].eval[BATCH](gi_t, go_t, dp_t, cache_t)
+        LossGraph.forward[BATCH](loss_in_t, loss_out_t, params_t, cache_t)
 
-        # -- Step 2: Compute scalar MSE gradient --
+        # Mean loss
         var total_loss: Float64 = 0.0
-        var grad_out = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
         for b in range(BATCH):
-            var q_a = gathered[b]
-            var td_err = q_a - targets[b]
-            total_loss += Float64(td_err * td_err)
-            grad_out[b] = (
-                Scalar[dtype](2.0) * td_err / Scalar[dtype](BATCH)
-            )
+            total_loss += Float64(loss_out[b])
         var loss = total_loss / Float64(BATCH)
 
-        # -- Step 3: GatherOp.vjp to scatter into Q-space --
-        var grad_out_t = LayoutTensor[
+        # Backward with seed 1/BATCH
+        var grad_seed = InlineArray[Scalar[dtype], BATCH](uninitialized=True)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            grad_seed[b] = inv_batch
+        var grad_seed_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](grad_out.unsafe_ptr())
+        ](grad_seed.unsafe_ptr())
 
-        # grad_input is [BATCH, GATHER_IN] -- we reuse gather_input storage
-        var grad_input = InlineArray[Scalar[dtype], BATCH * GATHER_IN](
+        var grad_in = InlineArray[Scalar[dtype], BATCH * LOSS_IN](
             uninitialized=True
         )
-        var grad_input_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
-        ](grad_input.unsafe_ptr())
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
+        ](grad_in.unsafe_ptr())
+        var grads = InlineArray[Scalar[dtype], max(1, LossGraph.PARAM_SIZE)](
+            fill=Scalar[dtype](0.0)
+        )
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+        ](grads.unsafe_ptr())
 
-        var dummy_gp = InlineArray[Scalar[dtype], 1](fill=Scalar[dtype](0.0))
-        var dgp_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-            dummy_gp.unsafe_ptr()
+        LossGraph.backward[BATCH](
+            grad_seed_t, grad_in_t, params_t, cache_t, grads_t
         )
 
-        GatherOp[ACTIONS].vjp[BATCH](
-            grad_out_t, grad_input_t, dp_t, cache_t, dgp_t
-        )
-
-        # Copy first ACTIONS columns (skip index column) into grad_q
+        # Extract first ACTIONS columns as grad_q
         for b in range(BATCH):
             for a in range(ACTIONS):
-                grad_q[b * ACTIONS + a] = grad_input[b * GATHER_IN + a]
+                grad_q[b * ACTIONS + a] = grad_in[b * LOSS_IN + a]
 
         return loss
 
@@ -304,151 +313,108 @@ struct AutodiffQGradient(QGradient):
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ],
     ) raises -> None:
-        """Autodiff Q-gradient on GPU using GatherOp kernels.
-
-        Three-phase approach:
-          Phase A: Pack [Q || action] -> gather_input, run GatherOp.eval_kernel
-          Phase B: Compute scalar MSE grad = 2*(Q(s,a) - target)/BATCH
-          Phase C: GatherOp.backward_kernel -> sparse grad in Q-space
-        """
-        comptime GATHER_IN = ACTIONS + 1
-
-        # Allocate workspace buffers
-        var gather_input_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * GATHER_IN
+        """Autodiff Q-gradient on GPU via composed loss graph."""
+        comptime LOSS_IN = ACTIONS + 2
+        comptime LossGraph = Sequential[
+            SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
+            MSELoss,
+        ]
+        comptime LOSS_CS = LossGraph.CACHE_SIZE
+        comptime LOSS_WS = max(
+            1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE
         )
-        var gathered_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        var cache_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        var grad_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * GATHER_IN
-        )
-
-        # LayoutTensor views
-        var gi_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
-        ](gather_input_buf.unsafe_ptr())
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
-            gathered_buf.unsafe_ptr()
-        )
-        var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grad_out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ](grad_out_buf.unsafe_ptr())
-        var grad_input_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
-        # ---- Phase A: Pack gather input and eval ----
+        # Allocate buffers
+        var loss_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * LOSS_IN)
+        var loss_out_buf = ctx.enqueue_create_buffer[dtype](BATCH)
+        var cache_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, BATCH * LOSS_CS)
+        )
+        var params_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, LossGraph.PARAM_SIZE)
+        )
+        var grads_buf = ctx.enqueue_create_buffer[dtype](
+            max(1, LossGraph.PARAM_SIZE)
+        )
+        var grad_seed_buf = ctx.enqueue_create_buffer[dtype](BATCH)
+        var grad_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * LOSS_IN)
+        var ws_buf = ctx.enqueue_create_buffer[dtype](LOSS_WS)
+
+        # Pack: [Q_values(A) || action_idx(1) || target(1)]
+        var loss_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
+        ](loss_in_buf.unsafe_ptr())
+
         @always_inline
-        fn pack_and_eval_kernel(
-            gi: LayoutTensor[
-                dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
+        fn pack_k(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
             ],
             qv: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
             act: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            gathered_out: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            ca: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-        ):
-            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if b >= BATCH:
-                return
-            # Pack Q-values and action index
-            for a in range(ACTIONS):
-                gi[b, a] = qv[b, a]
-            gi[b, ACTIONS] = act[b]
-            # GatherOp eval inline
-            var idx = Int(Float64(rebind[Scalar[dtype]](act[b])))
-            gathered_out[b, 0] = qv[b, idx]
-            ca[b, 0] = act[b]
-
-        ctx.enqueue_function[pack_and_eval_kernel, pack_and_eval_kernel](
-            gi_t,
-            q_values,
-            actions,
-            go_t,
-            cache_t,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-        # ---- Phase B: Compute scalar MSE gradient ----
-        @always_inline
-        fn mse_grad_kernel(
-            go: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            gathered: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
             tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
             if b >= BATCH:
                 return
-            var td_err = gathered[b, 0] - tgt[b]
-            go[b, 0] = (
-                Scalar[dtype](2.0) * td_err / Scalar[dtype](BATCH)
-            )
+            for a in range(ACTIONS):
+                dst[b, a] = qv[b, a]
+            dst[b, ACTIONS] = act[b]
+            dst[b, ACTIONS + 1] = tgt[b]
 
-        ctx.enqueue_function[mse_grad_kernel, mse_grad_kernel](
-            grad_out_t,
-            go_t,
-            targets,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
+        ctx.enqueue_function[pack_k, pack_k](
+            loss_in_t, q_values, actions, targets,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
         )
 
-        # ---- Phase C: GatherOp backward -> sparse grad in Q-space ----
-        @always_inline
-        fn scatter_kernel(
-            gi_grad: LayoutTensor[
-                dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
-            ],
-            go_grad: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            ca: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-        ):
-            # GatherOp backward logic: scatter grad to selected index
-            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if b >= BATCH:
-                return
-            var idx = Int(Float64(rebind[Scalar[dtype]](ca[b, 0])))
-            var g = rebind[Scalar[dtype]](go_grad[b, 0])
-            var zero = Scalar[dtype](0.0)
-            for i in range(GATHER_IN):
-                gi_grad[b, i] = zero
-            gi_grad[b, idx] = g
+        # Forward
+        var loss_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](loss_out_buf.unsafe_ptr())
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_CS), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var params_t = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+        ](params_buf.unsafe_ptr())
 
-        ctx.enqueue_function[scatter_kernel, scatter_kernel](
-            grad_input_t,
-            grad_out_t,
-            cache_t,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
+        LossGraph.forward_gpu[BATCH](
+            ctx, loss_out_t, loss_in_t, params_t, cache_t, ws_buf
         )
 
-        # ---- Copy first ACTIONS columns to grad_q ----
+        # Seed 1/BATCH
+        var seed_host = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
+        for b in range(BATCH):
+            seed_host[b] = inv_batch
+        ctx.enqueue_copy(grad_seed_buf, seed_host)
+
+        var grad_seed_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+        ](grad_seed_buf.unsafe_ptr())
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
+        ](grad_in_buf.unsafe_ptr())
+        var grads_t = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+        ](grads_buf.unsafe_ptr())
+
+        # Backward
+        LossGraph.backward_gpu[BATCH](
+            ctx, grad_in_t, grad_seed_t, params_t, cache_t, grads_t, ws_buf
+        )
+
+        # Extract first ACTIONS columns to grad_q
         @always_inline
-        fn copy_grad_kernel(
+        fn extract_k(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
             src: LayoutTensor[
-                dtype, Layout.row_major(BATCH, GATHER_IN), MutAnyOrigin
+                dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
             ],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -457,9 +423,7 @@ struct AutodiffQGradient(QGradient):
             for a in range(ACTIONS):
                 dst[b, a] = src[b, a]
 
-        ctx.enqueue_function[copy_grad_kernel, copy_grad_kernel](
-            grad_q,
-            grad_input_t,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
+        ctx.enqueue_function[extract_k, extract_k](
+            grad_q, grad_in_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
         )
