@@ -51,6 +51,7 @@ trait OnPolicyConfig:
     comptime CriticOpt: Optimizer
     comptime PolicyGrad: PolicyGradient
     comptime EpochSched: EpochSchedule
+    comptime USE_AUTODIFF_GRAD: Bool
 
 
 # =============================================================================
@@ -89,6 +90,7 @@ struct PPOConfig[
 
     comptime PolicyGrad = ClippedSurrogate
     comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = False
 
 
 # =============================================================================
@@ -126,6 +128,7 @@ struct A2CConfig[
 
     comptime PolicyGrad = VanillaPG
     comptime EpochSched = SinglePass
+    comptime USE_AUTODIFF_GRAD: Bool = False
 
 
 # =============================================================================
@@ -241,6 +244,7 @@ struct PPOCNNConfig[
 
     comptime PolicyGrad = ClippedSurrogate
     comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = False
 
 
 # =============================================================================
@@ -284,6 +288,7 @@ struct AutodiffPPOConfig[
 
     comptime PolicyGrad = AutodiffClippedSurrogate[Self.clip_eps]
     comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = True
 
 
 # =============================================================================
@@ -325,6 +330,7 @@ struct AutodiffA2CConfig[
 
     comptime PolicyGrad = AutodiffVanillaPG
     comptime EpochSched = SinglePass
+    comptime USE_AUTODIFF_GRAD: Bool = True
 
 
 # =============================================================================

@@ -1,21 +1,11 @@
-"""Test DQN Agent GPU Training on CartPole.
+"""Test Autodiff DQN Agent GPU Training on CartPole.
 
-This tests the GPU implementation of DQN using:
-- Network wrapper GPU methods (forward_gpu, backward_gpu, update_gpu)
-- CPU environment interaction + GPU batch training
-- Hyperparameters aligned with CleanRL's dqn.py reference
-
-CleanRL reference: references/RL-Algorithms/cleanrl-master/cleanrl/dqn.py
-  - Network: Linear(4,120) → ReLU → Linear(120,84) → ReLU → Linear(84,2)
-  - tau=1.0 (hard copy), target_network_frequency=500 env steps
-  - train_frequency=10 (1 grad step per 10 env steps)
-  - buffer_size=10000, batch_size=128, lr=2.5e-4
-  - exploration: linear 1.0 → 0.05 over 50% of training
-  - MSE loss, no Double DQN
+Same as test_dqn_gpu.mojo but using AutodiffDQNAgent which uses GatherOp-based
+gradient computation instead of the hand-written sparse MSE kernel.
 
 Run with:
-    pixi run -e apple mojo run -I . test_dqn_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . test_dqn_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . tests/deep_agents/test_autodiff_dqn_gpu.mojo
+    pixi run -e nvidia mojo run -I . tests/deep_agents/test_autodiff_dqn_gpu.mojo
 """
 
 from std.random import seed
@@ -25,7 +15,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.deep_agents.core.generic import DQNAgent
+from mojo_rl.deep_agents.core.generic import AutodiffDQNAgent
 from mojo_rl.envs import CartPoleEnv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -36,23 +26,17 @@ from mojo_rl.core.logger import RemoteLogger
 
 comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
-comptime HIDDEN_DIM = 120  # CleanRL: first hidden layer
-comptime HIDDEN_DIM2 = 84  # CleanRL: second hidden layer
-comptime BUFFER_CAPACITY = 10_000  # CleanRL: buffer_size=10000
-comptime BATCH_SIZE = 128  # CleanRL: batch_size=128
-comptime N_ENVS = 256  # Parallel environments for GPU collection
+comptime HIDDEN_DIM = 120
+comptime HIDDEN_DIM2 = 84
+comptime BUFFER_CAPACITY = 10_000
+comptime BATCH_SIZE = 128
+comptime N_ENVS = 256
 
-comptime NUM_STEPS = 500_000  # CleanRL: total_timesteps=500000
+comptime NUM_STEPS = 500_000
 comptime MAX_STEPS = 500
-comptime WARMUP_STEPS = 10_000  # CleanRL: learning_starts=10000
-comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
-
-# CleanRL: train_frequency=10 → 1 grad step per 10 env steps
-# With N_ENVS=256: 256/10 ≈ 26 gradient steps per collection
+comptime WARMUP_STEPS = 10_000
+comptime SYNC_EVERY = 10_000
 comptime GRADIENT_STEPS = 26
-
-# CleanRL: target_network_frequency=500, train_frequency=10
-# → 500/10 = 50 gradient steps between target updates
 comptime TARGET_UPDATE_FREQ = 50
 
 
@@ -64,17 +48,13 @@ comptime TARGET_UPDATE_FREQ = 50
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("DQN Agent GPU Test on CartPole (CleanRL-aligned)")
+    print("Autodiff DQN Agent GPU Test on CartPole")
     print("=" * 70)
     print()
 
-    # =========================================================================
-    # Create GPU context, environment and agent
-    # =========================================================================
-
     with DeviceContext() as ctx:
         var env = CartPoleEnv[DType.float32]()
-        var agent = DQNAgent[
+        var agent = AutodiffDQNAgent[
             OBS_DIM,
             NUM_ACTIONS,
             HIDDEN_DIM,
@@ -86,13 +66,13 @@ fn main() raises:
             L=RemoteLogger,
         ](
             gamma=0.99,
-            tau=1.0,  # CleanRL: hard copy
+            tau=1.0,
             epsilon_min=0.05,
             target_update_freq=TARGET_UPDATE_FREQ,
         )
 
         print("Environment: CartPole")
-        print("Agent: DQN (GPU, CleanRL-aligned)")
+        print("Agent: Autodiff DQN (GPU, GatherOp-based gradient)")
         print(
             "  Network: "
             + String(HIDDEN_DIM)
@@ -110,11 +90,10 @@ fn main() raises:
             + String(TARGET_UPDATE_FREQ)
             + " grad steps"
         )
-        print("  Sync every: " + String(SYNC_EVERY) + " transitions")
         print()
 
         # =====================================================================
-        # Setup logger — posts to local RL Monitor worker
+        # Setup logger
         # =====================================================================
 
         var env_vars = load_dotenv()
@@ -123,11 +102,11 @@ fn main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="DQN CartPole GPU",
+            run_name="Autodiff DQN CartPole GPU",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "DQN")
+        logger.set_config("agent", "Autodiff DQN")
         logger.set_config("env", "CartPole")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("hidden_dim2", String(HIDDEN_DIM2))
@@ -137,7 +116,7 @@ fn main() raises:
         logger.set_config("n_envs", String(N_ENVS))
 
         # =====================================================================
-        # Train using the train_gpu() method
+        # Train
         # =====================================================================
 
         print("Starting GPU training...")
@@ -166,12 +145,8 @@ fn main() raises:
         print("-" * 70)
         print()
 
-        # =====================================================================
-        # Summary
-        # =====================================================================
-
         print("=" * 70)
-        print("GPU Training Complete")
+        print("Autodiff DQN GPU Training Complete")
         print("=" * 70)
         print()
         print("Total steps: " + String(NUM_STEPS))
@@ -179,7 +154,6 @@ fn main() raises:
         print("Training time: " + String(elapsed_s)[:6] + " seconds")
         print()
 
-        # Print metrics summary
         print(
             "Final average reward (last 20 episodes): "
             + String(metrics.mean_reward_last_n(20))[:7]
@@ -188,7 +162,7 @@ fn main() raises:
         print()
 
         # =====================================================================
-        # Evaluation (greedy policy, on CPU with GPU-trained params)
+        # Evaluation
         # =====================================================================
 
         print("Evaluating greedy policy (10 episodes)...")
@@ -198,20 +172,6 @@ fn main() raises:
             max_steps_per_episode=MAX_STEPS,
         )
         print("Evaluation average: " + String(eval_avg)[:7])
-
-        print()
-        print("Evaluating with current epsilon (10 episodes)...")
-        var eval_eps_avg = agent.evaluate(
-            env,
-            num_episodes=10,
-            max_steps_per_episode=MAX_STEPS,
-        )
-        print(
-            "Evaluation average (epsilon="
-            + String(agent.epsilon)[:5]
-            + "): "
-            + String(eval_eps_avg)[:7]
-        )
 
         print()
         print("=" * 70)

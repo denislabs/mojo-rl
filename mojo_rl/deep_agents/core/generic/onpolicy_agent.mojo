@@ -13,7 +13,15 @@ from std.random import random_float64
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model import Model
+from mojo_rl.nn.model import (
+    Model,
+    Sequential,
+    CategoricalLogProb,
+    Ratio,
+    ClipSurrogate,
+    Slice,
+)
+from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.nn.initializer import Xavier
@@ -970,16 +978,127 @@ struct GenericOnPolicyAgent[
                         uninitialized=True
                     )
 
-                    Self.Config.PolicyGrad.compute_d_logits[Self.ACTIONS](
-                        probs,
-                        action,
-                        new_log_prob,
-                        old_log_prob,
-                        advantage,
-                        self.clip_epsilon,
-                        self.entropy_coef,
-                        d_logits,
-                    )
+                    comptime if Self.Config.USE_AUTODIFF_GRAD:
+                        # ---- True autodiff: LossGraph forward + backward ----
+                        comptime A = Self.ACTIONS
+                        comptime LOSS_IN = A + 3
+                        comptime LossGraph = Sequential[
+                            SplitApply[
+                                CategoricalLogProb[A],
+                                Slice[2, 0, 2],
+                                A + 1,
+                            ],
+                            SplitApply[Ratio[1], Slice[1, 0, 1], 2],
+                            ClipSurrogate[0.2],
+                        ]
+                        comptime LOSS_OUT = LossGraph.OUT_DIM  # 1
+                        comptime LOSS_CS = LossGraph.CACHE_SIZE
+
+                        # Pack input: [logits(A) || action_idx(1) || old_lp(1) || adv(1)]
+                        var loss_in_arr = InlineArray[
+                            Scalar[dtype], LOSS_IN
+                        ](uninitialized=True)
+                        for j in range(A):
+                            loss_in_arr[j] = logits_arr[j]
+                        loss_in_arr[A] = Scalar[dtype](Float64(action))
+                        loss_in_arr[A + 1] = old_log_prob
+                        loss_in_arr[A + 2] = advantage
+
+                        var loss_in_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(1, LOSS_IN),
+                            MutAnyOrigin,
+                        ](loss_in_arr.unsafe_ptr())
+
+                        # Forward
+                        var loss_out_arr = InlineArray[
+                            Scalar[dtype], LOSS_OUT
+                        ](uninitialized=True)
+                        var loss_out_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(1, LOSS_OUT),
+                            MutAnyOrigin,
+                        ](loss_out_arr.unsafe_ptr())
+                        var loss_cache_arr = InlineArray[
+                            Scalar[dtype], LOSS_CS
+                        ](uninitialized=True)
+                        var loss_cache_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(1, LOSS_CS),
+                            MutAnyOrigin,
+                        ](loss_cache_arr.unsafe_ptr())
+                        var loss_params_arr = InlineArray[
+                            Scalar[dtype], max(1, LossGraph.PARAM_SIZE)
+                        ](fill=Scalar[dtype](0.0))
+                        var loss_params_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(LossGraph.PARAM_SIZE),
+                            MutAnyOrigin,
+                        ](loss_params_arr.unsafe_ptr())
+
+                        LossGraph.forward[1](
+                            loss_in_t,
+                            loss_out_t,
+                            loss_params_t,
+                            loss_cache_t,
+                        )
+
+                        # Backward
+                        var loss_go_arr = InlineArray[
+                            Scalar[dtype], LOSS_OUT
+                        ](uninitialized=True)
+                        loss_go_arr[0] = Scalar[dtype](1.0)
+                        var loss_go_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(1, LOSS_OUT),
+                            MutAnyOrigin,
+                        ](loss_go_arr.unsafe_ptr())
+                        var loss_gi_arr = InlineArray[
+                            Scalar[dtype], LOSS_IN
+                        ](uninitialized=True)
+                        var loss_gi_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(1, LOSS_IN),
+                            MutAnyOrigin,
+                        ](loss_gi_arr.unsafe_ptr())
+                        var loss_grads_arr = InlineArray[
+                            Scalar[dtype], max(1, LossGraph.PARAM_SIZE)
+                        ](fill=Scalar[dtype](0.0))
+                        var loss_grads_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(LossGraph.PARAM_SIZE),
+                            MutAnyOrigin,
+                        ](loss_grads_arr.unsafe_ptr())
+
+                        LossGraph.backward[1](
+                            loss_go_t,
+                            loss_gi_t,
+                            loss_params_t,
+                            loss_cache_t,
+                            loss_grads_t,
+                        )
+
+                        # Extract d_logits[:A] and add entropy bonus
+                        for j in range(A):
+                            # d_logit from graph
+                            var d_lp = loss_gi_arr[j]
+                            # Entropy gradient: d(-sum(p*log(p)))/d(logit[j]) = -p[j]*(1+log(p[j]))
+                            var d_ent = -probs[j] * (
+                                Scalar[dtype](1.0) + log(probs[j] + Scalar[dtype](1e-8))
+                            )
+                            d_logits[j] = d_lp - Scalar[dtype](self.entropy_coef) * d_ent
+
+                    else:
+                        Self.Config.PolicyGrad.compute_d_logits[Self.ACTIONS](
+                            probs,
+                            action,
+                            new_log_prob,
+                            old_log_prob,
+                            advantage,
+                            self.clip_epsilon,
+                            self.entropy_coef,
+                            d_logits,
+                        )
 
                     # Actor backward
                     var d_logits_t = LayoutTensor[
@@ -1812,22 +1931,368 @@ struct GenericOnPolicyAgent[
                 ctx.synchronize()
 
                 # Policy gradient via strategy dispatch
-                Self.Config.PolicyGrad.compute_d_logits_gpu[
-                    MINIBATCH, Self.ACTIONS
-                ](
-                    ctx,
-                    actor_grad_output_t,
-                    kl_divergences_t,
-                    diag_entropy_t,
-                    diag_clip_t,
-                    actor_logits_t,
-                    mb_old_log_probs_t,
-                    mb_advantages_t,
-                    mb_actions_t,
-                    self.clip_epsilon,
-                    self.entropy_coef,
-                )
-                ctx.synchronize()
+                comptime if Self.Config.USE_AUTODIFF_GRAD:
+                    # ---- True autodiff: LossGraph forward + backward ----
+                    comptime A = Self.ACTIONS
+                    comptime LOSS_IN = A + 3
+                    comptime LossGraph = Sequential[
+                        SplitApply[
+                            CategoricalLogProb[A],
+                            Slice[2, 0, 2],
+                            A + 1,
+                        ],
+                        SplitApply[Ratio[1], Slice[1, 0, 1], 2],
+                        ClipSurrogate[0.2],
+                    ]
+                    comptime LOSS_OUT = LossGraph.OUT_DIM  # 1
+                    comptime LOSS_CS = LossGraph.CACHE_SIZE
+                    comptime LOSS_WS = max(
+                        1, MINIBATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE
+                    )
+
+                    # Allocate buffers
+                    var loss_input_buf = ctx.enqueue_create_buffer[dtype](
+                        MINIBATCH * LOSS_IN
+                    )
+                    var loss_output_buf = ctx.enqueue_create_buffer[dtype](
+                        MINIBATCH * LOSS_OUT
+                    )
+                    var loss_cache_buf = ctx.enqueue_create_buffer[dtype](
+                        max(1, MINIBATCH * LOSS_CS)
+                    )
+                    var loss_params_buf = ctx.enqueue_create_buffer[dtype](
+                        max(1, LossGraph.PARAM_SIZE)
+                    )
+                    var loss_grads_buf = ctx.enqueue_create_buffer[dtype](
+                        max(1, LossGraph.PARAM_SIZE)
+                    )
+                    var loss_grad_input_buf = ctx.enqueue_create_buffer[dtype](
+                        MINIBATCH * LOSS_IN
+                    )
+                    var loss_grad_output_buf = ctx.enqueue_create_buffer[dtype](
+                        MINIBATCH * LOSS_OUT
+                    )
+                    var loss_workspace_buf = ctx.enqueue_create_buffer[dtype](
+                        LOSS_WS
+                    )
+
+                    # Pack input: [logits(A) || action_idx(1) || old_lp(1) || adv(1)]
+                    var loss_input_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_IN),
+                        MutAnyOrigin,
+                    ](loss_input_buf.unsafe_ptr())
+
+                    @always_inline
+                    fn pack_discrete_loss_input_k(
+                        dst: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, LOSS_IN),
+                            MutAnyOrigin,
+                        ],
+                        logits_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, A),
+                            ImmutAnyOrigin,
+                        ],
+                        actions_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            ImmutAnyOrigin,
+                        ],
+                        old_lp_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            ImmutAnyOrigin,
+                        ],
+                        adv_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            ImmutAnyOrigin,
+                        ],
+                    ):
+                        var idx = Int(
+                            block_dim.x * block_idx.x + thread_idx.x
+                        )
+                        if idx >= MINIBATCH:
+                            return
+                        # Copy logits
+                        for j in range(A):
+                            dst.ptr[idx * LOSS_IN + j] = logits_in.ptr[
+                                idx * A + j
+                            ]
+                        # Copy action index, old_log_prob, advantage
+                        dst.ptr[idx * LOSS_IN + A] = actions_in.ptr[idx]
+                        dst.ptr[idx * LOSS_IN + A + 1] = old_lp_in.ptr[idx]
+                        dst.ptr[idx * LOSS_IN + A + 2] = adv_in.ptr[idx]
+
+                    var actor_logits_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, A),
+                        ImmutAnyOrigin,
+                    ](actor_logits_t.ptr)
+                    var mb_actions_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH),
+                        ImmutAnyOrigin,
+                    ](mb_actions_t.ptr)
+                    var mb_old_lp_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH),
+                        ImmutAnyOrigin,
+                    ](mb_old_log_probs_t.ptr)
+                    var mb_adv_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH),
+                        ImmutAnyOrigin,
+                    ](mb_advantages_t.ptr)
+
+                    ctx.enqueue_function[
+                        pack_discrete_loss_input_k,
+                        pack_discrete_loss_input_k,
+                    ](
+                        loss_input_t,
+                        actor_logits_immut,
+                        mb_actions_immut,
+                        mb_old_lp_immut,
+                        mb_adv_immut,
+                        grid_dim=(MINIBATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.synchronize()
+
+                    # Forward the loss graph
+                    var loss_output_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_OUT),
+                        MutAnyOrigin,
+                    ](loss_output_buf.unsafe_ptr())
+                    var loss_cache_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_CS),
+                        MutAnyOrigin,
+                    ](loss_cache_buf.unsafe_ptr())
+                    var loss_params_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(LossGraph.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](loss_params_buf.unsafe_ptr())
+
+                    LossGraph.forward_gpu[MINIBATCH](
+                        ctx,
+                        loss_output_t,
+                        loss_input_t,
+                        loss_params_t,
+                        loss_cache_t,
+                        loss_workspace_buf,
+                    )
+                    ctx.synchronize()
+
+                    # Seed grad_output = 1 / mb_size per sample
+                    var loss_grad_output_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_OUT),
+                        MutAnyOrigin,
+                    ](loss_grad_output_buf.unsafe_ptr())
+
+                    @always_inline
+                    fn seed_discrete_grad_k(
+                        go: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, LOSS_OUT),
+                            MutAnyOrigin,
+                        ],
+                    ):
+                        var idx = Int(
+                            block_dim.x * block_idx.x + thread_idx.x
+                        )
+                        if idx >= MINIBATCH:
+                            return
+                        go[idx, 0] = Scalar[dtype](1.0) / Scalar[dtype](
+                            MINIBATCH
+                        )
+
+                    ctx.enqueue_function[
+                        seed_discrete_grad_k, seed_discrete_grad_k
+                    ](
+                        loss_grad_output_t,
+                        grid_dim=(MINIBATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
+                    # Backward the loss graph
+                    var loss_grad_input_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_IN),
+                        MutAnyOrigin,
+                    ](loss_grad_input_buf.unsafe_ptr())
+                    var loss_grads_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(LossGraph.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](loss_grads_buf.unsafe_ptr())
+
+                    LossGraph.backward_gpu[MINIBATCH](
+                        ctx,
+                        loss_grad_input_t,
+                        loss_grad_output_t,
+                        loss_params_t,
+                        loss_cache_t,
+                        loss_grads_t,
+                        loss_workspace_buf,
+                    )
+                    ctx.synchronize()
+
+                    # Extract d_logits[:, :A] and add entropy bonus + compute diagnostics
+                    var loss_gi_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MINIBATCH, LOSS_IN),
+                        ImmutAnyOrigin,
+                    ](loss_grad_input_buf.unsafe_ptr())
+
+                    @always_inline
+                    fn extract_entropy_diag_k(
+                        dst: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, A),
+                            MutAnyOrigin,
+                        ],
+                        src: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, LOSS_IN),
+                            ImmutAnyOrigin,
+                        ],
+                        logits_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH, A),
+                            ImmutAnyOrigin,
+                        ],
+                        old_lp: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            ImmutAnyOrigin,
+                        ],
+                        actions_in: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            ImmutAnyOrigin,
+                        ],
+                        kl_out: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            MutAnyOrigin,
+                        ],
+                        ent_out: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            MutAnyOrigin,
+                        ],
+                        clip_out: LayoutTensor[
+                            dtype,
+                            Layout.row_major(MINIBATCH),
+                            MutAnyOrigin,
+                        ],
+                        ent_coef: Scalar[dtype],
+                        clip_eps: Scalar[dtype],
+                    ):
+                        var b = Int(
+                            block_dim.x * block_idx.x + thread_idx.x
+                        )
+                        if b >= MINIBATCH:
+                            return
+
+                        # Compute softmax probs for entropy gradient + diagnostics
+                        var max_logit = logits_in.ptr[b * A]
+                        for j in range(1, A):
+                            var lj = logits_in.ptr[b * A + j]
+                            if lj > max_logit:
+                                max_logit = lj
+
+                        var sum_exp = Scalar[dtype](0.0)
+                        for j in range(A):
+                            sum_exp += exp(logits_in.ptr[b * A + j] - max_logit)
+
+                        var probs_local = InlineArray[Scalar[dtype], A](
+                            fill=Scalar[dtype](0.0)
+                        )
+                        for j in range(A):
+                            probs_local[j] = exp(
+                                logits_in.ptr[b * A + j] - max_logit
+                            ) / sum_exp
+
+                        # Extract graph grad + entropy bonus
+                        for j in range(A):
+                            var d_lp = src.ptr[b * LOSS_IN + j]
+                            var prob_for_log = Float32(probs_local[j]) + Float32(1e-8)
+                            var d_ent = -probs_local[j] * (
+                                Scalar[dtype](1.0) + Scalar[dtype](log(prob_for_log))
+                            )
+                            dst.ptr[b * A + j] = d_lp - ent_coef / Scalar[dtype](MINIBATCH) * d_ent
+
+                        # Compute entropy
+                        var ent = Scalar[dtype](0.0)
+                        for j in range(A):
+                            if probs_local[j] > Scalar[dtype](1e-10):
+                                var p_log = Float32(probs_local[j]) + Float32(1e-8)
+                                ent -= probs_local[j] * Scalar[dtype](log(p_log))
+                        ent_out[b] = ent
+
+                        # Compute KL divergence and clip flags
+                        var action_idx = Int(rebind[Scalar[dtype]](actions_in.ptr[b]))
+                        var new_log_prob = Scalar[dtype](
+                            log(Float32(probs_local[action_idx]) + Float32(1e-8))
+                        )
+                        var old_lp_val = old_lp.ptr[b]
+                        var ratio = exp(new_log_prob - old_lp_val)
+                        var log_ratio = new_log_prob - old_lp_val
+                        var kl = (ratio - Scalar[dtype](1.0)) - log_ratio
+                        if kl < Scalar[dtype](0.0):
+                            kl = Scalar[dtype](0.0)
+                        kl_out[b] = kl
+
+                        var lo = Scalar[dtype](1.0) - clip_eps
+                        var hi = Scalar[dtype](1.0) + clip_eps
+                        if ratio < lo or ratio > hi:
+                            clip_out[b] = Scalar[dtype](1.0)
+                        else:
+                            clip_out[b] = Scalar[dtype](0.0)
+
+                    ctx.enqueue_function[
+                        extract_entropy_diag_k,
+                        extract_entropy_diag_k,
+                    ](
+                        actor_grad_output_t,
+                        loss_gi_immut,
+                        actor_logits_immut,
+                        mb_old_lp_immut,
+                        mb_actions_immut,
+                        kl_divergences_t,
+                        diag_entropy_t,
+                        diag_clip_t,
+                        Scalar[dtype](self.entropy_coef),
+                        Scalar[dtype](self.clip_epsilon),
+                        grid_dim=(MINIBATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.synchronize()
+
+                else:
+                    Self.Config.PolicyGrad.compute_d_logits_gpu[
+                        MINIBATCH, Self.ACTIONS
+                    ](
+                        ctx,
+                        actor_grad_output_t,
+                        kl_divergences_t,
+                        diag_entropy_t,
+                        diag_clip_t,
+                        actor_logits_t,
+                        mb_old_log_probs_t,
+                        mb_advantages_t,
+                        mb_actions_t,
+                        self.clip_epsilon,
+                        self.entropy_coef,
+                    )
+                    ctx.synchronize()
 
                 # KL early stopping (PPO)
                 comptime if Self.Config.EpochSched.USES_KL_EARLY_STOP:
