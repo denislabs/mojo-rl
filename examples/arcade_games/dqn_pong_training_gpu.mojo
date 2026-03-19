@@ -39,7 +39,7 @@ comptime N_ENVS = 256  # Parallel environments on GPU
 
 # Training duration — Pong episodes are long (~2000-5000 steps each)
 # so we need many total transitions to see enough episodes
-comptime NUM_STEPS = 5_000_000  # Total env transitions
+comptime NUM_STEPS = 50_000  # Total env transitions
 
 comptime dtype = DType.float32
 
