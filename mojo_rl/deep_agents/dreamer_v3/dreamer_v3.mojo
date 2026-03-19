@@ -1558,7 +1558,7 @@ struct DreamerV3Agent[
         batch_actions: List[Scalar[DType.float32]],
         batch_rewards: List[Scalar[DType.float32]],
         batch_dones: List[Scalar[DType.float32]],
-    ) raises:
+    ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
         """Full GPU BPTT backward for world model using autodiff.
 
         Replaces both the per-timestep head backward AND the BPTT backward
@@ -1570,6 +1570,9 @@ struct DreamerV3Agent[
         5. Straight-through VJP + KL gradients
         6. Posterior/Prior/Encoder backward
         7. GRU backward -> recurrent carries
+
+        Returns:
+            (total_wm_loss, obs_loss, rew_loss, cont_loss, dyn_kl, rep_kl)
         """
         comptime B = Self.batch_size
         comptime BL = Self.batch_length
@@ -1630,6 +1633,13 @@ struct DreamerV3Agent[
         # ── Zero recurrent carry buffers ──────────────────────────────────
         ctx.enqueue_memset(gpu_state.d_recurrent_deter_buf, 0)
         ctx.enqueue_memset(gpu_state.d_recurrent_stoch_buf, 0)
+
+        # ── Loss accumulators (computed on CPU for diagnostics) ────────────
+        var obs_loss = Float64(0.0)
+        var rew_loss = Float64(0.0)
+        var cont_loss = Float64(0.0)
+        var dyn_kl_total = Float64(0.0)
+        var rep_kl_total = Float64(0.0)
 
         # ── Reverse loop over timesteps ───────────────────────────────────
         for t_rev in range(BL):
@@ -1693,6 +1703,62 @@ struct DreamerV3Agent[
                 cont_cache_2d,
                 gpu_state.ws_continue,
             )
+
+            # ══════════════════════════════════════════════════════════════
+            # Step 2b: Compute diagnostic losses (CPU, from downloaded outputs)
+            # ══════════════════════════════════════════════════════════════
+            var dec_host = ctx.enqueue_create_host_buffer[dtype](B * OBS)
+            ctx.enqueue_copy(dec_host, gpu_state.dec_out_buf)
+            ctx.synchronize()
+
+            for b in range(B):
+                for i in range(OBS):
+                    var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
+                    var target = Float64(symlog(Float32(batch_obs[idx])))
+                    var pred = Float64(dec_host[b * OBS + i])
+                    obs_loss += (pred - target) * (pred - target)
+
+            if t > 0:
+                var rew_host = ctx.enqueue_create_host_buffer[dtype](B * BINS)
+                ctx.enqueue_copy(rew_host, gpu_state.rew_logits_buf)
+                ctx.synchronize()
+
+                for b in range(B):
+                    var rew_val = Float32(batch_rewards[b * BL + t])
+                    var rew_symlog = symlog(rew_val)
+                    var target_dist = InlineArray[Float32, Self.num_bins](
+                        uninitialized=True
+                    )
+                    two_hot_encode[Self.num_bins](
+                        rew_symlog, self.state.rssm.bins, target_dist
+                    )
+                    var max_l = Float64(rew_host[b * BINS])
+                    for k in range(1, BINS):
+                        var v = Float64(rew_host[b * BINS + k])
+                        if v > max_l:
+                            max_l = v
+                    var se = Float64(0.0)
+                    for k in range(BINS):
+                        se += exp(Float64(rew_host[b * BINS + k]) - max_l)
+                    var lse = log(se) + max_l
+                    for k in range(BINS):
+                        var t_k = Float64(target_dist[k])
+                        if t_k > 1e-8:
+                            rew_loss -= t_k * (Float64(rew_host[b * BINS + k]) - lse)
+
+            if t > 0:
+                var cont_host = ctx.enqueue_create_host_buffer[dtype](B)
+                ctx.enqueue_copy(cont_host, gpu_state.cont_out_buf)
+                ctx.synchronize()
+                for b in range(B):
+                    var ct = 1.0 - Float64(batch_dones[b * BL + t])
+                    var logit = Float64(cont_host[b])
+                    var prob = 1.0 / (1.0 + exp(-logit))
+                    if prob < 1e-6:
+                        prob = 1e-6
+                    if prob > 1.0 - 1e-6:
+                        prob = 1.0 - 1e-6
+                    cont_loss -= ct * log(prob) + (1.0 - ct) * log(1.0 - prob)
 
             # ══════════════════════════════════════════════════════════════
             # Step 3: Compute loss gradients
@@ -2159,6 +2225,17 @@ struct DreamerV3Agent[
                 grid_dim=(KL_BLOCKS,),
                 block_dim=(TPB,),
             )
+
+            # Accumulate KL loss (download from GPU for diagnostics)
+            var kl_host = ctx.enqueue_create_host_buffer[dtype](B)
+            ctx.enqueue_copy(kl_host, gpu_state.kl_buf)
+            ctx.synchronize()
+            var kl_sum = Float64(0.0)
+            for b in range(B):
+                kl_sum += Float64(kl_host[b])
+            kl_sum /= Float64(B)
+            dyn_kl_total += kl_sum
+            rep_kl_total += kl_sum
 
             # KL gradient -> d_post_kl, d_prior_logits
             var d_post_kl = LayoutTensor[
@@ -2775,6 +2852,23 @@ struct DreamerV3Agent[
                 grid_dim=(STOCH_BLOCKS,),
                 block_dim=(TPB,),
             )
+
+        # ── Normalize losses ─────────────────────────────────────────────
+        var inv_bl = 1.0 / Float64(BL)
+        var inv_bl_b = 1.0 / Float64(BL * B)
+        obs_loss *= inv_bl_b
+        rew_loss *= inv_bl_b
+        cont_loss *= inv_bl_b
+        dyn_kl_total *= inv_bl
+        rep_kl_total *= inv_bl
+
+        var total = (
+            obs_loss
+            + rew_loss
+            + cont_loss
+            + (0.5 * dyn_kl_total + 0.1 * rep_kl_total)
+        )
+        return (total, obs_loss, rew_loss, cont_loss, dyn_kl_total, rep_kl_total)
 
     # ══════════════════════════════════════════════════════════════════════
     # GPU Methods
@@ -3554,14 +3648,16 @@ struct DreamerV3Agent[
         # ── 3. Full BPTT Backward (autodiff) ────────────────────────────────
         # Replaces per-timestep head backward + separate BPTT loop with a
         # single unified reverse pass matching the tested CPU autodiff code.
-        self._gpu_bptt_autodiff(
+        var wm_losses = self._gpu_bptt_autodiff(
             ctx, gpu_state,
             batch_obs, batch_actions, batch_rewards, batch_dones,
         )
-
-        # (Old per-timestep head backward + BPTT backward loop removed —
-        #  replaced by _gpu_bptt_autodiff above which does everything in
-        #  a single reverse pass matching the tested CPU autodiff code.)
+        var total_wm_loss = wm_losses[0]
+        var obs_loss = wm_losses[1]
+        var rew_loss = wm_losses[2]
+        var cont_loss = wm_losses[3]
+        var dyn_kl_total = wm_losses[4]
+        var rep_kl_total = wm_losses[5]
 
         # ── 4. World model gradient clipping + optimizer step ──────────────
         var grad_norm_max = Scalar[dtype](self.max_grad_norm)
@@ -4795,19 +4891,35 @@ struct DreamerV3Agent[
             print(
                 "  [diag] step="
                 + String(self.train_step_count)
+                + " wm_loss="
+                + String(total_wm_loss)[:7]
+                + " obs="
+                + String(obs_loss)[:6]
+                + " rew="
+                + String(rew_loss)[:6]
+                + " cont="
+                + String(cont_loss)[:6]
+                + " kl="
+                + String(dyn_kl_total)[:6]
                 + " adv_std="
                 + String(sqrt(adv_var))[:6]
-                + " adv["
-                + String(adv_min)[:7]
-                + ","
-                + String(adv_max)[:7]
-                + "] val="
+                + " val="
                 + String(avg_val)[:6]
                 + " actor_grad="
                 + String(actor_grad_norm)
-                + " actor_w="
-                + String(actor_param_norm)
             )
+
+            if self.logger:
+                try:
+                    var diag_step = self.train_step_count
+                    self.logger[].log_scalar("wm_loss", total_wm_loss, diag_step)
+                    self.logger[].log_scalar("obs_loss", obs_loss, diag_step)
+                    self.logger[].log_scalar("reward_loss", rew_loss, diag_step)
+                    self.logger[].log_scalar("continue_loss", cont_loss, diag_step)
+                    self.logger[].log_scalar("dyn_kl", dyn_kl_total, diag_step)
+                    self.logger[].log_scalar("rep_kl", rep_kl_total, diag_step)
+                except:
+                    pass
 
         self.train_step_count += 1
 
