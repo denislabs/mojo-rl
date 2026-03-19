@@ -69,8 +69,8 @@ fn test_simple_chain() raises:
     # Define equivalent graphs
     comptime SeqModel = Sequential[LinearReLU[IN, HID], Linear[HID, OUT]]
     comptime GraphModel = ComputeGraph[
-        GNode[LinearReLU[IN, HID], -1],  # node 0: input → hidden
-        GNode[Linear[HID, OUT], 0],  # node 1: hidden → output
+        GNode["hidden", LinearReLU[IN, HID]],  # node 0: input → hidden
+        GNode["output", Linear[HID, OUT], "hidden"],  # node 1: hidden → output
     ]
 
     # Verify compile-time constants match
@@ -258,10 +258,10 @@ fn test_fan_out() raises:
     comptime BATCH = 2
 
     comptime FanOutGraph = ComputeGraph[
-        GNode[LinearReLU[4, 3], -1],  # 0: input → hidden
-        GNode[Linear[3, 1], 0],  # 1: hidden → v1  (fan-out)
-        GNode[Linear[3, 1], 0],  # 2: hidden → v2  (fan-out)
-        GNode[Min[1], 1, 2],  # 3: [v1, v2] → min
+        GNode["trunk", LinearReLU[4, 3]],  # 0: input → hidden
+        GNode["v1", Linear[3, 1], "trunk"],  # 1: hidden → v1  (fan-out)
+        GNode["v2", Linear[3, 1], "trunk"],  # 2: hidden → v2  (fan-out)
+        GNode["min", Min[1], "v1", "v2"],  # 3: [v1, v2] → min
     ]
 
     print(
@@ -377,9 +377,9 @@ fn test_dual_input_concat() raises:
     # So node 1's OP_IN_DIM must be 4+2 = 6 (concat dim)
     # Using a Linear[6,1] that takes the concat as input
     comptime DDPGGraph = ComputeGraph[
-        GNode[Linear[4, 2], -1],  # 0: obs → action
-        GNode[Linear[6, 1], -1, 0],  # 1: [obs, action] → Q (dual input)
-        GNode[Negate[1], 1],  # 2: → -Q
+        GNode["actor", Linear[4, 2]],  # 0: obs → action
+        GNode["critic", Linear[6, 1], "input", "actor"],  # 1: [obs, action] → Q (dual input)
+        GNode["neg_q", Negate[1], "critic"],  # 2: → -Q
     ]
 
     print(
@@ -478,8 +478,8 @@ fn test_grad_check_simple_chain() raises:
 
     comptime BATCH = 1
     comptime M = ComputeGraph[
-        GNode[LinearReLU[3, 4], -1],
-        GNode[Linear[4, 2], 0],
+        GNode["hidden", LinearReLU[3, 4]],
+        GNode["output", Linear[4, 2], "hidden"],
     ]
 
     var params_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
@@ -601,10 +601,10 @@ fn test_grad_check_fan_out() raises:
     # Fan-out: node 0 feeds both node 1 and node 2
     # Then Linear[2,1] smoothly combines them (differentiable everywhere)
     comptime M = ComputeGraph[
-        GNode[LinearReLU[3, 4], -1],  # 0: shared trunk
-        GNode[Linear[4, 1], 0],  # 1: branch A (fan-out)
-        GNode[Linear[4, 1], 0],  # 2: branch B (fan-out)
-        GNode[Linear[2, 1], 1, 2],  # 3: concat(A,B) → weighted sum
+        GNode["trunk", LinearReLU[3, 4]],  # 0: shared trunk
+        GNode["branch_a", Linear[4, 1], "trunk"],  # 1: branch A (fan-out)
+        GNode["branch_b", Linear[4, 1], "trunk"],  # 2: branch B (fan-out)
+        GNode["merge", Linear[2, 1], "branch_a", "branch_b"],  # 3: concat(A,B) → weighted sum
     ]
 
     var params_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
@@ -709,9 +709,9 @@ fn test_grad_check_dual_input() raises:
 
     comptime BATCH = 1
     comptime M = ComputeGraph[
-        GNode[Linear[3, 2], -1],  # 0: obs → action
-        GNode[Linear[5, 1], -1, 0],  # 1: [obs(3), action(2)] → Q
-        GNode[Negate[1], 1],  # 2: → -Q
+        GNode["actor", Linear[3, 2]],  # 0: obs → action
+        GNode["critic", Linear[5, 1], "input", "actor"],  # 1: [obs(3), action(2)] → Q
+        GNode["neg_q", Negate[1], "critic"],  # 2: → -Q
     ]
 
     var params_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](

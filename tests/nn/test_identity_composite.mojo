@@ -99,9 +99,9 @@ fn test_identity_in_compute_graph() raises:
 
     # 2-way fan-out, concat with Identity
     comptime G = ComputeGraph[
-        GNode[Linear[3, 2], -1],        # 0: input → a(2)
-        GNode[Linear[3, 4], -1],        # 1: input → b(4)  (fan-out)
-        GNode[Identity[6], 0, 1],       # 2: concat(a, b) = (6) ← clean!
+        GNode["branch_a", Linear[3, 2]],           # 0: input → a(2)
+        GNode["branch_b", Linear[3, 4]],           # 1: input → b(4)  (fan-out)
+        GNode["output",   Identity[6], "branch_a", "branch_b"],  # 2: concat(a, b) = (6) ← clean!
     ]
 
     if G.OUT_DIM != 6:

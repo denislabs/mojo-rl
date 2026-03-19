@@ -1,52 +1,38 @@
-"""ComputeGraph — compile-time differentiable DAG builder.
+"""ComputeGraph — compile-time differentiable DAG builder with named nodes.
 
-Composes Model-conforming nodes into an arbitrary directed acyclic graph (DAG)
-with automatic fan-out gradient accumulation. Unlike Sequential (linear chain)
-or DualPath (same-input fan-out), ComputeGraph handles true DAGs where any
-node's output can feed into multiple downstream nodes, and any node can take
-inputs from multiple predecessors.
+Instead of opaque integer indices:
+    GNode[ActorModel, -1],          # what does -1 mean?
+    GNode[RSample[6], 0],           # what is node 0?
 
-Key features:
-- Fixed 2-input arity per node (covers all RL algorithms; chain concats for 3+)
-- Automatic gradient accumulation at fan-out points
-- All topology resolved at compile time — zero runtime overhead
-- Nodes use the Model trait, so existing composed types (Sequential, SkipConcat,
-  etc.) work directly as node ops
+Use readable string names:
+    GNode["actor",   ActorModel,  "input"],
+    GNode["rsample", RSample[6],  "actor"],
 
 Usage:
     from mojo_rl.nn.autodiff.compute_graph import ComputeGraph, GNode
 
-    # DDPG actor loss as a DAG (equivalent to Sequential[SkipConcat[Actor], Critic, Negate])
+    # DDPG actor loss
     comptime DDPGGraph = ComputeGraph[
-        GNode[ActorModel, -1],          # 0: obs → action
-        GNode[ConcatNode, -1, 0],       # 1: [obs, action] (implicit concat)
-        GNode[CriticModel, 1],          # 2: → Q
-        GNode[Negate[1], 2],            # 3: → -Q
+        GNode["actor",     Linear[4, 2],  "input"],
+        GNode["critic_in", Identity[6],   "input", "actor"],
+        GNode["critic",    Linear[6, 1],  "critic_in"],
+        GNode["neg",       Negate[1],     "critic"],
     ]
 
     # SAC actor loss — true DAG with fan-out
     comptime SACGraph = ComputeGraph[
-        GNode[ActorModel, -1],          # 0: obs → [mean, log_std]
-        GNode[RSample[6], 0],           # 1: → [action, log_prob]
-        GNode[Slice[7, 0, 6], 1],       # 2: → action  (fan-out from 1)
-        GNode[ConcatNode, -1, 2],       # 3: [obs, action] = critic_input
-        GNode[Critic1, 3],              # 4: → Q1  (fan-out from 3)
-        GNode[Critic2, 3],              # 5: → Q2  (fan-out from 3)
-        GNode[Min[1], 4, 5],            # 6: → min_Q
-        GNode[Slice[7, 6, 7], 1],       # 7: → log_prob  (fan-out from 1)
-        GNode[SACLossOp, 6, 7],         # 8: → loss
+        GNode["actor",    ActorModel,     "input"],
+        GNode["rsample",  RSample[6],     "actor"],
+        GNode["action",   Slice[7, 0, 6], "rsample"],
+        GNode["Q1",       CriticModel,    "input", "action"],
+        GNode["Q2",       CriticModel,    "input", "action"],
+        GNode["min_q",    Min[1],         "Q1", "Q2"],
+        GNode["log_prob", Slice[7, 6, 7], "rsample"],
+        GNode["loss",     SACLossOp,      "min_q", "log_prob"],
     ]
 
-Memory layout:
-  Cache (per sample): [activations | node_caches]
-    activations: node_0_out(OUT_DIM_0) | ... | node_{N-1}_out(OUT_DIM_{N-1})
-    node_caches: node_0_cache(CS_0) | ... | node_{N-1}_cache(CS_{N-1})
-
-  Workspace (per sample, reused across forward/backward):
-    grad_activations: same layout as activations (backward only)
-    scratch_buffer: max(concat_dim, node_in_dim) — concat (forward) / gi (backward)
-    op_workspace: max across all nodes of their WORKSPACE_SIZE_PER_SAMPLE
-    dummy_cache: CACHE_SIZE — for forward_no_cache inference path
+Memory layout: activations, per-node caches, workspaces (same as before).
+Name resolution happens entirely at compile time via comptime for + comptime if.
 """
 
 from ..constants import dtype, TPB
@@ -66,23 +52,24 @@ fn _align4(x: Int) -> Int:
 
 
 # =============================================================================
-# GraphNode trait — a node in the compute graph
+# GraphNode trait — a node with string-based input references
 # =============================================================================
 
 
 trait GraphNode(Movable & ImplicitlyCopyable):
-    """A node in a ComputeGraph DAG.
+    """A node in a ComputeGraph DAG with string-based input references.
 
-    Each node wraps a Model and declares its input sources:
-      IN0: Index of first predecessor (-1 = graph external input)
-      IN1: Index of second predecessor (-2 = unused, single-input node)
+    Each node has a unique NAME and declares its input sources by name:
+      IN0_NAME: Name of first input source ("input" = graph external input)
+      IN1_NAME: Name of second input source ("" = unused, single-input node)
 
-    When IN1 != -2, the outputs of IN0 and IN1 are concatenated to form
-    this node's input. The concatenated dimension must equal OP_IN_DIM.
+    When IN1_NAME != "", the outputs of IN0 and IN1 sources are concatenated
+    to form this node's input. The concatenated dimension must equal OP_IN_DIM.
     """
 
-    comptime IN0: Int
-    comptime IN1: Int
+    comptime NAME: String
+    comptime IN0_NAME: String
+    comptime IN1_NAME: String
 
     comptime OP_IN_DIM: Int
     comptime OP_OUT_DIM: Int
@@ -91,7 +78,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
     comptime OP_WORKSPACE_SIZE_PER_SAMPLE: Int
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
@@ -209,18 +198,25 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct GNode[Op: Model, in0: Int = -1, in1: Int = -2](GraphNode):
-    """Concrete graph node wrapping a Model type.
+struct GNode[
+    node_name: StringLiteral,
+    Op: Model,
+    in0_name: StringLiteral = "input",
+    in1_name: StringLiteral = "",
+](GraphNode):
+    """Concrete named graph node wrapping a Model type.
 
     Args:
+        node_name: Unique name for this node.
         Op: The Model to execute at this node.
-        in0: Index of first input source (-1 = graph input, >= 0 = node index).
-        in1: Index of second input source (-2 = unused, -1 = graph input,
-             >= 0 = node index). When used, in0 and in1 outputs are concatenated.
+        in0_name: Name of first input source ("input" = graph external input).
+        in1_name: Name of second input source ("" = unused).
+                  When used, in0 and in1 outputs are concatenated.
     """
 
-    comptime IN0: Int = Self.in0
-    comptime IN1: Int = Self.in1
+    comptime NAME: String = String(Self.node_name)
+    comptime IN0_NAME: String = String(Self.in0_name)
+    comptime IN1_NAME: String = String(Self.in1_name)
     comptime OP_IN_DIM: Int = Self.Op.IN_DIM
     comptime OP_OUT_DIM: Int = Self.Op.OUT_DIM
     comptime OP_PARAM_SIZE: Int = Self.Op.PARAM_SIZE
@@ -230,7 +226,9 @@ struct GNode[Op: Model, in0: Int = -1, in1: Int = -2](GraphNode):
     )
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
@@ -292,9 +290,7 @@ struct GNode[Op: Model, in0: Int = -1, in1: Int = -2](GraphNode):
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.backward[BATCH](
-            grad_output, grad_input, params, cache, grads
-        )
+        Self.Op.backward[BATCH](grad_output, grad_input, params, cache, grads)
 
     @staticmethod
     fn op_forward_gpu[
@@ -345,27 +341,23 @@ struct GNode[Op: Model, in0: Int = -1, in1: Int = -2](GraphNode):
 
 
 # =============================================================================
-# ComputeGraph — compile-time DAG of GraphNodes
+# ComputeGraph — compile-time DAG with named node references
 # =============================================================================
 
 
 @fieldwise_init
 struct ComputeGraph[*NODES: GraphNode](Model):
-    """Compile-time differentiable DAG.
+    """Compile-time differentiable DAG with named node references.
 
-    Nodes are executed in index order (forward) and reverse order (backward).
-    All buffer sizes, offsets, and fan-out points are resolved at compile time.
-
-    Fan-out handling:
-      When a node's output feeds into multiple downstream nodes, the backward
-      pass naturally accumulates gradients: each consumer's VJP produces a
-      grad_input contribution that is ADDED to the predecessor's grad_act buffer.
+    Functionally identical to ComputeGraph but uses string names instead
+    of integer indices for node references. Name resolution happens entirely
+    at compile time — zero runtime overhead.
 
     Input rules:
-      - IN0 == -1: reads from graph external input
-      - IN0 >= 0: reads from that node's activation
-      - IN1 == -2: single input (no concat)
-      - IN1 >= 0 or -1: second input, concatenated with IN0's output
+      - IN0_NAME == "input": reads from graph external input
+      - IN0_NAME == <node_name>: reads from that node's activation
+      - IN1_NAME == "": single input (no concat)
+      - IN1_NAME == <node_name> or "input": second input, concatenated
     """
 
     comptime node_types = Variadic.types[T=GraphNode, *Self.NODES]
@@ -375,14 +367,33 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # Compile-time dimension inference
     # =========================================================================
 
-    # Convention: node 0 must have IN0 == -1 and IN1 == -2 (single input
-    # from graph external input). This is the natural topological ordering
-    # for all RL algorithm graphs.
     comptime IN_DIM: Int = Self.node_types[0].OP_IN_DIM
     comptime OUT_DIM: Int = Self.node_types[Self.N - 1].OP_OUT_DIM
 
     # =========================================================================
-    # Offset helpers
+    # Name resolution helpers (all compile-time evaluable)
+    # =========================================================================
+
+    @staticmethod
+    fn _source_dim_by_name[name: String]() -> Int:
+        """Get output dimension of named source. 'input' = graph IN_DIM."""
+        comptime if name == "input":
+            return Self.IN_DIM
+        comptime for j in range(Self.N):
+            comptime if Self.node_types[j].NAME == name:
+                return Self.node_types[j].OP_OUT_DIM
+        return 0
+
+    @staticmethod
+    fn _source_act_offset_by_name[name: String]() -> Int:
+        """Get activation offset for a named source node."""
+        comptime for j in range(Self.N):
+            comptime if Self.node_types[j].NAME == name:
+                return Self._act_offset[j]()
+        return 0
+
+    # =========================================================================
+    # Offset helpers (same as ComputeGraph)
     # =========================================================================
 
     @staticmethod
@@ -441,7 +452,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         """Max concat input dimension across all dual-input nodes."""
         var m = 0
         comptime for i in range(Self.N):
-            comptime if Self.node_types[i].IN1 != -2:
+            comptime if Self.node_types[i].IN1_NAME != "":
                 if Self.node_types[i].OP_IN_DIM > m:
                     m = Self.node_types[i].OP_IN_DIM
         return m
@@ -478,36 +489,25 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     # Workspace: grad_activations + scratch buffer + op workspace + dummy cache
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self._total_act_size()  # grad_activations (same size as activations)
-        + Self._max_scratch_dim()  # reusable scratch (concat / gi_node)
-        + Self._max_ws()  # reusable op workspace
-        + Self.CACHE_SIZE  # dummy cache for forward_no_cache
+        Self._total_act_size()
+        + Self._max_scratch_dim()
+        + Self._max_ws()
+        + Self.CACHE_SIZE
     )
-
-    # =========================================================================
-    # Source dimension helpers
-    # =========================================================================
-
-    @staticmethod
-    fn _source_dim[src: Int]() -> Int:
-        """Get output dimension of source. -1 = graph IN_DIM."""
-        comptime if src == -1:
-            return Self.IN_DIM
-        else:
-            return Self.node_types[src].OP_OUT_DIM
 
     # =========================================================================
     # Initialization
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    fn initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
         """Initialize all node params, zeroing alignment padding."""
-        # Zero everything (covers alignment padding regions)
         for i in range(Self.PARAM_SIZE):
             params.ptr[i] = Scalar[dtype](0.0)
 
@@ -541,16 +541,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass: execute nodes 0..N-1 in topological order.
-
-        For each node:
-        1. Gather input(s) — either graph input or predecessor activation(s)
-        2. If dual-input: concat into temporary buffer
-        3. Forward through node's Model
-        4. Store output in activation buffer (in cache)
-
-        Last node's output is also copied to the output tensor.
-        """
+        """Forward pass: execute nodes 0..N-1 in topological order."""
         comptime for i in range(Self.N):
             # Always write to activation buffer in cache
             var act_ptr = cache.ptr + BATCH * Self._act_offset[i]()
@@ -568,88 +559,81 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](params.ptr + Self._param_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_CACHE_SIZE
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._node_cache_offset[i]())
 
             # --- Gather input and forward ---
-            comptime if Self.node_types[i].IN1 == -2:
+            comptime if Self.node_types[i].IN1_NAME == "":
                 # Single input
-                comptime if Self.node_types[i].IN0 == -1:
+                comptime if Self.node_types[i].IN0_NAME == "input":
                     # From graph input
                     var node_in = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.node_types[i].OP_IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
                     ](input.ptr)
                     Self.node_types[i].op_forward[BATCH](
                         node_in, node_out, node_p, node_c
                     )
                 else:
-                    # From predecessor activation
-                    comptime src0 = Self.node_types[i].IN0
+                    # From predecessor activation (resolved by name)
+                    comptime src0_name = Self.node_types[i].IN0_NAME
                     var node_in = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.node_types[i].OP_IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
-                    ](cache.ptr + BATCH * Self._act_offset[src0]())
+                    ](
+                        cache.ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
+                    )
                     Self.node_types[i].op_forward[BATCH](
                         node_in, node_out, node_p, node_c
                     )
             else:
                 # Dual input: concat in0 and in1 outputs
-                # Use OP_IN_DIM directly (= dim0 + dim1) to avoid
-                # type unification issues with computed comptime vars
-                comptime src0 = Self.node_types[i].IN0
-                comptime src1 = Self.node_types[i].IN1
-                comptime dim0 = Self._source_dim[src0]()
-                comptime dim1 = Self._source_dim[src1]()
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime src1_name = Self.node_types[i].IN1_NAME
+                comptime dim0 = Self._source_dim_by_name[src0_name]()
+                comptime dim1 = Self._source_dim_by_name[src1_name]()
                 comptime NI = Self.node_types[i].OP_IN_DIM
 
-                # Build concat buffer using OP_IN_DIM for type
-                var concat_buf = InlineArray[
-                    Scalar[dtype], BATCH * NI
-                ](uninitialized=True)
+                # Build concat buffer
+                var concat_buf = InlineArray[Scalar[dtype], BATCH * NI](
+                    uninitialized=True
+                )
 
                 # Copy source 0
-                comptime if src0 == -1:
+                comptime if src0_name == "input":
                     for b in range(BATCH):
                         for d in range(dim0):
-                            concat_buf[b * NI + d] = (
-                                input.ptr[b * Self.IN_DIM + d]
-                            )
-                else:
-                    var s0_ptr = cache.ptr + BATCH * Self._act_offset[
-                        src0
-                    ]()
-                    for b in range(BATCH):
-                        for d in range(dim0):
-                            concat_buf[b * NI + d] = s0_ptr[
-                                b * dim0 + d
+                            concat_buf[b * NI + d] = input.ptr[
+                                b * Self.IN_DIM + d
                             ]
+                else:
+                    var s0_ptr = (
+                        cache.ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
+                    )
+                    for b in range(BATCH):
+                        for d in range(dim0):
+                            concat_buf[b * NI + d] = s0_ptr[b * dim0 + d]
 
                 # Copy source 1
-                comptime if src1 == -1:
+                comptime if src1_name == "input":
                     for b in range(BATCH):
                         for d in range(dim1):
-                            concat_buf[
-                                b * NI + dim0 + d
-                            ] = input.ptr[b * Self.IN_DIM + d]
+                            concat_buf[b * NI + dim0 + d] = input.ptr[
+                                b * Self.IN_DIM + d
+                            ]
                 else:
-                    var s1_ptr = cache.ptr + BATCH * Self._act_offset[
-                        src1
-                    ]()
+                    var s1_ptr = (
+                        cache.ptr
+                        + BATCH * Self._source_act_offset_by_name[src1_name]()
+                    )
                     for b in range(BATCH):
                         for d in range(dim1):
-                            concat_buf[
-                                b * NI + dim0 + d
-                            ] = s1_ptr[b * dim1 + d]
+                            concat_buf[b * NI + dim0 + d] = s1_ptr[b * dim1 + d]
 
                 var node_in = LayoutTensor[
                     dtype,
@@ -663,9 +647,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
             # Copy last node's activation to output tensor
             comptime if i == Self.N - 1:
-                for k in range(
-                    BATCH * Self.node_types[i].OP_OUT_DIM
-                ):
+                for k in range(BATCH * Self.node_types[i].OP_OUT_DIM):
                     output.ptr[k] = act_ptr[k]
 
     # =========================================================================
@@ -726,24 +708,13 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     ):
         """Backward pass: execute nodes N-1..0 in reverse topological order.
 
-        Algorithm:
-        1. Allocate grad_activations buffer (same layout as activations)
-        2. Initialize grad_act[last_node] = grad_output
-        3. For each node i (reverse order):
-           a. Run node_i.backward: grad_act[i] → grad_node_input
-           b. For single-input nodes: ADD grad_node_input to grad_act[IN0]
-              (or grad_input if IN0 == -1)
-           c. For dual-input nodes: SPLIT grad_node_input and ADD each
-              portion to the respective predecessor's grad_act buffer
-        4. Fan-out accumulation happens naturally — multiple consumers ADD
-           to the same grad_act buffer before that node's VJP runs.
+        Fan-out accumulation happens naturally — multiple consumers ADD
+        to the same grad_act buffer before that node's VJP runs.
         """
         comptime TOTAL_ACT = Self._total_act_size()
 
         # Allocate gradient activation buffer (zero-initialized)
-        var grad_act_storage = List[Scalar[dtype]](
-            capacity=BATCH * TOTAL_ACT
-        )
+        var grad_act_storage = List[Scalar[dtype]](capacity=BATCH * TOTAL_ACT)
         for _ in range(BATCH * TOTAL_ACT):
             grad_act_storage.append(0)
         var ga_ptr = grad_act_storage.unsafe_ptr()
@@ -766,9 +737,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             # Get this node's accumulated gradient
             var gi_go = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_OUT_DIM),
                 MutAnyOrigin,
             ](ga_ptr + BATCH * Self._act_offset[i]())
 
@@ -780,9 +749,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](params.ptr + Self._param_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_CACHE_SIZE
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._node_cache_offset[i]())
             var node_g = LayoutTensor[
@@ -810,30 +777,31 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             )
 
             # --- Scatter grad_input to predecessors ---
-            comptime if Self.node_types[i].IN1 == -2:
+            comptime if Self.node_types[i].IN1_NAME == "":
                 # Single input: add entire grad to predecessor
-                comptime src0 = Self.node_types[i].IN0
-                comptime if src0 == -1:
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime if src0_name == "input":
                     # Add to graph grad_input
                     for k in range(BATCH * Self.IN_DIM):
-                        grad_input.ptr[k] = (
-                            grad_input.ptr[k] + gi_buf[k]
-                        )
+                        grad_input.ptr[k] = grad_input.ptr[k] + gi_buf[k]
                 else:
                     # Add to predecessor's grad_act
-                    var dst = ga_ptr + BATCH * Self._act_offset[src0]()
-                    comptime dst_dim = Self.node_types[src0].OP_OUT_DIM
+                    var dst = (
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
+                    )
+                    comptime dst_dim = Self._source_dim_by_name[src0_name]()
                     for k in range(BATCH * dst_dim):
                         dst[k] = dst[k] + gi_buf[k]
             else:
                 # Dual input: split grad and add to each predecessor
-                comptime src0 = Self.node_types[i].IN0
-                comptime src1 = Self.node_types[i].IN1
-                comptime dim0 = Self._source_dim[src0]()
-                comptime dim1 = Self._source_dim[src1]()
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime src1_name = Self.node_types[i].IN1_NAME
+                comptime dim0 = Self._source_dim_by_name[src0_name]()
+                comptime dim1 = Self._source_dim_by_name[src1_name]()
 
                 # Scatter to source 0
-                comptime if src0 == -1:
+                comptime if src0_name == "input":
                     for b in range(BATCH):
                         for d in range(dim0):
                             grad_input.ptr[b * Self.IN_DIM + d] = (
@@ -842,36 +810,33 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             )
                 else:
                     var dst0 = (
-                        ga_ptr + BATCH * Self._act_offset[src0]()
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
                     for b in range(BATCH):
                         for d in range(dim0):
                             dst0[b * dim0 + d] = (
-                                dst0[b * dim0 + d]
-                                + gi_buf[b * NODE_IN + d]
+                                dst0[b * dim0 + d] + gi_buf[b * NODE_IN + d]
                             )
 
                 # Scatter to source 1
-                comptime if src1 == -1:
+                comptime if src1_name == "input":
                     for b in range(BATCH):
                         for d in range(dim1):
                             grad_input.ptr[b * Self.IN_DIM + d] = (
                                 grad_input.ptr[b * Self.IN_DIM + d]
-                                + gi_buf[
-                                    b * NODE_IN + dim0 + d
-                                ]
+                                + gi_buf[b * NODE_IN + dim0 + d]
                             )
                 else:
                     var dst1 = (
-                        ga_ptr + BATCH * Self._act_offset[src1]()
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src1_name]()
                     )
                     for b in range(BATCH):
                         for d in range(dim1):
                             dst1[b * dim1 + d] = (
                                 dst1[b * dim1 + d]
-                                + gi_buf[
-                                    b * NODE_IN + dim0 + d
-                                ]
+                                + gi_buf[b * NODE_IN + dim0 + d]
                             )
 
     # =========================================================================
@@ -899,11 +864,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU forward pass: execute nodes in topological order.
-
-        Each node's activation is stored in cache (same layout as CPU).
-        Dual-input nodes use workspace scratch for concat buffer.
-        """
+        """GPU forward pass: execute nodes in topological order."""
         comptime OP_WS_OFF = Self._total_act_size() + Self._max_scratch_dim()
         comptime OP_WS_SIZE = max(1, Self._max_ws())
         var op_ws = DeviceBuffer[dtype](
@@ -928,49 +889,46 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](params.ptr + Self._param_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_CACHE_SIZE
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._node_cache_offset[i]())
 
             # --- Gather input and forward ---
-            comptime if Self.node_types[i].IN1 == -2:
+            comptime if Self.node_types[i].IN1_NAME == "":
                 # Single input
-                comptime if Self.node_types[i].IN0 == -1:
+                comptime if Self.node_types[i].IN0_NAME == "input":
                     var node_in = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.node_types[i].OP_IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
                     ](input.ptr)
                     Self.node_types[i].op_forward_gpu[BATCH](
                         ctx, act_t, node_in, node_p, node_c, op_ws
                     )
                 else:
-                    comptime src0 = Self.node_types[i].IN0
+                    comptime src0_name = Self.node_types[i].IN0_NAME
                     var node_in = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.node_types[i].OP_IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
                     ](
-                        cache.ptr + BATCH * Self._act_offset[src0]()
+                        cache.ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
                     Self.node_types[i].op_forward_gpu[BATCH](
                         ctx, act_t, node_in, node_p, node_c, op_ws
                     )
             else:
                 # Dual input: concat on GPU using two copy kernels
-                comptime src0 = Self.node_types[i].IN0
-                comptime src1 = Self.node_types[i].IN1
-                comptime dim0 = Self._source_dim[src0]()
-                comptime dim1 = Self._source_dim[src1]()
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime src1_name = Self.node_types[i].IN1_NAME
+                comptime dim0 = Self._source_dim_by_name[src0_name]()
+                comptime dim1 = Self._source_dim_by_name[src1_name]()
                 comptime NI = Self.node_types[i].OP_IN_DIM
 
-                var concat_ptr = workspace.unsafe_ptr() + BATCH * Self._total_act_size()
+                var concat_ptr = (
+                    workspace.unsafe_ptr() + BATCH * Self._total_act_size()
+                )
                 var concat_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, NI),
@@ -981,7 +939,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 comptime S0_COPY = BATCH * dim0
                 var s0_grid = (S0_COPY + TPB - 1) // TPB
 
-                comptime if src0 == -1:
+                comptime if src0_name == "input":
                     var s0_src = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.IN_DIM),
@@ -1001,16 +959,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S0_COPY:
                             return
                         var b = idx // dim0
                         var d = idx % dim0
-                        dst.ptr[b * NI + d] = src.ptr[
-                            b * Self.IN_DIM + d
-                        ]
+                        dst.ptr[b * NI + d] = src.ptr[b * Self.IN_DIM + d]
 
                     ctx.enqueue_function[copy_s0_ext, copy_s0_ext](
                         concat_t,
@@ -1025,7 +979,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](
                         cache.ptr
-                        + BATCH * Self._act_offset[src0]()
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
 
                     @always_inline
@@ -1041,16 +995,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S0_COPY:
                             return
                         var b = idx // dim0
                         var d = idx % dim0
-                        dst.ptr[b * NI + d] = src.ptr[
-                            b * dim0 + d
-                        ]
+                        dst.ptr[b * NI + d] = src.ptr[b * dim0 + d]
 
                     ctx.enqueue_function[copy_s0_node, copy_s0_node](
                         concat_t,
@@ -1063,7 +1013,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 comptime S1_COPY = BATCH * dim1
                 var s1_grid = (S1_COPY + TPB - 1) // TPB
 
-                comptime if src1 == -1:
+                comptime if src1_name == "input":
                     var s1_src = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.IN_DIM),
@@ -1083,9 +1033,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S1_COPY:
                             return
                         var b = idx // dim1
@@ -1107,7 +1055,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](
                         cache.ptr
-                        + BATCH * Self._act_offset[src1]()
+                        + BATCH * Self._source_act_offset_by_name[src1_name]()
                     )
 
                     @always_inline
@@ -1123,16 +1071,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S1_COPY:
                             return
                         var b = idx // dim1
                         var d = idx % dim1
-                        dst.ptr[b * NI + dim0 + d] = src.ptr[
-                            b * dim1 + d
-                        ]
+                        dst.ptr[b * NI + dim0 + d] = src.ptr[b * dim1 + d]
 
                     ctx.enqueue_function[copy_s1_node, copy_s1_node](
                         concat_t,
@@ -1208,9 +1152,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_ptr)
-        Self.forward_gpu[BATCH](
-            ctx, output, input, params, cache_t, workspace
-        )
+        Self.forward_gpu[BATCH](ctx, output, input, params, cache_t, workspace)
 
     @staticmethod
     fn forward_gpu_no_cache_on_stream[
@@ -1230,9 +1172,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default."""
-        Self.forward_gpu_no_cache[BATCH](
-            ctx, output, input, params, workspace
-        )
+        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -1262,11 +1202,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU backward pass with fan-out gradient accumulation.
-
-        Uses device buffers for gradient activations, elementwise add
-        kernels for fan-out accumulation.
-        """
+        """GPU backward pass with fan-out gradient accumulation."""
         comptime TOTAL_ACT = Self._total_act_size()
 
         # Use workspace offset 0 for grad activation buffer
@@ -1331,9 +1267,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.OUT_DIM),
             ImmutAnyOrigin,
         ](grad_output.ptr)
-        ctx.enqueue_function[
-            init_last_grad_kernel, init_last_grad_kernel
-        ](
+        ctx.enqueue_function[init_last_grad_kernel, init_last_grad_kernel](
             ga_last,
             go_immut,
             grid_dim=(init_grid,),
@@ -1372,7 +1306,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         )
 
         # Scratch pointer for per-node gi buffer (reused each iteration)
-        var gi_scratch_ptr = workspace.unsafe_ptr() + BATCH * Self._total_act_size()
+        var gi_scratch_ptr = (
+            workspace.unsafe_ptr() + BATCH * Self._total_act_size()
+        )
 
         # Reverse iteration
         comptime for _ri in range(Self.N):
@@ -1381,9 +1317,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             # Get this node's accumulated gradient
             var gi_go = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_OUT_DIM),
                 MutAnyOrigin,
             ](ga_ptr + BATCH * Self._act_offset[i]())
 
@@ -1395,9 +1329,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](params.ptr + Self._param_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.node_types[i].OP_CACHE_SIZE
-                ),
+                Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._node_cache_offset[i]())
             var node_g = LayoutTensor[
@@ -1406,7 +1338,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](grads.ptr + Self._param_offset[i]())
 
-            # Use workspace scratch for grad_input buffer (reused each iteration)
+            # Use workspace scratch for grad_input buffer
             comptime NODE_IN = Self.node_types[i].OP_IN_DIM
             var gi_t = LayoutTensor[
                 dtype,
@@ -1420,10 +1352,10 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             )
 
             # --- Scatter grad_input to predecessors (GPU add kernels) ---
-            comptime if Self.node_types[i].IN1 == -2:
+            comptime if Self.node_types[i].IN1_NAME == "":
                 # Single input
-                comptime src0 = Self.node_types[i].IN0
-                comptime if src0 == -1:
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime if src0_name == "input":
                     # Add to graph grad_input
                     comptime ADD_N = BATCH * Self.IN_DIM
                     var add_grid = (ADD_N + TPB - 1) // TPB
@@ -1446,16 +1378,12 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= ADD_N:
                             return
                         dst.ptr[idx] = dst.ptr[idx] + src.ptr[idx]
 
-                    ctx.enqueue_function[
-                        add_to_gi_single, add_to_gi_single
-                    ](
+                    ctx.enqueue_function[add_to_gi_single, add_to_gi_single](
                         grad_input,
                         gi_immut,
                         grid_dim=(add_grid,),
@@ -1463,14 +1391,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
                 else:
                     # Add to predecessor's grad_act
-                    comptime dst_dim = Self.node_types[src0].OP_OUT_DIM
+                    comptime dst_dim = Self._source_dim_by_name[src0_name]()
                     comptime ADD_N = BATCH * dst_dim
                     var add_grid = (ADD_N + TPB - 1) // TPB
                     var dst_t = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, dst_dim),
                         MutAnyOrigin,
-                    ](ga_ptr + BATCH * Self._act_offset[src0]())
+                    ](
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
+                    )
                     var gi_immut = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, dst_dim),
@@ -1490,9 +1421,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= ADD_N:
                             return
                         dst.ptr[idx] = dst.ptr[idx] + src.ptr[idx]
@@ -1507,13 +1436,13 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
             else:
                 # Dual input: split and scatter
-                comptime src0 = Self.node_types[i].IN0
-                comptime src1 = Self.node_types[i].IN1
-                comptime dim0 = Self._source_dim[src0]()
-                comptime dim1 = Self._source_dim[src1]()
+                comptime src0_name = Self.node_types[i].IN0_NAME
+                comptime src1_name = Self.node_types[i].IN1_NAME
+                comptime dim0 = Self._source_dim_by_name[src0_name]()
+                comptime dim1 = Self._source_dim_by_name[src1_name]()
 
                 # Scatter source 0 portion
-                comptime if src0 == -1:
+                comptime if src0_name == "input":
                     comptime S0_N = BATCH * dim0
                     var s0_grid = (S0_N + TPB - 1) // TPB
 
@@ -1530,9 +1459,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S0_N:
                             return
                         var b = idx // dim0
@@ -1547,9 +1474,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[
-                        scatter_to_gi_s0, scatter_to_gi_s0
-                    ](
+                    ctx.enqueue_function[scatter_to_gi_s0, scatter_to_gi_s0](
                         grad_input,
                         gi_node_immut,
                         grid_dim=(s0_grid,),
@@ -1558,7 +1483,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 else:
                     comptime S0_N = BATCH * dim0
                     var s0_grid = (S0_N + TPB - 1) // TPB
-                    comptime d0_dim = Self.node_types[src0].OP_OUT_DIM
+                    comptime d0_dim = Self._source_dim_by_name[src0_name]()
 
                     @always_inline
                     fn scatter_to_pred_s0(
@@ -1573,23 +1498,23 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S0_N:
                             return
                         var b = idx // dim0
                         var d = idx % dim0
                         dst.ptr[b * d0_dim + d] = (
-                            dst.ptr[b * d0_dim + d]
-                            + src.ptr[b * NODE_IN + d]
+                            dst.ptr[b * d0_dim + d] + src.ptr[b * NODE_IN + d]
                         )
 
                     var dst0_t = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, d0_dim),
                         MutAnyOrigin,
-                    ](ga_ptr + BATCH * Self._act_offset[src0]())
+                    ](
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src0_name]()
+                    )
                     var gi_node_immut = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),
@@ -1605,7 +1530,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
 
                 # Scatter source 1 portion
-                comptime if src1 == -1:
+                comptime if src1_name == "input":
                     comptime S1_N = BATCH * dim1
                     var s1_grid = (S1_N + TPB - 1) // TPB
 
@@ -1622,9 +1547,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S1_N:
                             return
                         var b = idx // dim1
@@ -1639,9 +1562,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[
-                        scatter_to_gi_s1, scatter_to_gi_s1
-                    ](
+                    ctx.enqueue_function[scatter_to_gi_s1, scatter_to_gi_s1](
                         grad_input,
                         gi_node_immut_s1,
                         grid_dim=(s1_grid,),
@@ -1650,7 +1571,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 else:
                     comptime S1_N = BATCH * dim1
                     var s1_grid = (S1_N + TPB - 1) // TPB
-                    comptime d1_dim = Self.node_types[src1].OP_OUT_DIM
+                    comptime d1_dim = Self._source_dim_by_name[src1_name]()
 
                     @always_inline
                     fn scatter_to_pred_s1(
@@ -1665,9 +1586,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= S1_N:
                             return
                         var b = idx // dim1
@@ -1681,7 +1600,10 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         dtype,
                         Layout.row_major(BATCH, d1_dim),
                         MutAnyOrigin,
-                    ](ga_ptr + BATCH * Self._act_offset[src1]())
+                    ](
+                        ga_ptr
+                        + BATCH * Self._source_act_offset_by_name[src1_name]()
+                    )
                     var gi_node_immut_s1 = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, NODE_IN),

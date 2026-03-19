@@ -155,8 +155,11 @@ struct LunarLander[
     comptime OBS_DIM: Int = LLConstants.OBS_DIM_VAL
     comptime NUM_ACTIONS: Int = LLConstants.NUM_ACTIONS_VAL
     comptime ACTION_DIM: Int = LLConstants.ACTION_DIM_VAL  # For GPUContinuousEnv
-    comptime STEP_WS_SHARED: Int = 0
-    comptime STEP_WS_PER_ENV: Int = 0
+    # Pre-allocated workspace: shapes (shared) + contacts/counts (per-env)
+    comptime STEP_WS_SHARED: Int = LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+    comptime STEP_WS_PER_ENV: Int = (
+        LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE + 3
+    )
     comptime dtype = Self.DTYPE
     comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
@@ -1560,20 +1563,38 @@ struct LunarLander[
 
         Uses 2-kernel pipeline and writes observations directly to obs_buf,
         eliminating the need for a separate extract_obs kernel.
-        """
-        # Allocate workspace buffers
-        var contacts_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH_SIZE * LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
-        )
-        var contact_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var shapes_buf = ctx.enqueue_create_buffer[dtype](
-            LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
-        )
-        var edge_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
 
-        # Initialize shapes (once, shared across environments)
-        LunarLander[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
+        Workspace layout (pre-allocated via init_step_workspace_gpu):
+          [0..SHAPES_SIZE): shapes (shared, initialized once)
+          [SHAPES_SIZE..+BATCH*CONTACTS_PER_ENV): contacts
+          [..+BATCH): contact_counts
+          [..+BATCH): edge_counts
+          [..+BATCH): joint_counts
+        """
+        comptime SHAPES_SIZE = LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        comptime CONTACTS_PER_ENV = LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
+
+        # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
+        var ws = workspace_ptr
+        var shapes_buf = DeviceBuffer[dtype](
+            ctx, ws, SHAPES_SIZE, owning=False
+        )
+        ws = ws + SHAPES_SIZE
+        var contacts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
+        )
+        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        var contact_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
+        ws = ws + BATCH_SIZE
+        var edge_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
+        ws = ws + BATCH_SIZE
+        var joint_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
 
         # Kernel 1: Fused setup (zero + extract + apply_forces)
         LunarLander[Self.dtype]._setup_fused_gpu[BATCH_SIZE](
@@ -1635,20 +1656,33 @@ struct LunarLander[
         Actions buffer layout: [BATCH_SIZE, ACTION_DIM] where:
         - action[0]: main engine throttle (policy outputs [-1, 1], remapped to [0, 1])
         - action[1]: side engine control (-1.0 to 1.0)
-        """
-        # Allocate workspace buffers
-        var contacts_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH_SIZE * LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
-        )
-        var contact_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var shapes_buf = ctx.enqueue_create_buffer[dtype](
-            LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
-        )
-        var edge_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
 
-        # Initialize shapes (once, shared across environments)
-        LunarLander[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
+        Workspace layout: same as discrete overload (see above).
+        """
+        comptime SHAPES_SIZE = LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        comptime CONTACTS_PER_ENV = LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
+
+        # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
+        var ws = workspace_ptr
+        var shapes_buf = DeviceBuffer[dtype](
+            ctx, ws, SHAPES_SIZE, owning=False
+        )
+        ws = ws + SHAPES_SIZE
+        var contacts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
+        )
+        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        var contact_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
+        ws = ws + BATCH_SIZE
+        var edge_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
+        ws = ws + BATCH_SIZE
+        var joint_counts_buf = DeviceBuffer[dtype](
+            ctx, ws, BATCH_SIZE, owning=False
+        )
 
         # Kernel 1: Fused setup for continuous actions
         LunarLander[Self.dtype]._setup_fused_gpu_continuous[
@@ -1853,8 +1887,15 @@ struct LunarLander[
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
-        """No-op: LunarLander doesn't need pre-allocated workspace."""
-        pass
+        """Initialize pre-allocated workspace: shapes buffer at offset 0."""
+        comptime SHAPES_SIZE = LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        var shapes_buf = DeviceBuffer[dtype](
+            ctx,
+            workspace_buf.unsafe_ptr(),
+            SHAPES_SIZE,
+            owning=False,
+        )
+        LunarLander[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
     @staticmethod
     fn update_curriculum_gpu(

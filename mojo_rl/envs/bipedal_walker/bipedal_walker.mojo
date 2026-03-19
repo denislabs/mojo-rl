@@ -124,8 +124,11 @@ struct BipedalWalker[
     comptime STATE_SIZE: Int = BWConstants.STATE_SIZE_VAL
     comptime OBS_DIM: Int = BWConstants.OBS_DIM_VAL
     comptime ACTION_DIM: Int = BWConstants.ACTION_DIM_VAL
-    comptime STEP_WS_SHARED: Int = 0
-    comptime STEP_WS_PER_ENV: Int = 0
+    # Pre-allocated workspace sizes for step_kernel_gpu
+    # Shared: shapes data (same across all envs)
+    comptime STEP_WS_SHARED: Int = BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+    # Per-env: contacts + contact_count + edge_count + joint_count
+    comptime STEP_WS_PER_ENV: Int = BWConstants.MAX_CONTACTS * CONTACT_DATA_SIZE + 3
     comptime dtype = Self.DTYPE
     comptime StateType = BipedalWalkerState[Self.dtype]
     comptime ActionType = BipedalWalkerAction[Self.dtype]
@@ -1478,19 +1481,63 @@ struct BipedalWalker[
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for batched continuous actions."""
-        # Allocate workspace buffers
-        var contacts_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH_SIZE * BWConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
-        )
-        var contact_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var shapes_buf = ctx.enqueue_create_buffer[dtype](
-            BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE
-        )
-        var edge_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
-        var joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+        # Workspace layout (total = SHAPES_SIZE + BATCH * PER_ENV_SIZE):
+        #   [0 .. SHAPES_SIZE): shapes (shared across envs)
+        #   [SHAPES_SIZE .. +BATCH*CONTACTS_SIZE): contacts (all envs)
+        #   [.. +BATCH): contact_counts
+        #   [.. +BATCH): edge_counts
+        #   [.. +BATCH): joint_counts
+        comptime SHAPES_SIZE = BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        comptime CONTACTS_SIZE = BWConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
+        comptime PER_ENV_SIZE = CONTACTS_SIZE + 3
 
-        # Initialize shapes
-        BipedalWalker[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
+        var shapes_buf: DeviceBuffer[dtype]
+        var contacts_buf: DeviceBuffer[dtype]
+        var contact_counts_buf: DeviceBuffer[dtype]
+        var edge_counts_buf: DeviceBuffer[dtype]
+        var joint_counts_buf: DeviceBuffer[dtype]
+
+        if workspace_ptr:
+            # Reuse pre-allocated workspace
+            shapes_buf = DeviceBuffer[dtype](
+                ctx, workspace_ptr, SHAPES_SIZE, owning=False,
+            )
+            var per_env_ptr = workspace_ptr + SHAPES_SIZE
+            contacts_buf = DeviceBuffer[dtype](
+                ctx,
+                per_env_ptr,
+                BATCH_SIZE * CONTACTS_SIZE,
+                owning=False,
+            )
+            contact_counts_buf = DeviceBuffer[dtype](
+                ctx,
+                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE,
+                BATCH_SIZE,
+                owning=False,
+            )
+            edge_counts_buf = DeviceBuffer[dtype](
+                ctx,
+                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE + BATCH_SIZE,
+                BATCH_SIZE,
+                owning=False,
+            )
+            joint_counts_buf = DeviceBuffer[dtype](
+                ctx,
+                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE + 2 * BATCH_SIZE,
+                BATCH_SIZE,
+                owning=False,
+            )
+        else:
+            # Fallback: allocate per-step (backward compatible)
+            contacts_buf = ctx.enqueue_create_buffer[dtype](
+                BATCH_SIZE * CONTACTS_SIZE
+            )
+            contact_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+            shapes_buf = ctx.enqueue_create_buffer[dtype](SHAPES_SIZE)
+            edge_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+            joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+            # Initialize shapes (only needed on fresh allocation)
+            BipedalWalker[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
         # Fused step kernel
         BipedalWalker[Self.dtype]._fused_step_gpu[
@@ -1651,8 +1698,12 @@ struct BipedalWalker[
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
-        """No-op: BipedalWalker doesn't need pre-allocated workspace."""
-        pass
+        """Initialize shapes in the shared region of the workspace."""
+        comptime SHAPES_SIZE = BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        var shapes_buf = DeviceBuffer[dtype](
+            ctx, workspace_buf.unsafe_ptr(), SHAPES_SIZE, owning=False,
+        )
+        BipedalWalker[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
     @staticmethod
     fn update_curriculum_gpu(

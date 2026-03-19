@@ -220,18 +220,18 @@ fn test_tdmpc2_single_step() raises:
 
     comptime TDMPC2Step = ComputeGraph[
         # Multi-head fan-out from za
-        GNode[Dynamics, -1],                # 0: za → z_pred(8)
-        GNode[RewardHead, -1],              # 1: za → rew_logits(5)  (fan-out)
-        GNode[Q1, -1],                      # 2: za → q1_logits(5)   (fan-out)
-        GNode[Q2, -1],                      # 3: za → q2_logits(5)   (fan-out)
-        GNode[Slice[ZA, 0, LATENT], -1],    # 4: extract z_t(8) from za  (fan-out)
-        GNode[TermHead, 4],                 # 5: z_t → term_prob(1)
+        GNode["dynamics",    Dynamics],                # 0: za → z_pred(8)
+        GNode["rew_logits",  RewardHead],              # 1: za → rew_logits(5)  (fan-out)
+        GNode["q1_logits",   Q1],                      # 2: za → q1_logits(5)   (fan-out)
+        GNode["q2_logits",   Q2],                      # 3: za → q2_logits(5)   (fan-out)
+        GNode["z_extract",   Slice[ZA, 0, LATENT]],    # 4: extract z_t(8) from za  (fan-out)
+        GNode["term_prob",   TermHead, "z_extract"],    # 5: z_t → term_prob(1)
 
         # Concat chain: merge all outputs → single output tensor
-        GNode[Identity[D_PLUS_R], 0, 1],          # 6: [z_pred, rew](13)
-        GNode[Identity[D_R_Q1], 6, 2],            # 7: [z_pred, rew, q1](18)
-        GNode[Identity[D_R_Q1_Q2], 7, 3],         # 8: [z_pred, rew, q1, q2](23)
-        GNode[Identity[ALL_OUT], 8, 5],            # 9: [z_pred, rew, q1, q2, term](24)
+        GNode["cat_dr",      Identity[D_PLUS_R], "dynamics", "rew_logits"],     # 6: [z_pred, rew](13)
+        GNode["cat_drq1",    Identity[D_R_Q1], "cat_dr", "q1_logits"],         # 7: [z_pred, rew, q1](18)
+        GNode["cat_drq1q2",  Identity[D_R_Q1_Q2], "cat_drq1", "q2_logits"],   # 8: [z_pred, rew, q1, q2](23)
+        GNode["output",      Identity[ALL_OUT], "cat_drq1q2", "term_prob"],    # 9: [z_pred, rew, q1, q2, term](24)
     ]
 
     print(
@@ -345,12 +345,12 @@ fn test_dreamer_heads() raises:
     comptime ALL_OUT = DEC_REW + 1  # = 12
 
     comptime DreamerHeads = ComputeGraph[
-        GNode[Decoder, -1],              # 0: feat → obs_hat(6)
-        GNode[RewardHead, -1],           # 1: feat → rew_logits(5)  (fan-out)
-        GNode[ContinueHead, -1],         # 2: feat → cont(1)        (fan-out)
+        GNode["decoder",   Decoder],              # 0: feat → obs_hat(6)
+        GNode["rew_head",  RewardHead],           # 1: feat → rew_logits(5)  (fan-out)
+        GNode["cont_head", ContinueHead],         # 2: feat → cont(1)        (fan-out)
         # Concat all outputs
-        GNode[Identity[DEC_REW], 0, 1],    # 3: [obs_hat, rew](11)
-        GNode[Identity[ALL_OUT], 3, 2],  # 4: [obs_hat, rew, cont](12)
+        GNode["cat_dr",    Identity[DEC_REW], "decoder", "rew_head"],   # 3: [obs_hat, rew](11)
+        GNode["output",    Identity[ALL_OUT], "cat_dr", "cont_head"],   # 4: [obs_hat, rew, cont](12)
     ]
 
     print(
@@ -470,15 +470,15 @@ fn test_sac_actor_loss() raises:
     ]
 
     comptime SACGraph = ComputeGraph[
-        GNode[ActorModel, -1],                           # 0: obs → [mean, log_std](4)
-        GNode[RSample[ACT], 0],                          # 1: → [action(2), log_prob(1)]
-        GNode[Slice[RSAMPLE_OUT, 0, ACT], 1],            # 2: → action(2)  (fan-out from 1)
-        GNode[Slice[RSAMPLE_OUT, ACT, RSAMPLE_OUT], 1],  # 3: → log_prob(1) (fan-out from 1)
-        GNode[CriticModel, -1, 2],                       # 4: [obs(4), action(2)] → Q1
-        GNode[CriticModel, -1, 2],                       # 5: [obs(4), action(2)] → Q2 (fan-out from concat)
-        GNode[Min[1], 4, 5],                              # 6: → min_Q(1)
+        GNode["actor",    ActorModel],                              # 0: obs → [mean, log_std](4)
+        GNode["rsample",  RSample[ACT], "actor"],                  # 1: → [action(2), log_prob(1)]
+        GNode["action",   Slice[RSAMPLE_OUT, 0, ACT], "rsample"],            # 2: → action(2)  (fan-out from 1)
+        GNode["log_prob", Slice[RSAMPLE_OUT, ACT, RSAMPLE_OUT], "rsample"],  # 3: → log_prob(1) (fan-out from 1)
+        GNode["Q1",       CriticModel, "input", "action"],        # 4: [obs(4), action(2)] → Q1
+        GNode["Q2",       CriticModel, "input", "action"],        # 5: [obs(4), action(2)] → Q2 (fan-out from concat)
+        GNode["min_q",    Min[1], "Q1", "Q2"],                    # 6: → min_Q(1)
         # Concat min_Q and log_prob for final output
-        GNode[Identity[2], 6, 3],                         # 7: [min_Q(1), log_prob(1)] = output(2)
+        GNode["output",   Identity[2], "min_q", "log_prob"],      # 7: [min_Q(1), log_prob(1)] = output(2)
     ]
 
     print(

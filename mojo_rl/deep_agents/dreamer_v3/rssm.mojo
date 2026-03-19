@@ -990,11 +990,11 @@ struct RSSM[
     comptime HEADS_OUT_DIM: Int = Self._DEC_REW_DIM + 1
 
     comptime HeadsGraph = ComputeGraph[
-        GNode[Self.DecModel, -1],                      # 0: feat → obs_hat
-        GNode[Self.RewModel, -1],                      # 1: feat → rew_logits
-        GNode[Self.ContModel, -1],                     # 2: feat → cont_logit
-        GNode[Identity[Self._DEC_REW_DIM], 0, 1],     # 3: concat [dec, rew]
-        GNode[Identity[Self.HEADS_OUT_DIM], 3, 2],     # 4: concat all
+        GNode["decoder",   Self.DecModel],
+        GNode["rew_head",  Self.RewModel],
+        GNode["cont_head", Self.ContModel],
+        GNode["cat_dr",    Identity[Self._DEC_REW_DIM], "decoder", "rew_head"],
+        GNode["output",    Identity[Self.HEADS_OUT_DIM], "cat_dr", "cont_head"],
     ]
 
     comptime HeadsCP = CompositeParams[
