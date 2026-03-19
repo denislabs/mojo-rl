@@ -90,6 +90,7 @@ from .kernels import (
     advantage_kernel,
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
+    straight_through_softmax_vjp_kernel,
     TPB,
 )
 
@@ -2930,39 +2931,49 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
-            # d_post_logits_total = d_stoch_feat (straight-through) + d_post_logits_kl
+            # d_post_logits_total = softmax_vjp(d_stoch_feat) + d_post_logits_kl
+            #
+            # The straight-through estimator treats stoch ≈ probs, so
+            # d_probs = d_stoch. Then we need the softmax VJP (through unimix)
+            # to convert d_probs → d_logits. This was previously a raw copy
+            # which skipped the softmax Jacobian — the key bug fix.
             var bptt_d_post_total = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
 
-            # Copy d_stoch_feat -> d_post_logits_total (straight-through estimator)
-            comptime BPTT_STOCH_SZ = B * STOCH
-            var bptt_dpt_1d = LayoutTensor[
-                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
-            ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
-            var bptt_ds_1d = LayoutTensor[
-                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
-            ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
-
+            # Straight-through with proper softmax VJP
             @always_inline
-            fn bptt_copy_st(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            fn bptt_st_vjp(
+                gl: LayoutTensor[
+                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
                 ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+                gs: LayoutTensor[
+                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
+                ],
+                pp: LayoutTensor[
+                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
                 ],
             ):
-                copy_kernel[BPTT_STOCH_SZ](d, s)
+                straight_through_softmax_vjp_kernel[
+                    B, Self.stoch_dim, Self.classes, Self.StateType.RSSMType.UNIMIX
+                ](gl, gs, pp)
 
-            ctx.enqueue_function[bptt_copy_st, bptt_copy_st](
-                bptt_dpt_1d,
-                bptt_ds_1d,
-                grid_dim=(BPTT_STOCH_BLOCKS,),
+            comptime BPTT_ST_BLOCKS = (
+                B * Self.stoch_dim + TPB - 1
+            ) // TPB
+            ctx.enqueue_function[bptt_st_vjp, bptt_st_vjp](
+                bptt_d_post_total,
+                bptt_d_stoch,
+                bptt_post_probs,
+                grid_dim=(BPTT_ST_BLOCKS,),
                 block_dim=(TPB,),
             )
 
             # Add KL posterior gradient
+            comptime BPTT_STOCH_SZ = B * STOCH
+            var bptt_dpt_1d = LayoutTensor[
+                dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
+            ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
             var bptt_kl_post_1d = LayoutTensor[
                 dtype, Layout.row_major(BPTT_STOCH_SZ), MutAnyOrigin
             ](gpu_state.post_grad_out_buf.unsafe_ptr())

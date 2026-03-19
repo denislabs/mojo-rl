@@ -894,6 +894,67 @@ fn kl_categorical_gradient_kernel[
         grad_post_logits[b, base + c] = post_g
 
 
+@always_inline
+fn straight_through_softmax_vjp_kernel[
+    BATCH: Int,
+    STOCH_DIM: Int,
+    CLASSES: Int,
+    UNIMIX: Float64 = 0.01,
+](
+    grad_logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    grad_stoch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+    probs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, STOCH_DIM * CLASSES), MutAnyOrigin
+    ],
+):
+    """Straight-through gradient through categorical sampling + softmax + unimix.
+
+    Forward: logits → softmax → probs (with unimix) → sample → one_hot
+    Backward (straight-through): d_stoch → d_probs → d_softmax → softmax_vjp → d_logits
+
+    The straight-through estimator treats stoch ≈ probs, so d_probs = d_stoch.
+    Then: d_softmax = (1 - UNIMIX) * d_probs
+    Then: d_logits[j] = softmax[j] * (d_softmax[j] - sum(d_softmax * softmax)) per group
+
+    One thread per (batch, stoch_dim) pair — iterates over CLASSES internally.
+    """
+    comptime SC = STOCH_DIM * CLASSES
+    comptime ONE_MINUS_UNIMIX = 1.0 - UNIMIX
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * STOCH_DIM:
+        return
+    var b = tid // STOCH_DIM
+    var s = tid % STOCH_DIM
+    var base = s * CLASSES
+    var eps = S(1e-8)
+
+    # Recover softmax from probs: softmax = (probs - UNIMIX/CLASSES) / (1-UNIMIX)
+    # Compute dot(d_softmax, softmax) for this group
+    var dot_gs = S(0.0)
+    for c in range(CLASSES):
+        var prob_c = _rd2[BATCH, SC](probs, b, base + c)
+        var sm_c = (prob_c - S(UNIMIX / Float64(CLASSES))) / S(ONE_MINUS_UNIMIX)
+        if sm_c < S(0.0):
+            sm_c = S(0.0)
+        var d_stoch_c = _rd2[BATCH, SC](grad_stoch, b, base + c)
+        var d_sm_c = S(ONE_MINUS_UNIMIX) * d_stoch_c
+        dot_gs += d_sm_c * sm_c
+
+    # d_logits[c] = softmax[c] * (d_softmax[c] - dot_gs)
+    for c in range(CLASSES):
+        var prob_c = _rd2[BATCH, SC](probs, b, base + c)
+        var sm_c = (prob_c - S(UNIMIX / Float64(CLASSES))) / S(ONE_MINUS_UNIMIX)
+        if sm_c < S(0.0):
+            sm_c = S(0.0)
+        var d_stoch_c = _rd2[BATCH, SC](grad_stoch, b, base + c)
+        var d_sm_c = S(ONE_MINUS_UNIMIX) * d_stoch_c
+        grad_logits[b, base + c] = sm_c * (d_sm_c - dot_gs)
+
+
 # =============================================================================
 # Lambda Returns (Backward Scan)
 # =============================================================================
