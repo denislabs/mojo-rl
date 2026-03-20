@@ -20,17 +20,18 @@ fn main() raises:
     var agent = DreamerV3Agent[
         obs_dim=OBS,
         action_dim=ACT,
-        deter_dim=128,
+        deter_dim=256,
         hidden=64,
-        stoch_dim=8,
-        classes=8,
+        stoch_dim=16,
+        classes=4,
         units=64,
         num_bins=65,
         blocks=2,
-        batch_size=8,
-        batch_length=16,
-        imagine_horizon=8,
-        buffer_capacity=50000,
+        batch_size=16,
+        batch_length=32,
+        imagine_horizon=15,
+        buffer_capacity=100000,
+        free_nats=0.1,
     ](warmup_steps=500)
 
     var ctx = DeviceContext()

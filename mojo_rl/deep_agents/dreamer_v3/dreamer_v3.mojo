@@ -117,6 +117,10 @@ struct DreamerV3Agent[
     batch_length: Int = 64,
     imagine_horizon: Int = 15,
     buffer_capacity: Int = 1000000,
+    wm_lr: Float64 = 1e-4,
+    actor_lr: Float64 = 3e-5,
+    critic_lr: Float64 = 3e-5,
+    free_nats: Float64 = 1.0,
     L: Logger = NoOpLogger,
 ](Movable):
     """DreamerV3 agent for continuous control.
@@ -139,6 +143,10 @@ struct DreamerV3Agent[
         batch_length: BPTT sequence length (default: 64).
         imagine_horizon: Imagination rollout length (default: 15).
         buffer_capacity: Replay buffer capacity (default: 1M).
+        wm_lr: World model learning rate (default: 1e-4).
+        actor_lr: Actor learning rate (default: 3e-5).
+        critic_lr: Critic learning rate (default: 3e-5).
+        free_nats: Free nats threshold for KL loss (default: 1.0).
         L: Logger type for diagnostics (default: NoOpLogger).
     """
 
@@ -158,6 +166,14 @@ struct DreamerV3Agent[
         Self.units,
         Self.num_bins,
         Self.blocks,
+        WM_LR=Self.wm_lr,
+        ACTOR_LR=Self.actor_lr,
+        CRITIC_LR=Self.critic_lr,
+        FREE_NATS=Self.free_nats,
+        BUFFER_CAPACITY=Self.buffer_capacity,
+        BATCH_SIZE=Self.batch_size,
+        BATCH_LENGTH=Self.batch_length,
+        IMAGINE_HORIZON=Self.imagine_horizon,
     ]
 
     comptime GPUStateType = DreamerV3GPUState[
@@ -170,14 +186,18 @@ struct DreamerV3Agent[
         Self.units,
         Self.num_bins,
         Self.blocks,
+        WM_LR=Self.wm_lr,
+        ACTOR_LR=Self.actor_lr,
+        CRITIC_LR=Self.critic_lr,
+        FREE_NATS=Self.free_nats,
         BATCH_SIZE=Self.batch_size,
         BATCH_LENGTH=Self.batch_length,
         IMAGINE_HORIZON=Self.imagine_horizon,
     ]
 
     # ── Actor/Critic Network aliases (matching state.mojo definitions) ───
-    comptime ActorNet = Network[Self.StateType.ActorModel, Adam[LR=3e-5]]
-    comptime CriticNet = Network[Self.StateType.CriticModel, Adam[LR=3e-5]]
+    comptime ActorNet = Network[Self.StateType.ActorModel, Adam[LR=Self.actor_lr]]
+    comptime CriticNet = Network[Self.StateType.CriticModel, Adam[LR=Self.critic_lr]]
 
     # ── Core state ────────────────────────────────────────────────────────
     var state: Self.StateType

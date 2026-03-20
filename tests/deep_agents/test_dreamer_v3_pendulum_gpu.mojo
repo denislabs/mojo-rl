@@ -38,31 +38,33 @@ fn main() raises:
     )
     logger.set_config("agent", "DreamerV3")
     logger.set_config("env", "Pendulum")
-    logger.set_config("deter_dim", "128")
+    logger.set_config("deter_dim", "256")
     logger.set_config("hidden", "64")
-    logger.set_config("stoch_dim", "8")
-    logger.set_config("classes", "8")
+    logger.set_config("stoch_dim", "16")
+    logger.set_config("classes", "4")
     logger.set_config("num_bins", "65")
-    logger.set_config("batch_size", "8")
-    logger.set_config("batch_length", "16")
-    logger.set_config("imagine_horizon", "8")
+    logger.set_config("batch_size", "16")
+    logger.set_config("batch_length", "32")
+    logger.set_config("imagine_horizon", "15")
+    logger.set_config("free_nats", "0.1")
     logger.set_config("gamma", "0.997")
     logger.set_config("n_envs", String(N_ENVS))
 
     var agent = DreamerV3Agent[
         obs_dim=OBS,
         action_dim=ACT,
-        deter_dim=128,
+        deter_dim=256,
         hidden=64,
-        stoch_dim=8,
-        classes=8,
+        stoch_dim=16,
+        classes=4,
         units=64,
-        num_bins=255,
+        num_bins=65,
         blocks=2,
-        batch_size=8,
-        batch_length=16,
-        imagine_horizon=8,
-        buffer_capacity=50000,
+        batch_size=16,
+        batch_length=32,
+        imagine_horizon=15,
+        buffer_capacity=100000,
+        free_nats=0.1,
         L=RemoteLogger,
     ](warmup_steps=500)
 
