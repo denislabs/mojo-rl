@@ -42,7 +42,7 @@ fn main() raises:
         sync_every=100,
         verbose=True,
         print_every=5000,
-        diag_every=0,
+        diag_every=500,
     )
 
     print("=" * 60)
