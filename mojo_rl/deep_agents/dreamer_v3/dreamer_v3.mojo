@@ -4903,12 +4903,22 @@ struct DreamerV3Agent[
             s_rew.append(Scalar[DType.float32](0))
             s_don.append(Scalar[DType.float32](0))
 
+        # ── Timing accumulators (nanoseconds) ─────────────────────────
+        var t_action_select: Int = 0   # GPU RSSM inference + action sampling
+        var t_env_step: Int = 0        # GPU env step + download + reset
+        var t_replay_add: Int = 0      # CPU replay buffer add + episode bookkeeping
+        var t_replay_sample: Int = 0   # CPU replay buffer sampling + batch build
+        var t_gpu_train: Int = 0       # GPU training step (upload + fwd/bwd)
+        var t_sync: Int = 0            # GPU→CPU weight sync
+        var timing_train_iters: Int = 0
+
         # ── Main training loop ───────────────────────────────────────
         while completed_episodes < num_episodes:
             # ── 1. Download current obs (for replay buffer) ──────────
             ctx.enqueue_copy(obs_host, obs_buf)
 
             # ── 2. Action selection (all on GPU) ─────────────────────
+            var _t0_act = perf_counter_ns()
             if total_steps < self.warmup_steps * n_envs:
                 # Warmup: random actions on CPU, upload
                 ctx.synchronize()  # wait for obs_host
@@ -5073,7 +5083,10 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
 
+            t_action_select += Int(perf_counter_ns() - _t0_act)
+
             # ── 3. Step GPU envs ─────────────────────────────────────
+            var _t0_env = perf_counter_ns()
             comptime if TOTAL_WS > 0:
                 E.step_kernel_gpu[n_envs, E.STATE_SIZE, OBS, ACT](
                     ctx,
@@ -5129,7 +5142,10 @@ struct DreamerV3Agent[
                 ctx, states_buf, obs_buf
             )
 
+            t_env_step += Int(perf_counter_ns() - _t0_env)
+
             # ── 6. Process transitions (CPU, done_host already downloaded) ─
+            var _t0_add = perf_counter_ns()
             for e in range(n_envs):
                 var rew_val = Scalar[DType.float32](rew_host[e])
                 var done_val = Float64(done_host[e]) > 0.5
@@ -5175,6 +5191,7 @@ struct DreamerV3Agent[
                     if completed_episodes >= num_episodes:
                         break
 
+            t_replay_add += Int(perf_counter_ns() - _t0_add)
             total_steps += n_envs
             collection_step += 1
 
@@ -5190,6 +5207,7 @@ struct DreamerV3Agent[
 
                     if ready:
                         for _tr in range(actual_train_ratio):
+                            var _t0_samp = perf_counter_ns()
                             var b_per_env = B // n_envs
                             var b_rem = B % n_envs
                             var b_offset = 0
@@ -5213,7 +5231,9 @@ struct DreamerV3Agent[
                                         batch_rews[b * BL + k] = s_rew[k]
                                         batch_dones[b * BL + k] = s_don[k]
                                     b_offset += 1
+                            t_replay_sample += Int(perf_counter_ns() - _t0_samp)
 
+                            var _t0_train = perf_counter_ns()
                             self.do_gpu_train_step(
                                 ctx,
                                 gpu_state,
@@ -5222,10 +5242,14 @@ struct DreamerV3Agent[
                                 batch_rews,
                                 batch_dones,
                             )
+                            t_gpu_train += Int(perf_counter_ns() - _t0_train)
 
                             if self.train_step_count % sync_every == 0:
+                                var _t0_sync = perf_counter_ns()
                                 self.download_from_gpu(gpu_state, ctx)
                                 ctx.synchronize()
+                                t_sync += Int(perf_counter_ns() - _t0_sync)
+                            timing_train_iters += 1
 
             # ── 8. Progress ──────────────────────────────────────────
             if verbose and total_steps >= next_print:
@@ -5267,6 +5291,84 @@ struct DreamerV3Agent[
             + " | Train updates: "
             + String(self.train_step_count)
         )
+
+        # ── Timing summary ──────────────────────────────────────────
+        if verbose:
+            var total_ns = (
+                t_action_select
+                + t_env_step
+                + t_replay_add
+                + t_replay_sample
+                + t_gpu_train
+                + t_sync
+            )
+            var total_ms = Float64(total_ns) / 1e6
+
+            @always_inline
+            fn _pct(ns: Int, tot: Int) -> Float64:
+                if tot == 0:
+                    return 0.0
+                return Float64(ns) / Float64(tot) * 100.0
+
+            print("\n======== DreamerV3 GPU Timing Summary ========")
+            print(
+                "Total measured time:",
+                String(total_ms)[:9],
+                "ms over",
+                timing_train_iters,
+                "training iterations",
+            )
+            if timing_train_iters > 0:
+                print(
+                    "Avg per training iter:",
+                    String(total_ms / Float64(timing_train_iters))[:7],
+                    "ms",
+                )
+            print("──────────────────────────────────────────────")
+            print(
+                "Action selection:   ",
+                String(Float64(t_action_select) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_action_select, total_ns))[:5],
+                "%)",
+            )
+            print(
+                "Env step+download:  ",
+                String(Float64(t_env_step) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_env_step, total_ns))[:5],
+                "%)",
+            )
+            print(
+                "Replay buffer add:  ",
+                String(Float64(t_replay_add) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_replay_add, total_ns))[:5],
+                "%)",
+            )
+            print(
+                "Replay sampling:    ",
+                String(Float64(t_replay_sample) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_replay_sample, total_ns))[:5],
+                "%)",
+            )
+            print(
+                "GPU training:       ",
+                String(Float64(t_gpu_train) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_gpu_train, total_ns))[:5],
+                "%)",
+            )
+            print(
+                "GPU→CPU sync:       ",
+                String(Float64(t_sync) / 1e6)[:9],
+                "ms (",
+                String(_pct(t_sync, total_ns))[:5],
+                "%)",
+            )
+            print("==============================================")
+
         return metrics^
 
 
