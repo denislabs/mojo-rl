@@ -1706,19 +1706,15 @@ struct DreamerV3Agent[
             ](gpu_state.heads_out_buf.unsafe_ptr())
 
             comptime HEADS_FLAT = B * HEADS_OUT
-
-            @always_inline
-            fn _deint_dec(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-            ):
-                deinterleave_kernel[B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT](
-                    d, s
-                )
+            comptime _deint_dec = deinterleave_kernel[
+                B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT
+            ]
+            comptime _deint_rew = deinterleave_kernel[
+                B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
+            ]
+            comptime _deint_cont = deinterleave_kernel[
+                B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
+            ]
 
             comptime DEC_DEINT_BLK = (B * OBS + TPB - 1) // TPB
             ctx.enqueue_function[_deint_dec, _deint_dec](
@@ -1731,20 +1727,6 @@ struct DreamerV3Agent[
             var rew_out_1d = LayoutTensor[
                 dtype, Layout.row_major(B * BINS), MutAnyOrigin
             ](gpu_state.rew_logits_buf.unsafe_ptr())
-
-            @always_inline
-            fn _deint_rew(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B * BINS), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-            ):
-                deinterleave_kernel[
-                    B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
-                ](d, s)
-
             comptime REW_DEINT_BLK = (B * BINS + TPB - 1) // TPB
             ctx.enqueue_function[_deint_rew, _deint_rew](
                 rew_out_1d,
@@ -1756,20 +1738,6 @@ struct DreamerV3Agent[
             var cont_out_1d = LayoutTensor[
                 dtype, Layout.row_major(B), MutAnyOrigin
             ](gpu_state.cont_out_buf.unsafe_ptr())
-
-            @always_inline
-            fn _deint_cont(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-            ):
-                deinterleave_kernel[
-                    B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
-                ](d, s)
-
             comptime CONT_DEINT_BLK = (B + TPB - 1) // TPB
             ctx.enqueue_function[_deint_cont, _deint_cont](
                 cont_out_1d,
@@ -1818,7 +1786,9 @@ struct DreamerV3Agent[
                     for k in range(BINS):
                         var t_k = Float64(target_dist[k])
                         if t_k > 1e-8:
-                            rew_loss -= t_k * (Float64(rew_host[b * BINS + k]) - lse)
+                            rew_loss -= t_k * (
+                                Float64(rew_host[b * BINS + k]) - lse
+                            )
 
             if t > 0:
                 var cont_host = gpu_state.host_cont_diag_buf
@@ -1859,20 +1829,7 @@ struct DreamerV3Agent[
             ](gpu_state.dec_grad_out_buf.unsafe_ptr())
             var mse_scale = Scalar[dtype](2.0 / Float64(B * OBS))
 
-            @always_inline
-            fn ad_mse_grad(
-                g: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-                p: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-                s: Scalar[dtype],
-            ):
-                mse_grad_kernel[B * OBS](g, p, tgt, s)
+            comptime ad_mse_grad = mse_grad_kernel[B * OBS]
 
             comptime MSE_BLOCKS = (B * OBS + TPB - 1) // TPB
             ctx.enqueue_function[ad_mse_grad, ad_mse_grad](
@@ -1904,19 +1861,7 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(BINS), MutAnyOrigin
                 ](gpu_state.bins_buf.unsafe_ptr())
 
-                @always_inline
-                fn ad_rew_two_hot(
-                    tgt: LayoutTensor[
-                        dtype, Layout.row_major(B, BINS), MutAnyOrigin
-                    ],
-                    vals: LayoutTensor[
-                        dtype, Layout.row_major(B), MutAnyOrigin
-                    ],
-                    b_: LayoutTensor[
-                        dtype, Layout.row_major(BINS), MutAnyOrigin
-                    ],
-                ):
-                    two_hot_encode_kernel[B, BINS](tgt, vals, b_)
+                comptime ad_rew_two_hot = two_hot_encode_kernel[B, BINS]
 
                 comptime REW_TH_BLOCKS = (B + TPB - 1) // TPB
                 ctx.enqueue_function[ad_rew_two_hot, ad_rew_two_hot](
@@ -1936,20 +1881,7 @@ struct DreamerV3Agent[
                 ](gpu_state.rew_grad_out_buf.unsafe_ptr())
                 var rew_inv_batch = Scalar[dtype](1.0 / Float64(B))
 
-                @always_inline
-                fn ad_rew_ce_grad(
-                    g: LayoutTensor[
-                        dtype, Layout.row_major(B, BINS), MutAnyOrigin
-                    ],
-                    l: LayoutTensor[
-                        dtype, Layout.row_major(B, BINS), MutAnyOrigin
-                    ],
-                    tgt: LayoutTensor[
-                        dtype, Layout.row_major(B, BINS), MutAnyOrigin
-                    ],
-                    ib: Scalar[dtype],
-                ):
-                    two_hot_ce_grad_kernel[B, BINS](g, l, tgt, ib)
+                comptime ad_rew_ce_grad = two_hot_ce_grad_kernel[B, BINS]
 
                 ctx.enqueue_function[ad_rew_ce_grad, ad_rew_ce_grad](
                     rew_grad_out_2d,
@@ -1970,16 +1902,7 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(B), MutAnyOrigin
                 ](gpu_state.cont_out_buf.unsafe_ptr())
 
-                @always_inline
-                fn ad_cont_sigmoid(
-                    o: LayoutTensor[
-                        dtype, Layout.row_major(B), MutAnyOrigin
-                    ],
-                    inp: LayoutTensor[
-                        dtype, Layout.row_major(B), MutAnyOrigin
-                    ],
-                ):
-                    sigmoid_kernel[B](o, inp)
+                comptime ad_cont_sigmoid = sigmoid_kernel[B]
 
                 comptime CONT_SIG_BLOCKS = (B + TPB - 1) // TPB
                 ctx.enqueue_function[ad_cont_sigmoid, ad_cont_sigmoid](
@@ -2009,20 +1932,7 @@ struct DreamerV3Agent[
                 ](gpu_state.cont_grad_buf.unsafe_ptr())
                 var cont_inv_batch = Scalar[dtype](1.0 / Float64(B))
 
-                @always_inline
-                fn ad_cont_bce_grad(
-                    g: LayoutTensor[
-                        dtype, Layout.row_major(B, 1), MutAnyOrigin
-                    ],
-                    p: LayoutTensor[
-                        dtype, Layout.row_major(B, 1), MutAnyOrigin
-                    ],
-                    tgt: LayoutTensor[
-                        dtype, Layout.row_major(B, 1), MutAnyOrigin
-                    ],
-                    ib: Scalar[dtype],
-                ):
-                    bce_grad_kernel[B](g, p, tgt, ib)
+                comptime ad_cont_bce_grad = bce_grad_kernel[B]
 
                 ctx.enqueue_function[ad_cont_bce_grad, ad_cont_bce_grad](
                     cont_grad_2d,
@@ -2048,18 +1958,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B * OBS), MutAnyOrigin
             ](gpu_state.dec_grad_out_buf.unsafe_ptr())
 
-            @always_inline
-            fn _int_dec(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-            ):
-                interleave_kernel[
-                    B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT
-                ](d, s)
+            comptime _int_dec = interleave_kernel[
+                B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT
+            ]
 
             comptime INT_DEC_BLK = (B * OBS + TPB - 1) // TPB
             ctx.enqueue_function[_int_dec, _int_dec](
@@ -2074,18 +1975,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B * BINS), MutAnyOrigin
             ](gpu_state.rew_grad_out_buf.unsafe_ptr())
 
-            @always_inline
-            fn _int_rew(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(B * BINS), MutAnyOrigin
-                ],
-            ):
-                interleave_kernel[
-                    B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
-                ](d, s)
+            comptime _int_rew = interleave_kernel[
+                B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
+            ]
 
             comptime INT_REW_BLK = (B * BINS + TPB - 1) // TPB
             ctx.enqueue_function[_int_rew, _int_rew](
@@ -2096,22 +1988,13 @@ struct DreamerV3Agent[
             )
 
             # continue grad → heads_grad_out[:, OBS+BINS:]
-            var cg_1d = LayoutTensor[
-                dtype, Layout.row_major(B), MutAnyOrigin
-            ](gpu_state.cont_grad_buf.unsafe_ptr())
+            var cg_1d = LayoutTensor[dtype, Layout.row_major(B), MutAnyOrigin](
+                gpu_state.cont_grad_buf.unsafe_ptr()
+            )
 
-            @always_inline
-            fn _int_cont(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(B), MutAnyOrigin
-                ],
-            ):
-                interleave_kernel[
-                    B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
-                ](d, s)
+            comptime _int_cont = interleave_kernel[
+                B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
+            ]
 
             comptime INT_CONT_BLK = (B + TPB - 1) // TPB
             ctx.enqueue_function[_int_cont, _int_cont](
@@ -2160,19 +2043,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.d_stoch_feat_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_split_feat(
-                dd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                ds: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                df: LayoutTensor[
-                    dtype, Layout.row_major(B, FEAT), MutAnyOrigin
-                ],
-            ):
-                concat_feat_backward_kernel[B, DETER, STOCH](dd, ds, df)
+            comptime ad_split_feat = concat_feat_backward_kernel[
+                B, DETER, STOCH
+            ]
 
             comptime SPLIT_FEAT_BLOCKS = (B * FEAT + TPB - 1) // TPB
             ctx.enqueue_function[ad_split_feat, ad_split_feat](
@@ -2193,16 +2066,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
             ](gpu_state.d_recurrent_stoch_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_add_rec_stoch(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[STOCH_FLAT_SZ](d, s)
+            comptime ad_add_rec_stoch = accumulate_kernel[STOCH_FLAT_SZ]
 
             comptime STOCH_BLOCKS = (STOCH_FLAT_SZ + TPB - 1) // TPB
             ctx.enqueue_function[ad_add_rec_stoch, ad_add_rec_stoch](
@@ -2222,21 +2086,12 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_st_vjp(
-                gl: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                gs: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                pp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-            ):
-                straight_through_softmax_vjp_kernel[
-                    B, Self.stoch_dim, Self.classes, Self.StateType.RSSMType.UNIMIX
-                ](gl, gs, pp)
+            comptime ad_st_vjp = straight_through_softmax_vjp_kernel[
+                B,
+                Self.stoch_dim,
+                Self.classes,
+                Self.StateType.RSSMType.UNIMIX,
+            ]
 
             comptime ST_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
             ctx.enqueue_function[ad_st_vjp, ad_st_vjp](
@@ -2255,23 +2110,13 @@ struct DreamerV3Agent[
             ](gpu_state.all_prior_probs_buf.unsafe_ptr() + t * B * STOCH)
 
             # KL divergence
-            var kl_val = LayoutTensor[
-                dtype, Layout.row_major(B), MutAnyOrigin
-            ](gpu_state.kl_buf.unsafe_ptr())
+            var kl_val = LayoutTensor[dtype, Layout.row_major(B), MutAnyOrigin](
+                gpu_state.kl_buf.unsafe_ptr()
+            )
 
-            @always_inline
-            fn ad_kl_div(
-                kl: LayoutTensor[dtype, Layout.row_major(B), MutAnyOrigin],
-                pp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                prp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-            ):
-                kl_divergence_kernel[B, Self.stoch_dim, Self.classes](
-                    kl, pp, prp
-                )
+            comptime ad_kl_div = kl_divergence_kernel[
+                B, Self.stoch_dim, Self.classes
+            ]
 
             comptime KL_BLOCKS = (B + TPB - 1) // TPB
             ctx.enqueue_function[ad_kl_div, ad_kl_div](
@@ -2305,33 +2150,11 @@ struct DreamerV3Agent[
             var kl_rep_scale = Scalar[dtype](0.1)
             var kl_inv_batch = Scalar[dtype](1.0 / Float64(B))
 
-            @always_inline
-            fn ad_kl_grad(
-                gp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                gpr: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                pp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                prp: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                kl: LayoutTensor[dtype, Layout.row_major(B), MutAnyOrigin],
-                fn_: Scalar[dtype],
-                ds: Scalar[dtype],
-                rs: Scalar[dtype],
-                ib: Scalar[dtype],
-            ):
-                kl_categorical_gradient_kernel[
-                    B, Self.stoch_dim, Self.classes
-                ](gp, gpr, pp, prp, kl, fn_, ds, rs, ib)
+            comptime ad_kl_grad = kl_categorical_gradient_kernel[
+                B, Self.stoch_dim, Self.classes
+            ]
 
-            comptime KL_GRAD_BLOCKS = (
-                B * Self.stoch_dim + TPB - 1
-            ) // TPB
+            comptime KL_GRAD_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
             ctx.enqueue_function[ad_kl_grad, ad_kl_grad](
                 d_post_kl,
                 d_prior_logits,
@@ -2356,16 +2179,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
             ](gpu_state.post_grad_out_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_add_kl_post(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[STOCH_FLAT_SZ](d, s)
+            comptime ad_add_kl_post = accumulate_kernel[STOCH_FLAT_SZ]
 
             ctx.enqueue_function[ad_add_kl_post, ad_add_kl_post](
                 d_post_total_1d,
@@ -2382,10 +2196,7 @@ struct DreamerV3Agent[
             ](gpu_state.d_post_logits_total_buf.unsafe_ptr())
             var post_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, POST_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_post_cache_buf.unsafe_ptr()
-                + t * B * POST_CACHE
-            )
+            ](gpu_state.all_post_cache_buf.unsafe_ptr() + t * B * POST_CACHE)
             var post_grad_in = LayoutTensor[
                 dtype, Layout.row_major(B, POST_IN), MutAnyOrigin
             ](gpu_state.post_grad_in_buf.unsafe_ptr())
@@ -2410,21 +2221,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.d_embed_bwd_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_split_post_in(
-                dd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                de: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                dc: LayoutTensor[
-                    dtype, Layout.row_major(B, POST_IN), MutAnyOrigin
-                ],
-            ):
-                concat_deter_embed_backward_kernel[B, DETER, STOCH](
-                    dd, de, dc
-                )
+            comptime ad_split_post_in = concat_deter_embed_backward_kernel[
+                B, DETER, STOCH
+            ]
 
             comptime SPLIT_POST_BLOCKS = (B * POST_IN + TPB - 1) // TPB
             ctx.enqueue_function[ad_split_post_in, ad_split_post_in](
@@ -2440,10 +2239,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var prior_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, PRIOR_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_prior_cache_buf.unsafe_ptr()
-                + t * B * PRIOR_CACHE
-            )
+            ](gpu_state.all_prior_cache_buf.unsafe_ptr() + t * B * PRIOR_CACHE)
             var prior_grad_in = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.prior_grad_in_buf.unsafe_ptr())
@@ -2463,10 +2259,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var enc_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, ENC_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_enc_cache_buf.unsafe_ptr()
-                + t * B * ENC_CACHE
-            )
+            ](gpu_state.all_enc_cache_buf.unsafe_ptr() + t * B * ENC_CACHE)
             var d_symlog_obs = LayoutTensor[
                 dtype, Layout.row_major(B, OBS), MutAnyOrigin
             ](gpu_state.d_symlog_obs_bwd_buf.unsafe_ptr())
@@ -2501,16 +2294,7 @@ struct DreamerV3Agent[
             comptime DD_BLOCKS = (DETER_FLAT + TPB - 1) // TPB
 
             # d_deter_total already has d_deter_feat from split; add the rest
-            @always_inline
-            fn ad_add_dd_post(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[DETER_FLAT](d, s)
+            comptime ad_add_dd_post = accumulate_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_add_dd_post, ad_add_dd_post](
                 dd_1d,
@@ -2519,16 +2303,7 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
-            @always_inline
-            fn ad_add_dd_prior(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[DETER_FLAT](d, s)
+            comptime ad_add_dd_prior = accumulate_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_add_dd_prior, ad_add_dd_prior](
                 dd_1d,
@@ -2537,16 +2312,7 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
-            @always_inline
-            fn ad_add_dd_rec(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[DETER_FLAT](d, s)
+            comptime ad_add_dd_rec = accumulate_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_add_dd_rec, ad_add_dd_rec](
                 dd_1d,
@@ -2571,25 +2337,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
             ](gpu_state.all_gate_out_buf.unsafe_ptr() + t * B * 3 * DETER)
 
-            @always_inline
-            fn ad_gru_bwd(
-                dg: LayoutTensor[
-                    dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
-                ],
-                dpd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                dnd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                pd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                go: LayoutTensor[
-                    dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
-                ],
-            ):
-                gru_gate_backward_kernel[B, DETER](dg, dpd, dnd, pd, go)
+            comptime ad_gru_bwd = gru_gate_backward_kernel[B, DETER]
 
             comptime GRU_BLOCKS = (B * DETER + TPB - 1) // TPB
             ctx.enqueue_function[ad_gru_bwd, ad_gru_bwd](
@@ -2607,10 +2355,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var gg_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, GG_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_gru_gates_cache_buf.unsafe_ptr()
-                + t * B * GG_CACHE
-            )
+            ](gpu_state.all_gru_gates_cache_buf.unsafe_ptr() + t * B * GG_CACHE)
             var d_hidden = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.d_hidden_out_bwd_buf.unsafe_ptr())
@@ -2666,27 +2411,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, HID), MutAnyOrigin
             ](gpu_state.d_proj_a_bwd_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_split_concat(
-                dd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                dpd: LayoutTensor[
-                    dtype, Layout.row_major(B, HID), MutAnyOrigin
-                ],
-                dps: LayoutTensor[
-                    dtype, Layout.row_major(B, HID), MutAnyOrigin
-                ],
-                dpa: LayoutTensor[
-                    dtype, Layout.row_major(B, HID), MutAnyOrigin
-                ],
-                dc: LayoutTensor[
-                    dtype, Layout.row_major(B, GRU_IN), MutAnyOrigin
-                ],
-            ):
-                concat_gru_input_backward_kernel[B, DETER, HID](
-                    dd, dpd, dps, dpa, dc
-                )
+            comptime ad_split_concat = concat_gru_input_backward_kernel[
+                B, DETER, HID
+            ]
 
             comptime SPLIT_CONCAT_BLOCKS = (B * GRU_IN + TPB - 1) // TPB
             ctx.enqueue_function[ad_split_concat, ad_split_concat](
@@ -2704,10 +2431,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var dproj_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, DPROJ_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_dproj_cache_buf.unsafe_ptr()
-                + t * B * DPROJ_CACHE
-            )
+            ](gpu_state.all_dproj_cache_buf.unsafe_ptr() + t * B * DPROJ_CACHE)
             var d_prev_deter_dproj = LayoutTensor[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.d_prev_deter_dproj_buf.unsafe_ptr())
@@ -2727,10 +2451,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var sproj_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, SPROJ_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_sproj_cache_buf.unsafe_ptr()
-                + t * B * SPROJ_CACHE
-            )
+            ](gpu_state.all_sproj_cache_buf.unsafe_ptr() + t * B * SPROJ_CACHE)
             var d_prev_stoch = LayoutTensor[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.d_prev_stoch_bwd_buf.unsafe_ptr())
@@ -2750,10 +2471,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var aproj_cache_t = LayoutTensor[
                 dtype, Layout.row_major(B, APROJ_CACHE), MutAnyOrigin
-            ](
-                gpu_state.all_aproj_cache_buf.unsafe_ptr()
-                + t * B * APROJ_CACHE
-            )
+            ](gpu_state.all_aproj_cache_buf.unsafe_ptr() + t * B * APROJ_CACHE)
             var d_prev_action = LayoutTensor[
                 dtype, Layout.row_major(B, ACT), MutAnyOrigin
             ](gpu_state.d_prev_action_bwd_buf.unsafe_ptr())
@@ -2788,16 +2506,7 @@ struct DreamerV3Agent[
             ](gpu_state.d_prev_deter_dproj_buf.unsafe_ptr())
 
             # Copy d_prev_deter_gru -> d_recurrent_deter
-            @always_inline
-            fn ad_copy_rec_d(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[DETER_FLAT](d, s)
+            comptime ad_copy_rec_d = copy_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_copy_rec_d, ad_copy_rec_d](
                 rec_deter,
@@ -2807,16 +2516,7 @@ struct DreamerV3Agent[
             )
 
             # + d_prev_deter_concat
-            @always_inline
-            fn ad_add_concat_d(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[DETER_FLAT](d, s)
+            comptime ad_add_concat_d = accumulate_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_add_concat_d, ad_add_concat_d](
                 rec_deter,
@@ -2826,16 +2526,7 @@ struct DreamerV3Agent[
             )
 
             # + d_prev_deter_dproj
-            @always_inline
-            fn ad_add_dproj_d(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[DETER_FLAT](d, s)
+            comptime ad_add_dproj_d = accumulate_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_add_dproj_d, ad_add_dproj_d](
                 rec_deter,
@@ -2854,16 +2545,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
             ](gpu_state.d_prev_stoch_bwd_buf.unsafe_ptr())
 
-            @always_inline
-            fn ad_copy_rec_s(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[STOCH_FLAT_SZ](d, s)
+            comptime ad_copy_rec_s = copy_kernel[STOCH_FLAT_SZ]
 
             ctx.enqueue_function[ad_copy_rec_s, ad_copy_rec_s](
                 rec_stoch_dst,
@@ -2877,14 +2559,7 @@ struct DreamerV3Agent[
             # ══════════════════════════════════════════════════════════════
             var clamp_max = Scalar[dtype](1.0)
 
-            @always_inline
-            fn ad_clamp_rec_d(
-                b: LayoutTensor[
-                    dtype, Layout.row_major(DETER_FLAT), MutAnyOrigin
-                ],
-                m: Scalar[dtype],
-            ):
-                clamp_kernel[DETER_FLAT](b, m)
+            comptime ad_clamp_rec_d = clamp_kernel[DETER_FLAT]
 
             ctx.enqueue_function[ad_clamp_rec_d, ad_clamp_rec_d](
                 rec_deter,
@@ -2893,14 +2568,7 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
-            @always_inline
-            fn ad_clamp_rec_s(
-                b: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_FLAT_SZ), MutAnyOrigin
-                ],
-                m: Scalar[dtype],
-            ):
-                clamp_kernel[STOCH_FLAT_SZ](b, m)
+            comptime ad_clamp_rec_s = clamp_kernel[STOCH_FLAT_SZ]
 
             ctx.enqueue_function[ad_clamp_rec_s, ad_clamp_rec_s](
                 rec_stoch_dst,
@@ -2933,7 +2601,14 @@ struct DreamerV3Agent[
             + cont_loss
             + (0.5 * dyn_kl_total + 0.1 * rep_kl_total)
         )
-        return (total, obs_loss, rew_loss, cont_loss, dyn_kl_total, rep_kl_total)
+        return (
+            total,
+            obs_loss,
+            rew_loss,
+            cont_loss,
+            dyn_kl_total,
+            rep_kl_total,
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # GPU Methods
@@ -3126,14 +2801,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B * OBS), MutAnyOrigin
             ](gpu_state.symlog_obs_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_symlog(
-                o: LayoutTensor[dtype, Layout.row_major(B * OBS), MutAnyOrigin],
-                inp: LayoutTensor[
-                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
-                ],
-            ):
-                symlog_kernel[B * OBS](o, inp)
+            comptime run_symlog = symlog_kernel[B * OBS]
 
             comptime SYMLOG_BLOCKS = (B * OBS + TPB - 1) // TPB
             ctx.enqueue_function[run_symlog, run_symlog](
@@ -3172,16 +2840,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin
             ](gpu_state.symlog_obs_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_symlog(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(SYMLOG_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[SYMLOG_SLICE](d, s)
+            comptime copy_symlog = copy_kernel[SYMLOG_SLICE]
 
             comptime COPY_SL_BLOCKS = (SYMLOG_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_symlog, copy_symlog](
@@ -3199,14 +2858,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, ACT), MutAnyOrigin
             ](gpu_state.norm_action_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_action_norm(
-                o: LayoutTensor[dtype, Layout.row_major(B, ACT), MutAnyOrigin],
-                inp: LayoutTensor[
-                    dtype, Layout.row_major(B, ACT), MutAnyOrigin
-                ],
-            ):
-                action_normalize_kernel[B, ACT](o, inp)
+            comptime run_action_norm = action_normalize_kernel[B, ACT]
 
             comptime NORM_BLOCKS = (B * ACT + TPB - 1) // TPB
             ctx.enqueue_function[run_action_norm, run_action_norm](
@@ -3225,16 +2877,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin
             ](gpu_state.norm_action_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_nact(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(ACT_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[ACT_SLICE](d, s)
+            comptime copy_nact = copy_kernel[ACT_SLICE]
 
             comptime COPY_NA_BLOCKS = (ACT_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_nact, copy_nact](
@@ -3256,16 +2899,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin
             ](gpu_state.deter_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_prev_d(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(PREV_D_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[PREV_D_SLICE](d, s)
+            comptime copy_prev_d = copy_kernel[PREV_D_SLICE]
 
             comptime COPY_PD_BLOCKS = (PREV_D_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_prev_d, copy_prev_d](
@@ -3333,19 +2967,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, GRU_IN), MutAnyOrigin
             ](gpu_state.concat_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_concat_gru(
-                co: LayoutTensor[
-                    dtype, Layout.row_major(B, GRU_IN), MutAnyOrigin
-                ],
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                pd: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
-                ps: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
-                pa: LayoutTensor[dtype, Layout.row_major(B, HID), MutAnyOrigin],
-            ):
-                concat_gru_input_kernel[B, DETER, HID](co, d, pd, ps, pa)
+            comptime run_concat_gru = concat_gru_input_kernel[B, DETER, HID]
 
             comptime CONCAT_BLOCKS = (B * GRU_IN + TPB - 1) // TPB
             ctx.enqueue_function[run_concat_gru, run_concat_gru](
@@ -3404,16 +3026,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin
             ](gpu_state.gate_out_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_gate(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(GATE_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[GATE_SLICE](d, s)
+            comptime copy_gate = copy_kernel[GATE_SLICE]
 
             comptime COPY_G_BLOCKS = (GATE_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_gate, copy_gate](
@@ -3428,19 +3041,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, DETER), MutAnyOrigin
             ](gpu_state.new_deter_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_gru_gate(
-                nd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                pd: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                go: LayoutTensor[
-                    dtype, Layout.row_major(B, 3 * DETER), MutAnyOrigin
-                ],
-            ):
-                gru_gate_kernel[B, DETER](nd, pd, go)
+            comptime run_gru_gate = gru_gate_kernel[B, DETER]
 
             comptime GATE_BLOCKS = (B * DETER + TPB - 1) // TPB
             ctx.enqueue_function[run_gru_gate, run_gru_gate](
@@ -3457,19 +3058,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, POST_IN), MutAnyOrigin
             ](gpu_state.post_in_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_concat_de(
-                co: LayoutTensor[
-                    dtype, Layout.row_major(B, POST_IN), MutAnyOrigin
-                ],
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                e: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-            ):
-                concat_deter_embed_kernel[B, DETER, STOCH](co, d, e)
+            comptime run_concat_de = concat_deter_embed_kernel[B, DETER, STOCH]
 
             comptime DE_BLOCKS = (B * POST_IN + TPB - 1) // TPB
             ctx.enqueue_function[run_concat_de, run_concat_de](
@@ -3526,26 +3115,12 @@ struct DreamerV3Agent[
                 * UInt32(B * Self.stoch_dim * Self.classes + 1)
             )
 
-            @always_inline
-            fn run_cat_post(
-                o: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                p: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                l: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                s: Scalar[DType.uint32],
-                tr: Scalar[DType.bool],
-            ):
-                categorical_sample_kernel[
-                    B,
-                    Self.stoch_dim,
-                    Self.classes,
-                    Self.StateType.RSSMType.UNIMIX,
-                ](o, p, l, s, tr)
+            comptime run_cat_post = categorical_sample_kernel[
+                B,
+                Self.stoch_dim,
+                Self.classes,
+                Self.StateType.RSSMType.UNIMIX,
+            ]
 
             comptime CAT_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
             ctx.enqueue_function[run_cat_post, run_cat_post](
@@ -3566,26 +3141,12 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, STOCH), MutAnyOrigin
             ](gpu_state.dummy_stoch_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_cat_prior(
-                o: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                p: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                l: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-                s: Scalar[DType.uint32],
-                tr: Scalar[DType.bool],
-            ):
-                categorical_sample_kernel[
-                    B,
-                    Self.stoch_dim,
-                    Self.classes,
-                    Self.StateType.RSSMType.UNIMIX,
-                ](o, p, l, s, tr)
+            comptime run_cat_prior = categorical_sample_kernel[
+                B,
+                Self.stoch_dim,
+                Self.classes,
+                Self.StateType.RSSMType.UNIMIX,
+            ]
 
             ctx.enqueue_function[run_cat_prior, run_cat_prior](
                 dummy_stoch_2d,
@@ -3602,17 +3163,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(B, FEAT), MutAnyOrigin
             ](gpu_state.feat_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_concat_feat(
-                f: LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin],
-                d: LayoutTensor[
-                    dtype, Layout.row_major(B, DETER), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(B, STOCH), MutAnyOrigin
-                ],
-            ):
-                concat_feat_kernel[B, DETER, STOCH](f, d, s)
+            comptime run_concat_feat = concat_feat_kernel[B, DETER, STOCH]
 
             comptime FEAT_BLOCKS = (B * FEAT + TPB - 1) // TPB
             ctx.enqueue_function[run_concat_feat, run_concat_feat](
@@ -3633,16 +3184,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(DETER_SLICE), MutAnyOrigin
             ](gpu_state.new_deter_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_deter(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(DETER_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(DETER_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[DETER_SLICE](d, s)
+            comptime copy_deter = copy_kernel[DETER_SLICE]
 
             comptime COPY_D_BLOCKS = (DETER_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_deter, copy_deter](
@@ -3660,16 +3202,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
             ](gpu_state.new_stoch_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_stoch(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[STOCH_SLICE](d, s)
+            comptime copy_stoch = copy_kernel[STOCH_SLICE]
 
             comptime COPY_S_BLOCKS = (STOCH_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_stoch, copy_stoch](
@@ -3687,16 +3220,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(FEAT_SLICE), MutAnyOrigin
             ](gpu_state.feat_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_feat(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[FEAT_SLICE](d, s)
+            comptime copy_feat = copy_kernel[FEAT_SLICE]
 
             comptime COPY_F_BLOCKS = (FEAT_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_feat, copy_feat](
@@ -3714,8 +3238,12 @@ struct DreamerV3Agent[
         # Replaces per-timestep head backward + separate BPTT loop with a
         # single unified reverse pass matching the tested CPU autodiff code.
         var wm_losses = self._gpu_bptt_autodiff(
-            ctx, gpu_state,
-            batch_obs, batch_actions, batch_rewards, batch_dones,
+            ctx,
+            gpu_state,
+            batch_obs,
+            batch_actions,
+            batch_rewards,
+            batch_dones,
         )
         var total_wm_loss = wm_losses[0]
         var obs_loss = wm_losses[1]
@@ -3815,12 +3343,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(IB_DETER), MutAnyOrigin
         ](gpu_state.imag_deter_buf.unsafe_ptr())
 
-        @always_inline
-        fn copy_all_deter(
-            d: LayoutTensor[dtype, Layout.row_major(IB_DETER), MutAnyOrigin],
-            s: LayoutTensor[dtype, Layout.row_major(IB_DETER), MutAnyOrigin],
-        ):
-            copy_kernel[IB_DETER](d, s)
+        comptime copy_all_deter = copy_kernel[IB_DETER]
 
         comptime INIT_D_BLOCKS = (IB_DETER + TPB - 1) // TPB
         ctx.enqueue_function[copy_all_deter, copy_all_deter](
@@ -3838,12 +3361,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(IB_STOCH), MutAnyOrigin
         ](gpu_state.imag_stoch_buf.unsafe_ptr())
 
-        @always_inline
-        fn copy_all_stoch(
-            d: LayoutTensor[dtype, Layout.row_major(IB_STOCH), MutAnyOrigin],
-            s: LayoutTensor[dtype, Layout.row_major(IB_STOCH), MutAnyOrigin],
-        ):
-            copy_kernel[IB_STOCH](d, s)
+        comptime copy_all_stoch = copy_kernel[IB_STOCH]
 
         comptime INIT_S_BLOCKS = (IB_STOCH + TPB - 1) // TPB
         ctx.enqueue_function[copy_all_stoch, copy_all_stoch](
@@ -3875,19 +3393,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
             ](gpu_state.imag_feat_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_concat_imag_feat(
-                f: LayoutTensor[
-                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-                ],
-                d: LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                ],
-            ):
-                concat_feat_kernel[IB, DETER, STOCH](f, d, s)
+            comptime run_concat_imag_feat = concat_feat_kernel[IB, DETER, STOCH]
 
             # Save deter/stoch for multi-step actor-critic
             comptime IMAG_D_SLICE = IB * DETER
@@ -3905,27 +3411,9 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
             ](gpu_state.imag_stoch_buf.unsafe_ptr() + read_off * STOCH)
 
-            @always_inline
-            fn copy_imag_d(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_D_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[IMAG_D_SLICE](d, s)
+            comptime copy_imag_d = copy_kernel[IMAG_D_SLICE]
 
-            @always_inline
-            fn copy_imag_s(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_S_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[IMAG_S_SLICE](d, s)
+            comptime copy_imag_s = copy_kernel[IMAG_S_SLICE]
 
             comptime COPY_ID_BLOCKS = (IMAG_D_SLICE + TPB - 1) // TPB
             comptime COPY_IS_BLOCKS = (IMAG_S_SLICE + TPB - 1) // TPB
@@ -3984,16 +3472,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
             ](gpu_state.actor_out_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_ao(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(AO_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[AO_SLICE](d, s)
+            comptime copy_ao = copy_kernel[AO_SLICE]
 
             comptime COPY_AO_BLOCKS = (AO_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_ao, copy_ao](
@@ -4016,16 +3495,7 @@ struct DreamerV3Agent[
                 * UInt32(IB * ACT + 1)
             )
 
-            @always_inline
-            fn run_sample_actions(
-                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-                lp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ao: LayoutTensor[
-                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-                ],
-                s: Scalar[DType.uint32],
-            ):
-                tanh_normal_sample_kernel[IB, ACT](a, lp, ao, s)
+            comptime run_sample_actions = tanh_normal_sample_kernel[IB, ACT]
 
             comptime SAMPLE_BLOCKS = (IB + TPB - 1) // TPB
             ctx.enqueue_function[run_sample_actions, run_sample_actions](
@@ -4046,16 +3516,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
             ](gpu_state.imag_actions_buf.unsafe_ptr())
 
-            @always_inline
-            fn copy_imag_a(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(IMAG_A_SLICE), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[IMAG_A_SLICE](d, s)
+            comptime copy_imag_a = copy_kernel[IMAG_A_SLICE]
 
             comptime COPY_IA_BLOCKS = (IMAG_A_SLICE + TPB - 1) // TPB
             ctx.enqueue_function[copy_imag_a, copy_imag_a](
@@ -4093,16 +3554,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(BINS), MutAnyOrigin
             ](gpu_state.bins_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_decode_reward(
-                v: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                l: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
-                se: Scalar[DType.bool],
-            ):
-                decode_value_kernel[IB, BINS](v, l, b, se)
+            comptime run_decode_reward = decode_value_kernel[IB, BINS]
 
             ctx.enqueue_function[run_decode_reward, run_decode_reward](
                 rewards_h,
@@ -4133,12 +3585,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB), MutAnyOrigin
             ](gpu_state.imag_continues_buf.unsafe_ptr() + h * IB)
 
-            @always_inline
-            fn run_sigmoid(
-                o: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                i: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ):
-                sigmoid_kernel[IB](o, i)
+            comptime run_sigmoid = sigmoid_kernel[IB]
 
             ctx.enqueue_function[run_sigmoid, run_sigmoid](
                 continues_h,
@@ -4163,16 +3610,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB), MutAnyOrigin
             ](gpu_state.imag_values_buf.unsafe_ptr() + h * IB)
 
-            @always_inline
-            fn run_decode_value(
-                v: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                l: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
-                se: Scalar[DType.bool],
-            ):
-                decode_value_kernel[IB, BINS](v, l, b, se)
+            comptime run_decode_value = decode_value_kernel[IB, BINS]
 
             ctx.enqueue_function[run_decode_value, run_decode_value](
                 values_h,
@@ -4199,16 +3637,7 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(IB, ACT), MutAnyOrigin
                 ](gpu_state.imag_norm_act_buf.unsafe_ptr())
 
-                @always_inline
-                fn run_imag_act_norm(
-                    o: LayoutTensor[
-                        dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-                    ],
-                    inp: LayoutTensor[
-                        dtype, Layout.row_major(IB, ACT), MutAnyOrigin
-                    ],
-                ):
-                    action_normalize_kernel[IB, ACT](o, inp)
+                comptime run_imag_act_norm = action_normalize_kernel[IB, ACT]
 
                 comptime IMAG_NORM_BLOCKS = (IB * ACT + TPB - 1) // TPB
                 ctx.enqueue_function[run_imag_act_norm, run_imag_act_norm](
@@ -4267,25 +3696,9 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(IB, GRU_IN_IB), MutAnyOrigin
                 ](gpu_state.imag_concat_buf.unsafe_ptr())
 
-                @always_inline
-                fn run_imag_concat_gru(
-                    co: LayoutTensor[
-                        dtype, Layout.row_major(IB, GRU_IN_IB), MutAnyOrigin
-                    ],
-                    d: LayoutTensor[
-                        dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                    ],
-                    pd: LayoutTensor[
-                        dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                    ],
-                    ps: LayoutTensor[
-                        dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                    ],
-                    pa: LayoutTensor[
-                        dtype, Layout.row_major(IB, HID), MutAnyOrigin
-                    ],
-                ):
-                    concat_gru_input_kernel[IB, DETER, HID](co, d, pd, ps, pa)
+                comptime run_imag_concat_gru = concat_gru_input_kernel[
+                    IB, DETER, HID
+                ]
 
                 comptime IMAG_CONCAT_BLOCKS = (IB * GRU_IN_IB + TPB - 1) // TPB
                 ctx.enqueue_function[run_imag_concat_gru, run_imag_concat_gru](
@@ -4350,16 +3763,7 @@ struct DreamerV3Agent[
                     dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
                 ](gpu_state.imag_gate_buf.unsafe_ptr())
 
-                @always_inline
-                fn copy_imag_gate(
-                    d: LayoutTensor[
-                        dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
-                    ],
-                    s: LayoutTensor[
-                        dtype, Layout.row_major(IMAG_GATE_SLICE), MutAnyOrigin
-                    ],
-                ):
-                    copy_kernel[IMAG_GATE_SLICE](d, s)
+                comptime copy_imag_gate = copy_kernel[IMAG_GATE_SLICE]
 
                 comptime COPY_IG_BLOCKS = (IMAG_GATE_SLICE + TPB - 1) // TPB
                 ctx.enqueue_function[copy_imag_gate, copy_imag_gate](
@@ -4370,19 +3774,7 @@ struct DreamerV3Agent[
                 )
 
                 # Apply GRU gating -> next_deter
-                @always_inline
-                fn run_imag_gru_gate(
-                    nd: LayoutTensor[
-                        dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                    ],
-                    pd: LayoutTensor[
-                        dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                    ],
-                    go: LayoutTensor[
-                        dtype, Layout.row_major(IB, 3 * DETER), MutAnyOrigin
-                    ],
-                ):
-                    gru_gate_kernel[IB, DETER](nd, pd, go)
+                comptime run_imag_gru_gate = gru_gate_kernel[IB, DETER]
 
                 comptime IMAG_GATE_BLOCKS = (IB * DETER + TPB - 1) // TPB
                 ctx.enqueue_function[run_imag_gru_gate, run_imag_gru_gate](
@@ -4416,26 +3808,12 @@ struct DreamerV3Agent[
                     * UInt32(IB * Self.stoch_dim * Self.classes + 1)
                 )
 
-                @always_inline
-                fn run_imag_cat_prior(
-                    o: LayoutTensor[
-                        dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                    ],
-                    p: LayoutTensor[
-                        dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                    ],
-                    l: LayoutTensor[
-                        dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                    ],
-                    s: Scalar[DType.uint32],
-                    tr: Scalar[DType.bool],
-                ):
-                    categorical_sample_kernel[
-                        IB,
-                        Self.stoch_dim,
-                        Self.classes,
-                        Self.StateType.RSSMType.UNIMIX,
-                    ](o, p, l, s, tr)
+                comptime run_imag_cat_prior = categorical_sample_kernel[
+                    IB,
+                    Self.stoch_dim,
+                    Self.classes,
+                    Self.StateType.RSSMType.UNIMIX,
+                ]
 
                 comptime IMAG_CAT_BLOCKS = (
                     IB * Self.stoch_dim + TPB - 1
@@ -4466,26 +3844,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
         ](gpu_state.imag_continues_buf.unsafe_ptr())
 
-        @always_inline
-        fn run_lambda_returns(
-            ret: LayoutTensor[
-                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
-            ],
-            rew: LayoutTensor[
-                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
-            ],
-            val: LayoutTensor[
-                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
-            ],
-            cont: LayoutTensor[
-                dtype, Layout.row_major(HORIZON, IB), MutAnyOrigin
-            ],
-            gamma: Scalar[dtype],
-            lambda_: Scalar[dtype],
-        ):
-            lambda_returns_kernel[HORIZON, IB](
-                ret, rew, val, cont, gamma, lambda_
-            )
+        comptime run_lambda_returns = lambda_returns_kernel[HORIZON, IB]
 
         comptime LAMBDA_BLOCKS = (IB + TPB - 1) // TPB
         ctx.enqueue_function[run_lambda_returns, run_lambda_returns](
@@ -4509,14 +3868,7 @@ struct DreamerV3Agent[
             gpu_state.returns_minmax_buf.unsafe_ptr()
         )
 
-        @always_inline
-        fn run_minmax(
-            r: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
-            d: LayoutTensor[
-                dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
-            ],
-        ):
-            min_max_reduce_kernel[RETURNS_SIZE, TPB](r, d)
+        comptime run_minmax = min_max_reduce_kernel[RETURNS_SIZE, TPB]
 
         ctx.enqueue_function[run_minmax, run_minmax](
             minmax_2,
@@ -4557,13 +3909,7 @@ struct DreamerV3Agent[
                 gpu_state.imag_rewards_buf.unsafe_ptr() + h * IB
             )
 
-            @always_inline
-            fn run_adv_precompute(
-                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ret: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                val: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ):
-                advantage_kernel[IB](adv, ret, val)
+            comptime run_adv_precompute = advantage_kernel[IB]
 
             ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
                 adv_h,
@@ -4578,13 +3924,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin
         ](gpu_state.imag_rewards_buf.unsafe_ptr())
 
-        @always_inline
-        fn run_scale_adv(
-            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
-            lo_val: Scalar[dtype],
-            inv_s: Scalar[dtype],
-        ):
-            normalize_returns_elementwise_kernel[ADV_TOTAL](a, lo_val, inv_s)
+        comptime run_scale_adv = normalize_returns_elementwise_kernel[ADV_TOTAL]
 
         # adv = (adv - 0) * inv_rscale = adv / rscale
         ctx.enqueue_function[run_scale_adv, run_scale_adv](
@@ -4596,11 +3936,7 @@ struct DreamerV3Agent[
         )
 
         # Normalize advantages: (adv - mean) / max(std, 1.0)
-        @always_inline
-        fn run_norm_adv(
-            a: LayoutTensor[dtype, Layout.row_major(ADV_TOTAL), MutAnyOrigin],
-        ):
-            normalize_advantages_kernel[ADV_TOTAL, TPB](a)
+        comptime run_norm_adv = normalize_advantages_kernel[ADV_TOTAL, TPB]
 
         ctx.enqueue_function[run_norm_adv, run_norm_adv](
             all_adv,
@@ -4612,17 +3948,9 @@ struct DreamerV3Agent[
         # Advantages already computed from raw returns above.
         # Now normalize returns so critic trains on symlog(normalized_return).
         # This matches reference: critic sees [0,1]-scale targets.
-        @always_inline
-        fn run_norm_returns(
-            ret: LayoutTensor[
-                dtype, Layout.row_major(RETURNS_SIZE), MutAnyOrigin
-            ],
-            lo_val: Scalar[dtype],
-            inv_s: Scalar[dtype],
-        ):
-            normalize_returns_elementwise_kernel[RETURNS_SIZE](
-                ret, lo_val, inv_s
-            )
+        comptime run_norm_returns = normalize_returns_elementwise_kernel[
+            RETURNS_SIZE
+        ]
 
         ctx.enqueue_function[run_norm_returns, run_norm_returns](
             returns_flat,
@@ -4658,19 +3986,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
             ](gpu_state.imag_feat_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_concat_h_feat(
-                f: LayoutTensor[
-                    dtype, Layout.row_major(IB, FEAT), MutAnyOrigin
-                ],
-                d: LayoutTensor[
-                    dtype, Layout.row_major(IB, DETER), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(IB, STOCH), MutAnyOrigin
-                ],
-            ):
-                concat_feat_kernel[IB, DETER, STOCH](f, d, s)
+            comptime run_concat_h_feat = concat_feat_kernel[IB, DETER, STOCH]
 
             ctx.enqueue_function[run_concat_h_feat, run_concat_h_feat](
                 h_feat_2d,
@@ -4711,12 +4027,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB), MutAnyOrigin
             ](gpu_state.symlog_returns_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_symlog_ret_h(
-                o: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                inp: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-            ):
-                symlog_kernel[IB](o, inp)
+            comptime run_symlog_ret_h = symlog_kernel[IB]
 
             ctx.enqueue_function[run_symlog_ret_h, run_symlog_ret_h](
                 symlog_ret_h,
@@ -4729,15 +4040,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, BINS), MutAnyOrigin
             ](gpu_state.two_hot_targets_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_two_hot_h(
-                tgt: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                vals: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                b: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
-            ):
-                two_hot_encode_kernel[IB, BINS](tgt, vals, b)
+            comptime run_two_hot_h = two_hot_encode_kernel[IB, BINS]
 
             ctx.enqueue_function[run_two_hot_h, run_two_hot_h](
                 two_hot_h,
@@ -4751,20 +4054,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, BINS), MutAnyOrigin
             ](gpu_state.critic_grad_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_critic_grad_h(
-                g: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                l: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                t: LayoutTensor[
-                    dtype, Layout.row_major(IB, BINS), MutAnyOrigin
-                ],
-                ib: Scalar[dtype],
-            ):
-                two_hot_ce_grad_kernel[IB, BINS](g, l, t, ib)
+            comptime run_critic_grad_h = two_hot_ce_grad_kernel[IB, BINS]
 
             ctx.enqueue_function[run_critic_grad_h, run_critic_grad_h](
                 critic_grad_h,
@@ -4827,20 +4117,7 @@ struct DreamerV3Agent[
                 dtype, Layout.row_major(IB, ACTOR_OUT_DIM), MutAnyOrigin
             ](gpu_state.actor_grad_buf.unsafe_ptr())
 
-            @always_inline
-            fn run_reinforce_h(
-                g: LayoutTensor[
-                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-                ],
-                ao: LayoutTensor[
-                    dtype, Layout.row_major(IB, 2 * ACT), MutAnyOrigin
-                ],
-                a: LayoutTensor[dtype, Layout.row_major(IB, ACT), MutAnyOrigin],
-                adv: LayoutTensor[dtype, Layout.row_major(IB), MutAnyOrigin],
-                ib_scale: Scalar[dtype],
-                ec: Scalar[dtype],
-            ):
-                reinforce_grad_kernel[IB, ACT](g, ao, a, adv, ib_scale, ec)
+            comptime run_reinforce_h = reinforce_grad_kernel[IB, ACT]
 
             ctx.enqueue_function[run_reinforce_h, run_reinforce_h](
                 actor_grad_h,
@@ -4953,36 +4230,51 @@ struct DreamerV3Agent[
                 actor_param_norm += p * p
             actor_param_norm = sqrt(actor_param_norm)
 
-            print(
-                "  [diag] step="
-                + String(self.train_step_count)
-                + " wm_loss="
-                + String(total_wm_loss)[:7]
-                + " obs="
-                + String(obs_loss)[:6]
-                + " rew="
-                + String(rew_loss)[:6]
-                + " cont="
-                + String(cont_loss)[:6]
-                + " kl="
-                + String(dyn_kl_total)[:6]
-                + " adv_std="
-                + String(sqrt(adv_var))[:6]
-                + " val="
-                + String(avg_val)[:6]
-                + " actor_grad="
-                + String(actor_grad_norm)
-            )
+            # print(
+            #     "  [diag] step="
+            #     + String(self.train_step_count)
+            #     + " wm_loss="
+            #     + String(total_wm_loss)[:7]
+            #     + " obs="
+            #     + String(obs_loss)[:6]
+            #     + " rew="
+            #     + String(rew_loss)[:6]
+            #     + " cont="
+            #     + String(cont_loss)[:6]
+            #     + " kl="
+            #     + String(dyn_kl_total)[:6]
+            #     + " adv_std="
+            #     + String(sqrt(adv_var))[:6]
+            #     + " val="
+            #     + String(avg_val)[:6]
+            #     + " actor_grad="
+            #     + String(actor_grad_norm)
+            # )
 
             if self.logger:
                 try:
                     var diag_step = self.train_step_count
-                    self.logger[].log_scalar("wm_loss", total_wm_loss, diag_step)
+                    self.logger[].log_scalar(
+                        "wm_loss", total_wm_loss, diag_step
+                    )
                     self.logger[].log_scalar("obs_loss", obs_loss, diag_step)
                     self.logger[].log_scalar("reward_loss", rew_loss, diag_step)
-                    self.logger[].log_scalar("continue_loss", cont_loss, diag_step)
+                    self.logger[].log_scalar(
+                        "continue_loss", cont_loss, diag_step
+                    )
                     self.logger[].log_scalar("dyn_kl", dyn_kl_total, diag_step)
                     self.logger[].log_scalar("rep_kl", rep_kl_total, diag_step)
+                    self.logger[].log_scalar("adv_mean", avg_adv, diag_step)
+                    self.logger[].log_scalar("adv_min", adv_min, diag_step)
+                    self.logger[].log_scalar("adv_max", adv_max, diag_step)
+                    self.logger[].log_scalar("adv_var", adv_var, diag_step)
+                    self.logger[].log_scalar("val_mean", avg_val, diag_step)
+                    self.logger[].log_scalar(
+                        "actor_grad_norm", actor_grad_norm, diag_step
+                    )
+                    self.logger[].log_scalar(
+                        "actor_param_norm", actor_param_norm, diag_step
+                    )
                 except:
                     pass
 
@@ -5305,164 +4597,20 @@ struct DreamerV3Agent[
         self.upload_to_gpu(gpu_state, ctx)
         ctx.synchronize()
 
-        # ── Kernel wrappers ──────────────────────────────────────────
-        @always_inline
-        fn run_symlog(
-            o: LayoutTensor[
-                dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
-            ],
-            i: LayoutTensor[
-                dtype, Layout.row_major(n_envs * OBS), MutAnyOrigin
-            ],
-        ):
-            symlog_kernel[n_envs * OBS](o, i)
-
-        @always_inline
-        fn run_action_norm(
-            o: LayoutTensor[dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin],
-            i: LayoutTensor[dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin],
-        ):
-            action_normalize_kernel[n_envs, ACT](o, i)
-
-        @always_inline
-        fn run_concat_gru(
-            co: LayoutTensor[
-                dtype, Layout.row_major(n_envs, GRU_IN), MutAnyOrigin
-            ],
-            d: LayoutTensor[
-                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
-            ],
-            pd: LayoutTensor[
-                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
-            ],
-            ps: LayoutTensor[
-                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
-            ],
-            pa: LayoutTensor[
-                dtype, Layout.row_major(n_envs, HID), MutAnyOrigin
-            ],
-        ):
-            concat_gru_input_kernel[n_envs, DETER, HID](co, d, pd, ps, pa)
-
-        @always_inline
-        fn run_gru_gate(
-            nd: LayoutTensor[
-                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
-            ],
-            pd: LayoutTensor[
-                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
-            ],
-            go: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs, 3 * DETER),
-                MutAnyOrigin,
-            ],
-        ):
-            gru_gate_kernel[n_envs, DETER](nd, pd, go)
-
-        @always_inline
-        fn run_concat_de(
-            co: LayoutTensor[
-                dtype, Layout.row_major(n_envs, POST_IN), MutAnyOrigin
-            ],
-            d: LayoutTensor[
-                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
-            ],
-            e: LayoutTensor[
-                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
-            ],
-        ):
-            concat_deter_embed_kernel[n_envs, DETER, STOCH](co, d, e)
-
-        @always_inline
-        fn run_cat_sample(
-            o: LayoutTensor[
-                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
-            ],
-            p: LayoutTensor[
-                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
-            ],
-            l: LayoutTensor[
-                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
-            ],
-            s: Scalar[DType.uint32],
-            tr: Scalar[DType.bool],
-        ):
-            categorical_sample_kernel[
-                n_envs, Self.stoch_dim, Self.classes, RSSMType.UNIMIX
-            ](o, p, l, s, tr)
-
-        @always_inline
-        fn run_concat_feat(
-            f: LayoutTensor[
-                dtype, Layout.row_major(n_envs, FEAT), MutAnyOrigin
-            ],
-            d: LayoutTensor[
-                dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
-            ],
-            s: LayoutTensor[
-                dtype, Layout.row_major(n_envs, STOCH), MutAnyOrigin
-            ],
-        ):
-            concat_feat_kernel[n_envs, DETER, STOCH](f, d, s)
-
-        @always_inline
-        fn run_sample_actions(
-            a: LayoutTensor[dtype, Layout.row_major(n_envs, ACT), MutAnyOrigin],
-            lp: LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin],
-            ao: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs, 2 * ACT),
-                MutAnyOrigin,
-            ],
-            s: Scalar[DType.uint32],
-        ):
-            tanh_normal_sample_kernel[n_envs, ACT](a, lp, ao, s)
-
-        @always_inline
-        fn run_copy_deter(
-            d: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * DETER),
-                MutAnyOrigin,
-            ],
-            s: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * DETER),
-                MutAnyOrigin,
-            ],
-        ):
-            copy_kernel[n_envs * DETER](d, s)
-
-        @always_inline
-        fn run_copy_stoch(
-            d: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * STOCH),
-                MutAnyOrigin,
-            ],
-            s: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * STOCH),
-                MutAnyOrigin,
-            ],
-        ):
-            copy_kernel[n_envs * STOCH](d, s)
-
-        @always_inline
-        fn run_copy_act(
-            d: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * ACT),
-                MutAnyOrigin,
-            ],
-            s: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * ACT),
-                MutAnyOrigin,
-            ],
-        ):
-            copy_kernel[n_envs * ACT](d, s)
+        # ── Kernel aliases ──────────────────────────────────────────
+        comptime run_symlog = symlog_kernel[n_envs * OBS]
+        comptime run_action_norm = action_normalize_kernel[n_envs, ACT]
+        comptime run_concat_gru = concat_gru_input_kernel[n_envs, DETER, HID]
+        comptime run_gru_gate = gru_gate_kernel[n_envs, DETER]
+        comptime run_concat_de = concat_deter_embed_kernel[n_envs, DETER, STOCH]
+        comptime run_cat_sample = categorical_sample_kernel[
+            n_envs, Self.stoch_dim, Self.classes, RSSMType.UNIMIX
+        ]
+        comptime run_concat_feat = concat_feat_kernel[n_envs, DETER, STOCH]
+        comptime run_sample_actions = tanh_normal_sample_kernel[n_envs, ACT]
+        comptime run_copy_deter = copy_kernel[n_envs * DETER]
+        comptime run_copy_stoch = copy_kernel[n_envs * STOCH]
+        comptime run_copy_act = copy_kernel[n_envs * ACT]
 
         @always_inline
         fn run_rssm_reset_done(
@@ -5623,35 +4771,9 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(n_envs * ACT), MutAnyOrigin
         ](inf_prev_act.unsafe_ptr())
 
-        @always_inline
-        fn run_zero_d(
-            b: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * DETER),
-                MutAnyOrigin,
-            ],
-        ):
-            zero_kernel[n_envs * DETER](b)
-
-        @always_inline
-        fn run_zero_s(
-            b: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * STOCH),
-                MutAnyOrigin,
-            ],
-        ):
-            zero_kernel[n_envs * STOCH](b)
-
-        @always_inline
-        fn run_zero_a(
-            b: LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs * ACT),
-                MutAnyOrigin,
-            ],
-        ):
-            zero_kernel[n_envs * ACT](b)
+        comptime run_zero_d = zero_kernel[n_envs * DETER]
+        comptime run_zero_s = zero_kernel[n_envs * STOCH]
+        comptime run_zero_a = zero_kernel[n_envs * ACT]
 
         ctx.enqueue_function[run_zero_d, run_zero_d](
             z_d, grid_dim=(COPY_D_BLOCKS,), block_dim=(TPB,)
@@ -6101,12 +5223,9 @@ fn _clip_grads_gpu[
         partial_sums_buf.unsafe_ptr()
     )
 
-    @always_inline
-    fn run_norm(
-        p: LayoutTensor[dtype, Layout.row_major(GRAD_BLOCKS), MutAnyOrigin],
-        g: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-    ):
-        gradient_norm_kernel[dtype, PARAM_SIZE, GRAD_BLOCKS, TPB](p, g)
+    comptime run_norm = gradient_norm_kernel[
+        dtype, PARAM_SIZE, GRAD_BLOCKS, TPB
+    ]
 
     ctx.enqueue_function[run_norm, run_norm](
         ps,
@@ -6115,15 +5234,9 @@ fn _clip_grads_gpu[
         block_dim=(TPB,),
     )
 
-    @always_inline
-    fn run_clip(
-        g: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-        p: LayoutTensor[dtype, Layout.row_major(GRAD_BLOCKS), MutAnyOrigin],
-        m: Scalar[dtype],
-    ):
-        gradient_reduce_apply_fused_kernel[dtype, PARAM_SIZE, GRAD_BLOCKS, TPB](
-            g, p, m
-        )
+    comptime run_clip = gradient_reduce_apply_fused_kernel[
+        dtype, PARAM_SIZE, GRAD_BLOCKS, TPB
+    ]
 
     ctx.enqueue_function[run_clip, run_clip](
         grads,

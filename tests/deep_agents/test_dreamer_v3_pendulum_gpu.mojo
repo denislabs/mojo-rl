@@ -75,7 +75,7 @@ fn main() raises:
         verbose=True,
         print_every=5000,
         logger=UnsafePointer(to=logger),
-        diag_every=0,
+        diag_every=1000,
     )
 
     logger.close()
