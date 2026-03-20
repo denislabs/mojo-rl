@@ -11,7 +11,7 @@ comptime N_ENVS = 8
 
 fn main() raises:
     print("=" * 60)
-    print("DreamerV3 GPU Diagnostic with timing — Pendulum")
+    print("DreamerV3 GPU Diagnostic with timing 2 levels — Pendulum")
     print("=" * 60)
 
     comptime OBS = 3

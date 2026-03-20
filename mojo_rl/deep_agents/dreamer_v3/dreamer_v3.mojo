@@ -2746,6 +2746,9 @@ struct DreamerV3Agent[
         comptime GHNet = Self.StateType.RSSMType.GRUHiddenNet
         comptime GGNet = Self.StateType.RSSMType.GRUGateNet
 
+        # ── Phase timing (synced to measure actual GPU time) ─────────────
+        var _pt0 = perf_counter_ns()
+
         # ── 1. Upload batch data to GPU ──────────────────────────────────
         comptime OBS_SIZE = B * (BL + 1) * OBS
         comptime ACT_SIZE = B * BL * ACT
@@ -2787,6 +2790,9 @@ struct DreamerV3Agent[
         # ── Zero initial deter/stoch ─────────────────────────────────────
         ctx.enqueue_memset(gpu_state.deter_buf, 0)
         ctx.enqueue_memset(gpu_state.stoch_buf, 0)
+
+        ctx.synchronize()
+        var _pt1 = perf_counter_ns()  # end upload
 
         # ── 2. RSSM Observe Loop ─────────────────────────────────────────
         var total_kl = Float64(0.0)
@@ -3318,6 +3324,9 @@ struct DreamerV3Agent[
             ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
             ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
 
+        ctx.synchronize()
+        var _pt2 = perf_counter_ns()  # end RSSM observe
+
         # ── 3. Full BPTT Backward (autodiff) ────────────────────────────────
         # Replaces per-timestep head backward + separate BPTT loop with a
         # single unified reverse pass matching the tested CPU autodiff code.
@@ -3335,6 +3344,9 @@ struct DreamerV3Agent[
         var cont_loss = wm_losses[3]
         var dyn_kl_total = wm_losses[4]
         var rep_kl_total = wm_losses[5]
+
+        ctx.synchronize()
+        var _pt3 = perf_counter_ns()  # end BPTT backward
 
         # ── 4. World model gradient clipping + optimizer step ──────────────
         var grad_norm_max = Scalar[dtype](self.max_grad_norm)
@@ -3415,6 +3427,9 @@ struct DreamerV3Agent[
         gpu_state.action_proj.optimizer_step(ctx)
         gpu_state.gru_hidden.optimizer_step(ctx)
         gpu_state.gru_gates.optimizer_step(ctx)
+
+        ctx.synchronize()
+        var _pt4 = perf_counter_ns()  # end WM optim
 
         # ── 5. Imagination rollout ───────────────────────────────────────
         # Initialize from all observed states: all_feats[BL*B] -> imag buffers
@@ -3912,6 +3927,9 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
 
+        ctx.synchronize()
+        var _pt5 = perf_counter_ns()  # end imagination
+
         # ── 6. Lambda returns (GPU) ─────────────────────────────────────
         # Compute lambda returns entirely on GPU, only download 2 scalars
         # for EMA normalization tracking.
@@ -4043,6 +4061,9 @@ struct DreamerV3Agent[
             grid_dim=((RETURNS_SIZE + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
+
+        ctx.synchronize()
+        var _pt6 = perf_counter_ns()  # end lambda returns
 
         # ── 7. Multi-step Critic + Actor training ──────────────────────
         ctx.enqueue_memset(gpu_state.actor.grads_buf, 0)
@@ -4247,6 +4268,9 @@ struct DreamerV3Agent[
         )
         gpu_state.actor.optimizer_step(ctx)
 
+        ctx.synchronize()
+        var _pt7 = perf_counter_ns()  # end critic + actor
+
         # ── 8. Slow critic EMA update ──────────────────────────────────
         gpu_state.slow_critic.soft_update_from_gpu(
             gpu_state.critic,
@@ -4255,6 +4279,33 @@ struct DreamerV3Agent[
         )
 
         ctx.synchronize()
+        var _pt8 = perf_counter_ns()  # end EMA + sync
+
+        # ── Phase timing report (every diag_every steps) ────────────────
+        if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            var _total = Float64(_pt8 - _pt0) / 1e6
+            print(
+                "  [timing] step="
+                + String(self.train_step_count)
+                + " total="
+                + String(_total)[:7]
+                + "ms | upload="
+                + String(Float64(_pt1 - _pt0) / 1e6)[:6]
+                + " observe="
+                + String(Float64(_pt2 - _pt1) / 1e6)[:6]
+                + " bptt="
+                + String(Float64(_pt3 - _pt2) / 1e6)[:6]
+                + " wm_opt="
+                + String(Float64(_pt4 - _pt3) / 1e6)[:6]
+                + " imagine="
+                + String(Float64(_pt5 - _pt4) / 1e6)[:6]
+                + " returns="
+                + String(Float64(_pt6 - _pt5) / 1e6)[:6]
+                + " ac_train="
+                + String(Float64(_pt7 - _pt6) / 1e6)[:6]
+                + " ema="
+                + String(Float64(_pt8 - _pt7) / 1e6)[:6]
+            )
 
         # ── Diagnostics ──────────────────────────────────────────────────
         if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
