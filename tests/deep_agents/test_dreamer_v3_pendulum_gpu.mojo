@@ -46,7 +46,7 @@ fn main() raises:
     logger.set_config("batch_size", "16")
     logger.set_config("batch_length", "32")
     logger.set_config("imagine_horizon", "15")
-    logger.set_config("free_nats", "0.1")
+    logger.set_config("free_nats", "0.0")
     logger.set_config("gamma", "0.997")
     logger.set_config("n_envs", String(N_ENVS))
 
@@ -64,7 +64,7 @@ fn main() raises:
         batch_length=32,
         imagine_horizon=15,
         buffer_capacity=100000,
-        free_nats=0.1,
+        free_nats=0.0,
         L=RemoteLogger,
     ](warmup_steps=500)
 
