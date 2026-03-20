@@ -25,6 +25,7 @@ World Models (DreamerV3)
 from std.math import exp, log, sqrt, abs
 from std.random import random_float64
 from std.memory import alloc, memset
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -1112,6 +1113,84 @@ struct RSSM[
             self.decoder.grads_view().ptr,
             self.reward_head.grads_view().ptr,
             self.continue_head.grads_view().ptr,
+        )
+
+    # =========================================================================
+    # GPU Prediction Heads (ComputeGraph-based)
+    # =========================================================================
+    #
+    # GPU versions of predict_all_heads / backward_all_heads.
+    # Uses HeadsGraph.forward_gpu / backward_gpu with pre-assembled combined
+    # params/grads DeviceBuffers. The caller manages buffer assembly/scatter
+    # via HeadsCP.assemble_gpu / scatter_add_gpu.
+    #
+    # Output layout: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
+    # =========================================================================
+
+    @staticmethod
+    fn predict_all_heads_gpu[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        feat: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.FEAT_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HEADS_OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.HEADS_CACHE_SIZE),
+            MutAnyOrigin,
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward all prediction heads via ComputeGraph.
+
+        Output layout: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
+        The cache must be preserved for the subsequent backward call.
+        """
+        Self.HeadsGraph.forward_gpu[BATCH](
+            ctx, output, feat, params, cache, workspace,
+        )
+
+    @staticmethod
+    fn backward_all_heads_gpu[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.HEADS_OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_feat: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.FEAT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.HEADS_CACHE_SIZE),
+            MutAnyOrigin,
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward all prediction heads via ComputeGraph.
+
+        Computes grad_feat = d(loss)/d(feat) from ALL three head losses
+        (automatic fan-out gradient accumulation), and accumulates parameter
+        gradients into the combined grads buffer.
+
+        Use HeadsCP.scatter_add_gpu to distribute grads to individual networks.
+        """
+        Self.HeadsGraph.backward_gpu[BATCH](
+            ctx, grad_feat, grad_output, params, cache, grads, workspace,
         )
 
     # =========================================================================

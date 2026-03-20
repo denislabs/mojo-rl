@@ -91,8 +91,11 @@ from .kernels import (
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
     straight_through_softmax_vjp_kernel,
+    deinterleave_kernel,
+    interleave_kernel,
     TPB,
 )
+from mojo_rl.nn.autodiff.composite_params import CompositeParams
 
 
 # =============================================================================
@@ -1610,6 +1613,12 @@ struct DreamerV3Agent[
         comptime GH_CACHE = Self.StateType.RSSMType.GRUHiddenModel.CACHE_SIZE
         comptime GG_CACHE = Self.StateType.RSSMType.GRUGateModel.CACHE_SIZE
 
+        # ── ComputeGraph heads constants ─────────────────────────────────
+        comptime RSSMType = Self.StateType.RSSMType
+        comptime HEADS_OUT = RSSMType.HEADS_OUT_DIM
+        comptime HEADS_CS = RSSMType.HEADS_CACHE_SIZE
+        comptime HeadsGraph = RSSMType.HeadsGraph
+
         # ── Flat sizes for kernel launches ────────────────────────────────
         comptime FEAT_FLAT = B * FEAT
         comptime DETER_FLAT = B * DETER
@@ -1629,6 +1638,17 @@ struct DreamerV3Agent[
         ctx.enqueue_memset(gpu_state.action_proj.grads_buf, 0)
         ctx.enqueue_memset(gpu_state.gru_hidden.grads_buf, 0)
         ctx.enqueue_memset(gpu_state.gru_gates.grads_buf, 0)
+
+        # ── Zero combined heads grads + assemble combined params ──────────
+        ctx.enqueue_memset(gpu_state.heads_grads_buf, 0)
+        comptime HeadsCP = Self.GPUStateType.HeadsCP
+        HeadsCP.assemble_gpu(
+            ctx,
+            gpu_state.heads_params_buf.unsafe_ptr(),
+            gpu_state.decoder.params_buf.unsafe_ptr(),
+            gpu_state.reward_head.params_buf.unsafe_ptr(),
+            gpu_state.continue_head.params_buf.unsafe_ptr(),
+        )
 
         # ── Zero recurrent carry buffers ──────────────────────────────────
         ctx.enqueue_memset(gpu_state.d_recurrent_deter_buf, 0)
@@ -1653,55 +1673,109 @@ struct DreamerV3Agent[
             ](gpu_state.all_feats_buf.unsafe_ptr() + t * FEAT_FLAT)
 
             # ══════════════════════════════════════════════════════════════
-            # Step 2: Forward all 3 prediction heads WITH CACHE
+            # Step 2: Forward all 3 prediction heads via ComputeGraph
             # ══════════════════════════════════════════════════════════════
+            # HeadsGraph: feat → [obs_hat(OBS), rew_logits(BINS), cont(1)]
+            var heads_out_2d = LayoutTensor[
+                dtype, Layout.row_major(B, HEADS_OUT), MutAnyOrigin
+            ](gpu_state.heads_out_buf.unsafe_ptr())
+            var heads_cache_2d = LayoutTensor[
+                dtype, Layout.row_major(B, HEADS_CS), MutAnyOrigin
+            ](gpu_state.heads_cache_buf.unsafe_ptr())
+            var heads_params_1d = LayoutTensor[
+                dtype,
+                Layout.row_major(HeadsGraph.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu_state.heads_params_buf.unsafe_ptr())
+            RSSMType.predict_all_heads_gpu[B](
+                ctx,
+                feat_2d,
+                heads_out_2d,
+                heads_params_1d,
+                heads_cache_2d,
+                gpu_state.ws_heads,
+            )
 
-            # -- Decoder: feat -> dec_out --
-            var dec_out_2d = LayoutTensor[
-                dtype, Layout.row_major(B, OBS), MutAnyOrigin
+            # Deinterleave combined output → individual buffers
+            # (needed for loss gradient kernels + diagnostics)
+            var dec_out_1d = LayoutTensor[
+                dtype, Layout.row_major(B * OBS), MutAnyOrigin
             ](gpu_state.dec_out_buf.unsafe_ptr())
-            var dec_cache_2d = LayoutTensor[
-                dtype, Layout.row_major(B, DEC_CACHE), MutAnyOrigin
-            ](gpu_state.dec_cache_buf.unsafe_ptr())
-            DecNet.forward_gpu_with_cache[B](
-                ctx,
-                feat_2d,
-                dec_out_2d,
-                gpu_state.decoder.params_view(),
-                dec_cache_2d,
-                gpu_state.ws_decoder,
+            var heads_out_1d = LayoutTensor[
+                dtype, Layout.row_major(B * HEADS_OUT), MutAnyOrigin
+            ](gpu_state.heads_out_buf.unsafe_ptr())
+
+            comptime HEADS_FLAT = B * HEADS_OUT
+
+            @always_inline
+            fn _deint_dec(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+            ):
+                deinterleave_kernel[B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT](
+                    d, s
+                )
+
+            comptime DEC_DEINT_BLK = (B * OBS + TPB - 1) // TPB
+            ctx.enqueue_function[_deint_dec, _deint_dec](
+                dec_out_1d,
+                heads_out_1d,
+                grid_dim=(DEC_DEINT_BLK,),
+                block_dim=(TPB,),
             )
 
-            # -- Reward: feat -> rew_logits --
-            var rew_logits_2d = LayoutTensor[
-                dtype, Layout.row_major(B, BINS), MutAnyOrigin
+            var rew_out_1d = LayoutTensor[
+                dtype, Layout.row_major(B * BINS), MutAnyOrigin
             ](gpu_state.rew_logits_buf.unsafe_ptr())
-            var rew_cache_2d = LayoutTensor[
-                dtype, Layout.row_major(B, REW_CACHE), MutAnyOrigin
-            ](gpu_state.rew_cache_buf.unsafe_ptr())
-            RewNet.forward_gpu_with_cache[B](
-                ctx,
-                feat_2d,
-                rew_logits_2d,
-                gpu_state.reward_head.params_view(),
-                rew_cache_2d,
-                gpu_state.ws_reward,
+
+            @always_inline
+            fn _deint_rew(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(B * BINS), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+            ):
+                deinterleave_kernel[
+                    B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
+                ](d, s)
+
+            comptime REW_DEINT_BLK = (B * BINS + TPB - 1) // TPB
+            ctx.enqueue_function[_deint_rew, _deint_rew](
+                rew_out_1d,
+                heads_out_1d,
+                grid_dim=(REW_DEINT_BLK,),
+                block_dim=(TPB,),
             )
 
-            # -- Continue: feat -> cont_logit --
-            var cont_logit_2d = LayoutTensor[
-                dtype, Layout.row_major(B, 1), MutAnyOrigin
+            var cont_out_1d = LayoutTensor[
+                dtype, Layout.row_major(B), MutAnyOrigin
             ](gpu_state.cont_out_buf.unsafe_ptr())
-            var cont_cache_2d = LayoutTensor[
-                dtype, Layout.row_major(B, CONT_CACHE), MutAnyOrigin
-            ](gpu_state.cont_cache_buf.unsafe_ptr())
-            ContNet.forward_gpu_with_cache[B](
-                ctx,
-                feat_2d,
-                cont_logit_2d,
-                gpu_state.continue_head.params_view(),
-                cont_cache_2d,
-                gpu_state.ws_continue,
+
+            @always_inline
+            fn _deint_cont(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(B), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+            ):
+                deinterleave_kernel[
+                    B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
+                ](d, s)
+
+            comptime CONT_DEINT_BLK = (B + TPB - 1) // TPB
+            ctx.enqueue_function[_deint_cont, _deint_cont](
+                cont_out_1d,
+                heads_out_1d,
+                grid_dim=(CONT_DEINT_BLK,),
+                block_dim=(TPB,),
             )
 
             # ══════════════════════════════════════════════════════════════
@@ -1854,6 +1928,9 @@ struct DreamerV3Agent[
                 )
 
                 # Two-hot CE gradient
+                var rew_logits_2d = LayoutTensor[
+                    dtype, Layout.row_major(B, BINS), MutAnyOrigin
+                ](gpu_state.rew_logits_buf.unsafe_ptr())
                 var rew_grad_out_2d = LayoutTensor[
                     dtype, Layout.row_major(B, BINS), MutAnyOrigin
                 ](gpu_state.rew_grad_out_buf.unsafe_ptr())
@@ -1960,135 +2037,114 @@ struct DreamerV3Agent[
                 ctx.enqueue_memset(gpu_state.cont_grad_buf, 0)
 
             # ══════════════════════════════════════════════════════════════
-            # Step 4: Backward each head -> grad_in for feat
+            # Step 4: Interleave loss gradients → combined heads_grad_out
             # ══════════════════════════════════════════════════════════════
+            var hg_out_1d = LayoutTensor[
+                dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+            ](gpu_state.heads_grad_out_buf.unsafe_ptr())
 
-            # -- Decoder backward --
-            var dec_grad_out_2d = LayoutTensor[
-                dtype, Layout.row_major(B, OBS), MutAnyOrigin
+            # decoder grad → heads_grad_out[:, :OBS]
+            var dg_1d = LayoutTensor[
+                dtype, Layout.row_major(B * OBS), MutAnyOrigin
             ](gpu_state.dec_grad_out_buf.unsafe_ptr())
-            var dec_grad_in_2d = LayoutTensor[
-                dtype, Layout.row_major(B, FEAT), MutAnyOrigin
-            ](gpu_state.dec_grad_in_buf.unsafe_ptr())
-            var dec_grads_bptt = gpu_state.decoder.grads_view()
-            DecNet.backward_gpu[B](
-                ctx,
-                dec_grad_out_2d,
-                dec_grad_in_2d,
-                gpu_state.decoder.params_view(),
-                dec_cache_2d,
-                dec_grads_bptt,
-                gpu_state.ws_decoder,
+
+            @always_inline
+            fn _int_dec(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(B * OBS), MutAnyOrigin
+                ],
+            ):
+                interleave_kernel[
+                    B * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT
+                ](d, s)
+
+            comptime INT_DEC_BLK = (B * OBS + TPB - 1) // TPB
+            ctx.enqueue_function[_int_dec, _int_dec](
+                hg_out_1d,
+                dg_1d,
+                grid_dim=(INT_DEC_BLK,),
+                block_dim=(TPB,),
             )
 
-            # -- Reward backward --
-            var rew_grad_out_2d_bwd = LayoutTensor[
-                dtype, Layout.row_major(B, BINS), MutAnyOrigin
+            # reward grad → heads_grad_out[:, OBS:OBS+BINS]
+            var rg_1d = LayoutTensor[
+                dtype, Layout.row_major(B * BINS), MutAnyOrigin
             ](gpu_state.rew_grad_out_buf.unsafe_ptr())
-            var rew_grad_in_2d = LayoutTensor[
-                dtype, Layout.row_major(B, FEAT), MutAnyOrigin
-            ](gpu_state.rew_grad_in_buf.unsafe_ptr())
-            var rew_grads_bptt = gpu_state.reward_head.grads_view()
-            RewNet.backward_gpu[B](
-                ctx,
-                rew_grad_out_2d_bwd,
-                rew_grad_in_2d,
-                gpu_state.reward_head.params_view(),
-                rew_cache_2d,
-                rew_grads_bptt,
-                gpu_state.ws_reward,
+
+            @always_inline
+            fn _int_rew(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(B * BINS), MutAnyOrigin
+                ],
+            ):
+                interleave_kernel[
+                    B * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT
+                ](d, s)
+
+            comptime INT_REW_BLK = (B * BINS + TPB - 1) // TPB
+            ctx.enqueue_function[_int_rew, _int_rew](
+                hg_out_1d,
+                rg_1d,
+                grid_dim=(INT_REW_BLK,),
+                block_dim=(TPB,),
             )
 
-            # -- Continue backward --
-            var cont_grad_2d_bwd = LayoutTensor[
-                dtype, Layout.row_major(B, 1), MutAnyOrigin
+            # continue grad → heads_grad_out[:, OBS+BINS:]
+            var cg_1d = LayoutTensor[
+                dtype, Layout.row_major(B), MutAnyOrigin
             ](gpu_state.cont_grad_buf.unsafe_ptr())
-            var cont_grad_in_2d = LayoutTensor[
+
+            @always_inline
+            fn _int_cont(
+                d: LayoutTensor[
+                    dtype, Layout.row_major(HEADS_FLAT), MutAnyOrigin
+                ],
+                s: LayoutTensor[
+                    dtype, Layout.row_major(B), MutAnyOrigin
+                ],
+            ):
+                interleave_kernel[
+                    B, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT
+                ](d, s)
+
+            comptime INT_CONT_BLK = (B + TPB - 1) // TPB
+            ctx.enqueue_function[_int_cont, _int_cont](
+                hg_out_1d,
+                cg_1d,
+                grid_dim=(INT_CONT_BLK,),
+                block_dim=(TPB,),
+            )
+
+            # ══════════════════════════════════════════════════════════════
+            # Step 5: ComputeGraph backward → d_feat + heads param grads
+            # ══════════════════════════════════════════════════════════════
+            # HeadsGraph.backward_gpu handles fan-out gradient accumulation
+            # at the feat input automatically — no manual d_feat sum needed.
+            var d_feat_2d_bwd = LayoutTensor[
                 dtype, Layout.row_major(B, FEAT), MutAnyOrigin
-            ](gpu_state.cont_grad_in_buf.unsafe_ptr())
-            var cont_grads_bptt = gpu_state.continue_head.grads_view()
-            ContNet.backward_gpu[B](
-                ctx,
-                cont_grad_2d_bwd,
-                cont_grad_in_2d,
-                gpu_state.continue_head.params_view(),
-                cont_cache_2d,
-                cont_grads_bptt,
-                gpu_state.ws_continue,
-            )
-
-            # ══════════════════════════════════════════════════════════════
-            # Step 5: Accumulate d_feat = dec_grad_in + rew_grad_in + cont_grad_in
-            # ══════════════════════════════════════════════════════════════
-            var d_feat_1d = LayoutTensor[
-                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
             ](gpu_state.d_feat_buf.unsafe_ptr())
-            var dec_gi_1d = LayoutTensor[
-                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-            ](gpu_state.dec_grad_in_buf.unsafe_ptr())
-            var rew_gi_1d = LayoutTensor[
-                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-            ](gpu_state.rew_grad_in_buf.unsafe_ptr())
-            var cont_gi_1d = LayoutTensor[
-                dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-            ](gpu_state.cont_grad_in_buf.unsafe_ptr())
-
-            # Copy dec_grad_in -> d_feat
-            @always_inline
-            fn ad_copy_dfeat(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-            ):
-                copy_kernel[FEAT_FLAT](d, s)
-
-            comptime DFEAT_BLOCKS = (FEAT_FLAT + TPB - 1) // TPB
-            ctx.enqueue_function[ad_copy_dfeat, ad_copy_dfeat](
-                d_feat_1d,
-                dec_gi_1d,
-                grid_dim=(DFEAT_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # d_feat += rew_grad_in
-            @always_inline
-            fn ad_accum_rew(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[FEAT_FLAT](d, s)
-
-            ctx.enqueue_function[ad_accum_rew, ad_accum_rew](
-                d_feat_1d,
-                rew_gi_1d,
-                grid_dim=(DFEAT_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # d_feat += cont_grad_in
-            @always_inline
-            fn ad_accum_cont(
-                d: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-                s: LayoutTensor[
-                    dtype, Layout.row_major(FEAT_FLAT), MutAnyOrigin
-                ],
-            ):
-                accumulate_kernel[FEAT_FLAT](d, s)
-
-            ctx.enqueue_function[ad_accum_cont, ad_accum_cont](
-                d_feat_1d,
-                cont_gi_1d,
-                grid_dim=(DFEAT_BLOCKS,),
-                block_dim=(TPB,),
+            var hg_grad_out_2d = LayoutTensor[
+                dtype, Layout.row_major(B, HEADS_OUT), MutAnyOrigin
+            ](gpu_state.heads_grad_out_buf.unsafe_ptr())
+            var heads_grads_1d = LayoutTensor[
+                dtype,
+                Layout.row_major(HeadsGraph.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu_state.heads_grads_buf.unsafe_ptr())
+            RSSMType.backward_all_heads_gpu[B](
+                ctx,
+                hg_grad_out_2d,
+                d_feat_2d_bwd,
+                heads_params_1d,
+                heads_cache_2d,
+                heads_grads_1d,
+                gpu_state.ws_heads,
             )
 
             # ══════════════════════════════════════════════════════════════
@@ -2852,6 +2908,15 @@ struct DreamerV3Agent[
                 grid_dim=(STOCH_BLOCKS,),
                 block_dim=(TPB,),
             )
+
+        # ── Scatter combined heads grads → individual network grads ──────
+        HeadsCP.scatter_add_gpu(
+            ctx,
+            gpu_state.heads_grads_buf.unsafe_ptr(),
+            gpu_state.decoder.grads_buf.unsafe_ptr(),
+            gpu_state.reward_head.grads_buf.unsafe_ptr(),
+            gpu_state.continue_head.grads_buf.unsafe_ptr(),
+        )
 
         # ── Normalize losses ─────────────────────────────────────────────
         var inv_bl = 1.0 / Float64(BL)

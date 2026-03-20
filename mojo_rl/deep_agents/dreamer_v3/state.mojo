@@ -26,6 +26,7 @@ from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
+from mojo_rl.nn.autodiff.composite_params import CompositeParams
 from .rssm import RSSM
 
 
@@ -752,6 +753,20 @@ struct DreamerV3GPUState[
     var d_post_logits_total_buf: DeviceBuffer[dtype]  # [B * STOCH]
     var d_deter_from_post_buf: DeviceBuffer[dtype]  # [B * DETER]
 
+    # ── Combined prediction heads (ComputeGraph) ─────────────────────────
+    # HeadsGraph = ComputeGraph[decoder, reward, continue] with 3-way fan-out
+    # Used in BPTT backward instead of 3 separate forward/backward calls
+    comptime HeadsGraph = Self.RSSMType.HeadsGraph
+    comptime HeadsCP = Self.RSSMType.HeadsCP
+    comptime HEADS_OUT_DIM: Int = Self.RSSMType.HEADS_OUT_DIM
+    comptime HEADS_CACHE_SIZE: Int = Self.RSSMType.HEADS_CACHE_SIZE
+    var heads_params_buf: DeviceBuffer[dtype]  # [HeadsGraph.PARAM_SIZE]
+    var heads_grads_buf: DeviceBuffer[dtype]  # [HeadsGraph.PARAM_SIZE]
+    var heads_cache_buf: DeviceBuffer[dtype]  # [BATCH * HEADS_CACHE_SIZE]
+    var heads_out_buf: DeviceBuffer[dtype]  # [BATCH * HEADS_OUT_DIM]
+    var heads_grad_out_buf: DeviceBuffer[dtype]  # [BATCH * HEADS_OUT_DIM]
+    var ws_heads: DeviceBuffer[dtype]
+
     # ── Network workspace buffers ────────────────────────────────────────
     # Sized for the maximum batch dimension (IB for imagination phase)
     var ws_encoder: DeviceBuffer[dtype]
@@ -1005,6 +1020,13 @@ struct DreamerV3GPUState[
         self.d_post_logits_total_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
         self.d_deter_from_post_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
 
+        # ── Combined prediction heads (ComputeGraph) ─────────────────────
+        self.heads_params_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
+        self.heads_grads_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
+        self.heads_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_CACHE_SIZE)
+        self.heads_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_OUT_DIM)
+        self.heads_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_OUT_DIM)
+
         # ── Network workspace buffers ────────────────────────────────────
         # Use IB (imag batch) as max batch size for workspace allocation
         comptime EncNet = Network[Self.RSSMType.EncModel, Self.WMOpt]
@@ -1054,6 +1076,8 @@ struct DreamerV3GPUState[
         self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GG, 1))
         self.ws_actor = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_ACTOR, 1))
         self.ws_critic = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CRITIC, 1))
+        comptime WS_B_HEADS = Self.BATCH * Self.HeadsGraph.WORKSPACE_SIZE_PER_SAMPLE
+        self.ws_heads = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_HEADS, 1))
 
         # ── Inference buffers ────────────────────────────────────────────
         self.inf_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.OBS)
@@ -1240,6 +1264,12 @@ struct DreamerV3GPUState[
         self.d_recurrent_stoch_buf = take.d_recurrent_stoch_buf^
         self.d_post_logits_total_buf = take.d_post_logits_total_buf^
         self.d_deter_from_post_buf = take.d_deter_from_post_buf^
+        self.heads_params_buf = take.heads_params_buf^
+        self.heads_grads_buf = take.heads_grads_buf^
+        self.heads_cache_buf = take.heads_cache_buf^
+        self.heads_out_buf = take.heads_out_buf^
+        self.heads_grad_out_buf = take.heads_grad_out_buf^
+        self.ws_heads = take.ws_heads^
         self.ws_encoder = take.ws_encoder^
         self.ws_posterior = take.ws_posterior^
         self.ws_prior = take.ws_prior^

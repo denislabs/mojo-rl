@@ -977,14 +977,14 @@ struct Conv2D[
         smem[tid] = acc
         barrier()
 
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
+        var conv_stride = TPB // 2
+        while conv_stride > 0:
+            if tid < conv_stride:
                 smem[tid] = rebind[Scalar[dtype]](smem[tid]) + rebind[
                     Scalar[dtype]
-                ](smem[tid + stride])
+                ](smem[tid + conv_stride])
             barrier()
-            stride //= 2
+            conv_stride //= 2
 
         if tid == 0:
             db[oc] = smem[0]
@@ -1060,7 +1060,9 @@ struct Conv2D[
                 var val: Scalar[dtype] = 0
                 if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
                     val = rebind[Scalar[dtype]](
-                        input[b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw]
+                        input[
+                            b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw
+                        ]
                     )
                 cache_out[b, pos] = val
 
@@ -1391,7 +1393,11 @@ struct Conv2D[
                             var ow = ow_num // Self.stride
                             if oh < Self.out_h and ow < Self.out_w:
                                 var s = oh * Self.out_w + ow
-                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
                                 acc += rebind[Scalar[dtype]](
                                     dcol[c_k, b * Self.spatial_out + s]
                                 )

@@ -1575,3 +1575,48 @@ fn gradient_reduce_apply_fused_kernel[
 
     if idx < PARAM_SIZE:
         grads[idx] = grads[idx] * rebind[Scalar[dtype]](shared[1])
+
+
+# =============================================================================
+# Deinterleave / Interleave for ComputeGraph combined output
+# =============================================================================
+# Extract [B, DIM] sub-tensor from [B, TOTAL] at column offset OFFSET.
+# Layout: each sample b has TOTAL contiguous values, we extract DIM at OFFSET.
+
+
+fn deinterleave_kernel[
+    FLAT: Int, DIM: Int, TOTAL: Int, OFFSET: Int, SRC_FLAT: Int,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(FLAT), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(SRC_FLAT), MutAnyOrigin],
+):
+    """Extract [B, DIM] from [B, TOTAL] at OFFSET.
+
+    FLAT = B * DIM. Thread i maps to (b, d) where b = i // DIM, d = i % DIM.
+    src is [B * TOTAL] row-major (SRC_FLAT = B * TOTAL), dst is [B * DIM] row-major.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= FLAT:
+        return
+    var b = i // DIM
+    var d = i % DIM
+    dst[i] = src[b * TOTAL + OFFSET + d]
+
+
+fn interleave_kernel[
+    FLAT: Int, DIM: Int, TOTAL: Int, OFFSET: Int, DST_FLAT: Int,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(DST_FLAT), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(FLAT), MutAnyOrigin],
+):
+    """Insert [B, DIM] into [B, TOTAL] at OFFSET.
+
+    FLAT = B * DIM. Thread i maps to (b, d) where b = i // DIM, d = i % DIM.
+    dst is [B * TOTAL] row-major (DST_FLAT = B * TOTAL), src is [B * DIM] row-major.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= FLAT:
+        return
+    var b = i // DIM
+    var d = i % DIM
+    dst[b * TOTAL + OFFSET + d] = src[i]

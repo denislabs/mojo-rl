@@ -132,7 +132,7 @@ struct GatherOp[dim: Int](DiffOp):
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
             return
-        var idx = Int(Float64(rebind[Scalar[dtype]](input[b, Self.dim])))
+        var idx = Int(rebind[Scalar[dtype]](input[b, Self.dim]))
         output[b, 0] = rebind[Scalar[dtype]](input[b, idx])
         cache[b, 0] = rebind[Scalar[dtype]](input[b, Self.dim])
 
@@ -154,7 +154,7 @@ struct GatherOp[dim: Int](DiffOp):
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
             return
-        var idx = Int(Float64(rebind[Scalar[dtype]](cache[b, 0])))
+        var idx = Int(rebind[Scalar[dtype]](cache[b, 0]))
         var g = rebind[Scalar[dtype]](grad_output[b, 0])
         var zero = Scalar[dtype](0.0)
         # Zero all gradient slots

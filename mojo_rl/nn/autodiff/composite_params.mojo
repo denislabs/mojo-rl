@@ -29,6 +29,8 @@ from ..constants import dtype
 from ..model.model import Model
 from layout import LayoutTensor, Layout
 from std.builtin.variadics import Variadic
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
@@ -118,3 +120,92 @@ struct CompositeParams[*MODELS: Model]:
             var d = dsts[m]
             for i in range(sz):
                 d[i] = d[i] + src[off + i]
+
+    # =====================================================================
+    # GPU assembly / scatter
+    # =====================================================================
+
+    @staticmethod
+    fn assemble_gpu(
+        ctx: DeviceContext,
+        dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        *sources: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """GPU: copy N separate param DeviceBuffers into one combined buffer.
+
+        Zeros alignment padding via memset, then launches copy kernels.
+        All pointers must be device pointers.
+        """
+        # Zero the whole buffer (covers alignment padding)
+        var dst_buf = DeviceBuffer[dtype](
+            ctx, dst, Self.TOTAL_SIZE, owning=False
+        )
+        ctx.enqueue_memset(dst_buf, 0)
+
+        comptime TPB = 256
+
+        comptime for m in range(Self.N):
+            comptime SZ = Self.model_types[m].PARAM_SIZE
+
+            @always_inline
+            fn _cp_assemble_kernel(
+                d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= SZ:
+                    return
+                d[i] = s[i]
+
+            var off = Self.offset[m]()
+            var d_t = LayoutTensor[
+                dtype, Layout.row_major(SZ), MutAnyOrigin
+            ](dst + off)
+            var s_t = LayoutTensor[
+                dtype, Layout.row_major(SZ), MutAnyOrigin
+            ](sources[m])
+
+            comptime BLOCKS = (SZ + TPB - 1) // TPB
+            ctx.enqueue_function[_cp_assemble_kernel, _cp_assemble_kernel](
+                d_t, s_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
+            )
+
+    @staticmethod
+    fn scatter_add_gpu(
+        ctx: DeviceContext,
+        src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """GPU: add combined grads to N separate DeviceBuffers (accumulate).
+
+        All pointers must be device pointers.
+        """
+        comptime TPB = 256
+
+        comptime for m in range(Self.N):
+            comptime SZ = Self.model_types[m].PARAM_SIZE
+
+            @always_inline
+            fn _cp_scatter_add_kernel(
+                d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
+                s: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= SZ:
+                    return
+                d[i] = rebind[Scalar[dtype]](d[i]) + rebind[Scalar[dtype]](s[i])
+
+            var off = Self.offset[m]()
+            var d_t = LayoutTensor[
+                dtype, Layout.row_major(SZ), MutAnyOrigin
+            ](dsts[m])
+            var s_t = LayoutTensor[
+                dtype, Layout.row_major(SZ), MutAnyOrigin
+            ](src + off)
+
+            comptime BLOCKS = (SZ + TPB - 1) // TPB
+            ctx.enqueue_function[
+                _cp_scatter_add_kernel, _cp_scatter_add_kernel
+            ](
+                d_t, s_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
+            )
