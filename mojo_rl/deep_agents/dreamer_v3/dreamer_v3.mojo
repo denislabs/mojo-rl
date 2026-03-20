@@ -3250,6 +3250,40 @@ struct DreamerV3Agent[
                 block_dim=(TPB,),
             )
 
+            # Copy post_probs -> all_post_probs[t]
+            var all_post_probs_t = LayoutTensor[
+                dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
+            ](gpu_state.all_post_probs_buf.unsafe_ptr() + t * STOCH_SLICE)
+            var post_probs_1d = LayoutTensor[
+                dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
+            ](gpu_state.post_probs_buf.unsafe_ptr())
+
+            comptime copy_post_probs = copy_kernel[STOCH_SLICE]
+
+            ctx.enqueue_function[copy_post_probs, copy_post_probs](
+                all_post_probs_t,
+                post_probs_1d,
+                grid_dim=(COPY_S_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Copy prior_probs -> all_prior_probs[t]
+            var all_prior_probs_t = LayoutTensor[
+                dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
+            ](gpu_state.all_prior_probs_buf.unsafe_ptr() + t * STOCH_SLICE)
+            var prior_probs_1d = LayoutTensor[
+                dtype, Layout.row_major(STOCH_SLICE), MutAnyOrigin
+            ](gpu_state.prior_probs_buf.unsafe_ptr())
+
+            comptime copy_prior_probs = copy_kernel[STOCH_SLICE]
+
+            ctx.enqueue_function[copy_prior_probs, copy_prior_probs](
+                all_prior_probs_t,
+                prior_probs_1d,
+                grid_dim=(COPY_S_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
             # Swap deter/stoch for next timestep
             ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
             ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
