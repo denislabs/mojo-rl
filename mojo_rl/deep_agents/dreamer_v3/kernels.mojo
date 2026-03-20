@@ -1603,6 +1603,19 @@ fn deinterleave_kernel[
     dst[i] = src[b * TOTAL + OFFSET + d]
 
 
+fn one_minus_kernel[
+    SIZE: Int,
+](
+    output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    input: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+):
+    """Compute output[i] = 1.0 - input[i]."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+    output[i] = Scalar[dtype](1.0) - input[i]
+
+
 fn interleave_kernel[
     FLAT: Int, DIM: Int, TOTAL: Int, OFFSET: Int, DST_FLAT: Int,
 ](

@@ -93,6 +93,7 @@ from .kernels import (
     straight_through_softmax_vjp_kernel,
     deinterleave_kernel,
     interleave_kernel,
+    one_minus_kernel,
     TPB,
 )
 from mojo_rl.nn.autodiff.composite_params import CompositeParams
@@ -1767,80 +1768,38 @@ struct DreamerV3Agent[
             )
 
             # ══════════════════════════════════════════════════════════════
-            # Step 2b: Compute diagnostic losses (CPU, from downloaded outputs)
-            # ══════════════════════════════════════════════════════════════
-            var dec_host = gpu_state.host_dec_diag_buf
-            ctx.enqueue_copy(dec_host, gpu_state.dec_out_buf)
-            ctx.synchronize()
-
-            for b in range(B):
-                for i in range(OBS):
-                    var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
-                    var target = Float64(symlog(Float32(batch_obs[idx])))
-                    var pred = Float64(dec_host[b * OBS + i])
-                    obs_loss += (pred - target) * (pred - target)
-
-            if t > 0:
-                var rew_host = gpu_state.host_rew_diag_buf
-                ctx.enqueue_copy(rew_host, gpu_state.rew_logits_buf)
-                ctx.synchronize()
-
-                for b in range(B):
-                    var rew_val = Float32(batch_rewards[b * BL + t])
-                    var rew_symlog = symlog(rew_val)
-                    var target_dist = InlineArray[Float32, Self.num_bins](
-                        uninitialized=True
-                    )
-                    two_hot_encode[Self.num_bins](
-                        rew_symlog, self.state.rssm.bins, target_dist
-                    )
-                    var max_l = Float64(rew_host[b * BINS])
-                    for k in range(1, BINS):
-                        var v = Float64(rew_host[b * BINS + k])
-                        if v > max_l:
-                            max_l = v
-                    var se = Float64(0.0)
-                    for k in range(BINS):
-                        se += exp(Float64(rew_host[b * BINS + k]) - max_l)
-                    var lse = log(se) + max_l
-                    for k in range(BINS):
-                        var t_k = Float64(target_dist[k])
-                        if t_k > 1e-8:
-                            rew_loss -= t_k * (
-                                Float64(rew_host[b * BINS + k]) - lse
-                            )
-
-            if t > 0:
-                var cont_host = gpu_state.host_cont_diag_buf
-                ctx.enqueue_copy(cont_host, gpu_state.cont_out_buf)
-                ctx.synchronize()
-                for b in range(B):
-                    var ct = 1.0 - Float64(batch_dones[b * BL + t])
-                    var logit = Float64(cont_host[b])
-                    var prob = 1.0 / (1.0 + exp(-logit))
-                    if prob < 1e-6:
-                        prob = 1e-6
-                    if prob > 1.0 - 1e-6:
-                        prob = 1.0 - 1e-6
-                    cont_loss -= ct * log(prob) + (1.0 - ct) * log(1.0 - prob)
-
-            # ══════════════════════════════════════════════════════════════
-            # Step 3: Compute loss gradients
+            # Step 3: Compute loss gradients (all on GPU, no syncs)
             # ══════════════════════════════════════════════════════════════
 
             # -- Decoder: MSE gradient against symlog(obs[t+1]) --
-            var host_target = gpu_state.host_target_buf
-            for b in range(B):
-                for i in range(OBS):
-                    var idx = b * (BL + 1) * OBS + (t + 1) * OBS + i
-                    host_target[b * OBS + i] = Scalar[dtype](
-                        symlog(Float32(batch_obs[idx]))
-                    )
-            ctx.enqueue_copy(gpu_state.dec_target_buf, host_target)
+            # Gather obs[:,t+1,:] from batch_obs on GPU, then symlog
+            comptime BPTT_OBS_STRIDE = (BL + 1) * OBS
+            comptime BPTT_OBS_SRC = B * BPTT_OBS_STRIDE
+            comptime BPTT_OBS_FLAT = B * OBS
+            comptime run_deint_target = deinterleave_kernel[
+                BPTT_OBS_FLAT, OBS, BPTT_OBS_STRIDE, 0, BPTT_OBS_SRC,
+            ]
+            comptime BPTT_OBS_BLK = (BPTT_OBS_FLAT + TPB - 1) // TPB
+            comptime run_symlog_target = symlog_kernel[BPTT_OBS_FLAT]
 
             var dec_target_1d = LayoutTensor[
-                dtype, Layout.row_major(B * OBS), MutAnyOrigin
+                dtype, Layout.row_major(BPTT_OBS_FLAT), MutAnyOrigin
             ](gpu_state.dec_target_buf.unsafe_ptr())
+            var batch_obs_tp1 = LayoutTensor[
+                dtype, Layout.row_major(BPTT_OBS_SRC), MutAnyOrigin
+            ](gpu_state.batch_obs.unsafe_ptr() + (t + 1) * OBS)
+            ctx.enqueue_function[run_deint_target, run_deint_target](
+                dec_target_1d,
+                batch_obs_tp1,
+                grid_dim=(BPTT_OBS_BLK,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[run_symlog_target, run_symlog_target](
+                dec_target_1d,
+                dec_target_1d,
+                grid_dim=(BPTT_OBS_BLK,),
+                block_dim=(TPB,),
+            )
             var dec_pred_1d = LayoutTensor[
                 dtype, Layout.row_major(B * OBS), MutAnyOrigin
             ](gpu_state.dec_out_buf.unsafe_ptr())
@@ -1863,17 +1822,32 @@ struct DreamerV3Agent[
 
             # -- Reward: two-hot CE gradient (t > 0 only) --
             if t > 0:
-                # Upload symlog(reward[t])
-                var host_rew_symlog = gpu_state.host_rew_symlog_step_buf
-                for b in range(B):
-                    var r = batch_rewards[b * BL + t]
-                    host_rew_symlog[b] = Scalar[dtype](symlog(Float32(r)))
-                ctx.enqueue_copy(gpu_state.rew_symlog_buf, host_rew_symlog)
+                # Gather rewards[:,t] from batch_rewards on GPU, then symlog
+                comptime BPTT_REW_SRC = B * BL
+                comptime run_deint_rew = deinterleave_kernel[
+                    B, 1, BL, 0, BPTT_REW_SRC,
+                ]
+                comptime BPTT_REW_BLK = (B + TPB - 1) // TPB
+                comptime run_symlog_rew = symlog_kernel[B]
 
-                # Two-hot encode
                 var rew_symlog_1d = LayoutTensor[
                     dtype, Layout.row_major(B), MutAnyOrigin
                 ](gpu_state.rew_symlog_buf.unsafe_ptr())
+                var batch_rew_t = LayoutTensor[
+                    dtype, Layout.row_major(BPTT_REW_SRC), MutAnyOrigin
+                ](gpu_state.batch_rewards.unsafe_ptr() + t)
+                ctx.enqueue_function[run_deint_rew, run_deint_rew](
+                    rew_symlog_1d,
+                    batch_rew_t,
+                    grid_dim=(BPTT_REW_BLK,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[run_symlog_rew, run_symlog_rew](
+                    rew_symlog_1d,
+                    rew_symlog_1d,
+                    grid_dim=(BPTT_REW_BLK,),
+                    block_dim=(TPB,),
+                )
                 var rew_target_2d = LayoutTensor[
                     dtype, Layout.row_major(B, BINS), MutAnyOrigin
                 ](gpu_state.rew_target_buf.unsafe_ptr())
@@ -1932,13 +1906,32 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
 
-                # Upload 1.0 - done[t] as target
-                var host_cont_target = gpu_state.host_cont_target_step_buf
-                for b in range(B):
-                    host_cont_target[b] = Scalar[dtype](
-                        1.0 - Float64(batch_dones[b * BL + t])
-                    )
-                ctx.enqueue_copy(gpu_state.cont_target_buf, host_cont_target)
+                # Gather 1.0 - dones[:,t] from batch_dones on GPU
+                comptime BPTT_DONE_SRC = B * BL
+                comptime run_deint_done = deinterleave_kernel[
+                    B, 1, BL, 0, BPTT_DONE_SRC,
+                ]
+                comptime BPTT_DONE_BLK = (B + TPB - 1) // TPB
+                comptime run_one_minus_done = one_minus_kernel[B]
+
+                var cont_tgt_1d = LayoutTensor[
+                    dtype, Layout.row_major(B), MutAnyOrigin
+                ](gpu_state.cont_target_buf.unsafe_ptr())
+                var batch_done_t = LayoutTensor[
+                    dtype, Layout.row_major(BPTT_DONE_SRC), MutAnyOrigin
+                ](gpu_state.batch_dones.unsafe_ptr() + t)
+                ctx.enqueue_function[run_deint_done, run_deint_done](
+                    cont_tgt_1d,
+                    batch_done_t,
+                    grid_dim=(BPTT_DONE_BLK,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[run_one_minus_done, run_one_minus_done](
+                    cont_tgt_1d,
+                    cont_tgt_1d,
+                    grid_dim=(BPTT_DONE_BLK,),
+                    block_dim=(TPB,),
+                )
 
                 # BCE gradient
                 var cont_pred_2d = LayoutTensor[
@@ -2146,17 +2139,6 @@ struct DreamerV3Agent[
                 grid_dim=(KL_BLOCKS,),
                 block_dim=(TPB,),
             )
-
-            # Accumulate KL loss (download from GPU for diagnostics)
-            var kl_host = gpu_state.host_kl_diag_buf
-            ctx.enqueue_copy(kl_host, gpu_state.kl_buf)
-            ctx.synchronize()
-            var kl_sum = Float64(0.0)
-            for b in range(B):
-                kl_sum += Float64(kl_host[b])
-            kl_sum /= Float64(B)
-            dyn_kl_total += kl_sum
-            rep_kl_total += kl_sum
 
             # KL gradient -> d_post_kl, d_prior_logits
             var d_post_kl = LayoutTensor[
