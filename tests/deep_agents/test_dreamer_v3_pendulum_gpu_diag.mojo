@@ -38,7 +38,7 @@ fn main() raises:
 
     var metrics = agent.train_gpu[PendulumV2[dtype], n_envs=N_ENVS](
         ctx,
-        num_episodes=16,
+        num_episodes=32,
         sync_every=100,
         verbose=True,
         print_every=5000,
