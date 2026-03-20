@@ -38,9 +38,9 @@ comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 120  # CleanRL: first hidden layer
 comptime HIDDEN_DIM2 = 84  # CleanRL: second hidden layer
-comptime BUFFER_CAPACITY = 10_000  # CleanRL: buffer_size=10000
+comptime BUFFER_CAPACITY = 320_000  # CleanRL 10k × 32 envs
 comptime BATCH_SIZE = 128  # CleanRL: batch_size=128
-comptime N_ENVS = 256  # Parallel environments for GPU collection
+comptime N_ENVS = 32  # Parallel environments for GPU collection
 
 comptime NUM_STEPS = 500_000  # CleanRL: total_timesteps=500000
 comptime MAX_STEPS = 500
@@ -48,8 +48,8 @@ comptime WARMUP_STEPS = 10_000  # CleanRL: learning_starts=10000
 comptime SYNC_EVERY = 10_000  # Sync GPU params to CPU every N transitions
 
 # CleanRL: train_frequency=10 → 1 grad step per 10 env steps
-# With N_ENVS=256: 256/10 ≈ 26 gradient steps per collection
-comptime GRADIENT_STEPS = 26
+# With N_ENVS=32: 32/10 ≈ 3 gradient steps per collection
+comptime GRADIENT_STEPS = 3
 
 # CleanRL: target_network_frequency=500, train_frequency=10
 # → 500/10 = 50 gradient steps between target updates
@@ -155,7 +155,7 @@ fn main() raises:
             print_every=10_000,
             environment_name="CartPole (GPU)",
             logger=UnsafePointer(to=logger),
-            diag_every=50,
+            diag_every=1000,
         )
 
         var end_time = perf_counter_ns()

@@ -27,10 +27,10 @@ comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 64
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
-comptime N_ENVS = 256  # Smaller for testing (use 1024 for full training)
-comptime GPU_MINIBATCH_SIZE = 4096  # Fewer minibatches = less overfitting per rollout
+comptime N_ENVS = 32  # Matched to CartPole scale
+comptime GPU_MINIBATCH_SIZE = 512  # 32*128/8 minibatches per epoch
 
-comptime NUM_EPISODES = 1_000  # CartPole should converge quickly with 256 envs
+comptime NUM_EPISODES = 200  # CartPole converges fast, no need for more
 
 
 # =============================================================================
@@ -101,7 +101,7 @@ fn main() raises:
             ctx,
             num_updates=NUM_EPISODES,
             verbose=True,
-            print_every=50,
+            print_every=10,
         )
 
         var end_time = perf_counter_ns()

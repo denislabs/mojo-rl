@@ -415,6 +415,8 @@ struct DQNGPUStateGeneric[
     var diag_q_host: HostBuffer[dtype]    # [batch_size * num_actions]
     var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
     var diag_act_host: HostBuffer[dtype]  # [batch_size]
+    var diag_rew_host: HostBuffer[dtype]  # [batch_size]
+    var diag_done_host: HostBuffer[dtype] # [batch_size]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
@@ -480,6 +482,12 @@ struct DQNGPUStateGeneric[
             Self.batch_size
         )
         self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
         )
 
@@ -570,6 +578,7 @@ struct GenericDQNAgent[
     var epsilon: Float64
     var epsilon_min: Float64
     var epsilon_decay: Float64
+    var exploration_fraction: Float64
     var target_update_freq: Int
     var train_step_count: Int
     var target_total_steps: Int
@@ -588,6 +597,7 @@ struct GenericDQNAgent[
         epsilon: Float64 = 1.0,
         epsilon_min: Float64 = 0.05,
         epsilon_decay: Float64 = 0.995,
+        exploration_fraction: Float64 = 0.5,
         target_update_freq: Int = 500,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
@@ -599,6 +609,7 @@ struct GenericDQNAgent[
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
+        self.exploration_fraction = exploration_fraction
         self.target_update_freq = target_update_freq
         self.train_step_count = 0
         self.target_total_steps = target_total_steps
@@ -1356,6 +1367,8 @@ struct GenericDQNAgent[
                 ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_values)
                 ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
                 ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
                 ctx.synchronize()
                 var diag_q_host = gpu_state.diag_q_host
                 var diag_tgt_host = gpu_state.diag_tgt_host
@@ -1384,13 +1397,49 @@ struct GenericDQNAgent[
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
+                var tgt_min: Float64 = Float64(diag_tgt_host[0])
+                var tgt_max: Float64 = Float64(diag_tgt_host[0])
                 for i in range(BATCH):
-                    tgt_sum += Float64(diag_tgt_host[i])
+                    var v = Float64(diag_tgt_host[i])
+                    tgt_sum += v
+                    if v < tgt_min:
+                        tgt_min = v
+                    if v > tgt_max:
+                        tgt_max = v
                 self.logger[].log_scalar(
                     "td_target_mean",
                     tgt_sum / Float64(BATCH),
                     step,
                 )
+                self.logger[].log_scalar("td_target_min", tgt_min, step)
+                self.logger[].log_scalar("td_target_max", tgt_max, step)
+
+                # Done fraction and reward stats from sampled batch
+                var done_count: Float64 = 0.0
+                var rew_sum: Float64 = 0.0
+                var rew_min: Float64 = Float64(gpu_state.diag_rew_host[0])
+                var rew_max: Float64 = Float64(gpu_state.diag_rew_host[0])
+                for b in range(BATCH):
+                    var d = Float64(gpu_state.diag_done_host[b])
+                    done_count += d
+                    var r = Float64(gpu_state.diag_rew_host[b])
+                    rew_sum += r
+                    if r < rew_min:
+                        rew_min = r
+                    if r > rew_max:
+                        rew_max = r
+                self.logger[].log_scalar(
+                    "done_fraction",
+                    done_count / Float64(BATCH),
+                    step,
+                )
+                self.logger[].log_scalar(
+                    "reward_mean",
+                    rew_sum / Float64(BATCH),
+                    step,
+                )
+                self.logger[].log_scalar("reward_min", rew_min, step)
+                self.logger[].log_scalar("reward_max", rew_max, step)
 
                 # TD error stats
                 var td_err_abs_sum: Float64 = 0.0
@@ -1446,11 +1495,8 @@ struct GenericDQNAgent[
     fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """Linear epsilon schedule matching CleanRL:
         epsilon = max(end_e, start_e + (end_e - start_e) * t / duration).
-        Exploration fraction = 0.1 (CleanRL default: decay over first 10%).
         """
-        var duration = (
-            Float64(num_steps) * 0.1
-        )  # exploration_fraction = 0.1 (CleanRL)
+        var duration = Float64(num_steps) * self.exploration_fraction
         var slope = (self.epsilon_min - 1.0) / duration
         self.epsilon = max(
             self.epsilon_min,
