@@ -3288,42 +3288,6 @@ struct DreamerV3Agent[
             ctx.enqueue_copy(gpu_state.deter_buf, gpu_state.new_deter_buf)
             ctx.enqueue_copy(gpu_state.stoch_buf, gpu_state.new_stoch_buf)
 
-        # ── Debug: verify post/prior probs differ ────────────────────────
-        if self.train_step_count <= 3:
-            var _dbg_post = ctx.enqueue_create_host_buffer[dtype](B * STOCH)
-            var _dbg_prior = ctx.enqueue_create_host_buffer[dtype](B * STOCH)
-            # Read probs from timestep 0
-            var _dbg_post_db = DeviceBuffer[dtype](
-                ctx,
-                gpu_state.all_post_probs_buf.unsafe_ptr(),
-                B * STOCH,
-                owning=False,
-            )
-            var _dbg_prior_db = DeviceBuffer[dtype](
-                ctx,
-                gpu_state.all_prior_probs_buf.unsafe_ptr(),
-                B * STOCH,
-                owning=False,
-            )
-            ctx.enqueue_copy(_dbg_post, _dbg_post_db)
-            ctx.enqueue_copy(_dbg_prior, _dbg_prior_db)
-            ctx.synchronize()
-            print("  [DEBUG] post_probs[0,:8]:", end="")
-            for i in range(min(8, STOCH)):
-                print("", _dbg_post[i], end="")
-            print()
-            print("  [DEBUG] prior_probs[0,:8]:", end="")
-            for i in range(min(8, STOCH)):
-                print("", _dbg_prior[i], end="")
-            print()
-            var _kl_dbg = Float64(0.0)
-            for i in range(B * STOCH):
-                var p = Float64(_dbg_post[i])
-                var q = Float64(_dbg_prior[i])
-                if p > 1e-8:
-                    _kl_dbg += p * (log(p + 1e-8) - log(q + 1e-8))
-            print("  [DEBUG] KL(post||prior) sample 0 total:", _kl_dbg / Float64(B))
-
         # ── 3. Full BPTT Backward (autodiff) ────────────────────────────────
         # Replaces per-timestep head backward + separate BPTT loop with a
         # single unified reverse pass matching the tested CPU autodiff code.

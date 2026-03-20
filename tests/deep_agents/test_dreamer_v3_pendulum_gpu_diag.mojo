@@ -31,8 +31,8 @@ fn main() raises:
         batch_length=32,
         imagine_horizon=15,
         buffer_capacity=100000,
-        free_nats=0.0,
-    ](warmup_steps=500)
+        free_nats=0.01,
+    ](warmup_steps=500, max_grad_norm=10.0)
 
     var ctx = DeviceContext()
 
