@@ -2791,27 +2791,57 @@ struct DreamerV3Agent[
         # ── 2. RSSM Observe Loop ─────────────────────────────────────────
         var total_kl = Float64(0.0)
 
+        # ── Kernel aliases for timestep gather ───────────────────────────
+        comptime OBS_FLAT = B * OBS
+        comptime OBS_STRIDE = (BL + 1) * OBS
+        comptime OBS_SRC_FLAT = OBS_SIZE  # B * (BL+1) * OBS
+        comptime OBS_DEINT_BLK = (OBS_FLAT + TPB - 1) // TPB
+        comptime run_deint_obs = deinterleave_kernel[
+            OBS_FLAT, OBS, OBS_STRIDE, 0, OBS_SRC_FLAT,
+        ]
+
+        comptime ACT_FLAT = B * ACT
+        comptime ACT_STRIDE = BL * ACT
+        comptime ACT_SRC_FLAT = ACT_SIZE  # B * BL * ACT
+        comptime ACT_DEINT_BLK = (ACT_FLAT + TPB - 1) // TPB
+        comptime run_deint_act = deinterleave_kernel[
+            ACT_FLAT, ACT, ACT_STRIDE, 0, ACT_SRC_FLAT,
+        ]
+
+        var obs_step_lt = LayoutTensor[
+            dtype, Layout.row_major(OBS_FLAT), MutAnyOrigin
+        ](gpu_state.obs_step_buf.unsafe_ptr())
+        var act_step_lt = LayoutTensor[
+            dtype, Layout.row_major(ACT_FLAT), MutAnyOrigin
+        ](gpu_state.act_step_buf.unsafe_ptr())
+
         for t in range(BL):
-            # Extract obs[t] and action[t] from batch buffers on GPU
-            # Copy obs slice: batch_obs[b*(BL+1)*OBS + t*OBS : ... + (t+1)*OBS]
-            # For simplicity, we do this on CPU and upload per timestep.
-            # A more optimized version would use gather kernels.
-            var host_obs_step = gpu_state.host_obs_step_buf
-            var host_act_step = gpu_state.host_act_step_buf
-            for b in range(B):
-                for i in range(OBS):
-                    host_obs_step[b * OBS + i] = Scalar[dtype](
-                        batch_obs[b * (BL + 1) * OBS + t * OBS + i]
-                    )
-                for i in range(ACT):
-                    if t == 0:
-                        host_act_step[b * ACT + i] = Scalar[dtype](0.0)
-                    else:
-                        host_act_step[b * ACT + i] = Scalar[dtype](
-                            batch_actions[b * BL * ACT + (t - 1) * ACT + i]
-                        )
-            ctx.enqueue_copy(gpu_state.obs_step_buf, host_obs_step)
-            ctx.enqueue_copy(gpu_state.act_step_buf, host_act_step)
+            # Gather obs[:,t,:] from batch_obs on GPU via deinterleave
+            # with pointer shifted by t*OBS so kernel reads
+            # src[b*OBS_STRIDE + d] = batch_obs[b*(BL+1)*OBS + t*OBS + d]
+            var batch_obs_at_t = LayoutTensor[
+                dtype, Layout.row_major(OBS_SRC_FLAT), MutAnyOrigin
+            ](gpu_state.batch_obs.unsafe_ptr() + t * OBS)
+            ctx.enqueue_function[run_deint_obs, run_deint_obs](
+                obs_step_lt,
+                batch_obs_at_t,
+                grid_dim=(OBS_DEINT_BLK,),
+                block_dim=(TPB,),
+            )
+
+            # Gather act[:,t-1,:] from batch_actions on GPU (zero for t==0)
+            if t == 0:
+                ctx.enqueue_memset(gpu_state.act_step_buf, 0)
+            else:
+                var batch_act_at_t = LayoutTensor[
+                    dtype, Layout.row_major(ACT_SRC_FLAT), MutAnyOrigin
+                ](gpu_state.batch_actions.unsafe_ptr() + (t - 1) * ACT)
+                ctx.enqueue_function[run_deint_act, run_deint_act](
+                    act_step_lt,
+                    batch_act_at_t,
+                    grid_dim=(ACT_DEINT_BLK,),
+                    block_dim=(TPB,),
+                )
 
             # Symlog observations
             var obs_t = LayoutTensor[
@@ -4840,6 +4870,39 @@ struct DreamerV3Agent[
         )
         ctx.synchronize()
 
+        # ── Pre-allocated batch buffers (reused across training iters) ─
+        comptime BATCH_OBS_SIZE = B * (BL + 1) * OBS
+        comptime BATCH_ACT_SIZE = B * BL * ACT
+        comptime BATCH_SCALAR_SIZE = B * BL
+        var batch_obs = List[Scalar[DType.float32]](capacity=BATCH_OBS_SIZE)
+        var batch_acts = List[Scalar[DType.float32]](capacity=BATCH_ACT_SIZE)
+        var batch_rews = List[Scalar[DType.float32]](capacity=BATCH_SCALAR_SIZE)
+        var batch_dones = List[Scalar[DType.float32]](
+            capacity=BATCH_SCALAR_SIZE
+        )
+        for _ in range(BATCH_OBS_SIZE):
+            batch_obs.append(Scalar[DType.float32](0))
+        for _ in range(BATCH_ACT_SIZE):
+            batch_acts.append(Scalar[DType.float32](0))
+        for _ in range(BATCH_SCALAR_SIZE):
+            batch_rews.append(Scalar[DType.float32](0))
+            batch_dones.append(Scalar[DType.float32](0))
+
+        # ── Pre-allocated per-sample buffers (reused across samples) ──
+        comptime SEQ_OBS_SIZE = (BL + 1) * OBS
+        comptime SEQ_ACT_SIZE = BL * ACT
+        var s_obs = List[Scalar[DType.float32]](capacity=SEQ_OBS_SIZE)
+        var s_act = List[Scalar[DType.float32]](capacity=SEQ_ACT_SIZE)
+        var s_rew = List[Scalar[DType.float32]](capacity=BL)
+        var s_don = List[Scalar[DType.float32]](capacity=BL)
+        for _ in range(SEQ_OBS_SIZE):
+            s_obs.append(Scalar[DType.float32](0))
+        for _ in range(SEQ_ACT_SIZE):
+            s_act.append(Scalar[DType.float32](0))
+        for _ in range(BL):
+            s_rew.append(Scalar[DType.float32](0))
+            s_don.append(Scalar[DType.float32](0))
+
         # ── Main training loop ───────────────────────────────────────
         while completed_episodes < num_episodes:
             # ── 1. Download current obs (for replay buffer) ──────────
@@ -5127,62 +5190,25 @@ struct DreamerV3Agent[
 
                     if ready:
                         for _tr in range(actual_train_ratio):
-                            var batch_obs = List[Scalar[DType.float32]](
-                                capacity=B * (BL + 1) * OBS
-                            )
-                            var batch_acts = List[Scalar[DType.float32]](
-                                capacity=B * BL * ACT
-                            )
-                            var batch_rews = List[Scalar[DType.float32]](
-                                capacity=B * BL
-                            )
-                            var batch_dones = List[Scalar[DType.float32]](
-                                capacity=B * BL
-                            )
-                            for _ in range(B * (BL + 1) * OBS):
-                                batch_obs.append(Scalar[DType.float32](0))
-                            for _ in range(B * BL * ACT):
-                                batch_acts.append(Scalar[DType.float32](0))
-                            for _ in range(B * BL):
-                                batch_rews.append(Scalar[DType.float32](0))
-                                batch_dones.append(Scalar[DType.float32](0))
-
                             var b_per_env = B // n_envs
                             var b_rem = B % n_envs
                             var b_offset = 0
                             for e in range(n_envs):
                                 var n_seqs = b_per_env + (1 if e < b_rem else 0)
                                 for _ in range(n_seqs):
-                                    var s_obs = List[Scalar[DType.float32]](
-                                        capacity=(BL + 1) * OBS
-                                    )
-                                    var s_act = List[Scalar[DType.float32]](
-                                        capacity=BL * ACT
-                                    )
-                                    var s_rew = List[Scalar[DType.float32]](
-                                        capacity=BL
-                                    )
-                                    var s_don = List[Scalar[DType.float32]](
-                                        capacity=BL
-                                    )
-                                    for _ in range((BL + 1) * OBS):
-                                        s_obs.append(Scalar[DType.float32](0))
-                                    for _ in range(BL * ACT):
-                                        s_act.append(Scalar[DType.float32](0))
-                                    for _ in range(BL):
-                                        s_rew.append(Scalar[DType.float32](0))
-                                        s_don.append(Scalar[DType.float32](0))
                                     env_bufs[e].sample_sequences[1, BL](
                                         s_obs, s_act, s_rew, s_don
                                     )
 
                                     var b = b_offset
-                                    for k in range((BL + 1) * OBS):
+                                    for k in range(SEQ_OBS_SIZE):
                                         batch_obs[
-                                            b * (BL + 1) * OBS + k
+                                            b * SEQ_OBS_SIZE + k
                                         ] = s_obs[k]
-                                    for k in range(BL * ACT):
-                                        batch_acts[b * BL * ACT + k] = s_act[k]
+                                    for k in range(SEQ_ACT_SIZE):
+                                        batch_acts[
+                                            b * SEQ_ACT_SIZE + k
+                                        ] = s_act[k]
                                     for k in range(BL):
                                         batch_rews[b * BL + k] = s_rew[k]
                                         batch_dones[b * BL + k] = s_don[k]
