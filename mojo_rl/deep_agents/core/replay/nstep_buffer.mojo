@@ -34,6 +34,28 @@ from layout import Layout, LayoutTensor
 
 
 # =============================================================================
+# GPU Replay Buffer Storable Trait
+# =============================================================================
+
+
+trait GPUReplayBufferStorable:
+    """Trait for GPU replay buffers that can store batched transitions."""
+
+    fn store[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        rewards: DeviceBuffer[dtype],
+        next_states: DeviceBuffer[dtype],
+        dones: DeviceBuffer[dtype],
+    ) raises:
+        ...
+
+
+# =============================================================================
 # CPU NStepBuffer
 # =============================================================================
 
@@ -496,20 +518,21 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
             block_dim=(TPB,),
         )
 
-    fn store_valid(
-        mut self,
+    fn store_into[
+        B: GPUReplayBufferStorable
+    ](
+        self,
         ctx: DeviceContext,
-        mut buffer: _,
+        mut buffer: B,
     ) raises:
-        """Store all valid compressed transitions into the replay buffer.
+        """Store all N_ENVS compressed transitions into a GPU replay buffer.
 
-        Stores all N_ENVS transitions (valid and invalid). Invalid ones
-        have zero rewards and will be overwritten in the circular buffer.
-        This avoids GPU compaction complexity.
+        Stores all transitions (valid and invalid). Invalid ones have zero
+        rewards and will be overwritten in the circular buffer.
 
         Args:
             ctx: GPU device context.
-            buffer: Any buffer with store[N_ENVS](ctx, obs, act, rew, nobs, done).
+            buffer: GPU replay buffer implementing GPUReplayBufferStorable.
         """
         buffer.store[Self.N_ENVS](
             ctx,

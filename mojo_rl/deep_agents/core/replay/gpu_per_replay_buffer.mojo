@@ -31,6 +31,8 @@ from std.random import random_float64
 from std.math import abs as math_abs
 from layout import Layout, LayoutTensor
 
+from .nstep_buffer import GPUReplayBufferStorable
+
 from ..kernels import (
     store_obs_parallel_kernel,
     gather_obs_parallel_kernel,
@@ -43,7 +45,7 @@ struct GPUPrioritizedReplayBuffer[
     OBS_DIM: Int,
     ACTION_DIM: Int = 1,
     BATCH_SIZE: Int = 64,
-](Movable):
+](Movable & GPUReplayBufferStorable):
     """GPU-resident replay buffer with CPU-side prioritized sampling.
 
     Parameters:

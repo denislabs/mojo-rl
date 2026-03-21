@@ -23,6 +23,7 @@ from .dqn_agent import (
     NoisyDQNConfig,
 )
 from .c51_agent import GenericC51Agent, C51Config
+from .rainbow_agent import GenericRainbowAgent, RainbowConfig
 from .offpolicy_agent import GenericOffPolicyAgent
 from ..configs.offpolicy_config import DDPGConfig, TD3Config, SACConfig
 from .onpolicy_agent import GenericOnPolicyAgent
@@ -133,6 +134,27 @@ comptime C51Agent[
     L: Logger = NoOpLogger,
 ] = GenericC51Agent[
     C51Config[obs_dim, num_actions, num_atoms, v_min, v_max, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
+    n_envs,
+    L,
+]
+
+
+comptime RainbowAgent[
+    obs_dim: Int,
+    num_actions: Int,
+    num_atoms: Int = 51,
+    v_min: Float64 = -10.0,
+    v_max: Float64 = 10.0,
+    hidden_dim: Int = 128,
+    stream_hidden_dim: Int = 128,
+    n_step: Int = 3,
+    buffer_capacity: Int = 100000,
+    batch_size: Int = 32,
+    n_envs: Int = 256,
+    lr: Float64 = 6.25e-5,
+    L: Logger = NoOpLogger,
+] = GenericRainbowAgent[
+    RainbowConfig[obs_dim, num_actions, num_atoms, v_min, v_max, hidden_dim, stream_hidden_dim, n_step, buffer_capacity, batch_size, lr],
     n_envs,
     L,
 ]

@@ -45,8 +45,10 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 
+from .nstep_buffer import GPUReplayBufferStorable
+
 struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
-    Movable
+    Movable & GPUReplayBufferStorable
 ):
     """GPU-resident circular replay buffer.
 
