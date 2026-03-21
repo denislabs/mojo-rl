@@ -38,6 +38,8 @@ from mojo_rl.nn.model import (
     Parallel,
     NoisyLinear,
     NoisyLinearReLU,
+    Conv2DReLU,
+    FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import (
@@ -162,6 +164,69 @@ struct RainbowConfig[
                 NoisyLinearReLU[Self.HIDDEN, Self.STREAM_H],
                 NoisyLinear[Self.STREAM_H, Self.ACT * Self.NUM_ATOMS],
             ],
+        ],
+    ]
+    comptime QOpt = Adam[Self.lr]
+
+
+# =============================================================================
+# Rainbow CNN Config (for pixel observations like Atari/Pong)
+# =============================================================================
+
+
+struct RainbowCNNConfig[
+    ACT: Int,
+    NUM_ATOMS: Int = 51,
+    V_MIN: Float64 = -10.0,
+    V_MAX: Float64 = 10.0,
+    N_STEP: Int = 3,
+    CAP: Int = 10000,
+    BS: Int = 32,
+    lr: Float64 = 6.25e-5,
+](RainbowDQNConfig):
+    """Rainbow DQN with Nature CNN for 4x84x84 pixel observations.
+
+    Architecture: Conv layers (shared) → NoisyLinear dueling heads.
+      Conv2D(4→32, 8×8, stride=4) → ReLU
+      Conv2D(32→64, 4×4, stride=2) → ReLU
+      Conv2D(64→64, 3×3, stride=1) → ReLU
+      Flatten(3136)
+      NoisyLinearReLU(3136→512)
+      Parallel[
+        NoisyLinear(512→NUM_ATOMS),          # V distribution
+        NoisyLinear(512→ACT*NUM_ATOMS),      # A distributions
+      ]
+
+    Parameters:
+        ACT: Number of discrete actions.
+        NUM_ATOMS: Atoms in categorical distribution.
+        V_MIN: Min support value.
+        V_MAX: Max support value.
+        N_STEP: N-step return horizon.
+        CAP: Replay buffer capacity.
+        BS: Training batch size.
+        lr: Learning rate.
+    """
+
+    comptime NAME: String = "Rainbow CNN"
+    comptime obs_dim: Int = 4 * 84 * 84  # 28224
+    comptime num_actions: Int = Self.ACT
+    comptime num_atoms: Int = Self.NUM_ATOMS
+    comptime v_min: Float64 = Self.V_MIN
+    comptime v_max: Float64 = Self.V_MAX
+    comptime n_step: Int = Self.N_STEP
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        Conv2DReLU[4, 32, 8, 4, 0, 84, 84],
+        Conv2DReLU[32, 64, 4, 2, 0, 20, 20],
+        Conv2DReLU[64, 64, 3, 1, 0, 9, 9],
+        FlattenLayer[64 * 7 * 7],
+        NoisyLinearReLU[64 * 7 * 7, 512],
+        Parallel[
+            NoisyLinear[512, Self.NUM_ATOMS],
+            NoisyLinear[512, Self.ACT * Self.NUM_ATOMS],
         ],
     ]
     comptime QOpt = Adam[Self.lr]
