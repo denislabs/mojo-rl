@@ -36,3 +36,4 @@ from .swimmer import Swimmer
 from .walker2d import Walker2d
 from .humanoid import Humanoid
 from .humanoid_standup import HumanoidStandup
+from .board_games import TicTacToeEnv, ConnectFourEnv, GoEnv

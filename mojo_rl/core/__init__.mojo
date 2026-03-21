@@ -17,6 +17,8 @@ from .env_traits import (
     GPUContinuousEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
+    TwoPlayerDiscreteEnv,
+    GPUTwoPlayerDiscreteEnv,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

@@ -693,3 +693,155 @@ struct NoCurriculumScheduler(CurriculumScheduler):
     @staticmethod
     fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         return ""
+
+
+# ============================================================================
+# Two-Player Turn-Based Environment Traits
+# ============================================================================
+
+
+trait TwoPlayerDiscreteEnv(BoxDiscreteActionEnv):
+    """Environment with two players, turn-based, discrete actions.
+
+    Extends BoxDiscreteActionEnv for backward compatibility — board game
+    environments can be used with existing single-agent training loops
+    (with an internal opponent) or with self-play training loops.
+
+    Observations are always CANONICAL: from the perspective of the
+    player about to move. "My pieces" = plane 0, "opponent pieces" = plane 1.
+    This enables single-network self-play.
+
+    step() advances one turn. The returned reward is from the perspective
+    of the player who just moved.
+
+    Examples: TicTacToe, ConnectFour, Go, Chess.
+    """
+
+    fn current_player(self) -> Int:
+        """Return which player is about to move (0 or 1)."""
+        ...
+
+    fn legal_action_mask(self) -> List[Bool]:
+        """Return mask of legal actions (length = num_actions()).
+
+        True = legal, False = illegal. Used for action masking in
+        policy networks and MCTS.
+        """
+        ...
+
+    fn game_result(self) -> Int:
+        """Return game outcome.
+
+        Returns:
+            0 = ongoing, 1 = player 0 wins, 2 = player 1 wins, 3 = draw.
+        """
+        ...
+
+
+trait GPUTwoPlayerDiscreteEnv:
+    """Trait for GPU-compatible two-player discrete action environments.
+
+    Similar to GPUDiscreteEnv but with an additional legal_masks output
+    from step_kernel_gpu. The legal mask for the NEXT state is computed
+    during the step to avoid a separate kernel launch.
+
+    The step kernel also handles canonical observation extraction —
+    observations are always from the perspective of the next player to move.
+    """
+
+    # Compile-time constants for environment dimensions
+    comptime STATE_SIZE: Int
+    comptime OBS_DIM: Int
+    comptime NUM_ACTIONS: Int
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        mut rewards: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        mut terminated: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+        mut legal_masks: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Perform one environment step for all games in batch.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            actions: Actions buffer [BATCH_SIZE].
+            rewards: Rewards output [BATCH_SIZE]. From perspective of player who moved.
+            dones: Done flags output [BATCH_SIZE]. 1.0 if game ended.
+            terminated: Terminated flags output [BATCH_SIZE].
+            obs: Canonical observations output [BATCH_SIZE * OBS_DIM].
+            legal_masks: Legal action mask for NEXT state [BATCH_SIZE * NUM_ACTIONS].
+            rng_seed: Random seed.
+        """
+        ...
+
+    @staticmethod
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Reset all games to initial state.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            rng_seed: Random seed.
+        """
+        ...
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        """Reset only finished games.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            dones: Done flags buffer [BATCH_SIZE].
+            rng_seed: Random seed.
+        """
+        ...
+
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+        mut legal_masks: DeviceBuffer[dtype],
+    ) raises:
+        """Extract canonical observations and legal masks from state.
+
+        Called after reset to get initial obs + masks.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            obs: Observations output [BATCH_SIZE * OBS_DIM].
+            legal_masks: Legal mask output [BATCH_SIZE * NUM_ACTIONS].
+        """
+        ...
