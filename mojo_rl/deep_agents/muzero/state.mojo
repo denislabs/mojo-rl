@@ -1,4 +1,4 @@
-"""MuZero State Containers — CPU state for MuZero training.
+"""MuZero State Containers — CPU and GPU state for MuZero training.
 
 CPU state (MuZeroCPUState):
   - Three networks: representation h, dynamics g, prediction f
@@ -6,19 +6,28 @@ CPU state (MuZeroCPUState):
   - Additional storage for MCTS policies and values alongside replay data
   - Pre-allocated scratch buffers for K-step unrolled training
 
-Created once in MuZeroAgent.__init__.
+GPU state (MuZeroGPUState):
+  - GPUNetworkState for all 3 networks
+  - DeviceBuffer scratch for K-step unrolled training
+  - Host buffers for CPU<->GPU data transfer
+
+Created once in MuZeroAgent.__init__ / make_gpu_state.
 """
 
 from std.memory import alloc, memset
 from std.random import random_float64
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.training import Network, NetworkState
+from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
+)
+from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
+    GPUSequenceReplayBuffer,
 )
 
 
@@ -515,3 +524,342 @@ struct MuZeroCPUState[
                 self._value_targets[i * BATCH + b] = Scalar[dtype](0.0)
             for i in range(K):
                 self._reward_targets[i * BATCH + b] = Scalar[dtype](0.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# GPU State
+# ══════════════════════════════════════════════════════════════════════════
+
+
+struct MuZeroGPUState[
+    OBS_DIM: Int,
+    ACTION_DIM: Int,
+    LATENT_DIM: Int = 256,
+    HIDDEN_DIM: Int = 256,
+    NUM_BINS: Int = 101,
+    LR: Float64 = 1e-3,
+    BATCH_SIZE: Int = 128,
+    UNROLL_STEPS: Int = 5,
+    N_ENVS: Int = 64,
+    PER_ENV_CAP: Int = 1000,
+](Movable):
+    """GPU-resident state for MuZero training.
+
+    Holds GPUNetworkState for all three networks and DeviceBuffers
+    for all training scratch. Created by MuZeroAgent.make_gpu_state().
+    """
+
+    # ── Shorthand compile-time constants ─────────────────────────────
+    comptime OBS: Int = Self.OBS_DIM
+    comptime ACT: Int = Self.ACTION_DIM
+    comptime LATENT: Int = Self.LATENT_DIM
+    comptime BINS: Int = Self.NUM_BINS
+    comptime BATCH: Int = Self.BATCH_SIZE
+    comptime K: Int = Self.UNROLL_STEPS
+
+    # Network types (must match MuZeroCPUState)
+    comptime RepModel = Sequential[
+        LinearMish[Self.OBS, Self.HIDDEN_DIM],
+        LinearMish[Self.HIDDEN_DIM, Self.HIDDEN_DIM],
+        Linear[Self.HIDDEN_DIM, Self.LATENT],
+    ]
+    comptime DYN_IN: Int = Self.LATENT + Self.ACT
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    comptime DynModel = Sequential[
+        LinearMish[Self.DYN_IN, Self.HIDDEN_DIM],
+        LinearMish[Self.HIDDEN_DIM, Self.HIDDEN_DIM],
+        Linear[Self.HIDDEN_DIM, Self.DYN_OUT],
+    ]
+    comptime PRED_OUT: Int = Self.ACT + Self.BINS
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN_DIM],
+        Parallel[
+            Linear[Self.HIDDEN_DIM, Self.ACT],
+            Linear[Self.HIDDEN_DIM, Self.BINS],
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    # ── GPU Network States ───────────────────────────────────────────
+    var representation: GPUNetworkState[Self.RepModel, Self.OptType]
+    var dynamics: GPUNetworkState[Self.DynModel, Self.OptType]
+    var prediction: GPUNetworkState[Self.PredModel, Self.OptType]
+
+    # ── GPU Sequence Replay Buffer ───────────────────────────────────
+    var replay: GPUSequenceReplayBuffer[
+        Self.PER_ENV_CAP, Self.OBS, Self.ACT, Self.N_ENVS
+    ]
+
+    # ── MCTS Target Buffers (parallel to replay, same per-env layout) ─
+    var mcts_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP * ACT]
+    var mcts_value_buf: DeviceBuffer[dtype]   # [N_ENVS * PER_ENV_CAP]
+
+    # Per-step MCTS target staging buffers (for CPU→GPU upload per step)
+    var mcts_step_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * ACT]
+    var mcts_step_value_buf: DeviceBuffer[dtype]   # [N_ENVS]
+
+    # Host buffers for uploading MCTS targets from CPU
+    var mcts_policy_host: HostBuffer[dtype]   # [N_ENVS * ACT]
+    var mcts_value_host: HostBuffer[dtype]    # [N_ENVS]
+
+    # ── Batch data (sampled on GPU) ──────────────────────────────────
+    var batch_obs_buf: DeviceBuffer[dtype]      # [BATCH * (K+1) * OBS]
+    var batch_actions_buf: DeviceBuffer[dtype]   # [BATCH * K * ACT]
+    var batch_policies_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
+
+    # ── Value/Reward target scratch ──────────────────────────────────
+    var value_targets_buf: DeviceBuffer[dtype]   # [(K+1) * BATCH]  (scalar-transformed)
+    var reward_targets_buf: DeviceBuffer[dtype]  # [K * BATCH]      (scalar-transformed)
+    var value_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] (two-hot encoded)
+    var reward_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] (two-hot encoded)
+
+    # ── K-step unroll scratch ────────────────────────────────────────
+    var hidden_buf: DeviceBuffer[dtype]          # [(K+1) * BATCH * LATENT]
+    var pred_out_buf: DeviceBuffer[dtype]        # [BATCH * PRED_OUT] (reused per step)
+    var dyn_input_buf: DeviceBuffer[dtype]       # [BATCH * DYN_IN]
+    var dyn_output_buf: DeviceBuffer[dtype]      # [BATCH * DYN_OUT]
+
+    # ── Network cache (for backward) ────────────────────────────────
+    var rep_cache_buf: DeviceBuffer[dtype]       # [BATCH * RepModel.CACHE_SIZE]
+    var dyn_cache_buf: DeviceBuffer[dtype]       # [K * BATCH * DynModel.CACHE_SIZE]
+    var pred_cache_buf: DeviceBuffer[dtype]      # [(K+1) * BATCH * PredModel.CACHE_SIZE]
+
+    # ── Gradient scratch ─────────────────────────────────────────────
+    var grad_pred_out_buf: DeviceBuffer[dtype]   # [BATCH * PRED_OUT]
+    var grad_pred_in_buf: DeviceBuffer[dtype]    # [BATCH * LATENT]
+    var grad_dyn_out_buf: DeviceBuffer[dtype]    # [BATCH * DYN_OUT]
+    var grad_dyn_in_buf: DeviceBuffer[dtype]     # [BATCH * DYN_IN]
+    var grad_hidden_buf: DeviceBuffer[dtype]     # [BATCH * LATENT]
+    var grad_rep_out_buf: DeviceBuffer[dtype]    # [BATCH * LATENT]
+    var grad_rep_in_buf: DeviceBuffer[dtype]     # [BATCH * OBS]
+
+    # ── Network workspace (for forward/backward GPU) ─────────────────
+    var workspace_buf: DeviceBuffer[dtype]       # max workspace across all networks
+
+    # ── Host transfer buffers ────────────────────────────────────────
+    var batch_obs_host: HostBuffer[dtype]
+    var batch_actions_host: HostBuffer[dtype]
+    var batch_policies_host: HostBuffer[dtype]
+    var value_targets_host: HostBuffer[dtype]
+    var reward_targets_host: HostBuffer[dtype]
+
+    # ══════════════════════════════════════════════════════════════════
+    # Constructor
+    # ══════════════════════════════════════════════════════════════════
+
+    fn __init__(out self, ctx: DeviceContext) raises:
+        """Allocate all GPU buffers and network states."""
+
+        # ── Networks ─────────────────────────────────────────────────
+        self.representation = GPUNetworkState[Self.RepModel, Self.OptType](ctx)
+        self.dynamics = GPUNetworkState[Self.DynModel, Self.OptType](ctx)
+        self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
+
+        # ── GPU Replay Buffer ───────────────────────────────────────
+        self.replay = GPUSequenceReplayBuffer[
+            Self.PER_ENV_CAP, Self.OBS, Self.ACT, Self.N_ENVS
+        ](ctx)
+
+        # ── MCTS Target Buffers ─────────────────────────────────────
+        self.mcts_policy_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.PER_ENV_CAP * Self.ACT
+        )
+        self.mcts_value_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.PER_ENV_CAP
+        )
+        ctx.enqueue_memset(self.mcts_policy_buf, 0)
+        ctx.enqueue_memset(self.mcts_value_buf, 0)
+
+        self.mcts_step_policy_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.ACT
+        )
+        self.mcts_step_value_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS
+        )
+
+        self.mcts_policy_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.N_ENVS * Self.ACT
+        )
+        self.mcts_value_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.N_ENVS
+        )
+
+        # ── Batch data ───────────────────────────────────────────────
+        self.batch_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * Self.OBS
+        )
+        self.batch_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.K * Self.ACT
+        )
+        self.batch_policies_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * Self.ACT
+        )
+
+        # ── Targets ──────────────────────────────────────────────────
+        self.value_targets_buf = ctx.enqueue_create_buffer[dtype](
+            (Self.K + 1) * Self.BATCH
+        )
+        self.reward_targets_buf = ctx.enqueue_create_buffer[dtype](
+            Self.K * Self.BATCH
+        )
+        self.value_target_dist_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BINS
+        )
+        self.reward_target_dist_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BINS
+        )
+
+        # ── Unroll scratch ───────────────────────────────────────────
+        self.hidden_buf = ctx.enqueue_create_buffer[dtype](
+            (Self.K + 1) * Self.BATCH * Self.LATENT
+        )
+        self.pred_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
+        self.dyn_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DYN_IN
+        )
+        self.dyn_output_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DYN_OUT
+        )
+
+        # ── Cache ────────────────────────────────────────────────────
+        comptime REP_CS = Self.RepModel.CACHE_SIZE
+        self.rep_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * REP_CS
+        )
+        comptime DYN_CS = Self.DynModel.CACHE_SIZE
+        self.dyn_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.K * Self.BATCH * DYN_CS
+        )
+        comptime PRED_CS = Self.PredModel.CACHE_SIZE
+        self.pred_cache_buf = ctx.enqueue_create_buffer[dtype](
+            (Self.K + 1) * Self.BATCH * PRED_CS
+        )
+
+        # ── Gradient scratch ─────────────────────────────────────────
+        self.grad_pred_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
+        self.grad_pred_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.grad_dyn_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DYN_OUT
+        )
+        self.grad_dyn_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DYN_IN
+        )
+        self.grad_hidden_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.grad_rep_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.grad_rep_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+
+        # ── Workspace (max across all networks) ─────────────────────
+        comptime WS_REP = Self.RepModel.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_DYN = Self.DynModel.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_PRED = Self.PredModel.WORKSPACE_SIZE_PER_SAMPLE
+        comptime MAX_WS = WS_REP if WS_REP > WS_DYN else WS_DYN
+        comptime MAX_WS2 = MAX_WS if MAX_WS > WS_PRED else WS_PRED
+        comptime WS_TOTAL = Self.BATCH * MAX_WS2 if MAX_WS2 > 0 else 1
+        self.workspace_buf = ctx.enqueue_create_buffer[dtype](WS_TOTAL)
+
+        # ── Host transfer buffers ────────────────────────────────────
+        self.batch_obs_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * Self.OBS
+        )
+        self.batch_actions_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.K * Self.ACT
+        )
+        self.batch_policies_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * Self.ACT
+        )
+        self.value_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            (Self.K + 1) * Self.BATCH
+        )
+        self.reward_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.K * Self.BATCH
+        )
+
+    fn __init__(out self, *, deinit take: Self):
+        """Move constructor."""
+        self.representation = take.representation^
+        self.dynamics = take.dynamics^
+        self.prediction = take.prediction^
+        self.replay = take.replay^
+        self.mcts_policy_buf = take.mcts_policy_buf^
+        self.mcts_value_buf = take.mcts_value_buf^
+        self.mcts_step_policy_buf = take.mcts_step_policy_buf^
+        self.mcts_step_value_buf = take.mcts_step_value_buf^
+        self.mcts_policy_host = take.mcts_policy_host^
+        self.mcts_value_host = take.mcts_value_host^
+        self.batch_obs_buf = take.batch_obs_buf^
+        self.batch_actions_buf = take.batch_actions_buf^
+        self.batch_policies_buf = take.batch_policies_buf^
+        self.value_targets_buf = take.value_targets_buf^
+        self.reward_targets_buf = take.reward_targets_buf^
+        self.value_target_dist_buf = take.value_target_dist_buf^
+        self.reward_target_dist_buf = take.reward_target_dist_buf^
+        self.hidden_buf = take.hidden_buf^
+        self.pred_out_buf = take.pred_out_buf^
+        self.dyn_input_buf = take.dyn_input_buf^
+        self.dyn_output_buf = take.dyn_output_buf^
+        self.rep_cache_buf = take.rep_cache_buf^
+        self.dyn_cache_buf = take.dyn_cache_buf^
+        self.pred_cache_buf = take.pred_cache_buf^
+        self.grad_pred_out_buf = take.grad_pred_out_buf^
+        self.grad_pred_in_buf = take.grad_pred_in_buf^
+        self.grad_dyn_out_buf = take.grad_dyn_out_buf^
+        self.grad_dyn_in_buf = take.grad_dyn_in_buf^
+        self.grad_hidden_buf = take.grad_hidden_buf^
+        self.grad_rep_out_buf = take.grad_rep_out_buf^
+        self.grad_rep_in_buf = take.grad_rep_in_buf^
+        self.workspace_buf = take.workspace_buf^
+        self.batch_obs_host = take.batch_obs_host^
+        self.batch_actions_host = take.batch_actions_host^
+        self.batch_policies_host = take.batch_policies_host^
+        self.value_targets_host = take.value_targets_host^
+        self.reward_targets_host = take.reward_targets_host^
+
+    fn upload_from[
+        BUFFER_CAPACITY: Int,
+        BATCH_SIZE_CPU: Int,
+        UNROLL_STEPS_CPU: Int,
+        TD_STEPS_CPU: Int,
+    ](
+        mut self,
+        cpu: MuZeroCPUState[
+            Self.OBS_DIM, Self.ACTION_DIM, Self.LATENT_DIM, Self.HIDDEN_DIM,
+            Self.NUM_BINS, Self.LR, BUFFER_CAPACITY, BATCH_SIZE_CPU,
+            UNROLL_STEPS_CPU, TD_STEPS_CPU,
+        ],
+        ctx: DeviceContext,
+    ) raises:
+        """Upload CPU network params to GPU."""
+        self.representation.upload_from(cpu.representation, ctx)
+        self.dynamics.upload_from(cpu.dynamics, ctx)
+        self.prediction.upload_from(cpu.prediction, ctx)
+
+    fn download_to[
+        BUFFER_CAPACITY: Int,
+        BATCH_SIZE_CPU: Int,
+        UNROLL_STEPS_CPU: Int,
+        TD_STEPS_CPU: Int,
+    ](
+        mut self,
+        mut cpu: MuZeroCPUState[
+            Self.OBS_DIM, Self.ACTION_DIM, Self.LATENT_DIM, Self.HIDDEN_DIM,
+            Self.NUM_BINS, Self.LR, BUFFER_CAPACITY, BATCH_SIZE_CPU,
+            UNROLL_STEPS_CPU, TD_STEPS_CPU,
+        ],
+        ctx: DeviceContext,
+    ) raises:
+        """Download GPU network params to CPU."""
+        self.representation.download_to(cpu.representation, ctx)
+        self.dynamics.download_to(cpu.dynamics, ctx)
+        self.prediction.download_to(cpu.prediction, ctx)

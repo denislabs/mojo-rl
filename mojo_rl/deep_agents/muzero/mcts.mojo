@@ -376,6 +376,358 @@ struct MCTS[
         return policy
 
     # ══════════════════════════════════════════════════════════════════════
+    # Batched MCTS Search (Virtual Loss)
+    # ══════════════════════════════════════════════════════════════════════
+
+    fn search_batched[
+        RepModel: Model,
+        DynModel: Model,
+        PredModel: Model,
+        RepOpt: Optimizer,
+        DynOpt: Optimizer,
+        PredOpt: Optimizer,
+        BATCH_SIMS: Int = 8,
+    ](
+        mut self,
+        root_obs: List[Scalar[dtype]],
+        rep_state: NetworkState[RepModel, RepOpt],
+        dyn_state: NetworkState[DynModel, DynOpt],
+        pred_state: NetworkState[PredModel, PredOpt],
+        v_min: Float64,
+        v_max: Float64,
+        add_noise: Bool = True,
+    ) -> InlineArray[Float64, Self.ACTION_DIM]:
+        """Run batched MCTS — select BATCH_SIMS leaves per round, expand in one forward call.
+
+        Uses virtual losses during selection to encourage diverse leaf selection.
+        Network forward calls are batched: instead of NUM_SIMULATIONS x BATCH=1,
+        we do ceil(NUM_SIMULATIONS / BATCH_SIMS) x BATCH=BATCH_SIMS calls.
+
+        This provides ~BATCH_SIMS x speedup on network evaluation, which is the
+        dominant cost in MCTS with learned models.
+
+        Args:
+            root_obs: Current observation [obs_dim].
+            rep_state: Representation network state.
+            dyn_state: Dynamics network state.
+            pred_state: Prediction network state.
+            v_min: Minimum value support.
+            v_max: Maximum value support.
+            add_noise: Whether to add Dirichlet noise at root.
+
+        Returns:
+            Visit count distribution over actions (sums to 1).
+        """
+        # ── Initialize tree (same as unbatched) ──────────────────────
+        self.nodes.clear()
+        self.min_max = MinMaxStats()
+
+        # Encode root observation
+        comptime B1: Int = 1
+        comptime REP_IN = RepModel.IN_DIM
+        comptime REP_OUT = RepModel.OUT_DIM
+
+        var obs_ptr = alloc[Scalar[dtype]](REP_IN)
+        for i in range(REP_IN):
+            if i < len(root_obs):
+                obs_ptr[i] = root_obs[i]
+            else:
+                obs_ptr[i] = Scalar[dtype](0.0)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(B1, REP_IN), MutAnyOrigin
+        ](obs_ptr)
+
+        var h0_ptr = self.hidden_states
+        var h0_t = LayoutTensor[
+            dtype, Layout.row_major(B1, REP_OUT), MutAnyOrigin
+        ](h0_ptr)
+        Network[RepModel, RepOpt].forward[B1](obs_t, h0_t, rep_state.params_view())
+        self._scale_hidden_state(0)
+        obs_ptr.free()
+
+        # Predict root prior and value
+        comptime PRED_OUT = PredModel.OUT_DIM
+        comptime PRED_IN_R = PredModel.IN_DIM
+        var pred_out_ptr = alloc[Scalar[dtype]](PRED_OUT)
+        memset(pred_out_ptr, 0, PRED_OUT)
+        var pred_out_t = LayoutTensor[
+            dtype, Layout.row_major(B1, PRED_OUT), MutAnyOrigin
+        ](pred_out_ptr)
+        var h0_view = LayoutTensor[
+            dtype, Layout.row_major(B1, PRED_IN_R), MutAnyOrigin
+        ](h0_ptr)
+        Network[PredModel, PredOpt].forward[B1](
+            h0_view, pred_out_t, pred_state.params_view()
+        )
+
+        # Create root node with softmax prior
+        var root = MCTSNode[Self.ACTION_DIM](hidden_idx=0)
+        var policy_logits_ptr = alloc[Float64](Self.ACTION_DIM)
+        for a in range(Self.ACTION_DIM):
+            policy_logits_ptr[a] = Float64(rebind[Scalar[dtype]](pred_out_t[0, a]))
+        var max_logit = policy_logits_ptr[0]
+        for a in range(1, Self.ACTION_DIM):
+            if policy_logits_ptr[a] > max_logit:
+                max_logit = policy_logits_ptr[a]
+        var sum_exp = Float64(0.0)
+        for a in range(Self.ACTION_DIM):
+            policy_logits_ptr[a] = exp(policy_logits_ptr[a] - max_logit)
+            sum_exp += policy_logits_ptr[a]
+        for a in range(Self.ACTION_DIM):
+            root.prior[a] = policy_logits_ptr[a] / sum_exp
+
+        pred_out_ptr.free()
+
+        # Dirichlet noise
+        if add_noise:
+            var noise = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+            var noise_sum = Float64(0.0)
+            for a in range(Self.ACTION_DIM):
+                var u = random_float64(0.0001, 0.9999)
+                noise[a] = -log(u)
+                noise_sum += noise[a]
+            for a in range(Self.ACTION_DIM):
+                noise[a] /= noise_sum
+                root.prior[a] = (
+                    (1.0 - self.noise_fraction) * root.prior[a]
+                    + self.noise_fraction * noise[a]
+                )
+
+        self.nodes.append(root^)
+        policy_logits_ptr.free()
+
+        # ── Batched simulations ──────────────────────────────────────
+        comptime DYN_IN = DynModel.IN_DIM
+        comptime DYN_OUT = DynModel.OUT_DIM
+        comptime VIRTUAL_LOSS: Int = 3  # Virtual loss value
+
+        # Pre-allocate batched forward buffers
+        var batch_dyn_input = alloc[Scalar[dtype]](BATCH_SIMS * DYN_IN)
+        var batch_dyn_output = alloc[Scalar[dtype]](BATCH_SIMS * DYN_OUT)
+        var batch_pred_input = alloc[Scalar[dtype]](BATCH_SIMS * PredModel.IN_DIM)
+        var batch_pred_output = alloc[Scalar[dtype]](BATCH_SIMS * PRED_OUT)
+
+        # Per-simulation tracking
+        var sim_parent_idx = alloc[Int](BATCH_SIMS)
+        var sim_action = alloc[Int](BATCH_SIMS)
+        var sim_search_paths = List[List[Int]](capacity=BATCH_SIMS)
+        var sim_action_paths = List[List[Int]](capacity=BATCH_SIMS)
+        var sim_valid = alloc[Bool](BATCH_SIMS)
+
+        var sims_done = 0
+        while sims_done < Self.NUM_SIMULATIONS:
+            # How many to batch this round
+            var batch_count = Self.NUM_SIMULATIONS - sims_done
+            if batch_count > BATCH_SIMS:
+                batch_count = BATCH_SIMS
+
+            # ── Phase 1: Select leaves with virtual losses ───────────
+            sim_search_paths.clear()
+            sim_action_paths.clear()
+            var pending_expansions = 0
+
+            for s in range(batch_count):
+                var search_path = List[Int](capacity=64)
+                var actions_path = List[Int](capacity=64)
+                var node_idx = 0
+                search_path.append(node_idx)
+
+                while True:
+                    var action = self._select_action(node_idx)
+                    actions_path.append(action)
+
+                    if not self.nodes[node_idx].is_expanded(action):
+                        break
+
+                    node_idx = self.nodes[node_idx].child_idx[action]
+                    search_path.append(node_idx)
+
+                var parent_idx = search_path[len(search_path) - 1]
+                var leaf_action = actions_path[len(actions_path) - 1]
+
+                # Check tree overflow
+                if len(self.nodes) + pending_expansions >= Self.MAX_NODES:
+                    sim_valid[s] = False
+                    sim_search_paths.append(search_path^)
+                    sim_action_paths.append(actions_path^)
+                    continue
+
+                sim_parent_idx[s] = parent_idx
+                sim_action[s] = leaf_action
+                sim_valid[s] = True
+
+                # Apply virtual loss to discourage same path
+                self.nodes[parent_idx].visit_count[leaf_action] += VIRTUAL_LOSS
+                self.nodes[parent_idx].total_visits += VIRTUAL_LOSS
+
+                # Build dynamics input for this leaf
+                var parent_h_offset = self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
+                for i in range(Self.LATENT_DIM):
+                    batch_dyn_input[pending_expansions * DYN_IN + i] = (
+                        self.hidden_states + parent_h_offset + i
+                    )[]
+                # Zero the action part, then set one-hot
+                for a in range(Self.ACTION_DIM):
+                    batch_dyn_input[
+                        pending_expansions * DYN_IN + Self.LATENT_DIM + a
+                    ] = Scalar[dtype](0.0)
+                batch_dyn_input[
+                    pending_expansions * DYN_IN + Self.LATENT_DIM + leaf_action
+                ] = Scalar[dtype](1.0)
+
+                pending_expansions += 1
+                sim_search_paths.append(search_path^)
+                sim_action_paths.append(actions_path^)
+
+            if pending_expansions == 0:
+                sims_done += batch_count
+                continue
+
+            # ── Phase 2: Batched dynamics forward ────────────────────
+            # Pad remaining slots with zeros if pending < BATCH_SIMS
+            for i in range(pending_expansions * DYN_IN, BATCH_SIMS * DYN_IN):
+                batch_dyn_input[i] = Scalar[dtype](0.0)
+            memset(batch_dyn_output, 0, BATCH_SIMS * DYN_OUT)
+
+            var dyn_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIMS, DYN_IN), MutAnyOrigin
+            ](batch_dyn_input)
+            var dyn_out_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIMS, DYN_OUT), MutAnyOrigin
+            ](batch_dyn_output)
+            Network[DynModel, DynOpt].forward[BATCH_SIMS](
+                dyn_in_t, dyn_out_t, dyn_state.params_view()
+            )
+
+            # ── Phase 3: Extract hidden states, batched prediction ───
+            # Copy dynamics outputs to hidden state pool + build pred input
+            var expansion_idx = 0
+            for s in range(batch_count):
+                if not sim_valid[s]:
+                    continue
+
+                var child_hidden_idx = len(self.nodes) + expansion_idx
+                if child_hidden_idx >= Self.MAX_NODES:
+                    sim_valid[s] = False
+                    expansion_idx += 1
+                    continue
+
+                # Extract hidden state
+                var child_h_offset = child_hidden_idx * Self.LATENT_DIM
+                for i in range(Self.LATENT_DIM):
+                    (self.hidden_states + child_h_offset + i)[] = batch_dyn_output[
+                        expansion_idx * DYN_OUT + i
+                    ]
+                self._scale_hidden_state(child_hidden_idx)
+
+                # Copy to prediction input
+                comptime PRED_IN = PredModel.IN_DIM
+                for i in range(PRED_IN):
+                    batch_pred_input[expansion_idx * PRED_IN + i] = (
+                        self.hidden_states + child_h_offset + i
+                    )[]
+
+                expansion_idx += 1
+
+            # Pad prediction input
+            comptime PRED_IN_B = PredModel.IN_DIM
+            for i in range(expansion_idx * PRED_IN_B, BATCH_SIMS * PRED_IN_B):
+                batch_pred_input[i] = Scalar[dtype](0.0)
+            memset(batch_pred_output, 0, BATCH_SIMS * PRED_OUT)
+
+            var pred_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIMS, PRED_IN_B), MutAnyOrigin
+            ](batch_pred_input)
+            var pred_out_t_b = LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIMS, PRED_OUT), MutAnyOrigin
+            ](batch_pred_output)
+            Network[PredModel, PredOpt].forward[BATCH_SIMS](
+                pred_in_t, pred_out_t_b, pred_state.params_view()
+            )
+
+            # ── Phase 4: Create nodes + backup ───────────────────────
+            expansion_idx = 0
+            for s in range(batch_count):
+                if not sim_valid[s]:
+                    # Remove virtual loss for invalid simulations
+                    if sim_valid[s] == False and s < len(sim_search_paths):
+                        pass  # Virtual loss wasn't applied for invalid ones
+                    continue
+
+                var child_hidden_idx = len(self.nodes)
+                var parent = sim_parent_idx[s]
+                var act = sim_action[s]
+
+                # Extract reward from dynamics output
+                var reward = self._decode_value(
+                    batch_dyn_output + expansion_idx * DYN_OUT + Self.LATENT_DIM,
+                    v_min,
+                    v_max,
+                )
+
+                # Create child node with softmax prior from prediction
+                var child = MCTSNode[Self.ACTION_DIM](hidden_idx=child_hidden_idx)
+                var max_l = Float64(batch_pred_output[expansion_idx * PRED_OUT])
+                for a in range(1, Self.ACTION_DIM):
+                    var v = Float64(batch_pred_output[expansion_idx * PRED_OUT + a])
+                    if v > max_l:
+                        max_l = v
+                var se = Float64(0.0)
+                for a in range(Self.ACTION_DIM):
+                    var v = Float64(batch_pred_output[expansion_idx * PRED_OUT + a])
+                    child.prior[a] = exp(v - max_l)
+                    se += child.prior[a]
+                for a in range(Self.ACTION_DIM):
+                    child.prior[a] /= se
+
+                # Get leaf value
+                var leaf_value = self._decode_value(
+                    batch_pred_output + expansion_idx * PRED_OUT + Self.ACTION_DIM,
+                    v_min,
+                    v_max,
+                )
+
+                # Link parent -> child
+                self.nodes[parent].reward[act] = reward
+                self.nodes[parent].child_idx[act] = child_hidden_idx
+                self.nodes.append(child^)
+
+                # Remove virtual loss before backup
+                self.nodes[parent].visit_count[act] -= VIRTUAL_LOSS
+                self.nodes[parent].total_visits -= VIRTUAL_LOSS
+
+                # Backup
+                self._backup(sim_search_paths[s], sim_action_paths[s], leaf_value)
+
+                expansion_idx += 1
+
+            sims_done += batch_count
+
+        # Free batched buffers
+        batch_dyn_input.free()
+        batch_dyn_output.free()
+        batch_pred_input.free()
+        batch_pred_output.free()
+        sim_parent_idx.free()
+        sim_action.free()
+        sim_valid.free()
+
+        # Return visit count policy
+        var policy = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+        var total = Float64(0.0)
+        for a in range(Self.ACTION_DIM):
+            policy[a] = Float64(self.nodes[0].visit_count[a])
+            total += policy[a]
+        if total > 0.0:
+            for a in range(Self.ACTION_DIM):
+                policy[a] /= total
+        else:
+            for a in range(Self.ACTION_DIM):
+                policy[a] = 1.0 / Float64(Self.ACTION_DIM)
+
+        return policy
+
+    # ══════════════════════════════════════════════════════════════════════
     # Internal Methods
     # ══════════════════════════════════════════════════════════════════════
 
