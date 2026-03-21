@@ -5,7 +5,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
-- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (TD-MPC2, DreamerV3)
+- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (TD-MPC2, DreamerV3, MuZero)
 - **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 20+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
 - **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with 27+ DiffOp primitives, AutoDiffChain, fused kernels, 7 combinators (Residual, Parallel, Repeat, SkipConcat, DualPath, SplitApply, FanOut), ComputeGraph named-node DAG builder
 - **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
@@ -75,7 +75,8 @@ mojo-rl/
 │   │   │   ├── training/        #       CPU/GPU training loops
 │   │   │   └── replay/          #       Replay buffers (heap, PER, GPU, N-step, sequence)
 │   │   ├── dreamer_v3/          #     DreamerV3 (RSSM world model, imagination)
-│   │   └── tdmpc2/              #     TD-MPC2 (world model + MPPI planning)
+│   │   ├── tdmpc2/              #     TD-MPC2 (world model + MPPI planning)
+│   │   └── muzero/              #     MuZero (learned model + MCTS planning)
 │   ├── nn/                      #   Deep learning framework
 │   │   ├── model/               #     20+ layers: Linear, Conv2D, NoisyLinear, LayerNorm, etc.
 │   │   ├── optimizer/           #     SGD, Adam, AdamW, RMSprop, Muon
@@ -178,6 +179,7 @@ mojo-rl/
 | **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch, CNN variant |
 | **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
 | **DreamerV3** | Continuous | Yes | RSSM world model, imagination rollouts |
+| **MuZero** | Discrete | CPU | Learned model, MCTS planning, distributional |
 
 ## Environments
 

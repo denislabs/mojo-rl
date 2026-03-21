@@ -172,6 +172,7 @@
 - [x] **PPO (Continuous)** - Unbounded Gaussian policy (CleanRL-style), GPU training, LR annealing, KL early stopping, gradient clipping
 - [x] **TD-MPC2** - Model-based RL with world model ensemble, MPPI planning, distributional RL (two-hot), sequence replay buffer [experimental]
 - [x] **DreamerV3** - World model (RSSM), actor-critic in imagination, categorical latent states [experimental]
+- [x] **MuZero** - Learned representation/dynamics/prediction networks, MCTS planning with PUCT, K-step unrolled training, n-step bootstrapped targets, distributional value/reward [experimental]
 
 ### Deep RL Shared Infrastructure (`deep_agents/core/`)
 
@@ -371,3 +372,4 @@ Cooperative and competitive multi-agent settings.
 | Deep PPO Continuous | Deep RL | Unbounded Gaussian, GPU training |
 | TD-MPC2 | Model-Based RL | World model + MPPI + distributional |
 | DreamerV3 | Model-Based RL | RSSM + imagination + categorical latents |
+| MuZero | Model-Based RL | Learned model + MCTS + distributional |
