@@ -504,6 +504,7 @@ struct DreamerV3GPUState[
     comptime BINS: Int = Self.NUM_BINS
     comptime HORIZON: Int = Self.IMAGINE_HORIZON
     comptime IB: Int = Self.IMAG_BATCH
+    comptime HIB: Int = (Self.IMAGINE_HORIZON - 1) * Self.IB  # actor-critic batch
     comptime MAX_N: Int = Self.MAX_N_ENVS
 
     # ── RSSM type alias (same as CPUState) ────────────────────────────────
@@ -890,7 +891,7 @@ struct DreamerV3GPUState[
         # ── Imagination scratch ──────────────────────────────────────────
         self.imag_deter_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.DETER)
         self.imag_stoch_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.STOCH)
-        self.imag_feat_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
+        self.imag_feat_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
 
         comptime IMAG_SCALAR = Self.HORIZON * Self.IB
         self.imag_rewards_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
@@ -914,16 +915,16 @@ struct DreamerV3GPUState[
 
         # ── Actor/Critic scratch ─────────────────────────────────────────
         comptime ACTOR_OUT_DIM = Self.ActorModel.OUT_DIM
-        self.actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * ACTOR_OUT_DIM)
-        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ActorModel.CACHE_SIZE)
-        self.actor_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB * ACTOR_OUT_DIM)
-        self.actor_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
-        self.critic_logits_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
-        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.CriticModel.CACHE_SIZE)
-        self.critic_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
-        self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.FEAT)
-        self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
-        self.symlog_returns_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+        self.actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * ACTOR_OUT_DIM)
+        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.ActorModel.CACHE_SIZE)
+        self.actor_grad_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * ACTOR_OUT_DIM)
+        self.actor_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
+        self.critic_logits_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
+        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.CriticModel.CACHE_SIZE)
+        self.critic_grad_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
+        self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
+        self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
+        self.symlog_returns_buf = ctx.enqueue_create_buffer[dtype](Self.HIB)
         self.returns_minmax_buf = ctx.enqueue_create_buffer[dtype](2)
 
         # ── Pre-allocated host buffers for observe loop ──────────────────
@@ -1046,8 +1047,8 @@ struct DreamerV3GPUState[
         comptime CritNet = Network[Self.CriticModel, Self.CriticOpt]
 
         # Workspace sizes — use max(BATCH, IB) for networks used in both phases
-        comptime WS_IB_ACTOR = Self.IB * ActNet.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_IB_CRITIC = Self.IB * CritNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_ACTOR = Self.HIB * ActNet.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_IB_CRITIC = Self.HIB * CritNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_REWARD = Self.IB * RewNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_CONT = Self.IB * ContNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_PRIOR = Self.IB * PriorNet.WORKSPACE_SIZE_PER_SAMPLE

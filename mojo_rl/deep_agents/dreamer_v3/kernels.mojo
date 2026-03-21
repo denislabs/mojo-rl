@@ -1603,6 +1603,24 @@ fn deinterleave_kernel[
     dst[i] = src[b * TOTAL + OFFSET + d]
 
 
+fn zero_strided_kernel[
+    B: Int, BL: Int, DIM: Int,
+](
+    buf: LayoutTensor[dtype, Layout.row_major(B * BL * DIM), MutAnyOrigin],
+):
+    """Zero t=0 slice for each batch element in [B*BL, DIM] buffer.
+
+    Zeros buf[b*BL*DIM + d] for b=0..B-1, d=0..DIM-1.
+    Thread i maps to (b, d) where b=i//DIM, d=i%DIM.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= B * DIM:
+        return
+    var b = i // DIM
+    var d = i % DIM
+    buf[b * BL * DIM + d] = Scalar[dtype](0)
+
+
 fn batch_gather_obs_kernel[
     B: Int, BL: Int, OBS: Int, OFFSET: Int = 0,
 ](

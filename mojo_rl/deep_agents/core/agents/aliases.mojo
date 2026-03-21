@@ -21,6 +21,7 @@ from .dqn_agent import (
     DQNPERConfig,
     AutodiffDQNConfig,
 )
+from .c51_agent import GenericC51Agent, C51Config
 from .offpolicy_agent import GenericOffPolicyAgent
 from ..configs.offpolicy_config import DDPGConfig, TD3Config, SACConfig
 from .onpolicy_agent import GenericOnPolicyAgent
@@ -111,6 +112,26 @@ comptime AutodiffDQNAgent[
     L: Logger = NoOpLogger,
 ] = GenericDQNAgent[
     AutodiffDQNConfig[obs_dim, num_actions, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
+    n_envs,
+    L,
+]
+
+
+comptime C51Agent[
+    obs_dim: Int,
+    num_actions: Int,
+    num_atoms: Int = 51,
+    v_min: Float64 = -10.0,
+    v_max: Float64 = 10.0,
+    hidden_dim: Int = 128,
+    hidden_dim2: Int = 128,
+    buffer_capacity: Int = 10000,
+    batch_size: Int = 32,
+    n_envs: Int = 1024,
+    lr: Float64 = 2.5e-4,
+    L: Logger = NoOpLogger,
+] = GenericC51Agent[
+    C51Config[obs_dim, num_actions, num_atoms, v_min, v_max, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
     n_envs,
     L,
 ]

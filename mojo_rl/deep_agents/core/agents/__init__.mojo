@@ -19,6 +19,7 @@ Configs and agents:
   - onpolicy_agent: GenericOnPolicyAgent (discrete PPO, A2C)
   - onpolicy_continuous_agent: GenericOnPolicyContinuousAgent (continuous PPO)
   - dqn_agent: DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, GenericDQNAgent
+  - c51_agent: C51Config, GenericC51Agent (categorical distributional DQN)
 """
 
 # Strategy traits and implementations
@@ -46,6 +47,7 @@ from .offpolicy_agent import GenericOffPolicyAgent
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, HuberDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
+from .c51_agent import CategoricalDQNConfig, C51Config, GenericC51Agent
 
 # Convenience aliases matching old agent names
 from .aliases import (
@@ -54,6 +56,7 @@ from .aliases import (
     DuelingDQNAgent,
     DQNCNNAgent,
     AutodiffDQNAgent,
+    C51Agent,
     DeepDDPGAgent,
     DeepTD3Agent,
     DeepSACAgent,
