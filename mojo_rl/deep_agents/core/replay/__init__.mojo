@@ -20,4 +20,5 @@ from .replay_buffer import (
 )
 from .sequence_replay_buffer import SequenceReplayBuffer
 from .gpu_replay_buffer import GPUReplayBuffer
+from .gpu_per_replay_buffer import GPUPrioritizedReplayBuffer
 from .gpu_sequence_replay_buffer import GPUSequenceReplayBuffer
