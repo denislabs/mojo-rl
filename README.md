@@ -1,19 +1,21 @@
 # mojo-rl
 
-A reinforcement learning framework written in Mojo, featuring trait-based design, 30+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, and native SDL3 rendering.
+A reinforcement learning framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
 
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
-- **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO), and model-based RL (TD-MPC2)
-- **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 15+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
-- **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with DiffOp primitives, AutoDiffChain, fused kernels, and combinators (Residual, Parallel, Repeat)
+- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (TD-MPC2, DreamerV3)
+- **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 20+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
+- **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with 27+ DiffOp primitives, AutoDiffChain, fused kernels, 7 combinators (Residual, Parallel, Repeat, SkipConcat, DualPath, SplitApply, FanOut), ComputeGraph named-node DAG builder
 - **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
 - **2D physics engine** (`mojo_rl/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
-- **22 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing, HalfCheetah, Hopper, Ant, Walker2d, Swimmer, Humanoid, HumanoidStandup, InvertedPendulum, InvertedDoublePendulum, and more
+- **25 native environments**: Tabular, classic control, 2D physics, MuJoCo-style 3D, and GPU-accelerated arcade games
+- **Arcade game engines** (`mojo_rl/envs/arcade_games/`): Native GPU-accelerated Pong, Breakout, Space Invaders with clean obs + pixel obs modes
+- **Atari 2600 emulator** (`mojo_rl/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
 - **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **GPU training**: All continuous control deep agents (DDPG, TD3, SAC, PPO) support GPU-accelerated training
+- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, PPO, TD-MPC2, DreamerV3) support GPU-accelerated training
 
 ## Acknowledgments
 
@@ -65,31 +67,29 @@ mojo-rl/
 ├── mojo_rl/                     # Main Mojo package
 │   ├── core/                    #   Core RL abstractions (traits, replay buffers, tile coding)
 │   ├── agents/                  #   Tabular & linear RL algorithms (20+ agents)
-│   ├── deep_agents/             #   Deep RL agents with CPU/GPU training
-│   │   ├── core/                #     Shared training loops, GPU kernels, replay buffers
-│   │   ├── dqn/                 #     DQN, Double DQN
-│   │   ├── dqn_per/             #     DQN + Prioritized Experience Replay
-│   │   ├── dueling_dqn/         #     Dueling DQN (V + A streams)
-│   │   ├── ddpg/                #     Deep Deterministic Policy Gradient
-│   │   ├── td3/                 #     Twin Delayed DDPG
-│   │   ├── sac/                 #     Soft Actor-Critic
-│   │   ├── a2c/                 #     Advantage Actor-Critic
-│   │   ├── ppo/                 #     PPO (discrete + continuous)
-│   │   └── tdmpc2/              #     TD-MPC2 (model-based, world model + MPPI)
+│   ├── deep_agents/             #   Deep RL agents (config-driven generic architecture)
+│   │   ├── core/                #     Shared infrastructure
+│   │   │   ├── agents/          #       Generic agents (DQN, C51, Rainbow, off/on-policy)
+│   │   │   ├── configs/         #       Algorithm configs (DQN/TD3/SAC/PPO/A2C variants)
+│   │   │   ├── strategies/      #       Composable building blocks (exploration, target, loss)
+│   │   │   ├── training/        #       CPU/GPU training loops
+│   │   │   └── replay/          #       Replay buffers (heap, PER, GPU, N-step, sequence)
+│   │   ├── dreamer_v3/          #     DreamerV3 (RSSM world model, imagination)
+│   │   └── tdmpc2/              #     TD-MPC2 (world model + MPPI planning)
 │   ├── nn/                      #   Deep learning framework
-│   │   ├── model/               #     Layers: Linear, ReLU, Tanh, Sigmoid, Mish, LayerNorm, etc.
+│   │   ├── model/               #     20+ layers: Linear, Conv2D, NoisyLinear, LayerNorm, etc.
 │   │   ├── optimizer/           #     SGD, Adam, AdamW, RMSprop, Muon
 │   │   ├── loss/                #     MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
 │   │   ├── initializer/         #     Xavier, Kaiming, LeCun, etc.
 │   │   ├── training/            #     Trainer, NetworkState, GPUNetworkState, NetworkPair
 │   │   ├── checkpoint/          #     Model serialization (text + binary)
 │   │   ├── autodiff/            #     Automatic differentiation framework
-│   │   │   ├── primitives/      #       MatMul, BiasAdd, ReLU, Tanh, Conv2D, Attention, etc.
-│   │   │   ├── fused/           #       FusedMatMulBiasReLU, FusedMatMulBiasTanh, etc.
-│   │   │   └── combinators/     #       Residual, Parallel, Repeat
-│   │   ├── composites.mojo      #     Pre-built architectures (ResBlock, ResNet, LeNet)
-│   │   ├── gpu/                 #     GPU kernels (matmul, elementwise, random)
-│   │   └── replay/              #     Experience replay buffers
+│   │   │   ├── primitives/      #       27+ DiffOps (MatMul, Conv2D, Attention, RSample, etc.)
+│   │   │   ├── fused/           #       Fused kernels (MatMul+Bias+Act, Conv2D+Act)
+│   │   │   ├── combinators/     #       Residual, Parallel, Repeat, SkipConcat, DualPath, etc.
+│   │   │   └── compute_graph.mojo #    Named-node DAG builder (ComputeGraph)
+│   │   ├── composites.mojo      #     Pre-built architectures (ResBlock, ResNet, LeNet, NatureDQN)
+│   │   └── gpu/                 #     GPU kernels (matmul, elementwise, random)
 │   ├── physics3d/               #   3D MuJoCo-inspired physics engine
 │   │   ├── model/               #     Compile-time model specs (BodySpec, JointSpec, GeomSpec)
 │   │   ├── dynamics/            #     Mass matrix (CRBA), bias forces (RNE), Jacobians
@@ -125,19 +125,21 @@ mojo-rl/
 │       ├── ant/                 #     MuJoCo-style (physics3d)
 │       ├── walker2d/            #     MuJoCo-style (physics3d)
 │       ├── humanoid/            #     MuJoCo-style (physics3d)
+│       ├── arcade_games/        #     Native GPU game engines (Pong, Breakout, Space Invaders)
+│       ├── atari/               #     Atari 2600 emulator (6502 CPU, TIA, RIOT)
 │       └── gymnasium/           #     Python Gymnasium wrappers
-├── tests/                       # Test suite (120+ files)
-│   ├── physics3d/               #   Physics engine validation tests
-│   ├── nn/                      #   Neural network tests
-│   ├── deep_agents/             #   Deep RL agent tests
-│   └── arcade_games/            #   Arcade/Atari environment tests
+├── tests/                       # Test suite (166+ files)
+│   ├── physics3d/               #   Physics engine validation tests (73 files)
+│   ├── nn/                      #   Neural network + autodiff tests (20 files)
+│   ├── deep_agents/             #   Deep RL agent tests (39 files)
+│   └── arcade_games/            #   Arcade/Atari environment tests (6 files)
 ├── examples/                    # Demo scripts organized by environment
 │   ├── cartpole/                #   CartPole demos and benchmarks
 │   ├── half_cheetah/            #   HalfCheetah training (PPO, SAC, TD3, TD-MPC2)
 │   ├── hopper/                  #   Hopper training (PPO)
 │   ├── ant/                     #   Ant training (PPO)
 │   ├── acrobot/                 #   Acrobot demos
-│   ├── arcade_games/            #   Atari/Pong demos
+│   ├── arcade_games/            #   Pong/Breakout/SpaceInvaders (DQN, PPO, playable)
 │   └── *.mojo                   #   Various environment demos
 ├── benchmarks/                  # Performance benchmarks
 └── pixi.toml                    # Dependency management
@@ -163,14 +165,19 @@ mojo-rl/
 | Algorithm | Actions | GPU | Description |
 |-----------|---------|-----|-------------|
 | **DQN** | Discrete | Yes | Double DQN, target network, epsilon-greedy |
-| **DQN + PER** | Discrete | No | Prioritized replay with sum-tree |
-| **Dueling DQN** | Discrete | No | V(s) + A(s,a) architecture |
+| **DQN + PER** | Discrete | Yes | Prioritized replay with sum-tree |
+| **Dueling DQN** | Discrete | Yes | V(s) + A(s,a) architecture |
+| **Noisy DQN** | Discrete | Yes | NoisyLinear layers, no epsilon-greedy |
+| **DQN CNN** | Discrete | Yes | NatureDQN CNN for pixel observations |
+| **C51** | Discrete | Yes | Categorical distributional (51 atoms) |
+| **Rainbow** | Discrete | Yes | C51 + Double + PER + Dueling + Noisy + N-step |
 | **DDPG** | Continuous | Yes | Deterministic actor, Gaussian noise |
 | **TD3** | Continuous | Yes | Twin critics, delayed policy, target smoothing |
 | **SAC** | Continuous | Yes | Max entropy, stochastic policy, auto alpha |
-| **A2C** | Discrete | No | GAE, softmax policy |
-| **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch |
+| **A2C** | Discrete | CPU | GAE, softmax policy |
+| **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch, CNN variant |
 | **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
+| **DreamerV3** | Continuous | Yes | RSSM world model, imagination rollouts |
 
 ## Environments
 
@@ -195,7 +202,16 @@ mojo-rl/
 | Walker2d | 17 | 6 (continuous) | physics3d (GC) | Yes |
 | Swimmer | 8 | 2 (continuous) | physics3d (GC) | Yes |
 | Humanoid | 376 | 17 (continuous) | physics3d (GC) | Yes |
+| HumanoidStandup | 376 | 17 (continuous) | physics3d (GC) | Yes |
 | InvertedPendulum | 4 | 1 (continuous) | physics3d (GC) | Yes |
+| InvDoublePendulum | 9 | 1 (continuous) | physics3d (GC) | Yes |
+| Pong | 6 / 4x84x84 | 3 (discrete) | Native GPU engine | Yes |
+| Breakout | 7 / 4x84x84 | 4 (discrete) | Native GPU engine | Yes |
+| Space Invaders | 10 / 4x84x84 | 4 (discrete) | Native GPU engine | Yes |
+
+### Atari 2600 Emulator
+
+Full 6502 CPU + TIA + RIOT emulation. CPU-only (Pong, Breakout, Space Invaders ROMs). Used for validation against native GPU engines.
 
 ### Gymnasium Wrappers
 

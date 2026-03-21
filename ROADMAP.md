@@ -60,6 +60,22 @@
 - [x] Dyna-Q - Q-Learning with model-based planning
 - [x] Priority Sweeping - Prioritized updates by TD error
 
+### Environments - Arcade Games (`envs/arcade_games/`) [In Progress]
+
+- [x] **Pong** - Native GPU engine, clean obs (6D) + pixel obs (4x84x84), 3 actions
+- [x] **Breakout** - Native GPU engine, 6x14 brick grid, clean obs (7D) + pixel obs, 4 actions
+- [x] **Space Invaders** - Native GPU engine, 5x11 alien grid, clean obs (10D) + pixel obs, 4 actions
+- [ ] Freeway, Enduro, Qbert, Asteroids (planned — same template)
+
+### Environments - Atari 2600 Emulator (`envs/atari/`)
+
+- [x] **6502 CPU emulator** - Full fetch-decode-execute, all official opcodes
+- [x] **TIA graphics chip** - Playfield, sprites, ball, collision detection
+- [x] **RIOT** - Timer, I/O ports
+- [x] **ROM support** - Pong, Breakout, Space Invaders game definitions
+- [x] **Frame rendering** - BGRA, RGB, grayscale output modes
+- [x] **SDL3 renderer** - Interactive play with keyboard input
+
 ### Infrastructure
 
 - [x] Replay Buffer - Circular buffer for experience replay
@@ -68,7 +84,10 @@
 - [x] Q-Learning with PER - Off-policy learning with prioritized replay
 - [x] Continuous Replay Buffer - For continuous state/action algorithms
 - [x] GPU Replay Buffer - Device-side circular buffer for GPU training
+- [x] GPU Prioritized Replay Buffer - CPU sum-tree + GPU data storage
+- [x] N-Step Buffer - N-step returns accumulation (for Rainbow)
 - [x] Sequence Replay Buffer - Contiguous sequence sampling for model-based RL (TD-MPC2)
+- [x] GPU Sequence Replay Buffer - Device-side sequence buffer
 
 ### Function Approximation
 
@@ -93,8 +112,10 @@
 ### Deep Learning Framework (`nn/`)
 
 - [x] **Model Trait** - Stateless layers with compile-time dimensions
-  - Linear, LinearReLU, LinearTanh, ReLU, Tanh, Sigmoid, Softmax, Mish
+  - Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish, ReLU, Tanh, Sigmoid, Softmax, Mish
   - LayerNorm, SimNorm, Dropout, NormedLinear (Linear->LayerNorm->Mish)
+  - NoisyLinear, NoisyLinearReLU, NoisyLinearTanh (factorized Gaussian noise for exploration)
+  - Conv2D, Conv2DReLU, Conv2DTanh, Conv2DSigmoid, Conv2DMish, MaxPool, AvgPool, Flatten
   - StochasticActor (Gaussian policy with reparameterization trick)
   - Sequential[*LAYERS] - Variadic N-layer composition
 - [x] **Optimizer Trait** - SGD, Adam, AdamW, RMSprop, Muon
@@ -113,38 +134,52 @@
 ### Automatic Differentiation (`nn/autodiff/`)
 
 - [x] **DiffOp Trait** - Fine-grained differentiable operations
-  - MatMul, BiasAdd, ReLUOp, TanhOp, SigmoidOp, MishOp
-  - SoftmaxOp, LayerNormOp, RMSNormOp
-  - Scale, ElemMul, ReduceSum, ReduceMean
-  - DropoutOp, Flatten, Embedding
-  - Conv2D, MaxPool2D, AvgPool2D
-  - ScaledDotProductAttention
+  - Arithmetic: MatMul, BiasAdd, Scale, ElemMul, NegateOp
+  - Activations: ReLUOp, TanhOp, SigmoidOp, MishOp, SoftmaxOp, SymlogOp
+  - Normalization: LayerNormOp, RMSNormOp
+  - Reduction: ReduceSum, ReduceMean
+  - Spatial: Conv2D, MaxPool2D, AvgPool2D, Flatten
+  - Attention: ScaledDotProductAttention
+  - Embedding: Embedding, GatherOp
+  - RL-specific: RSampleOp (reparameterized tanh sampling), MinOp (twin critic), SliceOp, GaussianLogProbOp
+  - PPO-specific: CategoricalLogProbOp, RatioOp, ClipSurrogateOp
+  - Loss ops: MSEOp, HuberOp
 - [x] **AutoDiffChain[*OPS]** - Variadic composition of N DiffOps into a Model
-- [x] **Fused Operations** - FusedMatMulBias, FusedMatMulBiasReLU, FusedMatMulBiasTanh, generic FusedMatMulBiasActivation
-- [x] **AutoFused[*OPS]** - Automatic compile-time greedy fusion (MatMul+Bias+Act -> fused kernel)
-- [x] **Combinators** - Residual[Inner], Parallel[*BRANCHES], Repeat[n, Inner]
-- [x] **Composites** - Pre-built architectures: ResBlock, ResNet, LeNet, FFN
-- [x] **Convenience Aliases** - Dense, DenseReLU, DenseTanh (AutoDiffChain shortcuts)
+- [x] **Fused Operations** - FusedMatMulBias, FusedMatMulBiasActivation, FusedConv2DActivation
+- [x] **AutoFused[*OPS]** - Automatic compile-time greedy fusion (MatMul+Bias+Act -> fused kernel, Conv2D+Act -> fused)
+- [x] **Combinators** - Residual[Inner], Parallel[*BRANCHES], Repeat[n, Inner], SkipConcat[Inner], DualPath[A, B], SplitApply[Left, Right, split], FanOut[Inner, N]
+- [x] **ComputeGraph[*NODES]** - Named-node DAG builder for complex loss graphs (SAC actor loss, etc.)
+- [x] **CompositeParams[*MODELS]** - Multi-model parameter alignment with auto-padding for GPU safety
+- [x] **Composites** - Pre-built architectures: ResBlock, ResNet, LeNet, NatureDQN (Atari CNN), FFN
+- [x] **Convenience Aliases** - Dense, DenseReLU, DenseTanh, DenseSigmoid, DenseMish (AutoFused shortcuts)
 
 ### Deep RL Agents (`deep_agents/`)
 
+**Refactored to config-driven generic architecture** — old per-agent directories replaced by composable strategies.
+
 - [x] **DQN / Double DQN** - Deep Q-Network with target network, epsilon-greedy, GPU training
-- [x] **DQN + PER** - Prioritized replay with sum-tree, importance sampling, beta annealing
+- [x] **DQN + PER** - Prioritized replay with sum-tree, importance sampling, beta annealing, GPU
 - [x] **Dueling DQN** - V(s) + A(s,a) architecture with shared backbone
+- [x] **Noisy DQN** - NoisyLinear layers (factorized Gaussian noise), no epsilon-greedy needed
+- [x] **DQN CNN** - NatureDQN CNN architecture for pixel observations (84x84)
+- [x] **C51 (Categorical DQN)** - Distributional RL with 51 atoms, cross-entropy loss, Bellman projection
+- [x] **Rainbow** - C51 + Double DQN + PER + Dueling + Noisy Networks + N-step returns
 - [x] **DDPG** - Deterministic actor, Gaussian noise, target networks, GPU training
 - [x] **TD3** - Twin critics, delayed policy updates, target smoothing, GPU training
 - [x] **SAC** - Stochastic Gaussian policy, max entropy, auto alpha tuning, GPU training
 - [x] **A2C** - Advantage Actor-Critic with GAE
-- [x] **PPO (Discrete)** - Clipped surrogate, multi-epoch, entropy bonus
+- [x] **PPO (Discrete)** - Clipped surrogate, multi-epoch, entropy bonus, CNN variant
 - [x] **PPO (Continuous)** - Unbounded Gaussian policy (CleanRL-style), GPU training, LR annealing, KL early stopping, gradient clipping
-- [x] **TD-MPC2** - Model-based RL with world model ensemble, MPPI planning, distributional RL (two-hot), sequence replay buffer
+- [x] **TD-MPC2** - Model-based RL with world model ensemble, MPPI planning, distributional RL (two-hot), sequence replay buffer [experimental]
+- [x] **DreamerV3** - World model (RSSM), actor-critic in imagination, categorical latent states [experimental]
 
 ### Deep RL Shared Infrastructure (`deep_agents/core/`)
 
 - [x] **Trait-based agent design** - OffPolicyContinuousAgent, OffPolicyDiscreteAgent, OnPolicyContinuousAgent, OnPolicyDiscreteAgent, GPUOffPolicyAgent, GPUOnPolicyContinuousAgent, Checkpointable
+- [x] **Composable strategies** - Exploration (GaussianNoise, StochasticSample), target value (Single/Twin/Entropic), target action (Deterministic/Smoothed/Reparam), actor loss (DPG/MaxEnt/Autodiff), policy gradient (Vanilla/Clipped/Autodiff), Q-output (Direct/Dueling), Q-gradient (Manual/Autodiff)
 - [x] **Unified training loops** - CPU and GPU variants for off-policy and on-policy agents
-- [x] **Shared GPU kernels** - 80+ reusable kernels (soft update, episode tracking, replay, TD targets, etc.)
-- [x] **Replay buffer variants** - HeapReplayBuffer, PrioritizedReplayBuffer, GPUReplayBuffer, SequenceReplayBuffer
+- [x] **Shared GPU kernels** - 80+ reusable kernels (soft update, episode tracking, replay, TD targets, distributional RL, etc.)
+- [x] **Replay buffer variants** - HeapReplayBuffer, PrioritizedReplayBuffer, GPUReplayBuffer, GPUPrioritizedReplayBuffer, NStepBuffer, SequenceReplayBuffer, GPUSequenceReplayBuffer
 
 ### 3D Physics Engine (`physics3d/`)
 
@@ -226,8 +261,9 @@
 
 ### Environments
 
+- [ ] More arcade games (Freeway, Enduro, Qbert, Asteroids)
+- [ ] Reacher, Pusher (MuJoCo-style manipulation envs, Phase 3)
 - [ ] Custom environment builder
-- [ ] MinAtar environments (simplified Atari for CNN testing)
 - [ ] POMDP benchmark environments
 
 ## Future Exploration
@@ -249,18 +285,18 @@ Learning from fixed datasets without environment interaction.
 
 Model full distribution of returns instead of just expected value.
 
-- [ ] **C51** - Categorical distribution over returns (51 atoms)
+- [x] **C51** - Categorical distribution over returns (51 atoms)
+- [x] **Rainbow** - Combines 6 DQN improvements (C51, Double, PER, Dueling, NoisyNets, N-step)
 - [ ] **QR-DQN** - Quantile regression for distributional RL
 - [ ] **IQN (Implicit Quantile Networks)** - Sample quantile fractions
-- [ ] **Rainbow** - Combines DQN improvements (already have Double, Dueling, PER - add C51, NoisyNets)
 
 ### Exploration Enhancements
 
 For sparse reward and hard exploration problems.
 
+- [x] **NoisyNets** - Learnable parametric noise in network weights (NoisyLinear layer)
 - [ ] **ICM (Intrinsic Curiosity Module)** - Prediction error as intrinsic reward
 - [ ] **RND (Random Network Distillation)** - Simpler curiosity-driven exploration
-- [ ] **NoisyNets** - Learnable parametric noise in network weights
 - [ ] **Bootstrapped DQN** - Ensemble for uncertainty estimation
 
 ### Recurrent Policies (POMDPs)
@@ -282,7 +318,7 @@ Cooperative and competitive multi-agent settings.
 
 ### Model-Based Deep RL (Beyond TD-MPC2)
 
-- [ ] **Dreamer** - Latent imagination with actor-critic
+- [x] **DreamerV3** - RSSM world model, actor-critic in imagination, categorical latent states [experimental — performance tuning in progress]
 - [ ] **MBPO (Model-Based Policy Optimization)** - Short rollouts from learned model
 - [ ] **World Models** - VAE + MDN-RNN for latent dynamics
 
@@ -295,7 +331,7 @@ Cooperative and competitive multi-agent settings.
 
 - [ ] **HER (Hindsight Experience Replay)** - Works with existing replay infrastructure
 - [ ] **Soft Q-Learning** - Max entropy with discrete actions
-- [ ] **n-step DQN** - Multi-step returns for DQN
+- [x] **n-step DQN** - Multi-step returns for DQN (implemented in Rainbow via NStepBuffer)
 
 ## Algorithm Summary
 
@@ -324,6 +360,9 @@ Cooperative and competitive multi-agent settings.
 | Deep Double DQN | Deep RL | Reduced overestimation |
 | Deep Dueling DQN | Deep RL | V(s) + A(s,a) streams |
 | Deep DQN + PER | Deep RL | Priority sampling by TD error |
+| Noisy DQN | Deep RL | NoisyLinear, no epsilon-greedy |
+| C51 | Deep RL (Distributional) | Categorical distribution (51 atoms) |
+| Rainbow | Deep RL (Distributional) | C51 + Double + PER + Dueling + Noisy + N-step |
 | Deep DDPG | Deep RL | Deterministic actor + Q-critic |
 | Deep TD3 | Deep RL | Twin critics + delayed + smoothing |
 | Deep SAC | Deep RL | Stochastic + entropy + auto alpha |
@@ -331,3 +370,4 @@ Cooperative and competitive multi-agent settings.
 | Deep PPO | Deep RL | Clipped surrogate + LR anneal + KL stop |
 | Deep PPO Continuous | Deep RL | Unbounded Gaussian, GPU training |
 | TD-MPC2 | Model-Based RL | World model + MPPI + distributional |
+| DreamerV3 | Model-Based RL | RSSM + imagination + categorical latents |
