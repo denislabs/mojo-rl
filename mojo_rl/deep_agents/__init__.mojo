@@ -16,6 +16,7 @@ Available agents:
 - DeepPPOContinuousAgent: PPO for continuous action spaces
 - TDMPC2Agent: TD-MPC2 model-based agent
 - DreamerV3Agent: DreamerV3 world model-based agent
+- MuZeroAgent: MuZero model-based agent with MCTS planning
 """
 
 from .core.agents import (
@@ -32,3 +33,4 @@ from .core.agents import (
     DeepPPOCNNAgent,
 )
 from .dreamer_v3 import DreamerV3Agent
+from .muzero import MuZeroAgent
