@@ -32,13 +32,13 @@ fn main() raises:
         imagine_horizon=15,
         buffer_capacity=100000,
         free_nats=0.01,
-    ](warmup_steps=500, max_grad_norm=10.0)
+    ](warmup_steps=0, max_grad_norm=10.0)
 
     var ctx = DeviceContext()
 
     var metrics = agent.train_gpu[PendulumV2[dtype], n_envs=N_ENVS](
         ctx,
-        num_episodes=32,
+        num_episodes=16,
         sync_every=100,
         verbose=True,
         print_every=5000,
