@@ -1603,6 +1603,28 @@ fn deinterleave_kernel[
     dst[i] = src[b * TOTAL + OFFSET + d]
 
 
+fn batch_gather_obs_kernel[
+    B: Int, BL: Int, OBS: Int, OFFSET: Int = 0,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(B * BL * OBS), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(B * (BL + 1) * OBS), MutAnyOrigin],
+):
+    """Gather obs[:,OFFSET:OFFSET+BL,:] from [B,(BL+1),OBS] to [B*BL,OBS].
+
+    Thread i maps to (sample, d) where sample=i//OBS, d=i%OBS.
+    sample maps to (b, t) where b=sample//BL, t=sample%BL.
+    Reads src[b*(BL+1)*OBS + (t+OFFSET)*OBS + d].
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= B * BL * OBS:
+        return
+    var sample = i // OBS
+    var d = i % OBS
+    var b = sample // BL
+    var t = sample % BL
+    dst[i] = src[b * (BL + 1) * OBS + (t + OFFSET) * OBS + d]
+
+
 fn one_minus_kernel[
     SIZE: Int,
 ](

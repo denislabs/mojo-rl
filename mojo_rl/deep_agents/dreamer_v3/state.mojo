@@ -594,6 +594,7 @@ struct DreamerV3GPUState[
     var all_post_probs_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
     var all_prior_probs_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
     var all_feats_buf: DeviceBuffer[dtype]  # [BL * BATCH * FEAT]
+    var all_embed_buf: DeviceBuffer[dtype]  # [BL * BATCH * STOCH]
 
     # ── Decoder/head scratch ─────────────────────────────────────────────
     var dec_out_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
@@ -865,9 +866,10 @@ struct DreamerV3GPUState[
         self.all_post_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
         self.all_prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
         self.all_feats_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.FEAT)
+        self.all_embed_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
 
         # ── Decoder/head scratch ─────────────────────────────────────────
-        self.dec_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.dec_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
         comptime MAX_BATCH_BINS = Self.IB * Self.BINS  # IB > BATCH, so IB is max
         self.rew_logits_buf = ctx.enqueue_create_buffer[dtype](MAX_BATCH_BINS)
         comptime MAX_BATCH_1 = Self.IB
@@ -953,20 +955,20 @@ struct DreamerV3GPUState[
 
         # ── Decoder backward scratch ─────────────────────────────────────
         self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE)
-        self.dec_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.dec_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
         self.dec_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
-        self.dec_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
+        self.dec_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
 
         # ── Continue backward scratch ────────────────────────────────────
-        self.cont_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
-        self.cont_grad_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+        self.cont_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
+        self.cont_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
 
         # ── Reward backward scratch ──────────────────────────────────────
         self.rew_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.RewModel.CACHE_SIZE)
-        self.rew_target_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BINS)
-        self.rew_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BINS)
+        self.rew_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
+        self.rew_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
         self.rew_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
-        self.rew_symlog_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
+        self.rew_symlog_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
 
         # ── Continue backward cache ──────────────────────────────────────
         self.cont_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.ContModel.CACHE_SIZE)
@@ -1023,9 +1025,9 @@ struct DreamerV3GPUState[
         # ── Combined prediction heads (ComputeGraph) ─────────────────────
         self.heads_params_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
         self.heads_grads_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
-        self.heads_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_CACHE_SIZE)
-        self.heads_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_OUT_DIM)
-        self.heads_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HEADS_OUT_DIM)
+        self.heads_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_CACHE_SIZE)
+        self.heads_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_OUT_DIM)
+        self.heads_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_OUT_DIM)
 
         # ── Network workspace buffers ────────────────────────────────────
         # Use IB (imag batch) as max batch size for workspace allocation
@@ -1054,8 +1056,8 @@ struct DreamerV3GPUState[
         comptime WS_IB_APROJ = Self.IB * AProjNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_GH = Self.IB * GHNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_IB_GG = Self.IB * GGNet.WORKSPACE_SIZE_PER_SAMPLE
-        # Observe-phase only
-        comptime WS_B_ENC = Self.BATCH * EncNet.WORKSPACE_SIZE_PER_SAMPLE
+        # Observe-phase (encoder batched across BL timesteps)
+        comptime WS_B_ENC = Self.IB * EncNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_B_POST = Self.BATCH * PostNet.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_B_DEC = Self.BATCH * DecNet.WORKSPACE_SIZE_PER_SAMPLE
 
@@ -1076,7 +1078,7 @@ struct DreamerV3GPUState[
         self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GG, 1))
         self.ws_actor = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_ACTOR, 1))
         self.ws_critic = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CRITIC, 1))
-        comptime WS_B_HEADS = Self.BATCH * Self.HeadsGraph.WORKSPACE_SIZE_PER_SAMPLE
+        comptime WS_B_HEADS = Self.IB * Self.HeadsGraph.WORKSPACE_SIZE_PER_SAMPLE
         self.ws_heads = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_HEADS, 1))
 
         # ── Inference buffers ────────────────────────────────────────────
@@ -1151,6 +1153,7 @@ struct DreamerV3GPUState[
         self.all_post_probs_buf = take.all_post_probs_buf^
         self.all_prior_probs_buf = take.all_prior_probs_buf^
         self.all_feats_buf = take.all_feats_buf^
+        self.all_embed_buf = take.all_embed_buf^
         self.dec_out_buf = take.dec_out_buf^
         self.rew_logits_buf = take.rew_logits_buf^
         self.cont_out_buf = take.cont_out_buf^
