@@ -36,3 +36,17 @@ comptime LinearSigmoid[in_dim: Int, out_dim: Int] = AutoFused[
 comptime LinearMish[in_dim: Int, out_dim: Int] = AutoFused[
     MatMul[in_dim, out_dim], BiasAdd[out_dim], MishOp[out_dim]
 ]
+
+# NoisyLinear compositions (using Sequential since NoisyLinear is a Model, not DiffOp)
+from .noisy_linear import NoisyLinear
+from .sequential import Sequential
+from .relu import ReLU
+from .tanh import Tanh
+
+comptime NoisyLinearReLU[in_dim: Int, out_dim: Int] = Sequential[
+    NoisyLinear[in_dim, out_dim], ReLU[out_dim]
+]
+
+comptime NoisyLinearTanh[in_dim: Int, out_dim: Int] = Sequential[
+    NoisyLinear[in_dim, out_dim], Tanh[out_dim]
+]

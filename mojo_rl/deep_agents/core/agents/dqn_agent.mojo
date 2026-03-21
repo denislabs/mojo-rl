@@ -18,7 +18,7 @@ from mojo_rl.deep_agents.core import (
     PerfTimer,
 )
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel, Conv2DReLU, FlattenLayer, HuberLoss
+from mojo_rl.nn.model import Model, Linear, LinearReLU, Sequential, Parallel, Conv2DReLU, FlattenLayer, HuberLoss, NoisyLinear, NoisyLinearReLU
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import (
     Network,
@@ -263,6 +263,46 @@ struct HuberDQNConfig[
     comptime QTargetStrat = DoubleQTarget
     comptime QOutputStrat = DirectQ
     comptime QGradStrat = AutodiffQGradient[HuberLoss[Self.huber_delta]]
+
+
+# =============================================================================
+# NoisyDQNConfig -- Double DQN with NoisyLinear layers (no epsilon-greedy)
+# =============================================================================
+
+
+struct NoisyDQNConfig[
+    OBS: Int,
+    ACT: Int,
+    HIDDEN: Int = 128,
+    HIDDEN2: Int = 128,
+    CAP: Int = 10000,
+    BS: Int = 128,
+    lr: Float64 = 2.5e-4,
+](DiscreteOffPolicyConfig):
+    """Noisy DQN: replaces Linear with NoisyLinear for learned exploration.
+
+    No epsilon-greedy needed — noise on weights provides exploration.
+    Uses Double DQN target computation.
+
+    Inference (forward without cache) uses mu-only weights for
+    deterministic evaluation.
+    """
+
+    comptime NAME: String = "Noisy DQN"
+    comptime obs_dim: Int = Self.OBS
+    comptime num_actions: Int = Self.ACT
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+
+    comptime QModel = Sequential[
+        NoisyLinearReLU[Self.OBS, Self.HIDDEN],
+        NoisyLinearReLU[Self.HIDDEN, Self.HIDDEN2],
+        NoisyLinear[Self.HIDDEN2, Self.ACT],
+    ]
+    comptime QOpt = Adam[Self.lr]
+    comptime QTargetStrat = DoubleQTarget
+    comptime QOutputStrat = DirectQ
+    comptime QGradStrat = AutodiffQGradient[]
 
 
 # =============================================================================

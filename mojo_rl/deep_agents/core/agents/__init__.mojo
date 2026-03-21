@@ -46,7 +46,7 @@ from ..configs import (
 from .offpolicy_agent import GenericOffPolicyAgent
 from .onpolicy_agent import GenericOnPolicyAgent, PPOGPUStateGeneric
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
-from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, HuberDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
+from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, HuberDQNConfig, NoisyDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
 from .c51_agent import CategoricalDQNConfig, C51Config, GenericC51Agent
 
 # Convenience aliases matching old agent names
@@ -57,6 +57,7 @@ from .aliases import (
     DQNCNNAgent,
     AutodiffDQNAgent,
     C51Agent,
+    NoisyDQNAgent,
     DeepDDPGAgent,
     DeepTD3Agent,
     DeepSACAgent,

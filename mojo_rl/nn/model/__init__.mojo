@@ -1,6 +1,6 @@
 from .model import Model
 from .sequential import Sequential
-from .linear_act import Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish
+from .linear_act import Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish, NoisyLinearReLU, NoisyLinearTanh
 from .relu import ReLU
 from .tanh import Tanh
 from .sigmoid import Sigmoid
@@ -17,6 +17,7 @@ from .stochastic_actor import (
 from .mish import Mish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
+from .noisy_linear import NoisyLinear
 from .autodiff_layers import RSample, Min, Slice, Negate, Gather, CategoricalLogProb, Ratio, ClipSurrogate, GaussianLogProb, MSELoss, HuberLoss, Identity
 from .conv2d_layer import (
     Conv2DLayer,

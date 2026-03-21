@@ -20,6 +20,7 @@ from .dqn_agent import (
     DQNCNNConfig,
     DQNPERConfig,
     AutodiffDQNConfig,
+    NoisyDQNConfig,
 )
 from .c51_agent import GenericC51Agent, C51Config
 from .offpolicy_agent import GenericOffPolicyAgent
@@ -132,6 +133,23 @@ comptime C51Agent[
     L: Logger = NoOpLogger,
 ] = GenericC51Agent[
     C51Config[obs_dim, num_actions, num_atoms, v_min, v_max, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
+    n_envs,
+    L,
+]
+
+
+comptime NoisyDQNAgent[
+    obs_dim: Int,
+    num_actions: Int,
+    hidden_dim: Int = 128,
+    hidden_dim2: Int = 128,
+    buffer_capacity: Int = 10000,
+    batch_size: Int = 128,
+    n_envs: Int = 1024,
+    lr: Float64 = 2.5e-4,
+    L: Logger = NoOpLogger,
+] = GenericDQNAgent[
+    NoisyDQNConfig[obs_dim, num_actions, hidden_dim, hidden_dim2, buffer_capacity, batch_size, lr],
     n_envs,
     L,
 ]
