@@ -16,7 +16,7 @@ fn main() raises:
         v_max=200.0,
         hidden_dim=128,
         hidden_dim2=128,
-        buffer_capacity=10000,
+        buffer_capacity=300_000,
         batch_size=64,
         lr=0.0005,
     ](
@@ -31,7 +31,7 @@ fn main() raises:
     var env = CartPoleEnv[DType.float64]()
     var metrics = agent.train(
         env,
-        num_episodes=200,
+        num_episodes=300,
         max_steps_per_episode=500,
         warmup_steps=500,
         train_every=4,
