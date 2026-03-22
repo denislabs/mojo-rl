@@ -328,22 +328,37 @@ fn gpu_mcts_expand_kernel[
             var v = rebind[Scalar[dtype]](hidden_states[child_h_off + i])
             hidden_states[child_h_off + i] = (v - h_min) / h_delta
 
-    # 3. Extract reward (decode categorical)
-    var step = (v_max - v_min) / Scalar[dtype](PRED_OUT - ACT - 1)
-    var rew_max_val = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT])
-    for i in range(1, DYN_OUT - LATENT):
-        var v = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
-        if v > rew_max_val:
-            rew_max_val = v
-    var rew_sum_exp = Scalar[dtype](0.0)
-    for i in range(DYN_OUT - LATENT):
-        rew_sum_exp += exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val)
-    var rew_decoded = Scalar[dtype](0.0)
-    var num_rew_bins = DYN_OUT - LATENT
-    var rew_step = (v_max - v_min) / Scalar[dtype](num_rew_bins - 1)
-    for i in range(num_rew_bins):
-        var prob = exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val) / rew_sum_exp
-        rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
+    # 3. Extract reward from dynamics output
+    comptime NUM_REW_BINS = DYN_OUT - LATENT
+    var rew_decoded: Scalar[dtype]
+    if NUM_REW_BINS == 1:
+        # Scalar reward: read raw value, tanh for bounding
+        var raw = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT])
+        var e_pos = exp(raw)
+        var e_neg = exp(-raw)
+        rew_decoded = (e_pos - e_neg) / (e_pos + e_neg)  # tanh
+    else:
+        # Categorical reward: softmax + expectation over bins
+        var rew_max_val = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT])
+        for i in range(1, NUM_REW_BINS):
+            var v = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
+            if v > rew_max_val:
+                rew_max_val = v
+        var rew_sum_exp = Scalar[dtype](0.0)
+        for i in range(NUM_REW_BINS):
+            rew_sum_exp += exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val)
+        rew_decoded = Scalar[dtype](0.0)
+        var rew_step = (v_max - v_min) / Scalar[dtype](NUM_REW_BINS - 1)
+        for i in range(NUM_REW_BINS):
+            var prob = exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val) / rew_sum_exp
+            rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
+        # Inverse scalar transform
+        var sign_r = Scalar[dtype](1.0) if rew_decoded >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
+        var abs_r = rew_decoded if rew_decoded >= Scalar[dtype](0.0) else -rew_decoded
+        var eps_r = Scalar[dtype](0.001)
+        var inner_r = sqrt(Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps_r * (abs_r + Scalar[dtype](1.0) + eps_r))
+        var f_r = (inner_r - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_r)
+        rew_decoded = sign_r * (f_r * f_r - Scalar[dtype](1.0))
 
     # Set parent reward
     reward_buf[tree_off + parent * ACT + action] = rew_decoded
@@ -373,29 +388,37 @@ fn gpu_mcts_expand_kernel[
     child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
     node_count[e] = Scalar[dtype](child_node_idx + 1)
 
-    # 6. Decode leaf value (categorical → scalar → inverse transform)
-    var val_max = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-    var num_val_bins = PRED_OUT - ACT
-    for i in range(1, num_val_bins):
-        var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
-        if v > val_max:
-            val_max = v
-    var val_sum_exp = Scalar[dtype](0.0)
-    for i in range(num_val_bins):
-        val_sum_exp += exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max)
-    var val_step = (v_max - v_min) / Scalar[dtype](num_val_bins - 1)
-    var val_decoded = Scalar[dtype](0.0)
-    for i in range(num_val_bins):
-        var prob = exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max) / val_sum_exp
-        val_decoded += prob * (v_min + Scalar[dtype](i) * val_step)
+    # 6. Decode leaf value
+    comptime NUM_VAL_BINS = PRED_OUT - ACT
+    if NUM_VAL_BINS == 1:
+        # Scalar value: read raw output, tanh for [-1, 1] bounding
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        var ev_pos = exp(raw_v)
+        var ev_neg = exp(-raw_v)
+        leaf_values[e] = (ev_pos - ev_neg) / (ev_pos + ev_neg)  # tanh
+    else:
+        # Categorical value: softmax + expectation over bins
+        var val_max = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        for i in range(1, NUM_VAL_BINS):
+            var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+            if v > val_max:
+                val_max = v
+        var val_sum_exp = Scalar[dtype](0.0)
+        for i in range(NUM_VAL_BINS):
+            val_sum_exp += exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max)
+        var val_step = (v_max - v_min) / Scalar[dtype](NUM_VAL_BINS - 1)
+        var val_decoded = Scalar[dtype](0.0)
+        for i in range(NUM_VAL_BINS):
+            var prob = exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max) / val_sum_exp
+            val_decoded += prob * (v_min + Scalar[dtype](i) * val_step)
 
-    # Inverse scalar transform: h^{-1}(y)
-    var sign = Scalar[dtype](1.0) if val_decoded >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
-    var abs_y = val_decoded if val_decoded >= Scalar[dtype](0.0) else -val_decoded
-    var eps = Scalar[dtype](0.001)
-    var inner = sqrt(Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps))
-    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
-    leaf_values[e] = sign * (f * f - Scalar[dtype](1.0))
+        # Inverse scalar transform: h^{-1}(y)
+        var sign = Scalar[dtype](1.0) if val_decoded >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
+        var abs_y = val_decoded if val_decoded >= Scalar[dtype](0.0) else -val_decoded
+        var eps = Scalar[dtype](0.001)
+        var inner = sqrt(Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps))
+        var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
+        leaf_values[e] = sign * (f * f - Scalar[dtype](1.0))
 
 
 fn gpu_mcts_backup_kernel[
@@ -762,6 +785,358 @@ fn gpu_mcts_copy_root_state_kernel[
         game_states[dst_off + i] = env_states[src_off + i]
 
 
+fn gpu_mcts_expand_alphazero_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    PRED_OUT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Node storage
+    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Pending expansion
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Prediction output [N_ENVS * PRED_OUT] = (policy_logits[ACT], value[1])
+    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin],
+    # Reward from env.step [N_ENVS]
+    step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Output
+    leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """AlphaZero-specific expand: uses env.step reward and scalar value with tanh.
+
+    Unlike MuZero expand, this kernel:
+    - Reads reward directly from env.step output (not dynamics network)
+    - Reads value as a single scalar with tanh activation (not categorical)
+    - Does NOT touch hidden_states (game states handled separately)
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var tv_off = e * MAX_NODES
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    var action = Int(rebind[Scalar[dtype]](pending_action[e]))
+    var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
+
+    if child_node_idx >= MAX_NODES:
+        leaf_values[e] = Scalar[dtype](0.0)
+        return
+
+    # Set parent reward from env.step
+    reward_buf[tree_off + parent * ACT + action] = step_rewards[e]
+
+    # Set child prior from softmax of policy logits
+    var pred_off = e * PRED_OUT
+    var child_off = tree_off + child_node_idx * ACT
+    var p_max = rebind[Scalar[dtype]](pred_output[pred_off])
+    for a in range(1, ACT):
+        var v = rebind[Scalar[dtype]](pred_output[pred_off + a])
+        if v > p_max:
+            p_max = v
+    var p_sum = Scalar[dtype](0.0)
+    for a in range(ACT):
+        var v = exp(rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max)
+        prior[child_off + a] = v
+        p_sum += v
+    for a in range(ACT):
+        prior[child_off + a] = rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+        visit_count[child_off + a] = Scalar[dtype](0.0)
+        total_value[child_off + a] = Scalar[dtype](0.0)
+        reward_buf[child_off + a] = Scalar[dtype](0.0)
+        child_idx[child_off + a] = Scalar[dtype](-1.0)
+    total_visits[tv_off + child_node_idx] = Scalar[dtype](0.0)
+
+    # Link parent → child
+    child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
+    node_count[e] = Scalar[dtype](child_node_idx + 1)
+
+    # Decode scalar value with tanh: value = tanh(raw_logit) ∈ [-1, 1]
+    var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+    var ev_p = exp(raw_v)
+    var ev_n = exp(-raw_v)
+    leaf_values[e] = (ev_p - ev_n) / (ev_p + ev_n)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Batched Fused Kernels (BATCH_SIMS leaves per env per round)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+fn gpu_mcts_batched_select_and_copy_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    BATCH_SIMS: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Node storage
+    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Game states (for AlphaZero copy)
+    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    # Output: BATCH_SIMS pending expansions per env
+    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin],
+    # Search paths for backup (only last sim's path stored for simplicity)
+    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
+    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
+    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    # PUCT constants
+    c_base: Scalar[dtype],
+    c_init: Scalar[dtype],
+):
+    """Fused: select BATCH_SIMS leaves per env with virtual losses + copy parent game states.
+
+    One thread per env. Each thread sequentially selects BATCH_SIMS leaves,
+    applying virtual loss (+3 visits) after each selection to encourage diversity.
+    Then copies parent game states to the expansion staging buffer.
+
+    Combines gpu_mcts_select_kernel + gpu_mcts_copy_parent_state_kernel.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var tv_off = e * MAX_NODES
+    var mn = rebind[Scalar[dtype]](min_q[e])
+    var mx = rebind[Scalar[dtype]](max_q[e])
+    var q_range = mx - mn
+
+    comptime VIRTUAL_LOSS: Int = 3
+
+    for s in range(BATCH_SIMS):
+        # ── PUCT Selection ──────────────────────────────────
+        var node_idx = 0
+        var depth = 0
+        var path_off = (e * BATCH_SIMS + s) * MAX_DEPTH
+        search_paths[path_off] = Scalar[dtype](0.0)
+
+        while depth < MAX_DEPTH - 1:
+            var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
+            var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
+            var c = log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
+
+            var best_action = 0
+            var best_score = Scalar[dtype](-1e18)
+            for a in range(ACT):
+                var na_off = tree_off + node_idx * ACT + a
+                var n_a = rebind[Scalar[dtype]](visit_count[na_off])
+                var q_val: Scalar[dtype]
+                if n_a > Scalar[dtype](0.5):
+                    q_val = rebind[Scalar[dtype]](total_value[na_off]) / n_a
+                    if q_range > Scalar[dtype](1e-8):
+                        q_val = (q_val - mn) / q_range
+                else:
+                    q_val = Scalar[dtype](0.0)
+                var p = rebind[Scalar[dtype]](prior[na_off])
+                var score = q_val + c * p * sqrt_total / (Scalar[dtype](1.0) + n_a)
+                if score > best_score:
+                    best_score = score
+                    best_action = a
+
+            action_paths[path_off + depth] = Scalar[dtype](best_action)
+
+            var child = rebind[Scalar[dtype]](child_idx[tree_off + node_idx * ACT + best_action])
+            if child < Scalar[dtype](0.0):
+                # Leaf found
+                var sim_off = e * BATCH_SIMS + s
+                pending_parents[sim_off] = Scalar[dtype](node_idx)
+                pending_actions[sim_off] = Scalar[dtype](best_action)
+                path_lengths[sim_off] = Scalar[dtype](depth + 1)
+
+                # Apply virtual loss
+                visit_count[tree_off + node_idx * ACT + best_action] = (
+                    rebind[Scalar[dtype]](visit_count[tree_off + node_idx * ACT + best_action])
+                    + Scalar[dtype](VIRTUAL_LOSS)
+                )
+                total_visits[tv_off + node_idx] = (
+                    rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
+                    + Scalar[dtype](VIRTUAL_LOSS)
+                )
+
+                # ── Copy parent game state to expansion buffer ──
+                var parent_gs_off = e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+                var exp_off = sim_off * STATE_SIZE
+                for i in range(STATE_SIZE):
+                    expansion_states[exp_off + i] = game_states[parent_gs_off + i]
+
+                break
+
+            node_idx = Int(child)
+            depth += 1
+            search_paths[path_off + depth] = Scalar[dtype](node_idx)
+
+        # If max depth reached without finding leaf
+        if depth >= MAX_DEPTH - 1:
+            var sim_off = e * BATCH_SIMS + s
+            pending_parents[sim_off] = Scalar[dtype](node_idx)
+            pending_actions[sim_off] = Scalar[dtype](0)
+            path_lengths[sim_off] = Scalar[dtype](depth + 1)
+            var parent_gs_off = e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+            var exp_off = sim_off * STATE_SIZE
+            for i in range(STATE_SIZE):
+                expansion_states[exp_off + i] = game_states[parent_gs_off + i]
+
+
+fn gpu_mcts_batched_expand_backup_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    BATCH_SIMS: Int,
+    PRED_OUT: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Node storage
+    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Game states
+    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin],
+    # Pending expansions [N_ENVS * BATCH_SIMS]
+    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    # Prediction output [N_ENVS * BATCH_SIMS * PRED_OUT]
+    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin],
+    # Rewards from env.step [N_ENVS * BATCH_SIMS]
+    step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
+    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
+    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
+    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+):
+    """Fused: expand BATCH_SIMS nodes + negated backup + remove virtual losses.
+
+    One thread per env. Processes all BATCH_SIMS expansions sequentially.
+    Combines: store_child_state + expand_alphazero + backup_negated + virtual loss removal.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var tv_off = e * MAX_NODES
+
+    comptime VIRTUAL_LOSS: Int = 3
+
+    for s in range(BATCH_SIMS):
+        var sim_off = e * BATCH_SIMS + s
+        var parent = Int(rebind[Scalar[dtype]](pending_parents[sim_off]))
+        var action = Int(rebind[Scalar[dtype]](pending_actions[sim_off]))
+        var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
+
+        if child_node_idx >= MAX_NODES:
+            # Remove virtual loss even if we can't expand
+            visit_count[tree_off + parent * ACT + action] = (
+                rebind[Scalar[dtype]](visit_count[tree_off + parent * ACT + action])
+                - Scalar[dtype](VIRTUAL_LOSS)
+            )
+            total_visits[tv_off + parent] = (
+                rebind[Scalar[dtype]](total_visits[tv_off + parent])
+                - Scalar[dtype](VIRTUAL_LOSS)
+            )
+            continue
+
+        # ── Store child game state ──────────────────────────
+        var exp_gs_off = sim_off * STATE_SIZE
+        var child_gs_off = e * MAX_NODES * STATE_SIZE + child_node_idx * STATE_SIZE
+        for i in range(STATE_SIZE):
+            game_states[child_gs_off + i] = expansion_states[exp_gs_off + i]
+
+        # ── Set parent reward from env.step ─────────────────
+        reward_buf[tree_off + parent * ACT + action] = step_rewards[sim_off]
+
+        # ── Set child prior from softmax ────────────────────
+        var pred_off = sim_off * PRED_OUT
+        var child_off = tree_off + child_node_idx * ACT
+        var p_max = rebind[Scalar[dtype]](pred_output[pred_off])
+        for a in range(1, ACT):
+            var v = rebind[Scalar[dtype]](pred_output[pred_off + a])
+            if v > p_max:
+                p_max = v
+        var p_sum = Scalar[dtype](0.0)
+        for a in range(ACT):
+            var v = exp(rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max)
+            prior[child_off + a] = v
+            p_sum += v
+        for a in range(ACT):
+            prior[child_off + a] = rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+            visit_count[child_off + a] = Scalar[dtype](0.0)
+            total_value[child_off + a] = Scalar[dtype](0.0)
+            reward_buf[child_off + a] = Scalar[dtype](0.0)
+            child_idx[child_off + a] = Scalar[dtype](-1.0)
+        total_visits[tv_off + child_node_idx] = Scalar[dtype](0.0)
+
+        # ── Link parent → child ─────────────────────────────
+        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
+        node_count[e] = Scalar[dtype](child_node_idx + 1)
+
+        # ── Decode scalar value (tanh) ──────────────────────
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        var ev_p = exp(raw_v)
+        var ev_n = exp(-raw_v)
+        var leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+
+        # ── Remove virtual loss ─────────────────────────────
+        visit_count[tree_off + parent * ACT + action] = (
+            rebind[Scalar[dtype]](visit_count[tree_off + parent * ACT + action])
+            - Scalar[dtype](VIRTUAL_LOSS)
+        )
+        total_visits[tv_off + parent] = (
+            rebind[Scalar[dtype]](total_visits[tv_off + parent])
+            - Scalar[dtype](VIRTUAL_LOSS)
+        )
+
+        # ── Negated backup ──────────────────────────────────
+        var value = leaf_value
+        var path_off = sim_off * MAX_DEPTH
+        var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
+
+        for i in range(path_len):
+            var idx = path_len - 1 - i
+            var node = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
+            var act = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
+
+            value = -value  # Negate for zero-sum
+
+            var na_off = tree_off + node * ACT + act
+            visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
+            total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
+            total_visits[tv_off + node] = rebind[Scalar[dtype]](total_visits[tv_off + node]) + Scalar[dtype](1.0)
+
+            var n_a = rebind[Scalar[dtype]](visit_count[na_off])
+            var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
+            if mean_q < rebind[Scalar[dtype]](min_q[e]):
+                min_q[e] = mean_q
+            if mean_q > rebind[Scalar[dtype]](max_q[e]):
+                max_q[e] = mean_q
+
+
 fn gpu_mcts_build_dyn_input_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
@@ -843,6 +1218,7 @@ struct GPUMCTSState[
     LATENT: Int,
     BINS: Int,
     STATE_SIZE: Int = 0,
+    BATCH_SIMS: Int = 8,
 ](Movable):
     """GPU-resident MCTS tree storage for n_envs parallel searches.
 
@@ -921,17 +1297,19 @@ struct GPUMCTSState[
         self.min_q = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
         self.max_q = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
 
-        self.pending_parent = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        self.pending_action = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        self.search_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * MAX_DEPTH)
-        self.action_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * MAX_DEPTH)
-        self.path_lengths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        self.leaf_values = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+        # Batched pending/path buffers [N_ENVS * BATCH_SIMS * ...]
+        comptime BS = Self.BATCH_SIMS
+        self.pending_parent = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
+        self.pending_action = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
+        self.search_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * MAX_DEPTH)
+        self.action_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * MAX_DEPTH)
+        self.path_lengths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
+        self.leaf_values = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
 
-        self.dyn_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.DYN_IN)
-        self.dyn_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.DYN_OUT)
-        self.pred_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.LATENT)
-        self.pred_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.PRED_OUT)
+        self.dyn_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.DYN_IN)
+        self.dyn_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.DYN_OUT)
+        self.pred_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.LATENT)
+        self.pred_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.PRED_OUT)
 
         self.actions_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
         self.policies_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.ACT)
@@ -942,12 +1320,12 @@ struct GPUMCTSState[
         self.game_states = ctx.enqueue_create_buffer[dtype](
             GS_SIZE if GS_SIZE > 0 else 1
         )
-        comptime EXP_SIZE = Self.N_ENVS * Self.STATE_SIZE
+        comptime EXP_SIZE = Self.N_ENVS * BS * Self.STATE_SIZE
         self.expansion_states = ctx.enqueue_create_buffer[dtype](
             EXP_SIZE if EXP_SIZE > 0 else 1
         )
         self.expansion_legal_masks = ctx.enqueue_create_buffer[dtype](
-            Self.N_ENVS * Self.ACT
+            Self.N_ENVS * BS * Self.ACT
         )
 
     fn __init__(out self, *, deinit take: Self):
