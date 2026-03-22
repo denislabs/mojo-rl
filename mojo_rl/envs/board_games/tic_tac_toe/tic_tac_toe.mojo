@@ -17,6 +17,7 @@ Actions: 0-8 = cell index (row-major). Illegal move = pass with -1.0 reward.
 """
 
 from std.random import random_float64
+from std.memory import alloc
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -26,7 +27,9 @@ from mojo_rl.core import (
     BoxDiscreteActionEnv,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
+    RenderableEnv,
 )
+from mojo_rl.render import Renderer2D, SDL_Color
 from ..core.board_env import BoardGameState, BoardGameAction, board_dtype
 
 # State slot indices
@@ -50,7 +53,7 @@ comptime RESULT_DRAW: Int = 3
 
 
 struct TicTacToeEnv[DTYPE: DType = DType.float64](
-    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv
+    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv & RenderableEnv
 ):
     """TicTacToe environment — CPU+GPU dual path.
 
@@ -72,11 +75,17 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     var state: InlineArray[Scalar[Self.dtype], 12]
     var done: Bool
 
+    # Renderer
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __init__(out self):
         self.state = InlineArray[Scalar[Self.dtype], 12](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     # ========================================================================
     # CPU: reset + step
@@ -169,7 +178,10 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         return BoardGameState(index=Int(self.state[S_STEP_COUNT]))
 
     fn close(mut self):
-        pass
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     fn action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
@@ -274,6 +286,135 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 reward = Scalar[Self.dtype](-1.0)
 
         return (self.get_obs_list(), reward, done)
+
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        if self._renderer_initialized:
+            return True
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(
+            Renderer2D(width=400, height=450, fps=30, title="TicTacToe")
+        )
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._render(self._renderer[])
+
+    fn _render(self, mut renderer: Renderer2D):
+        """Render TicTacToe board state."""
+        var bg_color = SDL_Color(r=0x1A, g=0x5C, b=0x2A, a=0xFF)
+        var grid_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+        var x_color = SDL_Color(r=0xFF, g=0x44, b=0x44, a=0xFF)
+        var o_color = SDL_Color(r=0x44, g=0x88, b=0xFF, a=0xFF)
+        var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+        var win_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
+
+        var cell_size = 133  # 400 / 3
+        var board_size = 400
+
+        if not renderer.begin_frame_with_color(bg_color):
+            return
+
+        # Draw grid lines (2 horizontal + 2 vertical)
+        for i in range(1, 3):
+            renderer.draw_line(
+                0, i * cell_size, board_size, i * cell_size, grid_color, 3
+            )
+            renderer.draw_line(
+                i * cell_size, 0, i * cell_size, board_size, grid_color, 3
+            )
+
+        # Draw marks
+        for row in range(3):
+            for col in range(3):
+                var cx = col * cell_size + cell_size // 2
+                var cy = row * cell_size + cell_size // 2
+                var cell_idx = row * 3 + col
+                var cell_val = Int(self.state[cell_idx])
+
+                if cell_val == 1:
+                    # Draw X: two crossing lines
+                    var margin = 25
+                    var x0 = col * cell_size + margin
+                    var y0 = row * cell_size + margin
+                    var x1 = (col + 1) * cell_size - margin
+                    var y1 = (row + 1) * cell_size - margin
+                    renderer.draw_line(x0, y0, x1, y1, x_color, 4)
+                    renderer.draw_line(x1, y0, x0, y1, x_color, 4)
+                elif cell_val == 2:
+                    # Draw O: circle
+                    renderer.draw_circle(
+                        cx, cy, cell_size // 2 - 20, o_color, filled=False
+                    )
+
+        # Status bar at bottom (y=400..450)
+        renderer.draw_rect(
+            0,
+            board_size,
+            400,
+            50,
+            SDL_Color(r=0x11, g=0x33, b=0x11, a=0xFF),
+        )
+
+        var game_result = self.game_result()
+        if game_result == 0:
+            var player = self.current_player()
+            if player == 0:
+                renderer.draw_text(
+                    "Player X's turn", 140, board_size + 20, text_color
+                )
+            else:
+                renderer.draw_text(
+                    "Player O's turn", 140, board_size + 20, text_color
+                )
+        elif game_result == 1:
+            renderer.draw_text(
+                "X Wins!", 160, board_size + 20, win_color
+            )
+        elif game_result == 2:
+            renderer.draw_text(
+                "O Wins!", 160, board_size + 20, win_color
+            )
+        else:
+            renderer.draw_text(
+                "Draw!", 170, board_size + 20, win_color
+            )
+
+        renderer.flip()
+
+    fn close_renderer(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)
+
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
 
     # ========================================================================
     # GPU: Inline step/reset kernels (called per-thread on GPU)

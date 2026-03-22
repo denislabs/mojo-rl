@@ -31,7 +31,9 @@ from mojo_rl.core import (
     BoxDiscreteActionEnv,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
+    RenderableEnv,
 )
+from mojo_rl.render import Renderer2D, SDL_Color
 from ..core.board_env import BoardGameState, BoardGameAction, board_dtype
 
 # Game result codes
@@ -49,7 +51,7 @@ comptime KOMI: Float64 = 7.5
 
 
 struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
-    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv
+    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv & RenderableEnv
 ):
     """Go environment with parameterized board size.
 
@@ -85,6 +87,10 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # Temp buffer for flood-fill (avoid repeated allocation)
     var _visited: List[Bool]
 
+    # Renderer
+    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     fn __init__(out self):
         self.state = List[Scalar[Self.dtype]](capacity=Self.STATE_SIZE)
         for _ in range(Self.STATE_SIZE):
@@ -94,6 +100,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         self._visited = List[Bool](capacity=Self.BOARD_SIZE)
         for _ in range(Self.BOARD_SIZE):
             self._visited.append(False)
+        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer_initialized = False
 
     # ========================================================================
     # CPU: reset + step
@@ -465,7 +473,10 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         return BoardGameState(index=Int(self.state[Self.S_STEP_COUNT]))
 
     fn close(mut self):
-        pass
+        if self._renderer_initialized:
+            self._renderer[].close()
+            self._renderer.free()
+            self._renderer_initialized = False
 
     fn action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
@@ -589,6 +600,156 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                     reward = Scalar[Self.dtype](-1.0)
 
         return (self.get_obs_list(), reward, done)
+
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        if self._renderer_initialized:
+            return True
+        var cell_size = 50
+        var margin = 30
+        var win_w = 2 * margin + (Self.SIZE - 1) * cell_size
+        var win_h = 2 * margin + (Self.SIZE - 1) * cell_size + 50
+        self._renderer = alloc[Renderer2D](1)
+        self._renderer.init_pointee_move(
+            Renderer2D(width=win_w, height=win_h, fps=30, title="Go " + String(Self.SIZE) + "x" + String(Self.SIZE))
+        )
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._render(self._renderer[])
+
+    fn _render(self, mut renderer: Renderer2D):
+        """Render Go board state using SDL3."""
+        var board_color = SDL_Color(r=0xDE, g=0xB8, b=0x87, a=0xFF)  # tan/wooden
+        if not renderer.begin_frame_with_color(board_color):
+            return
+
+        var line_color = SDL_Color(r=0x00, g=0x00, b=0x00, a=0xFF)
+        var black_stone = SDL_Color(r=0x10, g=0x10, b=0x10, a=0xFF)
+        var white_stone_color = SDL_Color(r=0xF0, g=0xF0, b=0xF0, a=0xFF)
+        var black_outline = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+        var black_outline2 = SDL_Color(r=0x00, g=0x00, b=0x00, a=0xFF)
+        var hoshi_color = SDL_Color(r=0x00, g=0x00, b=0x00, a=0xFF)
+        var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+        var status_bg = SDL_Color(r=0x33, g=0x33, b=0x33, a=0xFF)
+
+        var margin = 30
+        var cell_size = 50
+        var board_end = Self.SIZE - 1
+
+        # Draw grid lines
+        for i in range(Self.SIZE):
+            var y = margin + i * cell_size
+            renderer.draw_line(
+                margin, y, margin + board_end * cell_size, y, line_color, 1
+            )
+            var x = margin + i * cell_size
+            renderer.draw_line(
+                x, margin, x, margin + board_end * cell_size, line_color, 1
+            )
+
+        # Draw star points (hoshi) for 9x9 board
+        comptime
+        if Self.SIZE == 9:
+            fn _hoshi_r(i: Int) -> Int:
+                if i == 0:
+                    return 2
+                if i == 1:
+                    return 2
+                if i == 2:
+                    return 6
+                if i == 3:
+                    return 6
+                return 4
+
+            fn _hoshi_c(i: Int) -> Int:
+                if i == 0:
+                    return 2
+                if i == 1:
+                    return 6
+                if i == 2:
+                    return 2
+                if i == 3:
+                    return 6
+                return 4
+
+            for i in range(5):
+                var hx = margin + _hoshi_c(i) * cell_size
+                var hy = margin + _hoshi_r(i) * cell_size
+                renderer.draw_circle(hx, hy, 4, hoshi_color, filled=True)
+
+        # Draw stones
+        var stone_r = 20
+        for row in range(Self.SIZE):
+            for col in range(Self.SIZE):
+                var cell_idx = row * Self.SIZE + col
+                var cell_val = Int(self.state[cell_idx])
+                var cx = margin + col * cell_size
+                var cy = margin + row * cell_size
+
+                if cell_val == 1:
+                    # Black stone: filled black with white outline
+                    renderer.draw_circle(cx, cy, stone_r + 1, black_outline, filled=True)
+                    renderer.draw_circle(cx, cy, stone_r, black_stone, filled=True)
+                elif cell_val == 2:
+                    # White stone: filled white with black outline
+                    renderer.draw_circle(cx, cy, stone_r + 1, black_outline2, filled=True)
+                    renderer.draw_circle(cx, cy, stone_r, white_stone_color, filled=True)
+
+        # Status bar at bottom
+        var win_w = 2 * margin + board_end * cell_size
+        var status_y = 2 * margin + board_end * cell_size
+        renderer.draw_rect(0, status_y, win_w, 50, status_bg)
+
+        var game_result = self.game_result()
+        if game_result == RESULT_ONGOING:
+            var player = self.current_player()
+            if player == 0:
+                renderer.draw_text("Black's turn", win_w // 2 - 40, status_y + 20, text_color)
+            else:
+                renderer.draw_text("White's turn", win_w // 2 - 40, status_y + 20, text_color)
+        elif game_result == RESULT_P0_WINS:
+            renderer.draw_text("Black Wins!", win_w // 2 - 40, status_y + 20, text_color)
+        elif game_result == RESULT_P1_WINS:
+            renderer.draw_text("White Wins!", win_w // 2 - 40, status_y + 20, text_color)
+        else:
+            renderer.draw_text("Draw!", win_w // 2 - 20, status_y + 20, text_color)
+
+        renderer.flip()
+
+    fn close_renderer(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return not self._renderer[].get_should_quit()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].get_should_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].renderer_delay(ms)
+
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
 
     # ========================================================================
     # GPU: Inline step/reset kernels

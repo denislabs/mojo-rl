@@ -11,3 +11,4 @@ Usage:
 from .tic_tac_toe import TicTacToeEnv
 from .connect_four import ConnectFourEnv
 from .go import GoEnv
+from .chess import ChessEnv
