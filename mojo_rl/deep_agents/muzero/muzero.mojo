@@ -71,6 +71,8 @@ from .gpu_mcts import (
     gpu_mcts_copy_parent_state_kernel,
     gpu_mcts_store_child_state_kernel,
     gpu_mcts_copy_root_state_kernel,
+    gpu_mcts_batched_select_and_build_dyn_kernel,
+    gpu_mcts_batched_expand_backup_muzero_kernel,
     MAX_DEPTH,
 )
 from .utils import (
@@ -2203,7 +2205,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         comptime WS_P = PredModel.WORKSPACE_SIZE_PER_SAMPLE
         comptime MAX_WS_1 = WS_R if WS_R > WS_D else WS_D
         comptime MAX_WS_2 = MAX_WS_1 if MAX_WS_1 > WS_P else WS_P
-        comptime MCTS_WS_SIZE = Self.n_envs * MAX_WS_2 if MAX_WS_2 > 0 else 1
+        comptime MCTS_BATCH_SZ = 8  # Must match MCTS_BATCH_SIMS in sim loop
+        comptime MCTS_WS_SIZE = Self.n_envs * MCTS_BATCH_SZ * MAX_WS_2 if MAX_WS_2 > 0 else 1
         var mcts_workspace = ctx.enqueue_create_buffer[dtype](MCTS_WS_SIZE)
 
         comptime REP_IN_DIM = RepModel.IN_DIM
@@ -2327,75 +2330,70 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 )
 
                 # 2d. Run NUM_SIMS simulation rounds
-                var pp_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin](gpu_mcts.pending_parent.unsafe_ptr())
-                var pa_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin](gpu_mcts.pending_action.unsafe_ptr())
-                var sp_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * MAX_DEPTH), MutAnyOrigin](gpu_mcts.search_paths.unsafe_ptr())
-                var ap_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * MAX_DEPTH), MutAnyOrigin](gpu_mcts.action_paths.unsafe_ptr())
-                var pl_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin](gpu_mcts.path_lengths.unsafe_ptr())
-                var lv_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin](gpu_mcts.leaf_values.unsafe_ptr())
+                # ── Batched simulations (BATCH_SIMS per round) ──
+                comptime MCTS_BATCH_SIMS = 8
+                comptime MCTS_ROUNDS = NUM_SIMS // MCTS_BATCH_SIMS
+                comptime MCTS_TOTAL = Self.n_envs * MCTS_BATCH_SIMS
+
                 var hs_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * MAX_NODES * LATENT), MutAnyOrigin](gpu_mcts.hidden_states.unsafe_ptr())
+                var b_pp = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin](gpu_mcts.pending_parent.unsafe_ptr())
+                var b_pa = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin](gpu_mcts.pending_action.unsafe_ptr())
+                var b_sp = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * MAX_DEPTH), MutAnyOrigin](gpu_mcts.search_paths.unsafe_ptr())
+                var b_ap = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * MAX_DEPTH), MutAnyOrigin](gpu_mcts.action_paths.unsafe_ptr())
+                var b_pl = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin](gpu_mcts.path_lengths.unsafe_ptr())
+                var b_di = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * DYN_IN), MutAnyOrigin](gpu_mcts.dyn_input.unsafe_ptr())
 
-                for _sim in range(NUM_SIMS):
-                    # Selection
-                    comptime run_sel = gpu_mcts_select_kernel[Self.n_envs, MAX_NODES, ACT, dtype]
-                    ctx.enqueue_function[run_sel, run_sel](
+                for _round in range(MCTS_ROUNDS):
+                    # 1. Fused select + build dynamics input
+                    comptime run_sel_dyn = gpu_mcts_batched_select_and_build_dyn_kernel[
+                        Self.n_envs, MAX_NODES, ACT, MCTS_BATCH_SIMS, LATENT, DYN_IN, dtype
+                    ]
+                    ctx.enqueue_function[run_sel_dyn, run_sel_dyn](
                         vc_t, tv_t, pr_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
-                        pp_t, pa_t, sp_t, ap_t, pl_t,
-                        Scalar[dtype](19652.0), Scalar[dtype](1.25),
+                        hs_t, b_di, b_pp, b_pa, b_sp, b_ap, b_pl,
+                        Scalar[dtype](Self.Config.PUCT.C_BASE),
+                        Scalar[dtype](Self.Config.PUCT.C_INIT),
                         grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
                     )
 
-                    # Build dynamics input
-                    var di_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * DYN_IN), MutAnyOrigin](gpu_mcts.dyn_input.unsafe_ptr())
-                    comptime run_bld = gpu_mcts_build_dyn_input_kernel[Self.n_envs, MAX_NODES, ACT, LATENT, DYN_IN, dtype]
-                    ctx.enqueue_function[run_bld, run_bld](
-                        di_t, hs_t, pp_t, pa_t,
-                        grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
-                    )
-
-                    # Dynamics forward [BATCH=Self.n_envs]
-                    var dyn_in_net = LayoutTensor[dtype, Layout.row_major(Self.n_envs, DYN_IN_DIM), MutAnyOrigin](gpu_mcts.dyn_input.unsafe_ptr())
-                    var dyn_out_net = LayoutTensor[dtype, Layout.row_major(Self.n_envs, DYN_OUT_DIM), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
-                    DynNet.forward_gpu[Self.n_envs](
-                        ctx, dyn_in_net, dyn_out_net,
+                    # 2. Batched dynamics forward [BATCH = n_envs * BATCH_SIMS]
+                    var dyn_in_b = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL, DYN_IN_DIM), MutAnyOrigin](gpu_mcts.dyn_input.unsafe_ptr())
+                    var dyn_out_b = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL, DYN_OUT_DIM), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
+                    DynNet.forward_gpu[MCTS_TOTAL](
+                        ctx, dyn_in_b, dyn_out_b,
                         gpu.dynamics.params_view(), mcts_workspace
                     )
 
-                    # Extract hidden from dyn output → pred input
-                    var pred_in_flat = LayoutTensor[dtype, Layout.row_major(Self.n_envs * LATENT), MutAnyOrigin](gpu_mcts.pred_input.unsafe_ptr())
-                    var dyn_out_flat = LayoutTensor[dtype, Layout.row_major(Self.n_envs * DYN_OUT), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
-                    comptime EXTRACT_BLK = (Self.n_envs * LATENT + TPB - 1) // TPB
-                    comptime run_extr = extract_hidden_kernel[Self.n_envs, LATENT, DYN_OUT, dtype]
+                    # 3. Extract hidden from dyn → pred input
+                    var pred_in_b = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * LATENT), MutAnyOrigin](gpu_mcts.pred_input.unsafe_ptr())
+                    var dyn_out_b_flat = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * DYN_OUT), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
+                    comptime EXTR_TOTAL = MCTS_TOTAL * LATENT
+                    comptime EXTR_BLK = (EXTR_TOTAL + TPB - 1) // TPB
+                    comptime run_extr = extract_hidden_kernel[MCTS_TOTAL, LATENT, DYN_OUT, dtype]
                     ctx.enqueue_function[run_extr, run_extr](
-                        pred_in_flat, dyn_out_flat,
-                        grid_dim=(EXTRACT_BLK,), block_dim=(TPB,),
+                        pred_in_b, dyn_out_b_flat,
+                        grid_dim=(EXTR_BLK,), block_dim=(TPB,),
                     )
 
-                    # Prediction forward [BATCH=Self.n_envs]
-                    var pred_in_net = LayoutTensor[dtype, Layout.row_major(Self.n_envs, PRED_IN_DIM), MutAnyOrigin](gpu_mcts.pred_input.unsafe_ptr())
-                    var pred_out_net = LayoutTensor[dtype, Layout.row_major(Self.n_envs, PRED_OUT_DIM), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-                    PredNet.forward_gpu[Self.n_envs](
+                    # 4. Batched prediction forward [BATCH = n_envs * BATCH_SIMS]
+                    var pred_in_net = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL, PRED_IN_DIM), MutAnyOrigin](gpu_mcts.pred_input.unsafe_ptr())
+                    var pred_out_net = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL, PRED_OUT_DIM), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
+                    PredNet.forward_gpu[MCTS_TOTAL](
                         ctx, pred_in_net, pred_out_net,
                         gpu.prediction.params_view(), mcts_workspace
                     )
 
-                    # Expand nodes
-                    var do_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * DYN_OUT), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
-                    var po_exp_t = LayoutTensor[dtype, Layout.row_major(Self.n_envs * PRED_OUT), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-                    comptime run_exp = gpu_mcts_expand_kernel[Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, DYN_OUT, dtype]
-                    ctx.enqueue_function[run_exp, run_exp](
-                        vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t,
-                        hs_t, pp_t, pa_t, do_t, po_exp_t,
-                        Scalar[dtype](self.v_min), Scalar[dtype](self.v_max), lv_t,
-                        grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
-                    )
-
-                    # Backup
-                    comptime run_bk = gpu_mcts_backup_kernel[Self.n_envs, MAX_NODES, ACT, dtype]
-                    ctx.enqueue_function[run_bk, run_bk](
-                        vc_t, tv_t, rw_t, tvis_t, miq_t, mxq_t,
-                        sp_t, ap_t, pl_t, lv_t,
-                        Scalar[dtype](self.gamma),
+                    # 5. Fused expand + backup + remove virtual losses
+                    var b_do = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * DYN_OUT), MutAnyOrigin](gpu_mcts.dyn_output.unsafe_ptr())
+                    var b_po = LayoutTensor[dtype, Layout.row_major(MCTS_TOTAL * PRED_OUT), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
+                    comptime run_exp_bk = gpu_mcts_batched_expand_backup_muzero_kernel[
+                        Self.n_envs, MAX_NODES, ACT, MCTS_BATCH_SIMS, LATENT, PRED_OUT, DYN_OUT, dtype
+                    ]
+                    ctx.enqueue_function[run_exp_bk, run_exp_bk](
+                        vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
+                        hs_t, b_pp, b_pa, b_do, b_po, b_sp, b_ap, b_pl,
+                        Scalar[dtype](self.v_min), Scalar[dtype](self.v_max),
+                        Scalar[dtype](self.gamma), Scalar[DType.bool](False),
                         grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
                     )
 
