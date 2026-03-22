@@ -859,11 +859,22 @@ fn gpu_mcts_expand_alphazero_kernel[
     child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
     node_count[e] = Scalar[dtype](child_node_idx + 1)
 
-    # Decode scalar value with tanh: value = tanh(raw_logit) ∈ [-1, 1]
-    var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-    var ev_p = exp(raw_v)
-    var ev_n = exp(-raw_v)
-    leaf_values[e] = (ev_p - ev_n) / (ev_p + ev_n)
+    # Decode leaf value:
+    # If env.step returned done (game over), use step reward directly.
+    # Otherwise, use tanh(network_output) as value estimate.
+    var step_done = rebind[Scalar[dtype]](step_rewards[e])  # reward doubles as done signal
+    # Actually step_rewards is the reward. We need done flag separately.
+    # For now: if reward is +1 or -1 (terminal), use it. If 0, use network.
+    var abs_rew = step_done if step_done >= Scalar[dtype](0.0) else -step_done
+    if abs_rew > Scalar[dtype](0.5):
+        # Terminal state: use game outcome directly
+        leaf_values[e] = step_done
+    else:
+        # Non-terminal: use network value prediction
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        var ev_p = exp(raw_v)
+        var ev_n = exp(-raw_v)
+        leaf_values[e] = (ev_p - ev_n) / (ev_p + ev_n)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1096,11 +1107,18 @@ fn gpu_mcts_batched_expand_backup_kernel[
         child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
         node_count[e] = Scalar[dtype](child_node_idx + 1)
 
-        # ── Decode scalar value (tanh) ──────────────────────
-        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-        var ev_p = exp(raw_v)
-        var ev_n = exp(-raw_v)
-        var leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+        # ── Decode leaf value ───────────────────────────────
+        # If terminal (|reward| > 0.5), use game outcome directly
+        var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
+        var abs_rew = step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
+        var leaf_value: Scalar[dtype]
+        if abs_rew > Scalar[dtype](0.5):
+            leaf_value = step_rew  # Terminal: use actual game outcome
+        else:
+            var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+            var ev_p = exp(raw_v)
+            var ev_n = exp(-raw_v)
+            leaf_value = (ev_p - ev_n) / (ev_p + ev_n)  # Non-terminal: network estimate
 
         # ── Remove virtual loss ─────────────────────────────
         visit_count[tree_off + parent * ACT + action] = (

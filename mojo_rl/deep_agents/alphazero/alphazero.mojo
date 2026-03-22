@@ -91,10 +91,16 @@ fn az_policy_value_grad_kernel[
         var target = rebind[Scalar[dtype]](target_policy[pol_off + a])
         grad_out[pred_off + a] = (prob - target) * inv_batch
 
-    # Value gradient: 2 * (pred - target) / BATCH
-    var pred_v = rebind[Scalar[dtype]](pred_out[pred_off + ACT])
+    # Value gradient: MSE through tanh activation
+    # loss = (tanh(raw) - target)^2
+    # d/draw = 2 * (tanh(raw) - target) * (1 - tanh(raw)^2)
+    var raw_v = rebind[Scalar[dtype]](pred_out[pred_off + ACT])
     var target_v = rebind[Scalar[dtype]](target_value[b])
-    grad_out[pred_off + ACT] = Scalar[dtype](2.0) * (pred_v - target_v) * inv_batch
+    var ev_p = exp(raw_v)
+    var ev_n = exp(-raw_v)
+    var tanh_v = (ev_p - ev_n) / (ev_p + ev_n)
+    var dtanh = Scalar[dtype](1.0) - tanh_v * tanh_v  # tanh derivative
+    grad_out[pred_off + ACT] = Scalar[dtype](2.0) * (tanh_v - target_v) * dtanh * inv_batch
 
 
 # ═══════════════════════════════════════════════════════════════════════════
