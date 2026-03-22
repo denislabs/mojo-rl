@@ -2,8 +2,8 @@
 
 Controls:
   Arrow keys: move cursor
-  Space: place stone at cursor
-  P: pass
+  Space / Left click: place stone at cursor
+  P / Right click: pass
   R: reset after game ends
   Close window to quit
 """
@@ -13,14 +13,15 @@ from mojo_rl.envs.board_games.go import GoEnv
 from mojo_rl.render import Renderer2D, SDL_Color
 from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
 from mojo_rl.render.sdl.sdl_scancode import Scancode
+from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
 fn main() raises:
     print("=== Playable Go 9x9 ===")
     print("Controls:")
     print("  Arrow keys to move cursor")
-    print("  Space to place stone")
-    print("  P to pass")
+    print("  Space / Left click to place stone")
+    print("  P / Right click to pass")
     print("  R to reset after game ends")
     print("  Close window to quit")
 
@@ -61,6 +62,13 @@ fn main() raises:
     var prev_p = False
     var prev_r = False
 
+    var prev_mouse_left = False
+    var prev_mouse_right = False
+    var mouse_x_ptr = alloc[Float32](1)
+    var mouse_y_ptr = alloc[Float32](1)
+    mouse_x_ptr[] = Float32(0)
+    mouse_y_ptr[] = Float32(0)
+
     var numkeys_ptr = alloc[Int32](1)
     numkeys_ptr[] = 0
 
@@ -75,6 +83,21 @@ fn main() raises:
         var cur_space = Bool(keys[Int(Scancode.SCANCODE_SPACE)])
         var cur_p = Bool(keys[Int(Scancode.SCANCODE_P)])
         var cur_r = Bool(keys[Int(Scancode.SCANCODE_R)])
+
+        # Read mouse state
+        var mouse_buttons = get_mouse_state(
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+        )
+        var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
+        var cur_mouse_right = (Int(mouse_buttons.value) & 4) != 0
+        var mouse_x = Int(mouse_x_ptr[])
+        var mouse_y = Int(mouse_y_ptr[])
+
+        # Convert mouse position to nearest grid intersection
+        var grid_col = (mouse_x - margin + cell_size // 2) // cell_size
+        var grid_row = (mouse_y - margin + cell_size // 2) // cell_size
+        var mouse_on_board = grid_row >= 0 and grid_row <= 8 and grid_col >= 0 and grid_col <= 8
 
         var game_over = env.done
 
@@ -109,6 +132,22 @@ fn main() raises:
 
             # P to pass
             if cur_p and not prev_p:
+                _ = env._step_impl(81)  # PASS_ACTION = 9*9 = 81
+
+            # Mouse hover updates cursor position
+            if mouse_on_board:
+                cursor_row = grid_row
+                cursor_col = grid_col
+
+            # Left click to place stone
+            if cur_mouse_left and not prev_mouse_left and mouse_on_board:
+                var m_action = cursor_row * 9 + cursor_col
+                var m_mask = env.legal_action_mask()
+                if m_mask[m_action]:
+                    _ = env._step_impl(m_action)
+
+            # Right click to pass
+            if cur_mouse_right and not prev_mouse_right:
                 _ = env._step_impl(81)  # PASS_ACTION = 9*9 = 81
 
         # === Rendering ===
@@ -215,7 +254,11 @@ fn main() raises:
         prev_space = cur_space
         prev_p = cur_p
         prev_r = cur_r
+        prev_mouse_left = cur_mouse_left
+        prev_mouse_right = cur_mouse_right
 
     numkeys_ptr.free()
+    mouse_x_ptr.free()
+    mouse_y_ptr.free()
     renderer.close()
     print("=== Done ===")

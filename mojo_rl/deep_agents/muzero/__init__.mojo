@@ -22,9 +22,11 @@ from .strategies import (
     ExplorationNoise, DirichletNoise, EpsilonNoise, NoNoise,
     PUCTFormula, MuZeroPUCT, AlphaGoPUCT, UCB1Formula,
     BackupMode, NStepBootstrap, MonteCarloReturn, LambdaReturn,
+    PlayerMode, SinglePlayer, SelfPlay,
 )
 from .state import MuZeroCPUState, MuZeroGPUState
 from .muzero import GenericMuZeroAgent
 from .mcts import MCTS, MCTSNode
 from .gpu_mcts import GPUMCTSState
 from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats
+from .evaluators import Evaluator, RandomOpponent, MinimaxTicTacToe

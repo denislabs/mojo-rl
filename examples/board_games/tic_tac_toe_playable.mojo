@@ -1,6 +1,7 @@
 """Playable TicTacToe -- two humans alternate placing X and O on a 3x3 board.
 
 Controls:
+  Mouse click: place mark at clicked cell
   Arrow keys: move cursor
   Space/Return: place mark at cursor
   Numpad 1-9: place mark directly (1=bottom-left, 9=top-right)
@@ -13,11 +14,13 @@ from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 from mojo_rl.render import Renderer2D, SDL_Color
 from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
 from mojo_rl.render.sdl.sdl_scancode import Scancode
+from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
 fn main() raises:
     print("=== Playable TicTacToe ===")
     print("Controls:")
+    print("  Mouse click to place mark at clicked cell")
     print("  Arrow keys to move cursor, Space/Return to place mark")
     print("  Numpad 1-9 to place directly (1=bottom-left, 9=top-right)")
     print("  R to reset after game ends, close window to quit")
@@ -58,6 +61,12 @@ fn main() raises:
     var prev_kp8 = False
     var prev_kp9 = False
 
+    var prev_mouse_left = False
+    var mouse_x_ptr = alloc[Float32](1)
+    var mouse_y_ptr = alloc[Float32](1)
+    mouse_x_ptr[] = Float32(0)
+    mouse_y_ptr[] = Float32(0)
+
     var numkeys_ptr = alloc[Int32](1)
     numkeys_ptr[] = 0
 
@@ -85,6 +94,31 @@ fn main() raises:
         var cur_kp7 = Bool(keys[Int(Scancode.SCANCODE_KP_7)])
         var cur_kp8 = Bool(keys[Int(Scancode.SCANCODE_KP_8)])
         var cur_kp9 = Bool(keys[Int(Scancode.SCANCODE_KP_9)])
+
+        # Mouse state
+        var mouse_buttons = get_mouse_state(
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+        )
+        var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
+        var mouse_x = Int(mouse_x_ptr[])
+        var mouse_y = Int(mouse_y_ptr[])
+
+        # Convert mouse position to board cell
+        var mouse_col = mouse_x // cell_size
+        var mouse_row = mouse_y // cell_size
+        var mouse_on_board = (
+            mouse_col >= 0
+            and mouse_col < 3
+            and mouse_row >= 0
+            and mouse_row < 3
+            and mouse_y < board_size
+        )
+
+        # Update cursor from mouse hover
+        if mouse_on_board:
+            cursor_row = mouse_row
+            cursor_col = mouse_col
 
         var game_over = env.done
         var action = -1  # -1 = no action
@@ -114,6 +148,10 @@ fn main() raises:
             if (cur_space and not prev_space) or (cur_return and not prev_return):
                 # Convert visual (row, col) to env cell index (row-major, row 0 = top)
                 action = cursor_row * 3 + cursor_col
+
+            # Mouse click to place mark
+            if cur_mouse_left and not prev_mouse_left and mouse_on_board:
+                action = mouse_row * 3 + mouse_col
 
             # Numpad direct placement (numpad layout: 1=bottom-left, 9=top-right)
             # Numpad 7=top-left, 8=top-center, 9=top-right
@@ -221,7 +259,10 @@ fn main() raises:
         prev_kp7 = cur_kp7
         prev_kp8 = cur_kp8
         prev_kp9 = cur_kp9
+        prev_mouse_left = cur_mouse_left
 
+    mouse_x_ptr.free()
+    mouse_y_ptr.free()
     numkeys_ptr.free()
     renderer.close()
     print("=== Done ===")

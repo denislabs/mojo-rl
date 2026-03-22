@@ -51,6 +51,9 @@ from .strategies import (
     NStepBootstrap,
     MonteCarloReturn,
     LambdaReturn,
+    PlayerMode,
+    SinglePlayer,
+    SelfPlay,
 )
 
 
@@ -106,6 +109,7 @@ trait MuZeroConfig:
     comptime Noise: ExplorationNoise      # Root exploration noise
     comptime PUCT: PUCTFormula            # UCB exploration formula
     comptime Backup: BackupMode           # Return computation strategy
+    comptime Players: PlayerMode          # Single-player vs self-play
 
     # ── Flags ─────────────────────────────────────────────────────
     comptime USE_REANALYZE: Bool  # Enable MuZero Reanalyze
@@ -187,6 +191,7 @@ struct MuZeroMLPConfig[
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
 
@@ -270,6 +275,7 @@ struct MuZeroCNNConfig[
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
 
@@ -364,6 +370,7 @@ struct MuZeroResNetConfig[
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
 
@@ -429,6 +436,7 @@ struct MuZeroLargeConfig[
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
 
@@ -503,6 +511,7 @@ struct AlphaZeroConfig[
     comptime Noise = DirichletNoise[0.25, 0.03]  # Lower alpha for large action spaces
     comptime PUCT = AlphaGoPUCT[2.5]          # Constant c (not log-based)
     comptime Backup = MonteCarloReturn         # Full episode returns for board games
+    comptime Players = SelfPlay                # Two-player self-play with legal masking
 
     comptime USE_REANALYZE: Bool = False
 
@@ -575,5 +584,6 @@ struct EfficientZeroConfig[
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = LambdaReturn[0.95]       # Lambda returns for sample efficiency
+    comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True         # Always use Reanalyze

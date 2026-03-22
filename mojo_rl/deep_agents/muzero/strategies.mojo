@@ -1,16 +1,17 @@
-"""MuZero Strategy Traits — Composable building blocks for MuZero variants.
+"""MuZero Strategy Traits — Composable building blocks with embedded logic.
 
-Follows the same strategy pattern as DQN/SAC (core/strategies/).
-Each trait defines a behavior axis that varies across MuZero family algorithms.
-Configs bundle strategy choices to define complete algorithm variants.
+Unlike simple flag-only configs, strategies contain actual compute methods
+that are called at compile-time dispatch points. Follows the DQN/SAC
+strategy pattern (e.g., QTarget.compute_targets_gpu).
 
 Strategy traits:
   - SearchMode: Learned dynamics (MuZero) vs true game rules (AlphaZero)
   - ValueEncoding: How values/rewards are encoded (Categorical, Scalar)
   - HiddenScaling: Hidden state normalization (MinMax, None)
   - ExplorationNoise: Root exploration (Dirichlet, Epsilon, None)
-  - PUCTFormula: UCB exploration formula (MuZero, AlphaGo, UCB1)
-  - BackupMode: Return computation (NStep, MonteCarlo, Lambda)
+  - PUCTFormula: UCB exploration formula with compute_score() logic
+  - BackupMode: Return computation with compute_return() logic
+  - PlayerMode: Single-player vs self-play with transform_value() logic
 """
 
 from std.math import sqrt, log
@@ -22,164 +23,99 @@ from std.math import sqrt, log
 
 
 trait SearchMode:
-    """Determines whether MCTS uses learned dynamics or true game rules.
+    """Determines how MCTS expands leaf nodes.
 
-    MuZero: Uses learned representation + dynamics + prediction networks.
-    AlphaZero: Uses true game rules for state transitions, only learns
-               policy + value networks (no dynamics model needed).
+    LearnedDynamics: Use dynamics network g(hidden, action) → next_hidden
+    TrueGameRules: Use env.step(state, action) → next_state (requires game states in tree)
     """
 
     comptime USE_LEARNED_DYNAMICS: Bool
-    """True for MuZero (learned model), False for AlphaZero (true rules)."""
+    """True = use dynamics network. False = use game rules."""
 
-    comptime NEEDS_REPRESENTATION: Bool
-    """True if observations need encoding to latent space (MuZero).
-    False if search operates on raw game state (AlphaZero)."""
-
-    comptime NEEDS_REWARD_HEAD: Bool
-    """True if reward must be predicted (MuZero).
-    False if reward comes from game rules (AlphaZero)."""
+    comptime NEEDS_GAME_STATE: Bool
+    """True = MCTS tree stores game states per node (for env.step).
+    False = MCTS tree stores hidden states per node (for dynamics net)."""
 
 
 struct LearnedDynamics(SearchMode):
-    """MuZero-style: learn dynamics from data, search in latent space."""
-
+    """MuZero: learn dynamics from data, search in latent space."""
     comptime USE_LEARNED_DYNAMICS: Bool = True
-    comptime NEEDS_REPRESENTATION: Bool = True
-    comptime NEEDS_REWARD_HEAD: Bool = True
+    comptime NEEDS_GAME_STATE: Bool = False
 
 
 struct TrueGameRules(SearchMode):
-    """AlphaZero-style: use true game simulator, search in observation space.
-
-    When using this mode:
-    - RepModel maps obs -> latent for policy/value prediction only
-    - DynModel is unused (game rules provide next state)
-    - PredModel still predicts policy and value from game state
-    """
-
+    """AlphaZero: use true game rules, search in observation space.
+    Tree nodes store actual game states. Expansion calls env.step()."""
     comptime USE_LEARNED_DYNAMICS: Bool = False
-    comptime NEEDS_REPRESENTATION: Bool = False
-    comptime NEEDS_REWARD_HEAD: Bool = False
+    comptime NEEDS_GAME_STATE: Bool = True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ValueEncoding — How values and rewards are encoded
+# ValueEncoding
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait ValueEncoding:
-    """Determines how scalar values/rewards are encoded for network I/O.
-
-    Categorical: Distributional encoding with NUM_BINS support bins +
-                 two-hot encoding. Most stable for large value ranges.
-    Scalar: Direct scalar prediction. Simpler but less stable.
-    """
-
+    """Determines how scalar values/rewards are encoded."""
     comptime IS_DISTRIBUTIONAL: Bool
-    """True for categorical/distributional encoding, False for scalar."""
-
     comptime USE_SCALAR_TRANSFORM: Bool
-    """True to apply h(x) = sign(x)(sqrt(|x|+1)-1)+eps*x before encoding."""
 
 
 struct CategoricalEncoding(ValueEncoding):
-    """Distributional encoding with categorical support (default MuZero).
-
-    Values are encoded as soft two-hot distributions over NUM_BINS bins.
-    Most stable for large value ranges (Atari scores up to 10K+).
-    """
-
+    """Distributional: two-hot over NUM_BINS support bins."""
     comptime IS_DISTRIBUTIONAL: Bool = True
     comptime USE_SCALAR_TRANSFORM: Bool = True
 
 
 struct ScalarEncoding(ValueEncoding):
-    """Direct scalar value prediction (simpler, for bounded-reward envs).
-
-    Values predicted directly as single float. Works well when rewards
-    are naturally bounded (e.g., CartPole reward = 1.0 per step).
-    No scalar transform needed since values are small.
-    """
-
+    """Direct scalar prediction. For bounded-reward envs."""
     comptime IS_DISTRIBUTIONAL: Bool = False
     comptime USE_SCALAR_TRANSFORM: Bool = False
 
 
 struct SymlogEncoding(ValueEncoding):
-    """Scalar prediction with symlog transform (DreamerV3-style).
-
-    Uses scalar transform for compression but predicts single value
-    instead of categorical distribution. Good middle ground.
-    """
-
+    """Scalar with symlog transform (DreamerV3-style)."""
     comptime IS_DISTRIBUTIONAL: Bool = False
     comptime USE_SCALAR_TRANSFORM: Bool = True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HiddenScaling — Hidden state normalization
+# HiddenScaling
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait HiddenScaling:
-    """Determines how hidden states are normalized after dynamics.
-
-    Prevents hidden state magnitudes from growing unboundedly through
-    repeated dynamics applications.
-    """
-
+    """Hidden state normalization after dynamics."""
     comptime ENABLED: Bool
-    """Whether to apply scaling after each dynamics step."""
-
-    comptime SCALE_METHOD: Int
-    """0=MinMax [0,1], 1=LayerNorm, 2=SimNorm."""
+    comptime SCALE_METHOD: Int  # 0=MinMax, 1=LayerNorm, 2=SimNorm
 
 
 struct MinMaxScale(HiddenScaling):
-    """Min-max normalization to [0, 1] (default MuZero).
-
-    Fast, no parameters. Each hidden state vector independently
-    normalized: h = (h - min(h)) / (max(h) - min(h)).
-    """
-
+    """Min-max normalization to [0, 1]."""
     comptime ENABLED: Bool = True
     comptime SCALE_METHOD: Int = 0
 
 
 struct NoScale(HiddenScaling):
-    """No hidden state scaling.
-
-    Relies on network initialization and gradient clipping
-    to keep hidden state magnitudes bounded.
-    """
-
+    """No scaling — for AlphaZero where tree stores real game states."""
     comptime ENABLED: Bool = False
     comptime SCALE_METHOD: Int = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ExplorationNoise — Root prior exploration
+# ExplorationNoise — with embedded sampling logic
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait ExplorationNoise:
-    """Determines how exploration noise is added to the root prior.
+    """Root exploration noise strategy.
 
-    Ensures MCTS explores diverse actions at the root, preventing
-    the search from collapsing to a single action early.
+    Provides compile-time parameters for noise generation.
+    Noise sampling runs inside GPU kernels using these constants.
     """
-
-    comptime NOISE_TYPE: Int
-    """0=Dirichlet, 1=Uniform epsilon, 2=None."""
-
+    comptime NOISE_TYPE: Int     # 0=Dirichlet, 1=Uniform, 2=None
     comptime NOISE_FRACTION: Float64
-    """Fraction of noise mixed into the prior: p = (1-f)*prior + f*noise."""
-
     comptime NOISE_ALPHA: Float64
-    """Dirichlet alpha parameter (only used when NOISE_TYPE=0).
-    Smaller alpha = more concentrated noise (good for many actions).
-    Typical: 0.03 (Go), 0.3 (Chess), 0.25 (Atari)."""
 
 
 struct DirichletNoise[
@@ -187,11 +123,7 @@ struct DirichletNoise[
     alpha: Float64 = 0.25,
 ](ExplorationNoise):
     """Dirichlet noise (default MuZero/AlphaZero).
-
-    Samples noise from Dirichlet(alpha) distribution, mixes with prior.
-    Alpha should scale inversely with action space size.
-    """
-
+    Alpha: 0.03 (Go/Chess), 0.25 (Atari/small games)."""
     comptime NOISE_TYPE: Int = 0
     comptime NOISE_FRACTION: Float64 = Self.fraction
     comptime NOISE_ALPHA: Float64 = Self.alpha
@@ -200,150 +132,213 @@ struct DirichletNoise[
 struct EpsilonNoise[
     fraction: Float64 = 0.25,
 ](ExplorationNoise):
-    """Uniform epsilon noise — simpler alternative to Dirichlet.
-
-    With probability `fraction`, replaces prior with uniform distribution.
-    Less sophisticated but easier to tune.
-    """
-
+    """Uniform epsilon noise — simpler alternative."""
     comptime NOISE_TYPE: Int = 1
     comptime NOISE_FRACTION: Float64 = Self.fraction
     comptime NOISE_ALPHA: Float64 = 0.0
 
 
 struct NoNoise(ExplorationNoise):
-    """No exploration noise — pure exploitation from prior.
-
-    Useful for evaluation/inference mode.
-    """
-
+    """No noise — pure exploitation. For evaluation."""
     comptime NOISE_TYPE: Int = 2
     comptime NOISE_FRACTION: Float64 = 0.0
     comptime NOISE_ALPHA: Float64 = 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PUCTFormula — UCB exploration formula
+# PUCTFormula — with embedded compute_score() logic
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait PUCTFormula:
-    """Determines the exploration formula used during MCTS selection.
+    """UCB exploration formula with embedded computation logic.
 
-    Controls the exploration-exploitation tradeoff in tree search.
+    Unlike a simple flag, this trait provides the actual formula
+    that computes the exploration constant c(s) from parent visit count.
     """
 
-    comptime PUCT_TYPE: Int
-    """0=MuZero (log-based), 1=AlphaGo (constant c), 2=UCB1 (classic)."""
-
     comptime C_BASE: Float64
-    """Base constant for MuZero PUCT (default: 19652)."""
-
     comptime C_INIT: Float64
-    """Initial exploration constant (default: 1.25)."""
+
+    @staticmethod
+    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+        """Compute exploration constant c(s) from parent visit count.
+
+        Called inside the MCTS selection kernel (must be @staticmethod + inline).
+
+        Args:
+            parent_visits: N(s) — total visits at parent node.
+            cb: Base constant (from config).
+            ci: Initial constant (from config).
+
+        Returns:
+            Exploration constant c(s).
+        """
+        ...
 
 
 struct MuZeroPUCT[
     c_base: Float64 = 19652.0,
     c_init: Float64 = 1.25,
 ](PUCTFormula):
-    """MuZero PUCT formula (Schrittwieser et al., 2020).
+    """MuZero: c(s) = log((1 + N(s) + c_base) / c_base) + c_init.
+    Log-based c increases exploration as tree grows."""
 
-    c(s) = log((1 + N(s) + c_base) / c_base) + c_init
-    score = Q(s,a) + c(s) * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
-
-    The log-based c increases exploration as the tree grows deeper.
-    """
-
-    comptime PUCT_TYPE: Int = 0
     comptime C_BASE: Float64 = Self.c_base
     comptime C_INIT: Float64 = Self.c_init
+
+    @staticmethod
+    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+        return log((1.0 + parent_visits + cb) / cb) + ci
 
 
 struct AlphaGoPUCT[
     c_puct: Float64 = 2.5,
 ](PUCTFormula):
-    """AlphaGo/AlphaZero PUCT formula (Silver et al., 2017).
+    """AlphaGo/AlphaZero: c(s) = c_puct (constant).
+    Simpler than MuZero's log-based formula."""
 
-    score = Q(s,a) + c * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
-
-    Constant exploration parameter — simpler than MuZero's log-based.
-    """
-
-    comptime PUCT_TYPE: Int = 1
     comptime C_BASE: Float64 = 0.0
     comptime C_INIT: Float64 = Self.c_puct
+
+    @staticmethod
+    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+        return ci
 
 
 struct UCB1Formula[
     c: Float64 = 1.414,
 ](PUCTFormula):
-    """Classic UCB1 formula (Auer et al., 2002).
+    """Classic UCB1: score = Q + c * sqrt(ln(N) / n). No prior."""
 
-    score = Q(s,a) + c * sqrt(ln(N(s)) / N(s,a))
-
-    No prior — pure UCB exploration. Mainly for comparison.
-    """
-
-    comptime PUCT_TYPE: Int = 2
     comptime C_BASE: Float64 = 0.0
     comptime C_INIT: Float64 = Self.c
 
+    @staticmethod
+    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+        return ci
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BackupMode — Return computation strategy
+# BackupMode — with embedded return computation logic
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait BackupMode:
-    """Determines how training targets (value/reward returns) are computed.
+    """Return computation strategy with embedded logic.
 
-    N-step bootstrapped returns are standard for MuZero. Monte Carlo
-    returns (full episode) can be used for short-episode environments.
-    Lambda returns blend both approaches.
+    Determines how training targets (value returns) are computed from
+    rewards and bootstrap values.
     """
 
-    comptime BACKUP_TYPE: Int
-    """0=N-step bootstrap, 1=Monte Carlo (full episode), 2=Lambda return."""
-
+    comptime BACKUP_TYPE: Int    # 0=N-step, 1=MonteCarlo, 2=Lambda
     comptime LAMBDA: Float64
-    """Lambda parameter for TD(lambda) returns. Only used when BACKUP_TYPE=2.
-    0.0 = 1-step TD, 1.0 = Monte Carlo."""
+
+    @staticmethod
+    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+        """Whether to add bootstrap value to the return.
+
+        Args:
+            steps_used: How many reward steps were accumulated.
+            n: Maximum n-step horizon.
+            hit_terminal: Whether a terminal state was hit.
+
+        Returns:
+            True if bootstrap value should be added.
+        """
+        ...
 
 
 struct NStepBootstrap(BackupMode):
-    """N-step bootstrapped returns (default MuZero).
-
-    z(t) = sum_{i=0}^{n-1} gamma^i * r_{t+i} + gamma^n * v_{t+n}
-
-    N is set by Config.td_steps. Best for online RL with long episodes.
-    """
+    """N-step bootstrap: z = sum gamma^i r_i + gamma^n V(s_{t+n})."""
 
     comptime BACKUP_TYPE: Int = 0
     comptime LAMBDA: Float64 = 0.0
 
+    @staticmethod
+    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+        return not hit_terminal and steps_used == n
+
 
 struct MonteCarloReturn(BackupMode):
-    """Full-episode Monte Carlo returns (no bootstrapping).
-
-    z(t) = sum_{i=0}^{T-t} gamma^i * r_{t+i}
-
-    Best for short-episode environments (board games, CartPole).
-    Unbiased but high variance.
-    """
+    """Full-episode return: z = sum gamma^i r_i. No bootstrapping.
+    Best for short-episode games (board games)."""
 
     comptime BACKUP_TYPE: Int = 1
     comptime LAMBDA: Float64 = 1.0
+
+    @staticmethod
+    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+        return False  # Never bootstrap — use full episode return
 
 
 struct LambdaReturn[
     lambda_: Float64 = 0.95,
 ](BackupMode):
-    """TD(lambda) returns — exponentially weighted blend of n-step returns.
-
-    Smoothly interpolates between 1-step TD (lambda=0) and
-    Monte Carlo (lambda=1). Good default for most environments.
-    """
+    """TD(lambda) returns. Lambda=0 → 1-step TD, Lambda=1 → Monte Carlo."""
 
     comptime BACKUP_TYPE: Int = 2
     comptime LAMBDA: Float64 = Self.lambda_
+
+    @staticmethod
+    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+        return not hit_terminal and steps_used == n
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PlayerMode — with embedded value transform logic
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+trait PlayerMode:
+    """Single-player vs two-player self-play with embedded transform logic.
+
+    Provides the value transformation applied during MCTS backup.
+    For zero-sum games, values are negated at each tree level
+    (parent sees opposite of child's value).
+    """
+
+    comptime IS_SELF_PLAY: Bool
+    comptime NEGATE_BACKUP: Bool
+    comptime USE_LEGAL_MASK: Bool
+
+    @staticmethod
+    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+        """Transform value during MCTS backup.
+
+        Called at each level when propagating values from leaf to root.
+
+        Args:
+            value: Accumulated value from child nodes.
+            reward: Reward at this edge (from dynamics or game rules).
+            gamma: Discount factor.
+
+        Returns:
+            Transformed value for the parent node.
+        """
+        ...
+
+
+struct SinglePlayer(PlayerMode):
+    """Standard single-player: value = reward + gamma * child_value."""
+
+    comptime IS_SELF_PLAY: Bool = False
+    comptime NEGATE_BACKUP: Bool = False
+    comptime USE_LEGAL_MASK: Bool = False
+
+    @staticmethod
+    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+        return reward + gamma * value
+
+
+struct SelfPlay(PlayerMode):
+    """Two-player zero-sum: value = -child_value (no discount, no per-step reward).
+    Parent's perspective is opposite to child's perspective."""
+
+    comptime IS_SELF_PLAY: Bool = True
+    comptime NEGATE_BACKUP: Bool = True
+    comptime USE_LEGAL_MASK: Bool = True
+
+    @staticmethod
+    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+        return -value

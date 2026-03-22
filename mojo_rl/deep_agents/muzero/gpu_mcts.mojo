@@ -502,6 +502,266 @@ fn gpu_mcts_extract_actions_kernel[
             policies_out[e * ACT + a] = Scalar[dtype](1.0) / Scalar[dtype](ACT)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Self-Play Kernels (legal masking + negated backup)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+fn gpu_mcts_apply_legal_mask_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    legal_masks: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+):
+    """Mask root prior with legal action mask and renormalize.
+
+    For board games: zero out illegal actions in root prior, then
+    renormalize so probabilities sum to 1.
+
+    One thread per environment. Call AFTER init_root, BEFORE simulations.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT  # Root is always node 0
+
+    # Apply mask
+    var sum_p = Scalar[dtype](0.0)
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+        if legal < Scalar[dtype](0.5):
+            prior[root_off + a] = Scalar[dtype](0.0)
+        else:
+            sum_p += rebind[Scalar[dtype]](prior[root_off + a])
+
+    # Renormalize
+    if sum_p > Scalar[dtype](1e-8):
+        for a in range(ACT):
+            prior[root_off + a] = rebind[Scalar[dtype]](prior[root_off + a]) / sum_p
+    else:
+        # All actions masked — uniform over legal actions (fallback)
+        var n_legal = Scalar[dtype](0.0)
+        for a in range(ACT):
+            if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](0.5):
+                n_legal += Scalar[dtype](1.0)
+        if n_legal > Scalar[dtype](0.5):
+            var inv_n = Scalar[dtype](1.0) / n_legal
+            for a in range(ACT):
+                if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](0.5):
+                    prior[root_off + a] = inv_n
+
+
+fn gpu_mcts_backup_negated_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Node storage (read/write)
+    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Search paths
+    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
+    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
+    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Backup with value negation for two-player zero-sum games.
+
+    At each backup level, the value is NEGATED (parent's perspective
+    is opposite to child's perspective). No discount (gamma=1 for board games).
+    No per-step reward (only terminal reward).
+
+    value = -value  at each level
+
+    One thread per environment.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var tv_off = e * MAX_NODES
+    var path_off = e * MAX_DEPTH
+    var path_len = Int(rebind[Scalar[dtype]](path_lengths[e]))
+
+    var value = rebind[Scalar[dtype]](leaf_values[e])
+
+    # Walk backwards from leaf parent to root, NEGATING at each level
+    for i in range(path_len):
+        var idx = path_len - 1 - i
+        var node_idx = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
+        var action = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
+
+        # Negate value (parent sees opposite of child)
+        value = -value
+
+        var na_off = tree_off + node_idx * ACT + action
+        visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
+        total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
+        total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
+            total_visits[tv_off + node_idx]
+        ) + Scalar[dtype](1.0)
+
+        # Update MinMax
+        var n_a = rebind[Scalar[dtype]](visit_count[na_off])
+        var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
+        if mean_q < rebind[Scalar[dtype]](min_q[e]):
+            min_q[e] = mean_q
+        if mean_q > rebind[Scalar[dtype]](max_q[e]):
+            max_q[e] = mean_q
+
+
+fn gpu_mcts_extract_actions_masked_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    legal_masks: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    policies_out: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+):
+    """Extract actions respecting legal mask — choose only among legal actions.
+
+    One thread per environment.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT
+
+    var total = Scalar[dtype](0.0)
+    var best_action = -1
+    var best_count = Scalar[dtype](-1.0)
+
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+        if legal > Scalar[dtype](0.5):
+            var count = rebind[Scalar[dtype]](visit_count[root_off + a])
+            total += count
+            if count > best_count or best_action < 0:
+                best_count = count
+                best_action = a
+
+    if best_action < 0:
+        best_action = 0  # Fallback (shouldn't happen with valid game state)
+
+    actions_out[e] = Scalar[dtype](best_action)
+
+    # Normalized policy (only over legal actions)
+    if total > Scalar[dtype](0.5):
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+            if legal > Scalar[dtype](0.5):
+                policies_out[e * ACT + a] = rebind[Scalar[dtype]](
+                    visit_count[root_off + a]
+                ) / total
+            else:
+                policies_out[e * ACT + a] = Scalar[dtype](0.0)
+    else:
+        for a in range(ACT):
+            policies_out[e * ACT + a] = Scalar[dtype](0.0)
+        policies_out[e * ACT + best_action] = Scalar[dtype](1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Game State Kernels (AlphaZero mode — true game rules)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+fn gpu_mcts_copy_parent_state_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
+    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Copy parent game state to expansion staging buffer.
+
+    One thread per env. Copies STATE_SIZE floats from parent node's
+    game state slot to the flat expansion buffer for env.step().
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    var src_off = e * MAX_NODES * STATE_SIZE + parent * STATE_SIZE
+    var dst_off = e * STATE_SIZE
+
+    for i in range(STATE_SIZE):
+        expansion_states[dst_off + i] = game_states[src_off + i]
+
+
+fn gpu_mcts_store_child_state_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Copy expansion result (after env.step) to child node's game state slot.
+
+    One thread per env. The child index is node_count (before increment —
+    expand kernel will increment it).
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var child_idx = Int(rebind[Scalar[dtype]](node_count[e]))
+    if child_idx >= MAX_NODES:
+        return
+
+    var src_off = e * STATE_SIZE
+    var dst_off = e * MAX_NODES * STATE_SIZE + child_idx * STATE_SIZE
+
+    for i in range(STATE_SIZE):
+        game_states[dst_off + i] = expansion_states[src_off + i]
+
+
+fn gpu_mcts_copy_root_state_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    env_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
+):
+    """Copy current env states to root node (node 0) of each env's tree.
+
+    Called once at start of each MCTS search.
+    One thread per env.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var src_off = e * STATE_SIZE
+    var dst_off = e * MAX_NODES * STATE_SIZE  # Root = node 0
+
+    for i in range(STATE_SIZE):
+        game_states[dst_off + i] = env_states[src_off + i]
+
+
 fn gpu_mcts_build_dyn_input_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
@@ -582,10 +842,14 @@ struct GPUMCTSState[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
+    STATE_SIZE: Int = 0,
 ](Movable):
     """GPU-resident MCTS tree storage for n_envs parallel searches.
 
     All tree data lives on GPU. No CPU↔GPU transfer during search.
+
+    When STATE_SIZE > 0 (AlphaZero mode), stores actual game states
+    per tree node for expansion via true game rules.
     """
 
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
@@ -602,8 +866,18 @@ struct GPUMCTSState[
     # Per-node scalar [N_ENVS × MAX_NODES]
     var total_visits: DeviceBuffer[dtype]
 
-    # Hidden state pool [N_ENVS × MAX_NODES × LATENT]
+    # Hidden state pool [N_ENVS × MAX_NODES × LATENT] (MuZero mode)
     var hidden_states: DeviceBuffer[dtype]
+
+    # Game state pool [N_ENVS × MAX_NODES × STATE_SIZE] (AlphaZero mode)
+    # Stores actual game states for expansion via env.step()
+    var game_states: DeviceBuffer[dtype]
+
+    # Staging buffer for env.step expansion [N_ENVS × STATE_SIZE]
+    var expansion_states: DeviceBuffer[dtype]
+    # Obs output from env.step [N_ENVS × OBS_DIM] — reuses pred_input
+    # Legal masks from env.step [N_ENVS × ACT]
+    var expansion_legal_masks: DeviceBuffer[dtype]
 
     # Per-env scalars [N_ENVS]
     var node_count: DeviceBuffer[dtype]
@@ -627,6 +901,9 @@ struct GPUMCTSState[
     # Final output
     var actions_out: DeviceBuffer[dtype]    # [N_ENVS]
     var policies_out: DeviceBuffer[dtype]   # [N_ENVS × ACT]
+
+    # Legal mask (for self-play / board games)
+    var legal_masks: DeviceBuffer[dtype]    # [N_ENVS × ACT]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         comptime NODE_ACT_SIZE = Self.N_ENVS * Self.MAX_NODES * Self.ACT
@@ -658,6 +935,20 @@ struct GPUMCTSState[
 
         self.actions_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
         self.policies_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.ACT)
+        self.legal_masks = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.ACT)
+
+        # Game state storage (AlphaZero mode: STATE_SIZE > 0)
+        comptime GS_SIZE = Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE
+        self.game_states = ctx.enqueue_create_buffer[dtype](
+            GS_SIZE if GS_SIZE > 0 else 1
+        )
+        comptime EXP_SIZE = Self.N_ENVS * Self.STATE_SIZE
+        self.expansion_states = ctx.enqueue_create_buffer[dtype](
+            EXP_SIZE if EXP_SIZE > 0 else 1
+        )
+        self.expansion_legal_masks = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.ACT
+        )
 
     fn __init__(out self, *, deinit take: Self):
         self.visit_count = take.visit_count^
@@ -667,6 +958,9 @@ struct GPUMCTSState[
         self.child_idx = take.child_idx^
         self.total_visits = take.total_visits^
         self.hidden_states = take.hidden_states^
+        self.game_states = take.game_states^
+        self.expansion_states = take.expansion_states^
+        self.expansion_legal_masks = take.expansion_legal_masks^
         self.node_count = take.node_count^
         self.min_q = take.min_q^
         self.max_q = take.max_q^
@@ -682,3 +976,4 @@ struct GPUMCTSState[
         self.pred_output = take.pred_output^
         self.actions_out = take.actions_out^
         self.policies_out = take.policies_out^
+        self.legal_masks = take.legal_masks^

@@ -37,9 +37,11 @@ fn main():
     # AlphaZero Config
     comptime C5 = AlphaZeroConfig[64, 4]  # Chess-like: 64 obs, 4 actions
     print("AlphaZero: Search.USE_LEARNED_DYNAMICS:", C5.Search.USE_LEARNED_DYNAMICS,
+          "| Search.NEEDS_GAME_STATE:", C5.Search.NEEDS_GAME_STATE,
           "| Encoding.IS_DISTRIBUTIONAL:", C5.Encoding.IS_DISTRIBUTIONAL,
-          "| PUCT.PUCT_TYPE:", C5.PUCT.PUCT_TYPE,
-          "| Backup.BACKUP_TYPE:", C5.Backup.BACKUP_TYPE)
+          "| PUCT.C_INIT:", C5.PUCT.C_INIT,
+          "| Backup.BACKUP_TYPE:", C5.Backup.BACKUP_TYPE,
+          "| Players.IS_SELF_PLAY:", C5.Players.IS_SELF_PLAY)
 
     # EfficientZero Config
     comptime C6 = EfficientZeroConfig[4, 2]
