@@ -6,7 +6,25 @@
 # Reference: Schrittwieser et al., 2020 — Mastering Atari, Go, Chess and
 # Shogi by Planning with a Learned Model (Nature)
 
+from .configs import (
+    MuZeroConfig,
+    MuZeroMLPConfig,
+    MuZeroCNNConfig,
+    MuZeroResNetConfig,
+    MuZeroLargeConfig,
+    AlphaZeroConfig,
+    EfficientZeroConfig,
+)
+from .strategies import (
+    SearchMode, LearnedDynamics, TrueGameRules,
+    ValueEncoding, CategoricalEncoding, ScalarEncoding, SymlogEncoding,
+    HiddenScaling, MinMaxScale, NoScale,
+    ExplorationNoise, DirichletNoise, EpsilonNoise, NoNoise,
+    PUCTFormula, MuZeroPUCT, AlphaGoPUCT, UCB1Formula,
+    BackupMode, NStepBootstrap, MonteCarloReturn, LambdaReturn,
+)
 from .state import MuZeroCPUState, MuZeroGPUState
-from .muzero import MuZeroAgent
+from .muzero import GenericMuZeroAgent
 from .mcts import MCTS, MCTSNode
+from .gpu_mcts import GPUMCTSState
 from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats

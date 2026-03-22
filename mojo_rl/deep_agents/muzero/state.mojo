@@ -29,19 +29,12 @@ from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
 from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
     GPUSequenceReplayBuffer,
 )
+from .configs import MuZeroConfig
 
 
 struct MuZeroCPUState[
-    OBS_DIM: Int,
-    ACTION_DIM: Int,
-    LATENT_DIM: Int = 256,
-    HIDDEN_DIM: Int = 256,
-    NUM_BINS: Int = 101,
-    LR: Float64 = 1e-3,
-    BUFFER_CAPACITY: Int = 100000,
-    BATCH_SIZE: Int = 128,
-    UNROLL_STEPS: Int = 5,
-    TD_STEPS: Int = 10,
+    Config: MuZeroConfig,
+    _CAP: Int = 100000,
 ](Movable):
     """CPU-resident state for MuZero training.
 
@@ -53,58 +46,26 @@ struct MuZeroCPUState[
       - Pre-allocated scratch for K-step unrolled training
 
     Parameters:
-        OBS_DIM: Observation space dimension.
-        ACTION_DIM: Number of discrete actions.
-        LATENT_DIM: Hidden state dimension (default: 256).
-        HIDDEN_DIM: Network hidden layer width (default: 256).
-        NUM_BINS: Categorical bins for value/reward (default: 101).
-        LR: Learning rate for all networks (default: 1e-3).
-        BUFFER_CAPACITY: Replay buffer capacity (default: 100K).
-        BATCH_SIZE: Training batch size (default: 128).
-        UNROLL_STEPS: K-step unroll depth (default: 5).
-        TD_STEPS: N-step return horizon (default: 10).
+        Config: MuZeroConfig trait providing all dimensions, network types,
+                and training hyperparameters.
     """
 
     # ── Shorthand compile-time constants ─────────────────────────────────
-    comptime OBS: Int = Self.OBS_DIM
-    comptime ACT: Int = Self.ACTION_DIM
-    comptime LATENT: Int = Self.LATENT_DIM
-    comptime HIDDEN: Int = Self.HIDDEN_DIM
-    comptime BINS: Int = Self.NUM_BINS
-    comptime BATCH: Int = Self.BATCH_SIZE
-    comptime K: Int = Self.UNROLL_STEPS
-    comptime N: Int = Self.TD_STEPS
-
+    comptime OBS: Int = Self.Config.obs_dim
+    comptime ACT: Int = Self.Config.action_dim
+    comptime LATENT: Int = Self.Config.latent_dim
+    comptime BINS: Int = Self.Config.num_bins
+    comptime BATCH: Int = Self.Config.batch_size
+    comptime K: Int = Self.Config.unroll_steps
+    comptime N: Int = Self.Config.td_steps
+    comptime DYN_IN: Int = Self.Config.DYN_IN
+    comptime DYN_OUT: Int = Self.Config.DYN_OUT
+    comptime PRED_OUT: Int = Self.Config.PRED_OUT
     # ── Network type aliases ─────────────────────────────────────────────
-
-    # Representation: obs -> hidden state
-    comptime RepModel = Sequential[
-        LinearMish[Self.OBS, Self.HIDDEN],
-        LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.LATENT],
-    ]
-
-    # Dynamics: (hidden + one_hot_action) -> (next_hidden + reward_logits)
-    comptime DYN_IN: Int = Self.LATENT + Self.ACT
-    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
-    comptime DynModel = Sequential[
-        LinearMish[Self.DYN_IN, Self.HIDDEN],
-        LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
-    ]
-
-    # Prediction: hidden -> (policy_logits + value_logits)
-    comptime PRED_OUT: Int = Self.ACT + Self.BINS
-    comptime PredModel = Sequential[
-        LinearMish[Self.LATENT, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],   # policy head
-            Linear[Self.HIDDEN, Self.BINS],   # value head
-        ],
-    ]
-
-    # Optimizer type
-    comptime OptType = Adam[LR=Self.LR]
+    comptime RepModel = Self.Config.RepModel
+    comptime DynModel = Self.Config.DynModel
+    comptime PredModel = Self.Config.PredModel
+    comptime OptType = Self.Config.OptType
 
     # ── Core state ───────────────────────────────────────────────────────
 
@@ -114,7 +75,7 @@ struct MuZeroCPUState[
     var prediction: NetworkState[Self.PredModel, Self.OptType]
 
     # Replay buffer (obs, actions, rewards, dones)
-    var buffer: SequenceReplayBuffer[Self.BUFFER_CAPACITY, Self.OBS, Self.ACT]
+    var buffer: SequenceReplayBuffer[Self._CAP, Self.OBS, Self.ACT]
 
     # MCTS target storage — parallel arrays alongside replay buffer
     # Stores MCTS visit count policies and root values for training targets
@@ -176,16 +137,16 @@ struct MuZeroCPUState[
 
         # ── Replay buffer ────────────────────────────────────────────────
         self.buffer = SequenceReplayBuffer[
-            Self.BUFFER_CAPACITY, Self.OBS, Self.ACT
+            Self._CAP, Self.OBS, Self.ACT
         ]()
 
         # MCTS target parallel storage
-        comptime POLICY_SIZE = Self.BUFFER_CAPACITY * Self.ACT
+        comptime POLICY_SIZE = Self._CAP * Self.ACT
         self.mcts_policies = alloc[Scalar[dtype]](POLICY_SIZE)
         memset(self.mcts_policies, 0, POLICY_SIZE)
 
-        self.mcts_values = alloc[Scalar[dtype]](Self.BUFFER_CAPACITY)
-        memset(self.mcts_values, 0, Self.BUFFER_CAPACITY)
+        self.mcts_values = alloc[Scalar[dtype]](Self._CAP)
+        memset(self.mcts_values, 0, Self._CAP)
 
         # ── Batch scratch ────────────────────────────────────────────────
         comptime BATCH_OBS_SIZE = Self.BATCH * (Self.K + 1) * Self.OBS
@@ -367,7 +328,7 @@ struct MuZeroCPUState[
         comptime N = Self.N
         comptime OBS = Self.OBS
         comptime ACT = Self.ACT
-        comptime CAPACITY = Self.BUFFER_CAPACITY
+        comptime CAPACITY = Self._CAP
 
         var sampled = 0
         var max_attempts = BATCH * 100
@@ -531,18 +492,7 @@ struct MuZeroCPUState[
 # ══════════════════════════════════════════════════════════════════════════
 
 
-struct MuZeroGPUState[
-    OBS_DIM: Int,
-    ACTION_DIM: Int,
-    LATENT_DIM: Int = 256,
-    HIDDEN_DIM: Int = 256,
-    NUM_BINS: Int = 101,
-    LR: Float64 = 1e-3,
-    BATCH_SIZE: Int = 128,
-    UNROLL_STEPS: Int = 5,
-    N_ENVS: Int = 64,
-    PER_ENV_CAP: Int = 1000,
-](Movable):
+struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int = 1000](Movable):
     """GPU-resident state for MuZero training.
 
     Holds GPUNetworkState for all three networks and DeviceBuffers
@@ -550,35 +500,21 @@ struct MuZeroGPUState[
     """
 
     # ── Shorthand compile-time constants ─────────────────────────────
-    comptime OBS: Int = Self.OBS_DIM
-    comptime ACT: Int = Self.ACTION_DIM
-    comptime LATENT: Int = Self.LATENT_DIM
-    comptime BINS: Int = Self.NUM_BINS
-    comptime BATCH: Int = Self.BATCH_SIZE
-    comptime K: Int = Self.UNROLL_STEPS
+    comptime OBS: Int = Self.Config.obs_dim
+    comptime ACT: Int = Self.Config.action_dim
+    comptime LATENT: Int = Self.Config.latent_dim
+    comptime BINS: Int = Self.Config.num_bins
+    comptime BATCH: Int = Self.Config.batch_size
+    comptime K: Int = Self.Config.unroll_steps
+    comptime DYN_IN: Int = Self.Config.DYN_IN
+    comptime DYN_OUT: Int = Self.Config.DYN_OUT
+    comptime PRED_OUT: Int = Self.Config.PRED_OUT
 
-    # Network types (must match MuZeroCPUState)
-    comptime RepModel = Sequential[
-        LinearMish[Self.OBS, Self.HIDDEN_DIM],
-        LinearMish[Self.HIDDEN_DIM, Self.HIDDEN_DIM],
-        Linear[Self.HIDDEN_DIM, Self.LATENT],
-    ]
-    comptime DYN_IN: Int = Self.LATENT + Self.ACT
-    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
-    comptime DynModel = Sequential[
-        LinearMish[Self.DYN_IN, Self.HIDDEN_DIM],
-        LinearMish[Self.HIDDEN_DIM, Self.HIDDEN_DIM],
-        Linear[Self.HIDDEN_DIM, Self.DYN_OUT],
-    ]
-    comptime PRED_OUT: Int = Self.ACT + Self.BINS
-    comptime PredModel = Sequential[
-        LinearMish[Self.LATENT, Self.HIDDEN_DIM],
-        Parallel[
-            Linear[Self.HIDDEN_DIM, Self.ACT],
-            Linear[Self.HIDDEN_DIM, Self.BINS],
-        ],
-    ]
-    comptime OptType = Adam[LR=Self.LR]
+    # Network type aliases (from Config)
+    comptime RepModel = Self.Config.RepModel
+    comptime DynModel = Self.Config.DynModel
+    comptime PredModel = Self.Config.PredModel
+    comptime OptType = Self.Config.OptType
 
     # ── GPU Network States ───────────────────────────────────────────
     var representation: GPUNetworkState[Self.RepModel, Self.OptType]
@@ -826,18 +762,9 @@ struct MuZeroGPUState[
         self.value_targets_host = take.value_targets_host^
         self.reward_targets_host = take.reward_targets_host^
 
-    fn upload_from[
-        BUFFER_CAPACITY: Int,
-        BATCH_SIZE_CPU: Int,
-        UNROLL_STEPS_CPU: Int,
-        TD_STEPS_CPU: Int,
-    ](
+    fn upload_from[_C: Int](
         mut self,
-        cpu: MuZeroCPUState[
-            Self.OBS_DIM, Self.ACTION_DIM, Self.LATENT_DIM, Self.HIDDEN_DIM,
-            Self.NUM_BINS, Self.LR, BUFFER_CAPACITY, BATCH_SIZE_CPU,
-            UNROLL_STEPS_CPU, TD_STEPS_CPU,
-        ],
+        cpu: MuZeroCPUState[Self.Config, _C],
         ctx: DeviceContext,
     ) raises:
         """Upload CPU network params to GPU."""
@@ -845,18 +772,9 @@ struct MuZeroGPUState[
         self.dynamics.upload_from(cpu.dynamics, ctx)
         self.prediction.upload_from(cpu.prediction, ctx)
 
-    fn download_to[
-        BUFFER_CAPACITY: Int,
-        BATCH_SIZE_CPU: Int,
-        UNROLL_STEPS_CPU: Int,
-        TD_STEPS_CPU: Int,
-    ](
+    fn download_to[_C: Int](
         mut self,
-        mut cpu: MuZeroCPUState[
-            Self.OBS_DIM, Self.ACTION_DIM, Self.LATENT_DIM, Self.HIDDEN_DIM,
-            Self.NUM_BINS, Self.LR, BUFFER_CAPACITY, BATCH_SIZE_CPU,
-            UNROLL_STEPS_CPU, TD_STEPS_CPU,
-        ],
+        mut cpu: MuZeroCPUState[Self.Config, _C],
         ctx: DeviceContext,
     ) raises:
         """Download GPU network params to CPU."""
