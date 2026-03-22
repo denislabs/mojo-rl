@@ -65,6 +65,223 @@ from ..strategies.q_gradient import QGradient, ManualQGradient, AutodiffQGradien
 
 
 # =============================================================================
+# DQNTrainWS — Training workspace for DQN GPU training buffers
+# =============================================================================
+
+
+struct DQNTrainWS[
+    BS: Int,           # Batch size
+    OBS: Int,          # Observation dimension
+    ACTIONS: Int,      # Number of discrete actions
+    RAW_OUT: Int,      # Raw network output dim (=ACTIONS for DirectQ, 1+ACTIONS for Dueling)
+    CACHE_SIZE: Int,   # Q-network cache size per sample
+    GRAD_WS: Int = 0,  # QGradient strategy workspace size
+](ImplicitlyCopyable, Movable):
+    """Typed workspace providing named LayoutTensor views over flat GPU memory.
+
+    All offsets are computed at compile time. The struct is just a pointer
+    wrapper — zero overhead, zero allocation, works on CPU and GPU.
+
+    Network workspace (forward_gpu/backward_gpu) is kept as a separate
+    DeviceBuffer because the Network API requires DeviceBuffer[dtype].
+
+    Layout:
+        Region 1: Raw forward outputs (q_raw, next_q_raw, online_next_q_raw)
+        Region 2: Combined Q-values (q_values, next_q_values, online_next_q)
+        Region 3: Targets
+        Region 4: Cache
+        Region 5: Gradients (grad_q, grad_raw, grad_input)
+        Region 6: Loss/gradient strategy workspace
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    # --- Region 1: Raw forward outputs ---
+    comptime _O_Q_RAW: Int = 0
+    comptime _O_NEXT_Q_RAW: Int = Self._O_Q_RAW + Self.BS * Self.RAW_OUT
+    comptime _O_ONLINE_NEXT_Q_RAW: Int = Self._O_NEXT_Q_RAW + Self.BS * Self.RAW_OUT
+
+    # --- Region 2: Combined Q-values ---
+    comptime _O_Q_VALUES: Int = Self._O_ONLINE_NEXT_Q_RAW + Self.BS * Self.RAW_OUT
+    comptime _O_NEXT_Q_VALUES: Int = Self._O_Q_VALUES + Self.BS * Self.ACTIONS
+    comptime _O_ONLINE_NEXT_Q: Int = Self._O_NEXT_Q_VALUES + Self.BS * Self.ACTIONS
+
+    # --- Region 3: Targets ---
+    comptime _O_TARGETS: Int = Self._O_ONLINE_NEXT_Q + Self.BS * Self.ACTIONS
+
+    # --- Region 4: Cache ---
+    comptime _O_CACHE: Int = Self._O_TARGETS + Self.BS
+
+    # --- Region 5: Gradients ---
+    comptime _O_GRAD_Q: Int = Self._O_CACHE + Self.BS * Self.CACHE_SIZE
+    comptime _O_GRAD_RAW: Int = Self._O_GRAD_Q + Self.BS * Self.ACTIONS
+    comptime _O_GRAD_INPUT: Int = Self._O_GRAD_RAW + Self.BS * Self.RAW_OUT
+
+    # --- Region 6: Loss workspace ---
+    comptime _O_LOSS_WS: Int = Self._O_GRAD_INPUT + Self.BS * Self.OBS
+
+    # --- Total ---
+    comptime TOTAL_SIZE: Int = Self._O_LOSS_WS + max(1, Self.GRAD_WS)
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        """Allocate a GPU buffer for this workspace."""
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    # --- Region 1: Raw forward output views ---
+
+    def q_raw(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_Q_RAW)
+
+    def next_q_raw(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_NEXT_Q_RAW)
+
+    def online_next_q_raw(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_ONLINE_NEXT_Q_RAW)
+
+    # --- Region 2: Combined Q-value views ---
+
+    def q_values(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_Q_VALUES)
+
+    def next_q_values(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_NEXT_Q_VALUES)
+
+    def online_next_q(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_ONLINE_NEXT_Q)
+
+    # --- Region 3: Targets ---
+
+    def targets(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.BS), MutAnyOrigin](
+            self.ptr + Self._O_TARGETS
+        )
+
+    # --- Region 4: Cache ---
+
+    def cache(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.CACHE_SIZE), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.CACHE_SIZE), MutAnyOrigin
+        ](self.ptr + Self._O_CACHE)
+
+    # --- Region 5: Gradient views ---
+
+    def grad_q(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_Q)
+
+    def grad_raw(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.RAW_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_RAW)
+
+    def grad_input(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.BS, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.BS, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_INPUT)
+
+    # --- Region 6: Loss workspace pointer ---
+
+    def loss_ws_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        """Raw pointer to loss/gradient workspace region."""
+        return self.ptr + Self._O_LOSS_WS
+
+
+# =============================================================================
+# DQNInferenceWS — Inference-time buffers (sized by max_n_envs)
+# =============================================================================
+
+
+struct DQNInferenceWS[
+    MAX_N_ENVS: Int,
+    ACTIONS: Int,
+    RAW_OUT: Int,
+](ImplicitlyCopyable, Movable):
+    """Workspace for DQN inference-time raw output and Q-value views.
+
+    Network workspace (forward_gpu) is kept as a separate DeviceBuffer
+    because the Network API requires DeviceBuffer[dtype].
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    comptime _O_RAW: Int = 0
+    comptime _O_Q: Int = Self._O_RAW + Self.MAX_N_ENVS * Self.RAW_OUT
+    comptime TOTAL_SIZE: Int = Self._O_Q + Self.MAX_N_ENVS * Self.ACTIONS
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    def raw[N_ENVS: Int](self) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_RAW)
+
+    def q[N_ENVS: Int](self) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_Q)
+
+
+# =============================================================================
 # DiscreteOffPolicyConfig trait
 # =============================================================================
 
@@ -388,11 +605,10 @@ struct DQNGPUStateGeneric[
 ](GPUOffPolicyState):
     """GPU-resident state for generic DQN training.
 
-    Holds all device buffers needed for one DQN GPU training loop:
-      - Online and target GPU network states
-      - GPU replay buffer (discrete action stored as float scalar index)
-      - Inference scratch buffers (sized by max_n_envs)
-      - Training scratch buffers (sample output, Q caches, grad buffers)
+    Uses typed workspaces to consolidate GPU buffers:
+      - DQNTrainWS: all training scratch (raw outputs, Q-values, cache, grads)
+      - DQNInferenceWS: inference-time action selection buffers
+      - SampleBatch: replay sample output (obs, act, rew, nobs, done)
 
     For Dueling DQN, QModel.OUT_DIM (RAW_OUT) = 1 + num_actions.
     Raw output buffers are sized by RAW_OUT; combined Q-value buffers by num_actions.
@@ -405,6 +621,7 @@ struct DQNGPUStateGeneric[
         num_actions: Number of discrete actions.
         batch_size: Training batch size.
         max_n_envs: Max parallel environments (sizes inference buffers).
+        grad_ws_size: QGradient strategy workspace size.
     """
 
     comptime Q_Net = Network[Self.QModel, Self.QOpt]
@@ -412,6 +629,14 @@ struct DQNGPUStateGeneric[
     comptime WS_PER_SAMPLE = Self.Q_Net.WORKSPACE_SIZE_PER_SAMPLE
     comptime RAW_OUT = Self.QModel.OUT_DIM
 
+    # Workspace type aliases
+    comptime TrainWS = DQNTrainWS[
+        Self.batch_size, Self.obs_dim, Self.num_actions, Self.RAW_OUT,
+        Self.CACHE_SIZE, Self.grad_ws_size,
+    ]
+    comptime InfWS = DQNInferenceWS[
+        Self.max_n_envs, Self.num_actions, Self.RAW_OUT,
+    ]
     # GPU network states (online + target)
     var online: GPUNetworkState[Self.QModel, Self.QOpt]
     var target: GPUNetworkState[Self.QModel, Self.QOpt]
@@ -419,44 +644,28 @@ struct DQNGPUStateGeneric[
     # GPU replay buffer (ACTION_DIM=1 default: scalar discrete action)
     var buffer: GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim]
 
-    # Inference buffers (max_n_envs sized, for select_actions_gpu)
-    var env_raw_buf: DeviceBuffer[dtype]  # [max_n_envs * RAW_OUT]
-    var env_q_buf: DeviceBuffer[dtype]  # [max_n_envs * num_actions]
-    var inf_ws: DeviceBuffer[dtype]  # [max(1, max_n_envs * WS_PER_SAMPLE)]
+    # Consolidated workspaces (single allocation each)
+    var inf_buf: DeviceBuffer[dtype]    # backing for DQNInferenceWS
+    var train_buf: DeviceBuffer[dtype]  # backing for DQNTrainWS
 
-    # Training scratch -- replay sample output
-    var s_obs: DeviceBuffer[dtype]  # [batch_size * obs_dim]
-    var s_act: DeviceBuffer[dtype]  # [batch_size]
-    var s_rew: DeviceBuffer[dtype]  # [batch_size]
-    var s_nobs: DeviceBuffer[dtype]  # [batch_size * obs_dim]
-    var s_done: DeviceBuffer[dtype]  # [batch_size]
-    var s_idx: DeviceBuffer[DType.int32]  # [batch_size]
+    # Separate DeviceBuffers required by Network API (takes DeviceBuffer[dtype])
+    var net_ws: DeviceBuffer[dtype]     # [max(1, batch_size * WS_PER_SAMPLE)]
+    var inf_net_ws: DeviceBuffer[dtype] # [max(1, max_n_envs * WS_PER_SAMPLE)]
+    var loss_ws: DeviceBuffer[dtype]    # [max(1, grad_ws_size)]
 
-    # Training scratch -- raw forward output (sized by RAW_OUT)
-    var q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
-    var next_q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
-    var online_next_q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
-
-    # Training scratch -- combined Q-values (sized by num_actions)
-    var q_values: DeviceBuffer[dtype]  # [batch_size * num_actions]
-    var next_q_values: DeviceBuffer[dtype]  # [batch_size * num_actions]
-    var online_next_q: DeviceBuffer[dtype]  # [batch_size * num_actions]
-
-    # Training scratch -- targets, cache, gradients
-    var cache: DeviceBuffer[dtype]  # [batch_size * CACHE_SIZE]
-    var targets: DeviceBuffer[dtype]  # [batch_size]
-    var grad_q: DeviceBuffer[dtype]  # [batch_size * num_actions]
-    var grad_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
-    var grad_input: DeviceBuffer[dtype]  # [batch_size * obs_dim]
-    var train_ws: DeviceBuffer[dtype]  # [max(1, batch_size * WS_PER_SAMPLE)]
-    var loss_ws: DeviceBuffer[dtype]  # [max(1, grad_ws_size)] — QGradient workspace
+    # Replay sample output (separate DeviceBuffers required by GPUReplayBuffer.sample API)
+    var s_obs: DeviceBuffer[dtype]       # [batch_size * obs_dim]
+    var s_act: DeviceBuffer[dtype]       # [batch_size]
+    var s_rew: DeviceBuffer[dtype]       # [batch_size]
+    var s_nobs: DeviceBuffer[dtype]      # [batch_size * obs_dim]
+    var s_done: DeviceBuffer[dtype]      # [batch_size]
+    var s_idx: DeviceBuffer[DType.int32] # [batch_size]
 
     # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
-    var diag_q_host: HostBuffer[dtype]    # [batch_size * num_actions]
-    var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
-    var diag_act_host: HostBuffer[dtype]  # [batch_size]
-    var diag_rew_host: HostBuffer[dtype]  # [batch_size]
-    var diag_done_host: HostBuffer[dtype] # [batch_size]
+    var diag_train_host: HostBuffer[dtype]  # [TrainWS.TOTAL_SIZE] — full train workspace
+    var diag_act_host: HostBuffer[dtype]    # [batch_size]
+    var diag_rew_host: HostBuffer[dtype]    # [batch_size]
+    var diag_done_host: HostBuffer[dtype]   # [batch_size]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
@@ -464,17 +673,22 @@ struct DQNGPUStateGeneric[
         self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.buffer = GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim](ctx)
 
-        # Inference buffers
-        self.env_raw_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.RAW_OUT
-        )
-        self.env_q_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.num_actions
-        )
-        var inf_ws_size = max(1, Self.max_n_envs * Self.WS_PER_SAMPLE)
-        self.inf_ws = ctx.enqueue_create_buffer[dtype](inf_ws_size)
+        # Consolidated workspace allocations
+        self.inf_buf = Self.InfWS.alloc_gpu(ctx)
+        self.train_buf = Self.TrainWS.alloc_gpu(ctx)
 
-        # Replay sample output
+        # Separate DeviceBuffers required by Network forward_gpu/backward_gpu
+        self.net_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.batch_size * Self.WS_PER_SAMPLE)
+        )
+        self.inf_net_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.max_n_envs * Self.WS_PER_SAMPLE)
+        )
+        self.loss_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.grad_ws_size)
+        )
+
+        # Replay sample output buffers
         self.s_obs = ctx.enqueue_create_buffer[dtype](
             Self.batch_size * Self.obs_dim
         )
@@ -486,40 +700,8 @@ struct DQNGPUStateGeneric[
         self.s_done = ctx.enqueue_create_buffer[dtype](Self.batch_size)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
 
-        # Raw forward output buffers
-        var batch_raw_size = Self.batch_size * Self.RAW_OUT
-        self.q_raw = ctx.enqueue_create_buffer[dtype](batch_raw_size)
-        self.next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw_size)
-        self.online_next_q_raw = ctx.enqueue_create_buffer[dtype](
-            batch_raw_size
-        )
-
-        # Combined Q-value buffers
-        var batch_q_size = Self.batch_size * Self.num_actions
-        self.q_values = ctx.enqueue_create_buffer[dtype](batch_q_size)
-        self.next_q_values = ctx.enqueue_create_buffer[dtype](batch_q_size)
-        self.online_next_q = ctx.enqueue_create_buffer[dtype](batch_q_size)
-
-        # Cache, targets, gradients
-        self.cache = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.CACHE_SIZE
-        )
-        self.targets = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.grad_q = ctx.enqueue_create_buffer[dtype](batch_q_size)
-        self.grad_raw = ctx.enqueue_create_buffer[dtype](batch_raw_size)
-        self.grad_input = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.obs_dim
-        )
-        var train_ws_size = max(1, Self.batch_size * Self.WS_PER_SAMPLE)
-        self.train_ws = ctx.enqueue_create_buffer[dtype](train_ws_size)
-        self.loss_ws = ctx.enqueue_create_buffer[dtype](
-            max(1, Self.grad_ws_size)
-        )
-        self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size * Self.num_actions
-        )
-        self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
+        self.diag_train_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.TrainWS.TOTAL_SIZE
         )
         self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
@@ -530,6 +712,18 @@ struct DQNGPUStateGeneric[
         self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
         )
+
+    # -------------------------------------------------------------------------
+    # Workspace accessors
+    # -------------------------------------------------------------------------
+
+    fn inference_ws(self) -> Self.InfWS:
+        """Typed inference workspace views."""
+        return Self.InfWS(self.inf_buf.unsafe_ptr())
+
+    fn train(self) -> Self.TrainWS:
+        """Typed training workspace views."""
+        return Self.TrainWS(self.train_buf.unsafe_ptr())
 
     # -------------------------------------------------------------------------
     # GPUOffPolicyState required methods
@@ -1167,20 +1361,18 @@ struct GenericDQNAgent[
 
         Pipeline: obs -> forward (raw) -> combine (Q-values) -> argmax + epsilon-greedy.
         """
+        var iws = gpu_state.inference_ws()
+
         # Forward pass: obs -> raw output
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
-        var raw_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.env_raw_buf.unsafe_ptr())
+        var raw_t = iws.raw[N_ENVS]()
         var p = gpu_state.online.params_view()
-        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_net_ws)
 
         # Combine raw output to Q-values
-        var q_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.env_q_buf.unsafe_ptr())
+        var q_t = iws.q[N_ENVS]()
         Self.Config.QOutputStrat.combine_gpu[
             N_ENVS, Self.ACTIONS, Self.RAW_OUT
         ](ctx, raw_t, q_t)
@@ -1267,7 +1459,10 @@ struct GenericDQNAgent[
             gpu_state.s_idx,
         )
 
-        # LayoutTensor views for sampled batch
+        # Typed workspace views (replaces ~40 lines of manual LayoutTensor construction)
+        var ws = gpu_state.train()
+
+        # Sample batch views (obs, actions, rewards, dones still from separate DeviceBuffers)
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
         ](gpu_state.s_obs.unsafe_ptr())
@@ -1283,118 +1478,66 @@ struct GenericDQNAgent[
         var dones_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](gpu_state.s_done.unsafe_ptr())
-        var targets_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](gpu_state.targets.unsafe_ptr())
-
-        # Raw output tensors
-        var q_raw_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.q_raw.unsafe_ptr())
-        var next_q_raw_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.next_q_raw.unsafe_ptr())
-        var online_next_q_raw_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.online_next_q_raw.unsafe_ptr())
-
-        # Combined Q-value tensors
-        var q_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.q_values.unsafe_ptr())
-        var next_q_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.next_q_values.unsafe_ptr())
-        var online_next_q_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.online_next_q.unsafe_ptr())
-
-        # Cache tensor
-        var cache_t = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.Q_CS),
-            MutAnyOrigin,
-        ](gpu_state.cache.unsafe_ptr())
-
-        # Grad tensors
-        var grad_q_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.grad_q.unsafe_ptr())
-        var grad_raw_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.grad_raw.unsafe_ptr())
-        var grad_in_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](gpu_state.grad_input.unsafe_ptr())
 
         var p_online = gpu_state.online.params_view()
         var p_target = gpu_state.target.params_view()
 
         # ---- Phase 2: Online forward with cache -> raw -> combine ----
+        var q_raw_t = ws.q_raw()
+        var cache_t = ws.cache()
         Self.QNet.forward_gpu_with_cache[BATCH](
-            ctx,
-            obs_t,
-            q_raw_t,
-            p_online,
-            cache_t,
-            gpu_state.train_ws,
+            ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.net_ws,
         )
+        var q_t = ws.q_values()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](
             ctx, q_raw_t, q_t
         )
 
         # ---- Phase 3: Target forward -> raw -> combine ----
+        var next_q_raw_t = ws.next_q_raw()
         Self.QNet.forward_gpu[BATCH](
-            ctx,
-            next_obs_t,
-            next_q_raw_t,
-            p_target,
-            gpu_state.train_ws,
+            ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.net_ws,
         )
+        var next_q_t = ws.next_q_values()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](
             ctx, next_q_raw_t, next_q_t
         )
 
         # ---- Phase 3b: Online forward on next_obs -> raw -> combine (for Double DQN) ----
+        var online_next_q_raw_t = ws.online_next_q_raw()
         Self.QNet.forward_gpu[BATCH](
-            ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.train_ws
+            ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.net_ws
         )
+        var online_next_q_t = ws.online_next_q()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](
             ctx, online_next_q_raw_t, online_next_q_t
         )
 
         # ---- Phase 4: Compute TD targets via strategy ----
+        var targets_t = ws.targets()
         Self.Config.QTargetStrat.compute_targets_gpu[BATCH, Self.ACTIONS](
-            ctx,
-            targets_t,
-            online_next_q_t,
-            next_q_t,
-            rewards_t,
-            dones_t,
-            self.gamma,
+            ctx, targets_t, online_next_q_t, next_q_t,
+            rewards_t, dones_t, self.gamma,
         )
 
         # ---- Phase 5: Gradient via QGradient strategy ----
+        var grad_q_t = ws.grad_q()
         Self.Config.QGradStrat.compute_grad_gpu[BATCH, Self.ACTIONS](
             ctx, q_t, targets_t, actions_t, grad_q_t, gpu_state.loss_ws
         )
 
         # ---- Phase 5b: Transform grad from Q-space to raw output space ----
+        var grad_raw_t = ws.grad_raw()
         Self.Config.QOutputStrat.grad_transform_gpu[
             BATCH, Self.ACTIONS, Self.RAW_OUT
         ](ctx, grad_q_t, grad_raw_t)
 
         # ---- Phase 6: Backward + optimizer step ----
+        var grad_in_t = ws.grad_input()
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
         Self.QNet.backward_gpu[BATCH](
-            ctx,
-            grad_raw_t,
-            grad_in_t,
-            p_online,
-            cache_t,
-            g,
-            gpu_state.train_ws,
+            ctx, grad_raw_t, grad_in_t, p_online, cache_t, g, gpu_state.net_ws,
         )
         gpu_state.online.optimizer_step(ctx)
 
@@ -1403,25 +1546,29 @@ struct GenericDQNAgent[
         # ---- GPU Diagnostic logging ----
         if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             try:
-                # Reuse pre-allocated host buffers
-                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_values)
-                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                # Copy training workspace and sample batch fields to host
+                ctx.enqueue_copy(gpu_state.diag_train_host, gpu_state.train_buf)
                 ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
                 ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
                 ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
                 ctx.synchronize()
-                var diag_q_host = gpu_state.diag_q_host
-                var diag_tgt_host = gpu_state.diag_tgt_host
+
+                # Create workspace view over host buffer for typed access
+                var diag_ws = Self.GPUStateType.TrainWS(
+                    gpu_state.diag_train_host.unsafe_ptr()
+                )
+                var diag_q = diag_ws.q_values()
+                var diag_tgt = diag_ws.targets()
                 var diag_act_host = gpu_state.diag_act_host
 
                 var step = self.train_step_count
 
                 # Q-value stats
-                var q_min: Float64 = Float64(diag_q_host[0])
-                var q_max: Float64 = Float64(diag_q_host[0])
+                var q_min = Float64(diag_q.ptr[0])
+                var q_max = Float64(diag_q.ptr[0])
                 var q_sum: Float64 = 0.0
                 for i in range(BATCH * Self.ACTIONS):
-                    var v = Float64(diag_q_host[i])
+                    var v = Float64(diag_q.ptr[i])
                     q_sum += v
                     if v < q_min:
                         q_min = v
@@ -1437,10 +1584,10 @@ struct GenericDQNAgent[
 
                 # TD target stats
                 var tgt_sum: Float64 = 0.0
-                var tgt_min: Float64 = Float64(diag_tgt_host[0])
-                var tgt_max: Float64 = Float64(diag_tgt_host[0])
+                var tgt_min = Float64(diag_tgt.ptr[0])
+                var tgt_max = Float64(diag_tgt.ptr[0])
                 for i in range(BATCH):
-                    var v = Float64(diag_tgt_host[i])
+                    var v = Float64(diag_tgt.ptr[i])
                     tgt_sum += v
                     if v < tgt_min:
                         tgt_min = v
@@ -1487,10 +1634,8 @@ struct GenericDQNAgent[
                 var total_loss: Float64 = 0.0
                 for b in range(BATCH):
                     var act = Int(Float64(diag_act_host[b]))
-                    var q_val = Float64(
-                        diag_q_host[b * Self.ACTIONS + act]
-                    )
-                    var tgt_val = Float64(diag_tgt_host[b])
+                    var q_val = Float64(diag_q.ptr[b * Self.ACTIONS + act])
+                    var tgt_val = Float64(diag_tgt.ptr[b])
                     var td_err = q_val - tgt_val
                     var abs_err = td_err if td_err >= 0.0 else -td_err
                     td_err_abs_sum += abs_err
@@ -1754,13 +1899,24 @@ struct DQNPERGPUState[
 ](GPUOffPolicyState):
     """GPU state for DQN+PER: networks + prioritized replay buffer.
 
-    Adds IS weights buffer and TD errors buffer compared to standard DQN GPU state.
+    Uses typed workspaces (DQNTrainWS, DQNInferenceWS) to consolidate
+    training scratch buffers. Adds IS weights and TD errors buffers
+    compared to standard DQN GPU state.
     """
 
     comptime Q_Net = Network[Self.QModel, Self.QOpt]
     comptime CACHE_SIZE = Self.QModel.CACHE_SIZE
     comptime WS_PER_SAMPLE = Self.Q_Net.WORKSPACE_SIZE_PER_SAMPLE
     comptime RAW_OUT = Self.QModel.OUT_DIM
+
+    # Workspace type aliases (shared with standard DQN)
+    comptime TrainWS = DQNTrainWS[
+        Self.batch_size, Self.obs_dim, Self.num_actions, Self.RAW_OUT,
+        Self.CACHE_SIZE, Self.grad_ws_size,
+    ]
+    comptime InfWS = DQNInferenceWS[
+        Self.max_n_envs, Self.num_actions, Self.RAW_OUT,
+    ]
 
     # GPU network states
     var online: GPUNetworkState[Self.QModel, Self.QOpt]
@@ -1771,12 +1927,16 @@ struct DQNPERGPUState[
         Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size
     ]
 
-    # Inference buffers
-    var env_raw_buf: DeviceBuffer[dtype]
-    var env_q_buf: DeviceBuffer[dtype]
-    var inf_ws: DeviceBuffer[dtype]
+    # Consolidated workspaces
+    var inf_buf: DeviceBuffer[dtype]    # backing for DQNInferenceWS
+    var train_buf: DeviceBuffer[dtype]  # backing for DQNTrainWS
 
-    # Training scratch -- replay sample output
+    # Separate DeviceBuffers required by Network API
+    var net_ws: DeviceBuffer[dtype]     # [max(1, batch_size * WS_PER_SAMPLE)]
+    var inf_net_ws: DeviceBuffer[dtype] # [max(1, max_n_envs * WS_PER_SAMPLE)]
+    var loss_ws: DeviceBuffer[dtype]    # [max(1, grad_ws_size)]
+
+    # Replay sample output (separate DeviceBuffers required by GPUPrioritizedReplayBuffer.sample)
     var s_obs: DeviceBuffer[dtype]
     var s_act: DeviceBuffer[dtype]
     var s_rew: DeviceBuffer[dtype]
@@ -1787,25 +1947,6 @@ struct DQNPERGPUState[
     # PER-specific: IS weights and TD errors
     var s_weights: DeviceBuffer[dtype]
     var td_errors: DeviceBuffer[dtype]
-
-    # Training scratch -- raw forward output
-    var q_raw: DeviceBuffer[dtype]
-    var next_q_raw: DeviceBuffer[dtype]
-    var online_next_q_raw: DeviceBuffer[dtype]
-
-    # Training scratch -- combined Q-values
-    var q_values: DeviceBuffer[dtype]
-    var next_q_values: DeviceBuffer[dtype]
-    var online_next_q: DeviceBuffer[dtype]
-
-    # Training scratch -- targets, cache, gradients
-    var cache: DeviceBuffer[dtype]
-    var targets: DeviceBuffer[dtype]
-    var grad_q: DeviceBuffer[dtype]
-    var grad_raw: DeviceBuffer[dtype]
-    var grad_input: DeviceBuffer[dtype]
-    var train_ws: DeviceBuffer[dtype]
-    var loss_ws: DeviceBuffer[dtype]
 
     # Diagnostic
     var diag_q_host: HostBuffer[dtype]
@@ -1826,15 +1967,19 @@ struct DQNPERGPUState[
             Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size
         ](ctx, alpha=alpha, beta=beta)
 
-        # Inference buffers
-        self.env_raw_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.RAW_OUT
+        # Consolidated workspace allocations
+        self.inf_buf = Self.InfWS.alloc_gpu(ctx)
+        self.train_buf = Self.TrainWS.alloc_gpu(ctx)
+
+        # Separate DeviceBuffers required by Network API
+        self.net_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.batch_size * Self.WS_PER_SAMPLE)
         )
-        self.env_q_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.num_actions
-        )
-        self.inf_ws = ctx.enqueue_create_buffer[dtype](
+        self.inf_net_ws = ctx.enqueue_create_buffer[dtype](
             max(1, Self.max_n_envs * Self.WS_PER_SAMPLE)
+        )
+        self.loss_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, Self.grad_ws_size)
         )
 
         # Replay sample output
@@ -1853,34 +1998,7 @@ struct DQNPERGPUState[
         self.s_weights = ctx.enqueue_create_buffer[dtype](Self.batch_size)
         self.td_errors = ctx.enqueue_create_buffer[dtype](Self.batch_size)
 
-        # Raw forward output
-        var batch_raw = Self.batch_size * Self.RAW_OUT
-        self.q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.online_next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-
-        # Combined Q-values
         var batch_q = Self.batch_size * Self.num_actions
-        self.q_values = ctx.enqueue_create_buffer[dtype](batch_q)
-        self.next_q_values = ctx.enqueue_create_buffer[dtype](batch_q)
-        self.online_next_q = ctx.enqueue_create_buffer[dtype](batch_q)
-
-        # Cache, targets, gradients
-        self.cache = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.CACHE_SIZE
-        )
-        self.targets = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.grad_q = ctx.enqueue_create_buffer[dtype](batch_q)
-        self.grad_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.grad_input = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.obs_dim
-        )
-        self.train_ws = ctx.enqueue_create_buffer[dtype](
-            max(1, Self.batch_size * Self.WS_PER_SAMPLE)
-        )
-        self.loss_ws = ctx.enqueue_create_buffer[dtype](
-            max(1, Self.grad_ws_size)
-        )
         self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](batch_q)
         self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
@@ -1894,6 +2012,22 @@ struct DQNPERGPUState[
         self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
         )
+
+    # -------------------------------------------------------------------------
+    # Workspace accessors
+    # -------------------------------------------------------------------------
+
+    fn inference_ws(self) -> Self.InfWS:
+        """Typed inference workspace views."""
+        return Self.InfWS(self.inf_buf.unsafe_ptr())
+
+    fn train(self) -> Self.TrainWS:
+        """Typed training workspace views."""
+        return Self.TrainWS(self.train_buf.unsafe_ptr())
+
+    # -------------------------------------------------------------------------
+    # GPUOffPolicyState required methods
+    # -------------------------------------------------------------------------
 
     fn gpu_store[
         N_ENVS: Int
@@ -2450,18 +2584,16 @@ struct GenericDQNPERAgent[
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
         """Forward Q-network on GPU + epsilon-greedy (same as standard DQN)."""
+        var iws = gpu_state.inference_ws()
+
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
-        var raw_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
-        ](gpu_state.env_raw_buf.unsafe_ptr())
+        var raw_t = iws.raw[N_ENVS]()
         var p = gpu_state.online.params_view()
-        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_net_ws)
 
-        var q_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.env_q_buf.unsafe_ptr())
+        var q_t = iws.q[N_ENVS]()
         Self.Config.QOutputStrat.combine_gpu[
             N_ENVS, Self.ACTIONS, Self.RAW_OUT
         ](ctx, raw_t, q_t)
@@ -2525,7 +2657,6 @@ struct GenericDQNPERAgent[
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         # ---- Phase 1: Priority-based sampling ----
-        # Beta annealing
         var progress = Scalar[dtype](
             Float64(self.train_step_count) / Float64(max(1, self.beta_frames))
         )
@@ -2540,45 +2671,47 @@ struct GenericDQNPERAgent[
             gpu_state.s_weights,
         )
 
+        # Typed workspace views (replaces ~18 lines of manual LayoutTensor construction)
+        var ws = gpu_state.train()
+
+        # Sample batch views (from separate DeviceBuffers)
         var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.s_obs.unsafe_ptr())
         var next_obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.s_nobs.unsafe_ptr())
         var actions_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_act.unsafe_ptr())
         var rewards_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_rew.unsafe_ptr())
         var dones_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_done.unsafe_ptr())
-        var targets_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.targets.unsafe_ptr())
         var weights_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.s_weights.unsafe_ptr())
         var td_errors_t = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](gpu_state.td_errors.unsafe_ptr())
-        var q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.q_raw.unsafe_ptr())
-        var next_q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.next_q_raw.unsafe_ptr())
-        var online_next_q_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.online_next_q_raw.unsafe_ptr())
-        var q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.q_values.unsafe_ptr())
-        var next_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.next_q_values.unsafe_ptr())
-        var online_next_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.online_next_q.unsafe_ptr())
-        var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Q_CS), MutAnyOrigin](gpu_state.cache.unsafe_ptr())
-        var grad_q_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin](gpu_state.grad_q.unsafe_ptr())
-        var grad_raw_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin](gpu_state.grad_raw.unsafe_ptr())
-        var grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin](gpu_state.grad_input.unsafe_ptr())
 
         var p_online = gpu_state.online.params_view()
         var p_target = gpu_state.target.params_view()
 
-        # ---- Phase 2: Forward passes ----
-        Self.QNet.forward_gpu_with_cache[BATCH](ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.train_ws)
+        # ---- Phase 2: Forward passes (using workspace views) ----
+        var q_raw_t = ws.q_raw()
+        var cache_t = ws.cache()
+        Self.QNet.forward_gpu_with_cache[BATCH](ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.net_ws)
+        var q_t = ws.q_values()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, q_raw_t, q_t)
 
-        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.train_ws)
+        var next_q_raw_t = ws.next_q_raw()
+        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.net_ws)
+        var next_q_t = ws.next_q_values()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, next_q_raw_t, next_q_t)
 
-        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.train_ws)
+        var online_next_q_raw_t = ws.online_next_q_raw()
+        Self.QNet.forward_gpu[BATCH](ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.net_ws)
+        var online_next_q_t = ws.online_next_q()
         Self.Config.QOutputStrat.combine_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, online_next_q_raw_t, online_next_q_t)
 
         # ---- Phase 3: TD targets ----
+        var targets_t = ws.targets()
         Self.Config.QTargetStrat.compute_targets_gpu[BATCH, Self.ACTIONS](
             ctx, targets_t, online_next_q_t, next_q_t, rewards_t, dones_t, self.gamma
         )
 
         # ---- Phase 4: IS-weighted gradient + TD errors ----
-        # Compute gradient with IS weights and extract TD errors for priority update
+        var grad_q_t = ws.grad_q()
+
         @always_inline
         fn per_weighted_grad_kernel(
             grd: LayoutTensor[dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin],
@@ -2612,10 +2745,12 @@ struct GenericDQNPERAgent[
         )
 
         # ---- Phase 5: Backward + optimizer ----
+        var grad_raw_t = ws.grad_raw()
         Self.Config.QOutputStrat.grad_transform_gpu[BATCH, Self.ACTIONS, Self.RAW_OUT](ctx, grad_q_t, grad_raw_t)
+        var grad_in_t = ws.grad_input()
         var g = gpu_state.online.grads_view()
         gpu_state.online.zero_grads(ctx)
-        Self.QNet.backward_gpu[BATCH](ctx, grad_raw_t, grad_in_t, p_online, cache_t, g, gpu_state.train_ws)
+        Self.QNet.backward_gpu[BATCH](ctx, grad_raw_t, grad_in_t, p_online, cache_t, g, gpu_state.net_ws)
         gpu_state.online.optimizer_step(ctx)
 
         self.train_step_count += 1

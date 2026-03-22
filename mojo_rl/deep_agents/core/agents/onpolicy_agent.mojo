@@ -73,6 +73,7 @@ from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from ..configs.onpolicy_config import OnPolicyConfig
+from ..workspace import RolloutWS, MinibatchWS, ActorTrainWS, CriticTrainWS
 
 
 # =============================================================================
@@ -262,22 +263,26 @@ struct PPOGPUStateGeneric[
         + Self._LOSS_WS                # loss_workspace
     )
 
+    # Workspace type aliases
+    comptime RolloutWSType = RolloutWS[Self.ROLLOUT_TOTAL, Self.OBS]
+    comptime MinibatchWSType = MinibatchWS[Self.MB, Self.OBS]
+    comptime ActorWSType = ActorTrainWS[
+        Self.MB, Self.ACTIONS, Self.OBS, Self.ActorModel.CACHE_SIZE
+    ]
+    comptime CriticWSType = CriticTrainWS[
+        Self.MB, 1, Self.OBS, Self.CriticModel.CACHE_SIZE
+    ]
+
     # GPU networks (params + grads + optimizer state)
     var gpu_actor: GPUNetworkState[Self.ActorModel, Self.ActorOpt]
     var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
 
-    # Rollout buffers (ROLLOUT_LEN * N_ENVS elements)
-    var rollout_obs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL * OBS]
-    var rollout_actions_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var rollout_log_probs_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var rollout_values_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var rollout_rewards_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var rollout_dones_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
+    # Consolidated workspace buffers
+    var rollout_buf: DeviceBuffer[dtype]  # RolloutWS: obs, actions, lp, values, rewards, dones, adv, ret
+    var minibatch_buf: DeviceBuffer[dtype]  # MinibatchWS: obs, actions, adv, ret, old_lp, old_values
+    var actor_train_buf: DeviceBuffer[dtype]  # ActorTrainWS: logits, cache, grad_out, grad_in
+    var critic_train_buf: DeviceBuffer[dtype]  # CriticTrainWS: values, cache, grad_out, grad_in
     var rollout_step: Int
-
-    # Advantage and return buffers
-    var advantages_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
-    var returns_buf: DeviceBuffer[dtype]  # [ROLLOUT_TOTAL]
 
     # Pinned host buffers for GAE computation
     var rollout_rewards_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
@@ -287,30 +292,17 @@ struct PPOGPUStateGeneric[
     var returns_host: HostBuffer[dtype]  # [ROLLOUT_TOTAL]
     var bootstrap_values_host: HostBuffer[dtype]  # [N]
 
-    # Minibatch scratch buffers
-    var mb_obs_buf: DeviceBuffer[dtype]  # [MB * OBS]
-    var mb_actions_buf: DeviceBuffer[dtype]  # [MB]
-    var mb_advantages_buf: DeviceBuffer[dtype]  # [MB]
-    var mb_returns_buf: DeviceBuffer[dtype]  # [MB]
-    var mb_old_log_probs_buf: DeviceBuffer[dtype]  # [MB]
-    var mb_old_values_buf: DeviceBuffer[dtype]  # [MB]
+    # Minibatch indices (int32 — separate from dtype workspace)
     var mb_indices_buf: DeviceBuffer[DType.int32]  # [MB]
     var mb_indices_host: HostBuffer[DType.int32]  # [MB]
 
-    # Training workspace buffers
+    # Inference logits (N_ENVS sized, not MB)
     var logits_buf: DeviceBuffer[dtype]  # [N * ACTIONS]
-    var actor_logits_buf: DeviceBuffer[dtype]  # [MB * ACTIONS]
-    var actor_cache_buf: DeviceBuffer[dtype]  # [MB * ActorModel.CACHE_SIZE]
-    var actor_grad_output_buf: DeviceBuffer[dtype]  # [MB * ACTIONS]
-    var actor_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS]
-    var critic_values_buf: DeviceBuffer[dtype]  # [MB]
-    var critic_cache_buf: DeviceBuffer[dtype]  # [MB * CriticModel.CACHE_SIZE]
-    var critic_grad_output_buf: DeviceBuffer[dtype]  # [MB]
-    var critic_grad_input_buf: DeviceBuffer[dtype]  # [MB * OBS]
+
+    # Diagnostic / scratch buffers
     var kl_divergences_buf: DeviceBuffer[dtype]  # [MB]
     var kl_divergences_host: HostBuffer[dtype]  # [MB]
     var mb_advantages_host: HostBuffer[dtype]  # [MB]
-    # Diagnostic buffers
     var diag_entropy_buf: DeviceBuffer[dtype]  # [MB]
     var diag_entropy_host: HostBuffer[dtype]  # [MB]
     var diag_clip_buf: DeviceBuffer[dtype]  # [MB]
@@ -338,31 +330,14 @@ struct PPOGPUStateGeneric[
         self.gpu_actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
         self.gpu_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
 
-        self.rollout_obs_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL * Self.OBS
-        )
-        self.rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
-        self.rollout_log_probs_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
-        self.rollout_values_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
-        self.rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
-        self.rollout_dones_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
+        # Consolidated workspace allocations (4 buffers replace 20+)
+        self.rollout_buf = Self.RolloutWSType.alloc_gpu(ctx)
+        self.minibatch_buf = Self.MinibatchWSType.alloc_gpu(ctx)
+        self.actor_train_buf = Self.ActorWSType.alloc_gpu(ctx)
+        self.critic_train_buf = Self.CriticWSType.alloc_gpu(ctx)
         self.rollout_step = 0
 
-        self.advantages_buf = ctx.enqueue_create_buffer[dtype](
-            Self.ROLLOUT_TOTAL
-        )
-        self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.ROLLOUT_TOTAL)
-
+        # Pinned host buffers for GAE computation
         self.rollout_rewards_host = ctx.enqueue_create_host_buffer[dtype](
             Self.ROLLOUT_TOTAL
         )
@@ -382,40 +357,18 @@ struct PPOGPUStateGeneric[
             Self.N
         )
 
-        self.mb_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MB * Self.OBS)
-        self.mb_actions_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.mb_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.mb_returns_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.mb_old_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
+        # Minibatch indices (int32)
         self.mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.MB)
         self.mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](
             Self.MB
         )
 
+        # Inference logits
         self.logits_buf = ctx.enqueue_create_buffer[dtype](
             Self.N * Self.ACTIONS
         )
-        self.actor_logits_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.ACTIONS
-        )
-        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.ActorModel.CACHE_SIZE
-        )
-        self.actor_grad_output_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.ACTIONS
-        )
-        self.actor_grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.OBS
-        )
-        self.critic_values_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.CriticModel.CACHE_SIZE
-        )
-        self.critic_grad_output_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
-        self.critic_grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            Self.MB * Self.OBS
-        )
+
+        # Diagnostic / scratch buffers
         self.kl_divergences_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
             Self.MB
@@ -463,6 +416,26 @@ struct PPOGPUStateGeneric[
         self.log_probs_env_buf = ctx.enqueue_create_buffer[dtype](Self.N)
 
     # -------------------------------------------------------------------------
+    # Workspace accessors
+    # -------------------------------------------------------------------------
+
+    fn rollout_ws(self) -> Self.RolloutWSType:
+        """Get typed rollout workspace view."""
+        return Self.RolloutWSType(self.rollout_buf.unsafe_ptr())
+
+    fn minibatch_ws(self) -> Self.MinibatchWSType:
+        """Get typed minibatch workspace view."""
+        return Self.MinibatchWSType(self.minibatch_buf.unsafe_ptr())
+
+    fn actor_ws(self) -> Self.ActorWSType:
+        """Get typed actor training workspace view."""
+        return Self.ActorWSType(self.actor_train_buf.unsafe_ptr())
+
+    fn critic_ws(self) -> Self.CriticWSType:
+        """Get typed critic training workspace view."""
+        return Self.CriticWSType(self.critic_train_buf.unsafe_ptr())
+
+    # -------------------------------------------------------------------------
     # GPUOnPolicyState trait methods
     # -------------------------------------------------------------------------
 
@@ -482,18 +455,11 @@ struct PPOGPUStateGeneric[
     ) raises -> None:
         """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
         var t_offset = self.rollout_step * N_ENVS
-        var r_obs = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-        ](self.rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
-        var r_actions = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](self.rollout_actions_buf.unsafe_ptr() + t_offset)
-        var r_log_probs = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](self.rollout_log_probs_buf.unsafe_ptr() + t_offset)
-        var r_values = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](self.rollout_values_buf.unsafe_ptr() + t_offset)
+        var rws = self.rollout_ws()
+        var r_obs = rws.obs_at[N_ENVS](t_offset)
+        var r_actions = rws.actions_at[N_ENVS](t_offset)
+        var r_log_probs = rws.log_probs_at[N_ENVS](t_offset)
+        var r_values = rws.values_at[N_ENVS](t_offset)
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
@@ -560,12 +526,9 @@ struct PPOGPUStateGeneric[
     ) raises -> None:
         """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
         var t_offset = self.rollout_step * N_ENVS
-        var r_rewards = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](self.rollout_rewards_buf.unsafe_ptr() + t_offset)
-        var r_dones = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](self.rollout_dones_buf.unsafe_ptr() + t_offset)
+        var rws = self.rollout_ws()
+        var r_rewards = rws.rewards_at[N_ENVS](t_offset)
+        var r_dones = rws.dones_at[N_ENVS](t_offset)
 
         var rewards_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS), MutAnyOrigin
@@ -1582,17 +1545,18 @@ struct GenericOnPolicyAgent[
         )
 
         # Copy rollout data to host for GAE computation
+        var rws = gpu_state.rollout_ws()
         ctx.enqueue_copy(
             gpu_state.bootstrap_values_host, gpu_state.values_env_buf
         )
         ctx.enqueue_copy(
-            gpu_state.rollout_rewards_host, gpu_state.rollout_rewards_buf
+            gpu_state.rollout_rewards_host, rws.rewards_subbuf(ctx)
         )
         ctx.enqueue_copy(
-            gpu_state.rollout_values_host, gpu_state.rollout_values_buf
+            gpu_state.rollout_values_host, rws.values_subbuf(ctx)
         )
         ctx.enqueue_copy(
-            gpu_state.rollout_dones_host, gpu_state.rollout_dones_buf
+            gpu_state.rollout_dones_host, rws.dones_subbuf(ctx)
         )
         ctx.synchronize()
 
@@ -1647,8 +1611,8 @@ struct GenericOnPolicyAgent[
                 ) / (std + Scalar[dtype](1e-8))
 
         # Copy advantages and returns to GPU
-        ctx.enqueue_copy(gpu_state.advantages_buf, gpu_state.advantages_host)
-        ctx.enqueue_copy(gpu_state.returns_buf, gpu_state.returns_host)
+        ctx.enqueue_copy(rws.advantages_subbuf(ctx), gpu_state.advantages_host)
+        ctx.enqueue_copy(rws.returns_subbuf(ctx), gpu_state.returns_host)
         ctx.synchronize()
 
     fn update_epochs_gpu(
@@ -1666,86 +1630,62 @@ struct GenericOnPolicyAgent[
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
         comptime CRITIC_GRAD_BLOCKS = (CRITIC_PARAMS + TPB - 1) // TPB
 
-        # LayoutTensor views over gpu_state rollout buffers
+        # Typed workspace views (replace 20+ ad-hoc LayoutTensor constructions)
         var actor_params_t = gpu_state.gpu_actor.params_view()
         var actor_grads_t = gpu_state.gpu_actor.grads_view()
         var critic_params_t = gpu_state.gpu_critic.params_view()
         var critic_grads_t = gpu_state.gpu_critic.grads_view()
 
-        var mb_obs_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, Self.OBS), MutAnyOrigin
-        ](gpu_state.mb_obs_buf.unsafe_ptr())
-        var mb_actions_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](gpu_state.mb_actions_buf.unsafe_ptr())
-        var mb_advantages_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](gpu_state.mb_advantages_buf.unsafe_ptr())
-        var mb_returns_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](gpu_state.mb_returns_buf.unsafe_ptr())
-        var mb_old_log_probs_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](gpu_state.mb_old_log_probs_buf.unsafe_ptr())
-        var mb_old_values_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
-        ](gpu_state.mb_old_values_buf.unsafe_ptr())
+        var rws = gpu_state.rollout_ws()
+        var mws = gpu_state.minibatch_ws()
+        var aws = gpu_state.actor_ws()
+        var cws = gpu_state.critic_ws()
+
+        # Minibatch views (use local MINIBATCH comptime for type consistency)
+        var mb_obs_t = mws.obs()
+        var mb_actions_t = mws.actions()
+        var mb_advantages_t = mws.advantages()
+        var mb_returns_t = mws.returns()
+        var mb_old_log_probs_t = mws.old_log_probs()
+        var mb_old_values_t = mws.old_values()
         var mb_indices_t = LayoutTensor[
             DType.int32, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](gpu_state.mb_indices_buf.unsafe_ptr())
 
-        var rollout_obs_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL, Self.OBS), MutAnyOrigin
-        ](gpu_state.rollout_obs_buf.unsafe_ptr())
-        var rollout_actions_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](gpu_state.rollout_actions_buf.unsafe_ptr())
-        var advantages_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](gpu_state.advantages_buf.unsafe_ptr())
-        var returns_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](gpu_state.returns_buf.unsafe_ptr())
-        var rollout_log_probs_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](gpu_state.rollout_log_probs_buf.unsafe_ptr())
-        var rollout_values_t = LayoutTensor[
-            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
-        ](gpu_state.rollout_values_buf.unsafe_ptr())
+        # Rollout views
+        var rollout_obs_t = rws.obs()
+        var rollout_actions_t = rws.actions()
+        var advantages_t = rws.advantages()
+        var returns_t = rws.returns()
+        var rollout_log_probs_t = rws.log_probs()
+        var rollout_values_t = rws.values()
 
-        var actor_logits_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.actor_logits_buf.unsafe_ptr())
-        var actor_grad_output_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, Self.ACTIONS), MutAnyOrigin
-        ](gpu_state.actor_grad_output_buf.unsafe_ptr())
-        var actor_cache_t = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ActorModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](gpu_state.actor_cache_buf.unsafe_ptr())
-        var actor_grad_input_t = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.ActorModel.IN_DIM),
-            MutAnyOrigin,
-        ](gpu_state.actor_grad_input_buf.unsafe_ptr())
+        # Actor forward/backward views
+        var actor_logits_t = aws.logits()
+        var actor_grad_output_t = aws.grad_output()
+        var actor_cache_t = aws.cache()
+        var actor_grad_input_t = aws.grad_input()
 
+        # Critic forward/backward views (rebind with local MINIBATCH comptime
+        # for type consistency with Self.CriticModel.forward_gpu/backward_gpu)
+        comptime C_OUT = Self.CriticModel.OUT_DIM
+        comptime C_CS = Self.CriticModel.CACHE_SIZE
+        comptime C_IN = Self.CriticModel.IN_DIM
+        comptime _C_O_CACHE = MINIBATCH * C_OUT
+        comptime _C_O_GO = _C_O_CACHE + MINIBATCH * C_CS
+        comptime _C_O_GI = _C_O_GO + MINIBATCH * C_OUT
         var critic_values_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, Self.CRITIC_OUT), MutAnyOrigin
-        ](gpu_state.critic_values_buf.unsafe_ptr())
-        var critic_grad_output_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, Self.CRITIC_OUT), MutAnyOrigin
-        ](gpu_state.critic_grad_output_buf.unsafe_ptr())
+            dtype, Layout.row_major(MINIBATCH, C_OUT), MutAnyOrigin
+        ](cws.ptr)
         var critic_cache_t = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.CriticModel.CACHE_SIZE),
-            MutAnyOrigin,
-        ](gpu_state.critic_cache_buf.unsafe_ptr())
+            dtype, Layout.row_major(MINIBATCH, C_CS), MutAnyOrigin,
+        ](cws.ptr + _C_O_CACHE)
+        var critic_grad_output_t = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH, C_OUT), MutAnyOrigin
+        ](cws.ptr + _C_O_GO)
         var critic_grad_input_t = LayoutTensor[
-            dtype,
-            Layout.row_major(MINIBATCH, Self.CriticModel.IN_DIM),
-            MutAnyOrigin,
-        ](gpu_state.critic_grad_input_buf.unsafe_ptr())
+            dtype, Layout.row_major(MINIBATCH, C_IN), MutAnyOrigin,
+        ](cws.ptr + _C_O_GI)
 
         var kl_divergences_t = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
@@ -1923,7 +1863,7 @@ struct GenericOnPolicyAgent[
                     if self.norm_adv_per_minibatch:
                         ctx.enqueue_copy(
                             gpu_state.mb_advantages_host,
-                            gpu_state.mb_advantages_buf,
+                            mws.advantages_subbuf(ctx),
                         )
                         ctx.synchronize()
                         var adv_mean = Scalar[dtype](0.0)
@@ -2390,7 +2330,7 @@ struct GenericOnPolicyAgent[
                 # ---- Train critic ---- (rebind obs for CRITIC_IN)
                 var mb_c_obs_t = LayoutTensor[
                     dtype, Layout.row_major(MINIBATCH, Self.CRITIC_IN), MutAnyOrigin
-                ](gpu_state.mb_obs_buf.unsafe_ptr())
+                ](mws.obs().ptr)
                 gpu_state.gpu_critic.zero_grads(ctx)
                 Self.CriticModel.forward_gpu[MINIBATCH](
                     ctx,

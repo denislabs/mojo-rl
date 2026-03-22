@@ -336,3 +336,442 @@ struct ExplorationWS[
 
     def inf_ws_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
         return self.ptr + Self._O_INF_WS
+
+
+# =============================================================================
+# RolloutWS — Rollout storage for on-policy agents (PPO / A2C)
+# =============================================================================
+
+
+struct RolloutWS[
+    RT: Int,       # ROLLOUT_TOTAL = rollout_len * n_envs
+    OBS: Int,      # Observation dimension
+](ImplicitlyCopyable, Movable):
+    """Typed workspace for on-policy rollout buffers.
+
+    Consolidates obs, actions, log_probs, values, rewards, dones,
+    advantages, and returns into a single flat GPU allocation.
+
+    Layout (all contiguous, dtype):
+        obs:        [RT * OBS]
+        actions:    [RT]
+        log_probs:  [RT]
+        values:     [RT]
+        rewards:    [RT]
+        dones:      [RT]
+        advantages: [RT]
+        returns:    [RT]
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    comptime _O_OBS: Int = 0
+    comptime _O_ACTIONS: Int = Self._O_OBS + Self.RT * Self.OBS
+    comptime _O_LOG_PROBS: Int = Self._O_ACTIONS + Self.RT
+    comptime _O_VALUES: Int = Self._O_LOG_PROBS + Self.RT
+    comptime _O_REWARDS: Int = Self._O_VALUES + Self.RT
+    comptime _O_DONES: Int = Self._O_REWARDS + Self.RT
+    comptime _O_ADVANTAGES: Int = Self._O_DONES + Self.RT
+    comptime _O_RETURNS: Int = Self._O_ADVANTAGES + Self.RT
+    comptime TOTAL_SIZE: Int = Self._O_RETURNS + Self.RT
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    # --- Rollout views (full ROLLOUT_TOTAL) ---
+
+    def obs(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.RT, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_OBS)
+
+    def obs_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+    ]:
+        """Obs view for a single timestep slice at t_offset * OBS."""
+        return LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_OBS + t_offset * Self.OBS)
+
+    def actions(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_ACTIONS
+        )
+
+    def actions_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            self.ptr + Self._O_ACTIONS + t_offset
+        )
+
+    def log_probs(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_LOG_PROBS
+        )
+
+    def log_probs_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            self.ptr + Self._O_LOG_PROBS + t_offset
+        )
+
+    def values(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_VALUES
+        )
+
+    def values_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            self.ptr + Self._O_VALUES + t_offset
+        )
+
+    def rewards(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_REWARDS
+        )
+
+    def rewards_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            self.ptr + Self._O_REWARDS + t_offset
+        )
+
+    def dones(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_DONES
+        )
+
+    def dones_at[N_ENVS: Int](self, t_offset: Int) -> LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            self.ptr + Self._O_DONES + t_offset
+        )
+
+    def advantages(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_ADVANTAGES
+        )
+
+    def returns(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.RT), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.RT), MutAnyOrigin](
+            self.ptr + Self._O_RETURNS
+        )
+
+    # --- Raw pointer access (for enqueue_copy to/from HostBuffers) ---
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_OBS
+
+    def actions_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_ACTIONS
+
+    def log_probs_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_LOG_PROBS
+
+    def values_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_VALUES
+
+    def rewards_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_REWARDS
+
+    def dones_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_DONES
+
+    def advantages_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_ADVANTAGES
+
+    def returns_ptr(self) -> UnsafePointer[Scalar[dtype], MutAnyOrigin]:
+        return self.ptr + Self._O_RETURNS
+
+    # --- DeviceBuffer sub-views (non-owning, for enqueue_copy) ---
+
+    def rewards_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_REWARDS, Self.RT, owning=False
+        )
+
+    def values_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_VALUES, Self.RT, owning=False
+        )
+
+    def dones_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_DONES, Self.RT, owning=False
+        )
+
+    def advantages_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_ADVANTAGES, Self.RT, owning=False
+        )
+
+    def returns_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_RETURNS, Self.RT, owning=False
+        )
+
+
+# =============================================================================
+# MinibatchWS — Minibatch buffers for on-policy agents (PPO / A2C)
+# =============================================================================
+
+
+struct MinibatchWS[
+    MB: Int,       # Minibatch size
+    OBS: Int,      # Observation dimension
+](ImplicitlyCopyable, Movable):
+    """Typed workspace for on-policy minibatch buffers.
+
+    Consolidates obs, actions, advantages, returns, old_log_probs, old_values
+    into a single flat GPU allocation. Indices buffer is separate (int32).
+
+    Layout (all contiguous, dtype):
+        obs:          [MB * OBS]
+        actions:      [MB]
+        advantages:   [MB]
+        returns:      [MB]
+        old_log_probs:[MB]
+        old_values:   [MB]
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    comptime _O_OBS: Int = 0
+    comptime _O_ACTIONS: Int = Self._O_OBS + Self.MB * Self.OBS
+    comptime _O_ADVANTAGES: Int = Self._O_ACTIONS + Self.MB
+    comptime _O_RETURNS: Int = Self._O_ADVANTAGES + Self.MB
+    comptime _O_OLD_LOG_PROBS: Int = Self._O_RETURNS + Self.MB
+    comptime _O_OLD_VALUES: Int = Self._O_OLD_LOG_PROBS + Self.MB
+    comptime TOTAL_SIZE: Int = Self._O_OLD_VALUES + Self.MB
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    def obs(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_OBS)
+
+    def actions(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.MB), MutAnyOrigin](
+            self.ptr + Self._O_ACTIONS
+        )
+
+    def advantages(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.MB), MutAnyOrigin](
+            self.ptr + Self._O_ADVANTAGES
+        )
+
+    def advantages_subbuf(self, ctx: DeviceContext) -> DeviceBuffer[dtype]:
+        return DeviceBuffer[dtype](
+            ctx, self.ptr + Self._O_ADVANTAGES, Self.MB, owning=False
+        )
+
+    def returns(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.MB), MutAnyOrigin](
+            self.ptr + Self._O_RETURNS
+        )
+
+    def old_log_probs(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.MB), MutAnyOrigin](
+            self.ptr + Self._O_OLD_LOG_PROBS
+        )
+
+    def old_values(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB), MutAnyOrigin
+    ]:
+        return LayoutTensor[dtype, Layout.row_major(Self.MB), MutAnyOrigin](
+            self.ptr + Self._O_OLD_VALUES
+        )
+
+
+# =============================================================================
+# ActorTrainWS — Actor forward/backward workspace for on-policy agents
+# =============================================================================
+
+
+struct ActorTrainWS[
+    MB: Int,       # Minibatch size
+    ACTIONS: Int,  # Number of actions / actor output dim
+    OBS: Int,      # Actor input dim (observation)
+    CACHE: Int,    # Actor cache size per sample
+](ImplicitlyCopyable, Movable):
+    """Typed workspace for actor forward/backward buffers.
+
+    Layout (all contiguous, dtype):
+        logits:      [MB * ACTIONS]
+        cache:       [MB * CACHE]
+        grad_output: [MB * ACTIONS]
+        grad_input:  [MB * OBS]
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    comptime _O_LOGITS: Int = 0
+    comptime _O_CACHE: Int = Self._O_LOGITS + Self.MB * Self.ACTIONS
+    comptime _O_GRAD_OUTPUT: Int = Self._O_CACHE + Self.MB * Self.CACHE
+    comptime _O_GRAD_INPUT: Int = Self._O_GRAD_OUTPUT + Self.MB * Self.ACTIONS
+    comptime TOTAL_SIZE: Int = Self._O_GRAD_INPUT + Self.MB * Self.OBS
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    def logits(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_LOGITS)
+
+    def cache(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.CACHE), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.CACHE), MutAnyOrigin
+        ](self.ptr + Self._O_CACHE)
+
+    def grad_output(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.ACTIONS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.ACTIONS), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_OUTPUT)
+
+    def grad_input(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_INPUT)
+
+
+# =============================================================================
+# CriticTrainWS — Critic forward/backward workspace for on-policy agents
+# =============================================================================
+
+
+struct CriticTrainWS[
+    MB: Int,        # Minibatch size
+    CRITIC_OUT: Int, # Critic output dim (usually 1)
+    OBS: Int,       # Critic input dim (observation)
+    CACHE: Int,     # Critic cache size per sample
+](ImplicitlyCopyable, Movable):
+    """Typed workspace for critic forward/backward buffers.
+
+    Layout (all contiguous, dtype):
+        values:      [MB * CRITIC_OUT]
+        cache:       [MB * CACHE]
+        grad_output: [MB * CRITIC_OUT]
+        grad_input:  [MB * OBS]
+    """
+
+    var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+
+    comptime _O_VALUES: Int = 0
+    comptime _O_CACHE: Int = Self._O_VALUES + Self.MB * Self.CRITIC_OUT
+    comptime _O_GRAD_OUTPUT: Int = Self._O_CACHE + Self.MB * Self.CACHE
+    comptime _O_GRAD_INPUT: Int = Self._O_GRAD_OUTPUT + Self.MB * Self.CRITIC_OUT
+    comptime TOTAL_SIZE: Int = Self._O_GRAD_INPUT + Self.MB * Self.OBS
+
+    def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        self.ptr = ptr
+
+    def __init__(out self, *, copy: Self):
+        self.ptr = copy.ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.ptr = take.ptr
+
+    @staticmethod
+    def alloc_gpu(ctx: DeviceContext) raises -> DeviceBuffer[dtype]:
+        return ctx.enqueue_create_buffer[dtype](Self.TOTAL_SIZE)
+
+    def values(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.CRITIC_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.CRITIC_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_VALUES)
+
+    def cache(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.CACHE), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.CACHE), MutAnyOrigin
+        ](self.ptr + Self._O_CACHE)
+
+    def grad_output(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.CRITIC_OUT), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.CRITIC_OUT), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_OUTPUT)
+
+    def grad_input(self) -> LayoutTensor[
+        dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            dtype, Layout.row_major(Self.MB, Self.OBS), MutAnyOrigin
+        ](self.ptr + Self._O_GRAD_INPUT)
