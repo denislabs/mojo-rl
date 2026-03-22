@@ -15,7 +15,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 - **Atari 2600 emulator** (`mojo_rl/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
 - **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, PPO, TD-MPC2, DreamerV3) support GPU-accelerated training
+- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, PPO, TD-MPC2, DreamerV3, MuZero) support GPU-accelerated training
 
 ## Acknowledgments
 
@@ -179,7 +179,7 @@ mojo-rl/
 | **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch, CNN variant |
 | **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
 | **DreamerV3** | Continuous | Yes | RSSM world model, imagination rollouts |
-| **MuZero** | Discrete | CPU | Learned model, MCTS planning, distributional |
+| **MuZero** | Discrete | Yes | Learned model, MCTS planning, distributional |
 
 ## Environments
 
