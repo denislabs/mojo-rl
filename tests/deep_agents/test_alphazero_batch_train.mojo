@@ -42,6 +42,7 @@ struct TTTBatchConfig(AlphaZeroConfig):
     comptime history_window: Int = 3  # Keep last 3 iterations for small game
     comptime num_simulations: Int = 25  # Like alpha-zero-general
     comptime max_nodes: Int = 64
+    comptime temp_threshold: Int = 15
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[1.0]  # cpuct=1
     comptime Players = SelfPlay

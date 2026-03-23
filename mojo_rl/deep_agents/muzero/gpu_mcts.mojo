@@ -828,6 +828,99 @@ def gpu_mcts_extract_actions_masked_kernel[
         policies_out[e * ACT + best_action] = Scalar[dtype](1.0)
 
 
+def gpu_mcts_extract_actions_temp_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    policies_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    temp_threshold: Int,
+    rng_seed: Scalar[DType.uint32],
+):
+    """Extract actions with temperature annealing.
+
+    Like alpha-zero-general:
+      - First temp_threshold moves: temp=1, sample proportionally from visit counts
+      - After temp_threshold: temp=0, pick argmax (one-hot policy target)
+
+    One thread per environment.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT
+    var move_count = Int(rebind[Scalar[dtype]](ep_steps[e]))
+
+    # Compute visit counts for legal actions
+    var total = Scalar[dtype](0.0)
+    var best_action = -1
+    var best_count = Scalar[dtype](-1.0)
+
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+        if legal > Scalar[dtype](0.5):
+            var count = rebind[Scalar[dtype]](visit_count[root_off + a])
+            total += count
+            if count > best_count or best_action < 0:
+                best_count = count
+                best_action = a
+
+    if best_action < 0:
+        best_action = 0
+
+    if move_count < temp_threshold and total > Scalar[dtype](0.5):
+        # Temperature = 1: proportional policy + sample proportionally
+        # Output proportional policy
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+            if legal > Scalar[dtype](0.5):
+                policies_out[e * ACT + a] = (
+                    rebind[Scalar[dtype]](visit_count[root_off + a]) / total
+                )
+            else:
+                policies_out[e * ACT + a] = Scalar[dtype](0.0)
+
+        # Sample action proportionally using PhiloxRandom
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(e * 7919 + move_count * 6271),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var rand = Scalar[dtype](rand_vals[0])
+
+        var cumsum = Scalar[dtype](0.0)
+        var sampled = best_action  # Fallback to best
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+            if legal > Scalar[dtype](0.5):
+                cumsum += rebind[Scalar[dtype]](
+                    visit_count[root_off + a]
+                ) / total
+                if rand < cumsum:
+                    sampled = a
+                    break
+        actions_out[e] = Scalar[dtype](sampled)
+    else:
+        # Temperature = 0: greedy argmax + one-hot policy target
+        actions_out[e] = Scalar[dtype](best_action)
+
+        for a in range(ACT):
+            policies_out[e * ACT + a] = Scalar[dtype](0.0)
+        policies_out[e * ACT + best_action] = Scalar[dtype](1.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Game State Kernels (AlphaZero mode — true game rules)
 # ═══════════════════════════════════════════════════════════════════════════

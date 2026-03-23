@@ -47,6 +47,7 @@ from mojo_rl.deep_agents.muzero.gpu_mcts import (
     GPUMCTSState,
     gpu_mcts_init_root_kernel,
     gpu_mcts_extract_actions_masked_kernel,
+    gpu_mcts_extract_actions_temp_kernel,
     gpu_mcts_apply_legal_mask_kernel,
     gpu_mcts_copy_root_state_kernel,
     gpu_mcts_batched_select_and_copy_kernel,
@@ -600,11 +601,16 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
             self.state.prediction.params[i] = new_params[i]
         new_params.free()
 
-        # Elo-style: wins=1.0, draws=0.5, losses=0.0
-        var score = (Float64(new_wins) + 0.5 * Float64(draws)) / Float64(
-            num_games
-        )
-        var accepted = score >= threshold
+        # Like alpha-zero-general: draws excluded from denominator
+        # win_rate = new_wins / (new_wins + old_wins), ignoring draws
+        var old_wins = num_games - new_wins - draws
+        var decisive = new_wins + old_wins
+        var accepted: Bool
+        if decisive == 0:
+            accepted = False  # All draws — no evidence new is better
+        else:
+            var win_rate = Float64(new_wins) / Float64(decisive)
+            accepted = win_rate >= threshold
 
         if not accepted:
             # Revert to previous params
@@ -988,21 +994,27 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
                         block_dim=(TPB,),
                     )
 
-                # Extract actions (legal only)
+                # Extract actions with temperature annealing
                 var act_out = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](actions_buf.unsafe_ptr())
                 var pol_out = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
                 ](gpu_mcts.policies_out.unsafe_ptr())
-                comptime run_act = gpu_mcts_extract_actions_masked_kernel[
+                var ep_steps_t = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                ](ep_steps_buf.unsafe_ptr())
+                comptime run_act = gpu_mcts_extract_actions_temp_kernel[
                     Self.n_envs, MAX_NODES, ACT, dtype
                 ]
                 ctx.enqueue_function[run_act, run_act](
                     vc,
                     lm,
+                    ep_steps_t,
                     act_out,
                     pol_out,
+                    Self.Config.temp_threshold,
+                    Scalar[DType.uint32](UInt32(total_steps)),
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -1105,10 +1117,16 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
                         var last_reward = Float64(rewards_host[e])
                         var ep_len = len(env_obs_history[e])
 
+                        # Draws get small positive value (both players)
+                        # like alpha-zero-general's 1e-4
+                        var is_draw = (last_reward > -0.01 and last_reward < 0.01)
+
                         for t in range(ep_len):
                             var steps_from_end = ep_len - 1 - t
                             var outcome: Float64
-                            if steps_from_end % 2 == 0:
+                            if is_draw:
+                                outcome = 1e-4  # Tiny positive for both players
+                            elif steps_from_end % 2 == 0:
                                 outcome = last_reward
                             else:
                                 outcome = -last_reward

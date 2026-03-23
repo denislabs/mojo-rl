@@ -11,6 +11,7 @@ Reuses strategies from muzero/strategies.mojo for composability.
 
 from mojo_rl.nn.model import (
     Model, Linear, LinearReLU, LinearMish, Sequential, Parallel,
+    Conv2DReLU, FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
@@ -50,6 +51,7 @@ trait AlphaZeroConfig:
     # ── MCTS ──────────────────────────────────────────────────────
     comptime num_simulations: Int
     comptime max_nodes: Int
+    comptime temp_threshold: Int   # Use temp=1 for first N moves, temp=0 after
 
     # ── Strategies (shared with MuZero) ───────────────────────────
     comptime Noise: ExplorationNoise
@@ -58,20 +60,20 @@ trait AlphaZeroConfig:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TicTacToe Config
+# TicTacToe Config (MLP — lightweight)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 struct AlphaZeroTicTacToeConfig[
     HIDDEN: Int = 128,
     LR: Float64 = 1e-3,
-    BS: Int = 128,
+    BS: Int = 64,
     CAP: Int = 50000,
-    SIMS: Int = 50,
+    SIMS: Int = 25,
     NODES: Int = 64,
-    C_PUCT: Float64 = 2.5,
+    C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
-    """AlphaZero for TicTacToe (27D obs, 9 actions)."""
+    """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant."""
 
     comptime NAME: String = "AlphaZero-TicTacToe"
     comptime obs_dim: Int = 27
@@ -89,9 +91,65 @@ struct AlphaZeroTicTacToeConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime history_window: Int = 3   # Keep last 3 iterations (small game)
+    comptime history_window: Int = 20  # Like alpha-zero-general
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15  # temp=1 first 15 moves, then temp=0
+
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Players = SelfPlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TicTacToe Config (CNN — matches alpha-zero-general architecture)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct AlphaZeroTicTacToeCNNConfig[
+    FILTERS: Int = 128,
+    LR: Float64 = 1e-3,
+    BS: Int = 64,
+    CAP: Int = 50000,
+    SIMS: Int = 25,
+    NODES: Int = 64,
+    C_PUCT: Float64 = 1.0,
+](AlphaZeroConfig):
+    """AlphaZero for TicTacToe — CNN variant matching alpha-zero-general.
+
+    Input 27D = 3 channels × 3×3 board (one-hot: mine, opponent, empty).
+    3× Conv2D(3×3, same padding) → Conv2D(3×3, valid) → flatten → FC heads.
+    """
+
+    comptime NAME: String = "AlphaZero-TicTacToe-CNN"
+    comptime obs_dim: Int = 27
+    comptime action_dim: Int = 9
+
+    # Conv2DReLU[ic, oc, k, s, p, h, w]
+    # 3 channels, 3×3 board with same padding (p=1)
+    # After 3× same-padding convs: still 3×3
+    # After valid conv (p=0): (3+0-3)/1+1 = 1×1
+    comptime PredModel = Sequential[
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],       # 3ch→F, 3×3→3×3
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # F→F, 3×3→1×1
+        FlattenLayer[Self.FILTERS],                               # F×1×1 → F
+        LinearReLU[Self.FILTERS, Self.FILTERS * 2],               # F → 2F
+        LinearReLU[Self.FILTERS * 2, Self.FILTERS],               # 2F → F
+        Parallel[
+            Linear[Self.FILTERS, 9],   # Policy head
+            Linear[Self.FILTERS, 1],   # Value head
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20  # Like alpha-zero-general
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -130,9 +188,10 @@ struct AlphaZeroConnectFourConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime history_window: Int = 10  # Keep last 10 iterations (medium game)
+    comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[2.5]
@@ -171,9 +230,10 @@ struct AlphaZeroChessConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime history_window: Int = 20  # Keep last 20 iterations (large game)
+    comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 30
 
     comptime Noise = DirichletNoise[0.25, 0.03]  # Small alpha for large action space
     comptime PUCT = AlphaGoPUCT[2.5]

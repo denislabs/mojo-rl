@@ -9,6 +9,7 @@
 from .configs import (
     AlphaZeroConfig,
     AlphaZeroTicTacToeConfig,
+    AlphaZeroTicTacToeCNNConfig,
     AlphaZeroConnectFourConfig,
     AlphaZeroChessConfig,
 )
