@@ -28,7 +28,9 @@ from mojo_rl.core import (
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
     RenderableEnv,
+    DataAugmentable,
 )
+from mojo_rl.nn.constants import dtype as nn_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
 from ..core.board_env import BoardGameState, BoardGameAction, board_dtype
 
@@ -46,14 +48,16 @@ comptime RESULT_P1_WINS: Int = 2
 comptime RESULT_DRAW: Int = 3
 
 
-
 # ============================================================================
 # TicTacToeEnv
 # ============================================================================
 
 
 struct TicTacToeEnv[DTYPE: DType = DType.float64](
-    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv & RenderableEnv
+    TwoPlayerDiscreteEnv
+    & GPUTwoPlayerDiscreteEnv
+    & RenderableEnv
+    & DataAugmentable
 ):
     """TicTacToe environment — CPU+GPU dual path.
 
@@ -70,6 +74,9 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     comptime STATE_SIZE: Int = 12
     comptime OBS_DIM: Int = 27  # 3 planes × 3×3
     comptime NUM_ACTIONS: Int = 9
+
+    # DataAugmentable: 8 symmetries (4 rotations × 2 reflections)
+    comptime NUM_SYMMETRIES: Int = 8
 
     # CPU state
     var state: InlineArray[Scalar[Self.dtype], 12]
@@ -374,17 +381,11 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                     "Player O's turn", 140, board_size + 20, text_color
                 )
         elif game_result == 1:
-            renderer.draw_text(
-                "X Wins!", 160, board_size + 20, win_color
-            )
+            renderer.draw_text("X Wins!", 160, board_size + 20, win_color)
         elif game_result == 2:
-            renderer.draw_text(
-                "O Wins!", 160, board_size + 20, win_color
-            )
+            renderer.draw_text("O Wins!", 160, board_size + 20, win_color)
         else:
-            renderer.draw_text(
-                "Draw!", 170, board_size + 20, win_color
-            )
+            renderer.draw_text("Draw!", 170, board_size + 20, win_color)
 
         renderer.flip()
 
@@ -417,6 +418,81 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         return False
 
     # ========================================================================
+    # DataAugmentable: 3×3 board symmetries (8 total)
+    # ========================================================================
+
+    # Permutation table: 8 symmetries × 9 cells, stored flat
+    # [identity, rot90, rot180, rot270, hflip, vflip, diag, antidiag]
+    @staticmethod
+    fn _sym_perm(sym: Int, cell: Int) -> Int:
+        """Return permuted cell index for symmetry `sym`."""
+        # Hard-coded for speed — avoids alloc in hot path
+        if sym == 0:  # Identity
+            return cell
+        var r = cell // 3
+        var c = cell % 3
+        var nr: Int
+        var nc: Int
+        if sym == 1:  # Rot 90° CW: (r,c) → (c, 2-r)
+            nr = c
+            nc = 2 - r
+        elif sym == 2:  # Rot 180°: (r,c) → (2-r, 2-c)
+            nr = 2 - r
+            nc = 2 - c
+        elif sym == 3:  # Rot 270° CW: (r,c) → (2-c, r)
+            nr = 2 - c
+            nc = r
+        elif sym == 4:  # H-flip: (r,c) → (r, 2-c)
+            nr = r
+            nc = 2 - c
+        elif sym == 5:  # V-flip: (r,c) → (2-r, c)
+            nr = 2 - r
+            nc = c
+        elif sym == 6:  # Main diagonal: (r,c) → (c, r)
+            nr = c
+            nc = r
+        else:  # Anti-diagonal: (r,c) → (2-c, 2-r)
+            nr = 2 - c
+            nc = 2 - r
+        return nr * 3 + nc
+
+    @staticmethod
+    fn augment_obs[
+        OBS_DIM: Int,
+    ](
+        obs: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+        sym_idx: Int,
+        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        """Permute 27D observation (3 planes × 9 cells) by symmetry."""
+        if sym_idx == 0:
+            for i in range(OBS_DIM):
+                out[i] = obs[i]
+            return
+        # 3 planes of 9 cells each
+        for plane in range(3):
+            for cell in range(9):
+                var src = TicTacToeEnv._sym_perm(sym_idx, cell)
+                out[plane * 9 + cell] = obs[plane * 9 + src]
+
+    @staticmethod
+    fn augment_policy[
+        ACT: Int,
+    ](
+        policy: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+        sym_idx: Int,
+        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        """Permute 9D policy vector by symmetry."""
+        if sym_idx == 0:
+            for i in range(ACT):
+                out[i] = policy[i]
+            return
+        for a in range(9):
+            var src = TicTacToeEnv._sym_perm(sym_idx, a)
+            out[a] = policy[src]
+
+    # ========================================================================
     # GPU: Inline step/reset kernels (called per-thread on GPU)
     # ========================================================================
 
@@ -436,25 +512,58 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         i: Int,
         mark: Scalar[board_dtype],
     ) -> Bool:
-        """Check if the given mark has won, reading directly from states tensor."""
+        """Check if the given mark has won, reading directly from states tensor.
+        """
         # Rows
-        if states[i, 0] == mark and states[i, 1] == mark and states[i, 2] == mark:
+        if (
+            states[i, 0] == mark
+            and states[i, 1] == mark
+            and states[i, 2] == mark
+        ):
             return True
-        if states[i, 3] == mark and states[i, 4] == mark and states[i, 5] == mark:
+        if (
+            states[i, 3] == mark
+            and states[i, 4] == mark
+            and states[i, 5] == mark
+        ):
             return True
-        if states[i, 6] == mark and states[i, 7] == mark and states[i, 8] == mark:
+        if (
+            states[i, 6] == mark
+            and states[i, 7] == mark
+            and states[i, 8] == mark
+        ):
             return True
         # Columns
-        if states[i, 0] == mark and states[i, 3] == mark and states[i, 6] == mark:
+        if (
+            states[i, 0] == mark
+            and states[i, 3] == mark
+            and states[i, 6] == mark
+        ):
             return True
-        if states[i, 1] == mark and states[i, 4] == mark and states[i, 7] == mark:
+        if (
+            states[i, 1] == mark
+            and states[i, 4] == mark
+            and states[i, 7] == mark
+        ):
             return True
-        if states[i, 2] == mark and states[i, 5] == mark and states[i, 8] == mark:
+        if (
+            states[i, 2] == mark
+            and states[i, 5] == mark
+            and states[i, 8] == mark
+        ):
             return True
         # Diagonals
-        if states[i, 0] == mark and states[i, 4] == mark and states[i, 8] == mark:
+        if (
+            states[i, 0] == mark
+            and states[i, 4] == mark
+            and states[i, 8] == mark
+        ):
             return True
-        if states[i, 2] == mark and states[i, 4] == mark and states[i, 6] == mark:
+        if (
+            states[i, 2] == mark
+            and states[i, 4] == mark
+            and states[i, 6] == mark
+        ):
             return True
         return False
 
@@ -673,7 +782,9 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
             board_dtype, Layout.row_major(BATCH_SIZE, 9), MutAnyOrigin
         ](legal_masks_buf.unsafe_ptr())
         var states_immut = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+            board_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            ImmutAnyOrigin,
         ](states_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
@@ -723,7 +834,11 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
                 ImmutAnyOrigin,
-            ](rebind[UnsafePointer[Scalar[board_dtype], ImmutAnyOrigin]](states.ptr))
+            ](
+                rebind[UnsafePointer[Scalar[board_dtype], ImmutAnyOrigin]](
+                    states.ptr
+                )
+            )
             TicTacToeEnv.extract_obs_and_masks[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 9
             ](states_read, obs, legal_masks)
@@ -824,7 +939,9 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         mut legal_masks_buf: DeviceBuffer[board_dtype],
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+            board_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            ImmutAnyOrigin,
         ](states_buf.unsafe_ptr())
         var obs = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

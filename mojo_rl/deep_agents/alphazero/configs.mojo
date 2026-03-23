@@ -12,7 +12,7 @@ Reuses strategies from muzero/strategies.mojo for composability.
 from mojo_rl.nn.model import (
     Model, Linear, LinearReLU, LinearMish, Sequential, Parallel,
 )
-from mojo_rl.nn.optimizer import Optimizer, Adam
+from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
 from mojo_rl.deep_agents.muzero.strategies import (
     ExplorationNoise, DirichletNoise,
@@ -68,6 +68,7 @@ struct AlphaZeroTicTacToeConfig[
     CAP: Int = 50000,
     SIMS: Int = 50,
     NODES: Int = 64,
+    C_PUCT: Float64 = 2.5,
 ](AlphaZeroConfig):
     """AlphaZero for TicTacToe (27D obs, 9 actions)."""
 
@@ -91,7 +92,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime max_nodes: Int = Self.NODES
 
     comptime Noise = DirichletNoise[0.25, 0.25]
-    comptime PUCT = AlphaGoPUCT[2.5]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
 
 

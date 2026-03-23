@@ -19,6 +19,7 @@ from .env_traits import (
     NoCurriculumScheduler,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
+    DataAugmentable,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

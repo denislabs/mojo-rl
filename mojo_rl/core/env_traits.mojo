@@ -696,6 +696,68 @@ struct NoCurriculumScheduler(CurriculumScheduler):
 
 
 # ============================================================================
+# Data Augmentation Trait (Board Symmetries)
+# ============================================================================
+
+
+trait DataAugmentable:
+    """Environments that can generate equivalent training samples via symmetries.
+
+    Board games have natural symmetries (rotations, reflections) that produce
+    equivalent positions. A TicTacToe board has 8 symmetries (4 rotations ×
+    2 reflections), ConnectFour has 2 (horizontal flip), etc.
+
+    The agent uses conforms_to[E, DataAugmentable]() at compile time to
+    check if augmentation is available, then calls augment_obs/augment_policy
+    for each symmetry to generate additional training data for free.
+
+    Environments without symmetries simply don't implement this trait.
+    """
+
+    comptime NUM_SYMMETRIES: Int
+    """Total number of symmetries including identity. E.g., 8 for 3×3 board."""
+
+    @staticmethod
+    fn augment_obs[
+        OBS_DIM: Int,
+    ](
+        obs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        sym_idx: Int,
+        mut out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ):
+        """Apply symmetry sym_idx to an observation vector.
+
+        sym_idx=0 is always identity. Higher indices are rotations/reflections.
+
+        Args:
+            obs: Input observation [OBS_DIM].
+            sym_idx: Symmetry index in [0, NUM_SYMMETRIES).
+            out: Output buffer [OBS_DIM] to write permuted observation.
+        """
+        ...
+
+    @staticmethod
+    fn augment_policy[
+        ACT: Int,
+    ](
+        policy: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        sym_idx: Int,
+        mut out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ):
+        """Apply symmetry sym_idx to a policy vector.
+
+        The action permutation must be consistent with augment_obs:
+        if obs is rotated 90°, the policy actions must be rotated 90° too.
+
+        Args:
+            policy: Input policy [ACT].
+            sym_idx: Symmetry index in [0, NUM_SYMMETRIES).
+            out: Output buffer [ACT] to write permuted policy.
+        """
+        ...
+
+
+# ============================================================================
 # Two-Player Turn-Based Environment Traits
 # ============================================================================
 

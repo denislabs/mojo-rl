@@ -25,6 +25,7 @@ from mojo_rl.nn.checkpoint import (
 )
 from mojo_rl.core import (
     TrainingMetrics, TwoPlayerDiscreteEnv, GPUTwoPlayerDiscreteEnv,
+    DataAugmentable,
 )
 from mojo_rl.deep_agents.core.utils import print_progress_bar, clear_progress_bar
 from mojo_rl.deep_agents.core.kernels import (
@@ -86,10 +87,16 @@ fn az_policy_value_grad_kernel[
     var sum_exp = Scalar[dtype](0.0)
     for a in range(ACT):
         sum_exp += exp(rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit)
+    # Entropy regularization coefficient (prevents policy collapse)
+    var entropy_coef = Scalar[dtype](0.01)
     for a in range(ACT):
         var prob = exp(rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit) / sum_exp
         var target = rebind[Scalar[dtype]](target_policy[pol_off + a])
-        grad_out[pred_off + a] = (prob - target) * inv_batch
+        # CE gradient + entropy bonus: d/d_logit = (prob - target) + entropy_coef * (1 + log(prob))
+        # Simplified: entropy gradient = entropy_coef * (log(prob) + 1) * prob * (1 - prob)
+        # But simpler: just add entropy_coef to push prob toward uniform
+        var entropy_grad = entropy_coef * (prob - Scalar[dtype](1.0) / Scalar[dtype](ACT))
+        grad_out[pred_off + a] = ((prob - target) + entropy_grad) * inv_batch
 
     # Value gradient: MSE through tanh activation
     # loss = (tanh(raw) - target)^2
@@ -362,16 +369,176 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
         self.train_step_count += 1
 
     # ══════════════════════════════════════════════════════════════
+    # Data Augmentation (via DataAugmentable trait on environment)
+    # ══════════════════════════════════════════════════════════════
+
+    fn _add_with_augmentation[
+        AugEnv: DataAugmentable,
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        policy: List[Scalar[dtype]],
+        value: Scalar[dtype],
+    ):
+        """Add training sample + all symmetries from the environment.
+
+        Uses the DataAugmentable trait to generate augmented samples.
+        The environment knows its own symmetries (rotations, reflections).
+        """
+        comptime ACT = Self.Config.action_dim
+        comptime OBS = Self.Config.obs_dim
+
+        for s in range(AugEnv.NUM_SYMMETRIES):
+            var sym_obs = alloc[Scalar[dtype]](OBS)
+            var sym_pol = alloc[Scalar[dtype]](ACT)
+
+            var obs_in = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                obs.unsafe_ptr()
+            )
+            var pol_in = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                policy.unsafe_ptr()
+            )
+            var obs_out = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                sym_obs
+            )
+            var pol_out = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                sym_pol
+            )
+
+            AugEnv.augment_obs[OBS](obs_in, s, obs_out)
+            AugEnv.augment_policy[ACT](pol_in, s, pol_out)
+
+            self.state.add(
+                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sym_obs),
+                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sym_pol),
+                value,
+            )
+
+            sym_obs.free()
+            sym_pol.free()
+
+    # ══════════════════════════════════════════════════════════════
+    # Arena Comparison (accept/reject new model)
+    # ══════════════════════════════════════════════════════════════
+
+    fn arena_compare[
+        E: TwoPlayerDiscreteEnv,
+        origin: MutOrigin,
+    ](
+        mut self,
+        mut env: E,
+        mut prev_params: UnsafePointer[Scalar[dtype], origin],
+        num_games: Int = 40,
+        threshold: Float64 = 0.55,
+    ) -> Bool:
+        """Play current model vs previous model. Accept if win rate >= threshold.
+
+        Saves/restores network params to compare. Uses policy-only action
+        selection (no MCTS) for speed during comparison.
+
+        Args:
+            env: Environment for playing games.
+            prev_params: Saved parameters of the previous best model.
+            num_games: Games to play (half as each side).
+            threshold: Win fraction needed to accept new model.
+
+        Returns:
+            True if new model is accepted.
+        """
+        comptime ACT = Self.Config.action_dim
+        comptime OBS = Self.Config.obs_dim
+        comptime PS = Self.Config.PredModel.PARAM_SIZE
+
+        # Save current (new) params
+        var new_params = alloc[Scalar[dtype]](PS)
+        for i in range(PS):
+            new_params[i] = self.state.prediction.params[i]
+
+        var new_wins = 0
+        var prev_wins = 0
+
+        for game_idx in range(num_games):
+            var new_is_p0 = game_idx < num_games // 2
+            _ = env.reset()
+
+            while env.game_result() == 0:
+                var player = env.current_player()
+                var is_new = (player == 0 and new_is_p0) or (
+                    player == 1 and not new_is_p0
+                )
+
+                # Load appropriate params
+                if is_new:
+                    for i in range(PS):
+                        self.state.prediction.params[i] = new_params[i]
+                else:
+                    for i in range(PS):
+                        self.state.prediction.params[i] = prev_params[i]
+
+                var legal = env.legal_action_mask()
+                var obs_raw = env.get_obs_list()
+                var obs = List[Scalar[dtype]](capacity=OBS)
+                for i in range(OBS):
+                    if i < len(obs_raw):
+                        obs.append(Scalar[dtype](obs_raw[i]))
+                    else:
+                        obs.append(Scalar[dtype](0.0))
+
+                var action = self.select_action(obs, legal)
+                if action < 0 or action >= ACT or not legal[action]:
+                    for a in range(ACT):
+                        if legal[a]:
+                            action = a
+                            break
+                _ = env.step(env.action_from_index(action))
+
+            var result = env.game_result()
+            if result == 1:
+                if new_is_p0:
+                    new_wins += 1
+                else:
+                    prev_wins += 1
+            elif result == 2:
+                if new_is_p0:
+                    prev_wins += 1
+                else:
+                    new_wins += 1
+
+        # Restore new params (we'll decide whether to keep or revert)
+        for i in range(PS):
+            self.state.prediction.params[i] = new_params[i]
+        new_params.free()
+
+        var win_rate = Float64(new_wins) / Float64(num_games)
+        var accepted = win_rate >= threshold
+
+        if not accepted:
+            # Revert to previous params
+            for i in range(PS):
+                self.state.prediction.params[i] = prev_params[i]
+
+        return accepted
+
+    # ══════════════════════════════════════════════════════════════
     # Self-Play GPU Training
     # ══════════════════════════════════════════════════════════════
 
-    fn train_selfplay_gpu[E: GPUTwoPlayerDiscreteEnv](
+    fn train_selfplay_gpu[
+        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        ArenaEnv: TwoPlayerDiscreteEnv,
+    ](
         mut self,
         ctx: DeviceContext,
+        mut arena_env: ArenaEnv,
         num_steps: Int = 500000,
         warmup_steps: Int = 1000,
         gradient_steps: Int = 1,
         print_every: Int = 10000,
+        lr_decay_every: Int = 0,
+        lr_decay_factor: Float64 = 0.5,
+        arena_every: Int = 0,
+        arena_games: Int = 40,
+        arena_threshold: Float64 = 0.55,
     ) raises -> TrainingMetrics:
         """Train via GPU self-play with true game rules MCTS.
 
@@ -457,6 +624,15 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
         var metrics = TrainingMetrics(algorithm_name="AlphaZero")
         var total_steps = 0
         var next_print = print_every
+        var next_arena = arena_every if arena_every > 0 else num_steps + 1
+
+        # Save initial params for arena comparison
+        comptime PS = Self.Config.PredModel.PARAM_SIZE
+        var best_params = alloc[Scalar[dtype]](PS)
+        for i in range(PS):
+            best_params[i] = self.state.prediction.params[i]
+        var arena_accepts = 0
+        var arena_rejects = 0
 
         while total_steps < num_steps:
             # ── 1. Download obs for episode tracking ─────────────
@@ -621,7 +797,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                     env_rewards[e].append(Float64(rewards_host[e]))
 
                     if Float64(dones_host[e]) > 0.5:
-                        # Game ended — compute outcome and add all moves to replay
+                        # Game ended — compute outcome and add all moves + symmetries
                         var last_reward = Float64(rewards_host[e])
                         var ep_len = len(env_obs_history[e])
 
@@ -633,11 +809,10 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                             else:
                                 outcome = -last_reward
 
-                            var obs_ptr = env_obs_history[e][t].unsafe_ptr()
-                            var pol_ptr = env_policy_history[e][t].unsafe_ptr()
-                            self.state.add(
-                                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs_ptr),
-                                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](pol_ptr),
+                            # Add original + all symmetries (up to 8x for 3x3 boards)
+                            self._add_with_augmentation[E](
+                                env_obs_history[e][t],
+                                env_policy_history[e][t],
                                 Scalar[dtype](outcome),
                             )
 
@@ -668,6 +843,30 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                 for _ in range(gradient_steps):
                     self.train_step_gpu(ctx, gpu)
 
+                # LR step-decay
+                if lr_decay_every > 0 and self.train_step_count > 0:
+                    if self.train_step_count % lr_decay_every == 0:
+                        gpu.prediction.lr_scale *= lr_decay_factor
+
+            # ── 7b. Arena comparison ─────────────────────────────
+            if arena_every > 0 and total_steps >= next_arena:
+                gpu.download_to(self.state, ctx)
+                var accepted = self.arena_compare[ArenaEnv](
+                    arena_env, best_params,
+                    num_games=arena_games, threshold=arena_threshold,
+                )
+                if accepted:
+                    # Save new best params
+                    for i in range(PS):
+                        best_params[i] = self.state.prediction.params[i]
+                    gpu.upload_from(self.state, ctx)
+                    arena_accepts += 1
+                else:
+                    # Reverted to best params — re-upload
+                    gpu.upload_from(self.state, ctx)
+                    arena_rejects += 1
+                next_arena += arena_every
+
             # ── 8. Progress ──────────────────────────────────────
             if total_steps >= next_print:
                 ctx.enqueue_copy(rew_sum_host, rew_sum_buf)
@@ -687,4 +886,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                 next_print += print_every
 
         gpu.download_to(self.state, ctx)
+        best_params.free()
+        if arena_every > 0:
+            print("Arena: accepted", arena_accepts, "/ rejected", arena_rejects)
         return metrics
