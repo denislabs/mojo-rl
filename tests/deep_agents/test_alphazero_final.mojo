@@ -57,8 +57,6 @@ def main() raises:
     var random_eval = RandomOpponent()
     var minimax_eval = MinimaxTicTacToe()
     var eval_env = TTTCPU()
-    var arena_env = TTTCPU()
-
     print("Before:")
     var r0 = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
     print("vs Random: W", r0[0], "D", r0[1], "L", r0[2])
@@ -78,9 +76,8 @@ def main() raises:
         agent.start_new_iteration()
 
         # 2. Collect self-play games (frozen network, no training)
-        _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+        _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            arena_env,
             num_steps=1000,
             warmup_steps=0,
             gradient_steps=0,  # No training during collection
@@ -101,13 +98,13 @@ def main() raises:
             agent.train_step_gpu(ctx, gpu)
         gpu.download_to(agent.state, ctx)
 
-        # 4. Arena comparison (skip first 5 iters to let model learn first)
-        # Like alpha-zero-general: threshold=0.6, draws excluded
+        # 4. GPU Arena comparison (MCTS temp=0, like original AlphaZero)
+        # Skip first 5 iters to let model learn first
         if iter >= 5:
-            var accepted = agent.arena_compare[TTTCPU](
-                arena_env,
-                best_params,
-                num_games=40,
+            var accepted = agent.arena_compare_gpu[TTT](
+                ctx,
+                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](best_params),
+                num_games=64,   # n_envs games in parallel
                 threshold=0.6,
             )
             if accepted:

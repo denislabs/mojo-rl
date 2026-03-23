@@ -383,16 +383,13 @@ def test_selfplay_data_quality() raises:
     print("=== Test 6: Self-Play Data Quality ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
-    comptime TTTCPU = TicTacToeEnv[DType.float64]
 
     var agent = GenericAlphaZeroAgent[DiagConfig, 64]()
-    var arena_env = TTTCPU()
 
     # Collect 1 iteration of self-play data
     agent.start_new_iteration()
-    _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+    _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        arena_env,
         num_steps=500,
         warmup_steps=0,
         gradient_steps=0,

@@ -70,17 +70,14 @@ def test_mcts_policy_quality() raises:
     print("=== Test 1: MCTS Policy Entropy ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
-    comptime TTTCPU = TicTacToeEnv[DType.float64]
     comptime ACT = 9
 
     var agent = GenericAlphaZeroAgent[DiagConfig, 64]()
-    var arena_env = TTTCPU()
 
     # Collect self-play data with random network
     agent.start_new_iteration()
-    _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+    _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        arena_env,
         num_steps=500,
         warmup_steps=0,
         gradient_steps=0,
@@ -150,7 +147,6 @@ def test_training_improves_play() raises:
     var agent = GenericAlphaZeroAgent[DiagConfig, 64]()
     var random_eval = RandomOpponent()
     var eval_env = TTTCPU()
-    var arena_env = TTTCPU()
 
     # Evaluate before training
     var r_before = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
@@ -160,9 +156,8 @@ def test_training_improves_play() raises:
     # Collect + train for 3 iterations
     for iter in range(3):
         agent.start_new_iteration()
-        _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+        _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            arena_env,
             num_steps=1000,
             warmup_steps=0,
             gradient_steps=0,
@@ -203,17 +198,14 @@ def test_mcts_finds_winning_move() raises:
     print("=== Test 3: MCTS Gets Sharper With Training ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
-    comptime TTTCPU = TicTacToeEnv[DType.float64]
     comptime ACT = 9
 
     var agent = GenericAlphaZeroAgent[DiagConfig, 64]()
-    var arena_env = TTTCPU()
 
     # Iteration 1: random network
     agent.start_new_iteration()
-    _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+    _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        arena_env,
         num_steps=500,
         warmup_steps=0,
         gradient_steps=0,
@@ -244,9 +236,8 @@ def test_mcts_finds_winning_move() raises:
 
     # Iteration 2: trained network (new iteration clears old data)
     agent.start_new_iteration()
-    _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+    _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        arena_env,
         num_steps=500,
         warmup_steps=0,
         gradient_steps=0,
@@ -298,16 +289,13 @@ def test_policy_targets_nondegenerate() raises:
     print("=== Test 4: Policy Target Sanity ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
-    comptime TTTCPU = TicTacToeEnv[DType.float64]
     comptime ACT = 9
 
     var agent = GenericAlphaZeroAgent[DiagConfig, 64]()
-    var arena_env = TTTCPU()
 
     agent.start_new_iteration()
-    _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+    _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        arena_env,
         num_steps=500,
         warmup_steps=0,
         gradient_steps=0,

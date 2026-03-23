@@ -62,8 +62,6 @@ def main() raises:
     var random_eval = RandomOpponent()
     var minimax_eval = MinimaxTicTacToe()
     var eval_env = TTTCPU()
-    var arena_env = TTTCPU()
-
     print("Before:")
     var r0 = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
     print("vs Random: W", r0[0], "D", r0[1], "L", r0[2])
@@ -78,9 +76,8 @@ def main() raises:
         # 1. Collect ~100 games via self-play (with 8x symmetries → ~4000 samples)
         # 64 envs × ~7 steps/game ≈ ~450 steps for 64 games
         # Run 1000 env steps to get ~130 games
-        _ = agent.train_selfplay_gpu[TTT, TTTCPU](
+        _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            arena_env,
             num_steps=1000,
             warmup_steps=0,
             gradient_steps=0,  # No training during collection
