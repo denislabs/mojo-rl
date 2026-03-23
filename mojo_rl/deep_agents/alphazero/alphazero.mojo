@@ -1521,6 +1521,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
     def train_selfplay_gpu[
         E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
         GPUEval: GPUEvaluator = RandomOpponent,
+        GPUEval2: GPUEvaluator = RandomOpponent,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1530,6 +1531,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         warmup_iters: Int = 1,
         arena_threshold: Float64 = 0.6,
         do_eval: Bool = True,
+        do_eval2: Bool = False,
         do_arena: Bool = True,
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
@@ -2137,6 +2139,22 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
                     self.state.buf_size,
                     "| Train:",
                     self.train_step_count,
+                )
+
+            # ── 4b. Second GPU Evaluation ────────────────────────
+            if do_eval2 and use_mcts:
+                var eval_r2 = self.gpu_eval[E, GPUEval2](
+                    ctx, gpu, rng_offset=total_steps + 77777
+                )
+                print(
+                    "    vs",
+                    GPUEval2.NAME,
+                    ": W",
+                    eval_r2[0],
+                    "D",
+                    eval_r2[1],
+                    "L",
+                    eval_r2[2],
                 )
 
             # ── 5. GPU Arena ─────────────────────────────────────
