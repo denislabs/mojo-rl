@@ -478,6 +478,14 @@ struct RainbowGPUState[
     var td_errors: DeviceBuffer[dtype]        # for PER priority update
     var bins_buf: DeviceBuffer[dtype]
 
+    # Diagnostic host buffers
+    var diag_comb_host: HostBuffer[dtype]    # [batch * COMBINED] combined logits
+    var diag_act_host: HostBuffer[dtype]     # [batch]
+    var diag_rew_host: HostBuffer[dtype]     # [batch]
+    var diag_done_host: HostBuffer[dtype]    # [batch]
+    var diag_weights_host: HostBuffer[dtype] # [batch] IS weights
+    var diag_td_host: HostBuffer[dtype]      # [batch] CE loss per sample
+
     fn __init__(
         out self, ctx: DeviceContext, alpha: Float64 = 0.6, beta: Float64 = 0.4,
         gamma: Float64 = 0.99,
@@ -544,6 +552,26 @@ struct RainbowGPUState[
         )
         self.td_errors = ctx.enqueue_create_buffer[dtype](Self.batch_size)
         self.bins_buf = ctx.enqueue_create_buffer[dtype](Self.num_atoms)
+
+        # Diagnostics
+        self.diag_comb_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size * Self.num_actions * Self.num_atoms
+        )
+        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_weights_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_td_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
 
     fn gpu_store[
         N_ENVS: Int
@@ -972,6 +1000,119 @@ struct GenericRainbowAgent[
         cpu_state.buffer.update_priorities[Self.BATCH](b_indices, td_errors)
 
         self.train_step_count += 1
+
+        # ---- Diagnostic logging ----
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+
+                # Expected Q-value stats (from online combined distribution)
+                var online_q = InlineArray[
+                    Scalar[dtype], Self.BATCH * Self.ACTIONS
+                ](uninitialized=True)
+                _rainbow_expected_q[Self.BATCH, Self.ACTIONS, ATOMS, COMB](
+                    combined, cpu_state.bins, online_q
+                )
+
+                var q_min = Float64(online_q[0])
+                var q_max = Float64(online_q[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH * Self.ACTIONS):
+                    var v = Float64(online_q[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean",
+                    q_sum / Float64(Self.BATCH * Self.ACTIONS),
+                    step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # CE loss
+                self.logger[].log_scalar("loss", loss, step)
+
+                # TD error stats (CE loss per sample, used as PER priority)
+                var td_err_abs_sum: Float64 = 0.0
+                var td_err_max_abs: Float64 = 0.0
+                for b in range(Self.BATCH):
+                    var abs_err = Float64(td_errors[b])
+                    if abs_err < 0:
+                        abs_err = -abs_err
+                    td_err_abs_sum += abs_err
+                    if abs_err > td_err_max_abs:
+                        td_err_max_abs = abs_err
+                self.logger[].log_scalar(
+                    "td_error_abs_mean",
+                    td_err_abs_sum / Float64(Self.BATCH),
+                    step,
+                )
+                self.logger[].log_scalar(
+                    "td_error_max", td_err_max_abs, step
+                )
+
+                # IS weight stats (importance sampling correction)
+                var w_min = Float64(b_weights[0])
+                var w_max = Float64(b_weights[0])
+                var w_sum: Float64 = 0.0
+                for b in range(Self.BATCH):
+                    var w = Float64(b_weights[b])
+                    w_sum += w
+                    if w < w_min:
+                        w_min = w
+                    if w > w_max:
+                        w_max = w
+                self.logger[].log_scalar(
+                    "is_weight_mean",
+                    w_sum / Float64(Self.BATCH),
+                    step,
+                )
+                self.logger[].log_scalar("is_weight_min", w_min, step)
+                self.logger[].log_scalar("is_weight_max", w_max, step)
+
+                # PER beta (IS correction annealing)
+                var beta_val = Float64(self.beta_start) + (
+                    1.0 - Float64(self.beta_start)
+                ) * Float64(self.train_step_count) / Float64(
+                    max(1, self.beta_frames)
+                )
+                if beta_val > 1.0:
+                    beta_val = 1.0
+                self.logger[].log_scalar("per_beta", beta_val, step)
+
+                # Distribution entropy (how peaked/spread the predicted dist is)
+                var entropy_sum: Float64 = 0.0
+                for b in range(Self.BATCH):
+                    var action = Int(b_act1[b])
+                    var pred_base = b * COMB + action * ATOMS
+                    var pred_max2 = combined[pred_base]
+                    for i in range(1, ATOMS):
+                        if combined[pred_base + i] > pred_max2:
+                            pred_max2 = combined[pred_base + i]
+                    var se2 = Scalar[dtype](0.0)
+                    for i in range(ATOMS):
+                        se2 += exp(combined[pred_base + i] - pred_max2)
+                    var h: Float64 = 0.0
+                    for i in range(ATOMS):
+                        var p = Float64(
+                            exp(combined[pred_base + i] - pred_max2) / se2
+                        )
+                        if p > 1e-8:
+                            h -= p * log(p)
+                    entropy_sum += h
+                self.logger[].log_scalar(
+                    "dist_entropy_mean",
+                    entropy_sum / Float64(Self.BATCH),
+                    step,
+                )
+            except:
+                pass
 
         # Target update
         if (
@@ -1511,6 +1652,162 @@ struct GenericRainbowAgent[
 
         # ---- Phase 7: PER priority update ----
         gpu_state.buffer.update_priorities[BATCH](ctx, gpu_state.td_errors)
+
+        # ---- GPU Diagnostic logging ----
+        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            try:
+                # Copy diagnostic data to host
+                ctx.enqueue_copy(gpu_state.diag_comb_host, gpu_state.q_combined)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(gpu_state.diag_weights_host, gpu_state.s_weights)
+                ctx.enqueue_copy(gpu_state.diag_td_host, gpu_state.td_errors)
+                ctx.synchronize()
+
+                var step = self.train_step_count
+
+                # Compute expected Q from combined logits on host
+                var comb_host_arr = InlineArray[
+                    Scalar[dtype], BATCH * COMB
+                ](uninitialized=True)
+                for i in range(BATCH * COMB):
+                    comb_host_arr[i] = gpu_state.diag_comb_host[i]
+                var bins_host = InlineArray[
+                    Scalar[dtype], ATOMS
+                ](uninitialized=True)
+                for i in range(ATOMS):
+                    bins_host[i] = Scalar[dtype](
+                        Self.Config.v_min
+                        + Float64(i) * (Self.Config.v_max - Self.Config.v_min)
+                        / Float64(ATOMS - 1)
+                    )
+                var eq_host = InlineArray[
+                    Scalar[dtype], BATCH * Self.ACTIONS
+                ](uninitialized=True)
+                _rainbow_expected_q[BATCH, Self.ACTIONS, ATOMS, COMB](
+                    comb_host_arr, bins_host, eq_host
+                )
+
+                # Q-value stats (expected Q from distributional)
+                var q_min = Float64(eq_host[0])
+                var q_max = Float64(eq_host[0])
+                var q_sum: Float64 = 0.0
+                for i in range(BATCH * Self.ACTIONS):
+                    var v = Float64(eq_host[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean", q_sum / Float64(BATCH * Self.ACTIONS), step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # Done fraction and reward stats
+                var done_count: Float64 = 0.0
+                var rew_sum: Float64 = 0.0
+                var rew_min = Float64(gpu_state.diag_rew_host[0])
+                var rew_max = Float64(gpu_state.diag_rew_host[0])
+                for b in range(BATCH):
+                    done_count += Float64(gpu_state.diag_done_host[b])
+                    var r = Float64(gpu_state.diag_rew_host[b])
+                    rew_sum += r
+                    if r < rew_min:
+                        rew_min = r
+                    if r > rew_max:
+                        rew_max = r
+                self.logger[].log_scalar(
+                    "done_fraction", done_count / Float64(BATCH), step,
+                )
+                self.logger[].log_scalar(
+                    "reward_mean", rew_sum / Float64(BATCH), step,
+                )
+                self.logger[].log_scalar("reward_min", rew_min, step)
+                self.logger[].log_scalar("reward_max", rew_max, step)
+
+                # TD error stats (CE loss per sample, used as PER priority)
+                var td_err_abs_sum: Float64 = 0.0
+                var td_err_max_abs: Float64 = 0.0
+                for b in range(BATCH):
+                    var abs_err = Float64(gpu_state.diag_td_host[b])
+                    if abs_err < 0:
+                        abs_err = -abs_err
+                    td_err_abs_sum += abs_err
+                    if abs_err > td_err_max_abs:
+                        td_err_max_abs = abs_err
+                self.logger[].log_scalar(
+                    "td_error_abs_mean",
+                    td_err_abs_sum / Float64(BATCH),
+                    step,
+                )
+                self.logger[].log_scalar(
+                    "td_error_max", td_err_max_abs, step
+                )
+
+                # IS weight stats (importance sampling correction)
+                var w_min = Float64(gpu_state.diag_weights_host[0])
+                var w_max = Float64(gpu_state.diag_weights_host[0])
+                var w_sum: Float64 = 0.0
+                for b in range(BATCH):
+                    var w = Float64(gpu_state.diag_weights_host[b])
+                    w_sum += w
+                    if w < w_min:
+                        w_min = w
+                    if w > w_max:
+                        w_max = w
+                self.logger[].log_scalar(
+                    "is_weight_mean", w_sum / Float64(BATCH), step,
+                )
+                self.logger[].log_scalar("is_weight_min", w_min, step)
+                self.logger[].log_scalar("is_weight_max", w_max, step)
+
+                # PER beta
+                var beta_val = Float64(self.beta_start) + (
+                    1.0 - Float64(self.beta_start)
+                ) * Float64(self.train_step_count) / Float64(
+                    max(1, self.beta_frames)
+                )
+                if beta_val > 1.0:
+                    beta_val = 1.0
+                self.logger[].log_scalar("per_beta", beta_val, step)
+
+                # Distribution entropy
+                var entropy_sum: Float64 = 0.0
+                for b in range(BATCH):
+                    var action = Int(Float64(gpu_state.diag_act_host[b]))
+                    var pred_base = b * COMB + action * ATOMS
+                    var pred_max2 = Float64(gpu_state.diag_comb_host[pred_base])
+                    for i in range(1, ATOMS):
+                        var v = Float64(
+                            gpu_state.diag_comb_host[pred_base + i]
+                        )
+                        if v > pred_max2:
+                            pred_max2 = v
+                    var se2: Float64 = 0.0
+                    for i in range(ATOMS):
+                        se2 += exp(
+                            Float64(gpu_state.diag_comb_host[pred_base + i])
+                            - pred_max2
+                        )
+                    var h: Float64 = 0.0
+                    for i in range(ATOMS):
+                        var p = exp(
+                            Float64(gpu_state.diag_comb_host[pred_base + i])
+                            - pred_max2
+                        ) / se2
+                        if p > 1e-8:
+                            h -= p * log(p)
+                    entropy_sum += h
+                self.logger[].log_scalar(
+                    "dist_entropy_mean",
+                    entropy_sum / Float64(BATCH),
+                    step,
+                )
+            except:
+                pass
 
     fn soft_update_targets_gpu(
         mut self, ctx: DeviceContext, mut gpu_state: Self.GPUStateType,

@@ -281,7 +281,10 @@ struct C51GPUState[
     var train_ws: DeviceBuffer[dtype]       # [max(1, batch_size * WS_PER_SAMPLE)]
 
     # Diagnostic host buffers
-    var diag_q_host: HostBuffer[dtype]      # [batch_size * num_actions]
+    var diag_raw_host: HostBuffer[dtype]    # [batch_size * RAW_OUT]
+    var diag_act_host: HostBuffer[dtype]    # [batch_size]
+    var diag_rew_host: HostBuffer[dtype]    # [batch_size]
+    var diag_done_host: HostBuffer[dtype]   # [batch_size]
 
     fn __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers."""
@@ -342,8 +345,17 @@ struct C51GPUState[
         self.train_ws = ctx.enqueue_create_buffer[dtype](train_ws_size)
 
         # Diagnostics
-        self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size * Self.num_actions
+        self.diag_raw_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size * Self.RAW_OUT
+        )
+        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
         )
 
     # GPUOffPolicyState required methods
@@ -764,6 +776,71 @@ struct GenericC51Agent[
         cpu_state.online.optimizer_step()
 
         self.train_step_count += 1
+
+        # ---- Diagnostic logging ----
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var step = self.train_step_count
+
+                # Expected Q-value stats (from online_next used for action selection)
+                var online_q = InlineArray[
+                    Scalar[dtype], Self.BATCH * Self.ACTIONS
+                ](uninitialized=True)
+                _expected_q_from_logits[
+                    Self.BATCH, Self.ACTIONS, ATOMS, Self.RAW_OUT
+                ](raw_arr, cpu_state.bins, online_q)
+
+                var q_min = Float64(online_q[0])
+                var q_max = Float64(online_q[0])
+                var q_sum: Float64 = 0.0
+                for i in range(Self.BATCH * Self.ACTIONS):
+                    var v = Float64(online_q[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean",
+                    q_sum / Float64(Self.BATCH * Self.ACTIONS),
+                    step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # CE loss
+                self.logger[].log_scalar("loss", loss, step)
+
+                # Distribution entropy (how peaked/spread the predicted dist is)
+                var entropy_sum: Float64 = 0.0
+                for b in range(Self.BATCH):
+                    var action = Int(b_act1[b])
+                    var pred_base = b * Self.RAW_OUT + action * ATOMS
+                    var pred_max2 = raw_arr[pred_base]
+                    for i in range(1, ATOMS):
+                        if raw_arr[pred_base + i] > pred_max2:
+                            pred_max2 = raw_arr[pred_base + i]
+                    var se2 = Scalar[dtype](0.0)
+                    for i in range(ATOMS):
+                        se2 += exp(raw_arr[pred_base + i] - pred_max2)
+                    var h: Float64 = 0.0
+                    for i in range(ATOMS):
+                        var p = Float64(
+                            exp(raw_arr[pred_base + i] - pred_max2) / se2
+                        )
+                        if p > 1e-8:
+                            h -= p * log(p)
+                    entropy_sum += h
+                self.logger[].log_scalar(
+                    "dist_entropy_mean",
+                    entropy_sum / Float64(Self.BATCH),
+                    step,
+                )
+            except:
+                pass
 
         # Target update (hard or soft)
         if (
@@ -1382,6 +1459,114 @@ struct GenericC51Agent[
         gpu_state.online.optimizer_step(ctx)
 
         self.train_step_count += 1
+
+        # ---- GPU Diagnostic logging ----
+        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            try:
+                # Copy raw logits and sample data to host
+                ctx.enqueue_copy(gpu_state.diag_raw_host, gpu_state.q_raw)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.synchronize()
+
+                var step = self.train_step_count
+
+                # Compute expected Q from raw logits on host
+                var raw_host_arr = InlineArray[
+                    Scalar[dtype], BATCH * Self.RAW_OUT
+                ](uninitialized=True)
+                for i in range(BATCH * Self.RAW_OUT):
+                    raw_host_arr[i] = gpu_state.diag_raw_host[i]
+                var bins_host = InlineArray[
+                    Scalar[dtype], ATOMS
+                ](uninitialized=True)
+                for i in range(ATOMS):
+                    bins_host[i] = Scalar[dtype](
+                        Self.Config.v_min
+                        + Float64(i) * (Self.Config.v_max - Self.Config.v_min)
+                        / Float64(ATOMS - 1)
+                    )
+                var eq_host = InlineArray[
+                    Scalar[dtype], BATCH * Self.ACTIONS
+                ](uninitialized=True)
+                _expected_q_from_logits[
+                    BATCH, Self.ACTIONS, ATOMS, Self.RAW_OUT
+                ](raw_host_arr, bins_host, eq_host)
+
+                # Q-value stats
+                var q_min = Float64(eq_host[0])
+                var q_max = Float64(eq_host[0])
+                var q_sum: Float64 = 0.0
+                for i in range(BATCH * Self.ACTIONS):
+                    var v = Float64(eq_host[i])
+                    q_sum += v
+                    if v < q_min:
+                        q_min = v
+                    if v > q_max:
+                        q_max = v
+                self.logger[].log_scalar(
+                    "q_mean", q_sum / Float64(BATCH * Self.ACTIONS), step,
+                )
+                self.logger[].log_scalar("q_min", q_min, step)
+                self.logger[].log_scalar("q_max", q_max, step)
+
+                # Done fraction and reward stats from sampled batch
+                var done_count: Float64 = 0.0
+                var rew_sum: Float64 = 0.0
+                var rew_min = Float64(gpu_state.diag_rew_host[0])
+                var rew_max = Float64(gpu_state.diag_rew_host[0])
+                for b in range(BATCH):
+                    done_count += Float64(gpu_state.diag_done_host[b])
+                    var r = Float64(gpu_state.diag_rew_host[b])
+                    rew_sum += r
+                    if r < rew_min:
+                        rew_min = r
+                    if r > rew_max:
+                        rew_max = r
+                self.logger[].log_scalar(
+                    "done_fraction", done_count / Float64(BATCH), step,
+                )
+                self.logger[].log_scalar(
+                    "reward_mean", rew_sum / Float64(BATCH), step,
+                )
+                self.logger[].log_scalar("reward_min", rew_min, step)
+                self.logger[].log_scalar("reward_max", rew_max, step)
+
+                # Distribution entropy (how peaked/spread the predicted dist is)
+                var entropy_sum: Float64 = 0.0
+                for b in range(BATCH):
+                    var action = Int(Float64(gpu_state.diag_act_host[b]))
+                    var pred_base = b * Self.RAW_OUT + action * ATOMS
+                    var pred_max2 = Float64(gpu_state.diag_raw_host[pred_base])
+                    for i in range(1, ATOMS):
+                        var v = Float64(
+                            gpu_state.diag_raw_host[pred_base + i]
+                        )
+                        if v > pred_max2:
+                            pred_max2 = v
+                    var se2: Float64 = 0.0
+                    for i in range(ATOMS):
+                        se2 += exp(
+                            Float64(gpu_state.diag_raw_host[pred_base + i])
+                            - pred_max2
+                        )
+                    var h: Float64 = 0.0
+                    for i in range(ATOMS):
+                        var p = exp(
+                            Float64(gpu_state.diag_raw_host[pred_base + i])
+                            - pred_max2
+                        ) / se2
+                        if p > 1e-8:
+                            h -= p * log(p)
+                    entropy_sum += h
+                self.logger[].log_scalar(
+                    "dist_entropy_mean",
+                    entropy_sum / Float64(BATCH),
+                    step,
+                )
+            except:
+                pass
 
     fn soft_update_targets_gpu(
         mut self,
