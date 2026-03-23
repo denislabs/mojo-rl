@@ -303,6 +303,25 @@ struct MinimaxTicTacToe(Evaluator):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _gpu_check_winner(board: InlineArray[Int, 9]) -> Int:
+    """Check TicTacToe winner. Returns 0=none, 1=mark1 won, 2=mark2 won."""
+    # Rows
+    for r in range(3):
+        var i = r * 3
+        if board[i] != 0 and board[i] == board[i + 1] and board[i + 1] == board[i + 2]:
+            return board[i]
+    # Columns
+    for c in range(3):
+        if board[c] != 0 and board[c] == board[c + 3] and board[c + 3] == board[c + 6]:
+            return board[c]
+    # Diagonals
+    if board[0] != 0 and board[0] == board[4] and board[4] == board[8]:
+        return board[0]
+    if board[2] != 0 and board[2] == board[4] and board[4] == board[6]:
+        return board[2]
+    return 0
+
+
 def _gpu_minimax_ttt_kernel[
     N_ENVS: Int,
     STATE_SIZE: Int,
@@ -313,118 +332,156 @@ def _gpu_minimax_ttt_kernel[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
     ],
 ):
-    """GPU minimax for TicTacToe. One thread per environment.
+    """GPU minimax for TicTacToe — iterative with explicit stack.
 
-    Reads board from game_states[env * STATE_SIZE + 0..8].
-    Board values: 0=empty, 1=P0, 2=P1.
-    Current player from game_states[env * STATE_SIZE + 9]: 0=P0, 1=P1.
-    Computes perfect minimax action.
+    No recursion — uses a fixed-size stack (max depth 9) to avoid
+    GPU thread stack overflow on NVIDIA.
+    One thread per environment.
     """
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
 
     var s_off = e * STATE_SIZE
-
-    # Read board into local array
     var board = InlineArray[Int, 9](fill=0)
     for i in range(9):
         board[i] = Int(rebind[Scalar[dtype]](game_states[s_off + i]))
 
     var current_player = Int(rebind[Scalar[dtype]](game_states[s_off + 9]))
-    var my_mark = current_player + 1  # 1 or 2
-    var opp_mark = 2 - current_player  # 2 or 1
+    var my_mark = current_player + 1
 
-    # Minimax: current player is maximizing
+    # Try each legal root action, evaluate with iterative minimax
     var best_action = -1
     var best_score = -2
 
-    for a in range(9):
-        if board[a] != 0:
+    for root_a in range(9):
+        if board[root_a] != 0:
             continue
 
-        # Make move
-        board[a] = my_mark
-
-        # Evaluate from opponent's perspective (minimizing)
-        var score = _gpu_minimax_eval(board, opp_mark, my_mark, False)
-
-        # Undo
-        board[a] = 0
+        board[root_a] = my_mark
+        var score = _gpu_minimax_iterative(board, my_mark)
+        board[root_a] = 0
 
         if score > best_score:
             best_score = score
-            best_action = a
+            best_action = root_a
 
     if best_action < 0:
-        best_action = 0  # Fallback
+        best_action = 0
     actions_out[e] = Scalar[dtype](best_action)
 
 
-def _gpu_minimax_eval(
-    mut board: InlineArray[Int, 9],
-    next_mark: Int,
-    my_mark: Int,
-    is_maximizing: Bool,
+def _gpu_minimax_iterative(
+    mut board: InlineArray[Int, 9], my_mark: Int
 ) -> Int:
-    """Recursive minimax evaluation. Runs on GPU (bounded depth ≤ 9)."""
-    # Check winner
-    # Rows
-    for r in range(3):
-        var i = r * 3
-        if (
-            board[i] != 0
-            and board[i] == board[i + 1]
-            and board[i + 1] == board[i + 2]
-        ):
-            return 1 if board[i] == my_mark else -1
-    # Columns
-    for c in range(3):
-        if (
-            board[c] != 0
-            and board[c] == board[c + 3]
-            and board[c + 3] == board[c + 6]
-        ):
-            return 1 if board[c] == my_mark else -1
-    # Diagonals
-    if board[0] != 0 and board[0] == board[4] and board[4] == board[8]:
-        return 1 if board[0] == my_mark else -1
-    if board[2] != 0 and board[2] == board[4] and board[4] == board[6]:
-        return 1 if board[2] == my_mark else -1
+    """Iterative minimax using explicit stack. No recursion.
 
-    # Check draw
-    var has_empty = False
-    for i in range(9):
-        if board[i] == 0:
-            has_empty = True
-            break
-    if not has_empty:
-        return 0
+    Stack frame: (action_to_try, best_so_far, is_maximizing, mark_to_place)
+    Max depth = 9 (max empty cells in TicTacToe).
+    """
+    # Explicit stack — each frame tracks:
+    #   action_idx: next action to try (0-9, 9=done)
+    #   best: best score found at this level
+    #   is_max: True if maximizing
+    #   mark: mark to place at this level
+    #   placed_action: which cell we placed to get here (-1 if root)
+    comptime MAX_DEPTH = 10
+    var stk_action = InlineArray[Int, MAX_DEPTH](fill=0)
+    var stk_best = InlineArray[Int, MAX_DEPTH](fill=0)
+    var stk_is_max = InlineArray[Int, MAX_DEPTH](fill=0)  # 0=min, 1=max
+    var stk_mark = InlineArray[Int, MAX_DEPTH](fill=0)
+    var stk_placed = InlineArray[Int, MAX_DEPTH](fill=-1)
 
-    var other_mark = my_mark if next_mark != my_mark else (3 - my_mark)
+    # After placing root move, opponent plays (minimizing)
+    var opp_mark = 3 - my_mark
+    var depth = 0
+    stk_action[0] = 0
+    stk_best[0] = 2   # Minimizing: start with +2
+    stk_is_max[0] = 0  # Opponent minimizes
+    stk_mark[0] = opp_mark
+    stk_placed[0] = -1
 
-    if is_maximizing:
-        var best = -2
-        for a in range(9):
-            if board[a] != 0:
-                continue
-            board[a] = next_mark
-            var score = _gpu_minimax_eval(board, other_mark, my_mark, False)
-            board[a] = 0
-            if score > best:
-                best = score
-        return best
-    else:
-        var best = 2
-        for a in range(9):
-            if board[a] != 0:
-                continue
-            board[a] = next_mark
-            var score = _gpu_minimax_eval(board, other_mark, my_mark, True)
-            board[a] = 0
-            if score < best:
-                best = score
-        return best
+    while depth >= 0:
+        # Check if current board position is terminal
+        var winner = _gpu_check_winner(board)
+        if winner != 0:
+            var val = 1 if winner == my_mark else -1
+            # Propagate up
+            if depth == 0:
+                return val
+            # Undo the move that got us here
+            board[stk_placed[depth]] = 0
+            depth -= 1
+            # Update parent's best
+            if stk_is_max[depth] != 0:
+                if val > stk_best[depth]:
+                    stk_best[depth] = val
+            else:
+                if val < stk_best[depth]:
+                    stk_best[depth] = val
+            stk_action[depth] += 1
+            continue
+
+        # Check draw (no empty cells)
+        var has_empty = False
+        for i in range(9):
+            if board[i] == 0:
+                has_empty = True
+                break
+        if not has_empty:
+            var val = 0  # Draw
+            if depth == 0:
+                return val
+            board[stk_placed[depth]] = 0
+            depth -= 1
+            if stk_is_max[depth] != 0:
+                if val > stk_best[depth]:
+                    stk_best[depth] = val
+            else:
+                if val < stk_best[depth]:
+                    stk_best[depth] = val
+            stk_action[depth] += 1
+            continue
+
+        # Find next action to try at current depth
+        var found_action = False
+        while stk_action[depth] < 9:
+            var a = stk_action[depth]
+            if board[a] == 0:
+                # Make move and descend
+                board[a] = stk_mark[depth]
+                found_action = True
+
+                # Push new frame
+                depth += 1
+                stk_placed[depth] = a
+                stk_action[depth] = 0
+                if stk_is_max[depth - 1] != 0:
+                    stk_best[depth] = 2  # Child minimizes: init +2
+                    stk_is_max[depth] = 0
+                else:
+                    stk_best[depth] = -2  # Child maximizes: init -2
+                    stk_is_max[depth] = 1
+                stk_mark[depth] = 3 - stk_mark[depth - 1]
+                break
+            stk_action[depth] += 1
+
+        if not found_action:
+            # All actions tried at this depth — propagate best up
+            var val = stk_best[depth]
+            if depth == 0:
+                return val
+            board[stk_placed[depth]] = 0
+            depth -= 1
+            if stk_is_max[depth] != 0:
+                if val > stk_best[depth]:
+                    stk_best[depth] = val
+            else:
+                if val < stk_best[depth]:
+                    stk_best[depth] = val
+            stk_action[depth] += 1
+
+    return 0  # Should not reach here
 
 
 struct GPUMinimaxTicTacToe(GPUEvaluator):
