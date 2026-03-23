@@ -1210,13 +1210,15 @@ def gpu_mcts_batched_select_and_copy_kernel[
 
     comptime VIRTUAL_LOSS: Int = 3
 
-    # Track virtual losses locally per root action to avoid stale reads
-    # from global memory (NVIDIA compiler may cache global loads across
-    # loop iterations, making virtual loss writes invisible to later sims).
-    var root_vl_visits = InlineArray[Scalar[dtype], ACT](
-        fill=Scalar[dtype](0.0)
-    )
-    var root_vl_total = Scalar[dtype](0.0)
+    # Load root node state into local memory to avoid stale global reads.
+    # NVIDIA compiler caches global memory loads across loop iterations,
+    # making virtual loss writes invisible to subsequent simulations.
+    # Solution: use ONLY local copies for root-level PUCT decisions.
+    var root_vc = InlineArray[Scalar[dtype], ACT](fill=Scalar[dtype](0.0))
+    var root_tv_sum = Scalar[dtype](0.0)
+    for _a in range(ACT):
+        root_vc[_a] = rebind[Scalar[dtype]](visit_count[tree_off + _a])
+        root_tv_sum += root_vc[_a]
 
     for s in range(BATCH_SIMS):
         # ── PUCT Selection ──────────────────────────────────
@@ -1226,10 +1228,12 @@ def gpu_mcts_batched_select_and_copy_kernel[
         search_paths[path_off] = Scalar[dtype](0.0)
 
         while depth < MAX_DEPTH - 1:
-            var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
-            # Add local virtual loss tracking for root node
+            # Use local copy for root, global for deeper nodes
+            var n_total: Scalar[dtype]
             if node_idx == 0:
-                n_total += root_vl_total
+                n_total = root_tv_sum
+            else:
+                n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
             var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
             var c = (
                 log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
@@ -1239,10 +1243,12 @@ def gpu_mcts_batched_select_and_copy_kernel[
             var best_score = Scalar[dtype](-1e18)
             for a in range(ACT):
                 var na_off = tree_off + node_idx * ACT + a
-                var n_a = rebind[Scalar[dtype]](visit_count[na_off])
-                # Add local virtual loss for root actions
+                # Use local copy for root actions, global for deeper
+                var n_a: Scalar[dtype]
                 if node_idx == 0:
-                    n_a += root_vl_visits[a]
+                    n_a = root_vc[a]
+                else:
+                    n_a = rebind[Scalar[dtype]](visit_count[na_off])
                 var q_val: Scalar[dtype]
                 if n_a > Scalar[dtype](0.5):
                     q_val = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -1284,10 +1290,12 @@ def gpu_mcts_batched_select_and_copy_kernel[
                     total_visits[tv_off + node_idx]
                 ) + Scalar[dtype](VIRTUAL_LOSS)
 
-                # Also track locally for root node
+                # Update local root copy
                 if node_idx == 0:
-                    root_vl_visits[best_action] += Scalar[dtype](VIRTUAL_LOSS)
-                    root_vl_total += Scalar[dtype](VIRTUAL_LOSS)
+                    root_vc[best_action] = root_vc[best_action] + Scalar[dtype](
+                        VIRTUAL_LOSS
+                    )
+                    root_tv_sum = root_tv_sum + Scalar[dtype](VIRTUAL_LOSS)
 
                 # ── Copy parent game state to expansion buffer ──
                 var parent_gs_off = (
