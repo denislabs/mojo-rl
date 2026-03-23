@@ -45,7 +45,7 @@ comptime NUM_ATOMS = 51
 comptime N_STEP = 3
 
 # Smaller buffers/batch due to large obs size (28224 floats per transition)
-comptime BUFFER_CAPACITY = 320_000
+comptime BUFFER_CAPACITY = 10_000
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
