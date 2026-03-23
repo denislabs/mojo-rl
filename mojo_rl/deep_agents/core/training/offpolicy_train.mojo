@@ -609,9 +609,9 @@ def run_offpolicy_discrete_train[
                     "Episode "
                     + String(episode + 1)
                     + " | Avg reward: "
-                    + String(avg_reward)[:7]
+                    + String(avg_reward)[byte=:7]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                     + " | Steps: "
                     + String(total_steps)
                 )
@@ -760,9 +760,9 @@ def run_offpolicy_discrete_train[
                     "Episode "
                     + String(episode + 1)
                     + " | Avg reward: "
-                    + String(avg_reward)[:7]
+                    + String(avg_reward)[byte=:7]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                     + " | Steps: "
                     + String(total_steps)
                 )
@@ -909,9 +909,9 @@ def run_offpolicy_continuous_train[
                     "Episode "
                     + String(episode + 1)
                     + " | Avg reward: "
-                    + String(avg_reward)[:7]
+                    + String(avg_reward)[byte=:7]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                     + " | Steps: "
                     + String(total_steps)
                 )
@@ -1065,9 +1065,9 @@ def run_offpolicy_continuous_train[
                     "Episode "
                     + String(episode + 1)
                     + " | Avg reward: "
-                    + String(avg_reward)[:7]
+                    + String(avg_reward)[byte=:7]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                     + " | Steps: "
                     + String(total_steps)
                 )

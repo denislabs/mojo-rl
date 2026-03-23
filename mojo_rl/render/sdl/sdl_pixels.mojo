@@ -943,7 +943,7 @@ def get_pixel_format_name(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatName",
-        fn(format: PixelFormat) -> Ptr[c_char, ImmutAnyOrigin],
+        def(format: PixelFormat) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(format)
 
 
@@ -978,7 +978,7 @@ def get_masks_for_pixel_format(
     ret = _get_dylib_function[
         lib,
         "SDL_GetMasksForPixelFormat",
-        fn(
+        def(
             format: PixelFormat,
             bpp: Ptr[c_int, MutAnyOrigin],
             rmask: Ptr[UInt32, MutAnyOrigin],
@@ -1019,7 +1019,7 @@ def get_pixel_format_for_masks(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatForMasks",
-        fn(
+        def(
             bpp: c_int,
             rmask: UInt32,
             gmask: UInt32,
@@ -1054,7 +1054,7 @@ def get_pixel_format_details(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatDetails",
-        fn(format: PixelFormat) -> Ptr[PixelFormatDetails, ImmutAnyOrigin],
+        def(format: PixelFormat) -> Ptr[PixelFormatDetails, ImmutAnyOrigin],
     ]()(format)
 
 
@@ -1080,7 +1080,7 @@ def create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_CreatePalette",
-        fn(ncolors: c_int) -> Ptr[Palette, MutAnyOrigin],
+        def(ncolors: c_int) -> Ptr[Palette, MutAnyOrigin],
     ]()(ncolors)
 
 
@@ -1112,7 +1112,7 @@ def set_palette_colors(
     ret = _get_dylib_function[
         lib,
         "SDL_SetPaletteColors",
-        fn(
+        def(
             palette: Ptr[Palette, MutAnyOrigin],
             colors: Ptr[Color, ImmutAnyOrigin],
             firstcolor: c_int,
@@ -1139,7 +1139,7 @@ def destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyPalette",
-        fn(palette: Ptr[Palette, MutAnyOrigin]) -> None,
+        def(palette: Ptr[Palette, MutAnyOrigin]) -> None,
     ]()(palette)
 
 
@@ -1188,7 +1188,7 @@ def map_rgb(
     return _get_dylib_function[
         lib,
         "SDL_MapRGB",
-        fn(
+        def(
             format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
             palette: Ptr[Palette, ImmutAnyOrigin],
             r: UInt8,
@@ -1245,7 +1245,7 @@ def map_rgba(
     return _get_dylib_function[
         lib,
         "SDL_MapRGBA",
-        fn(
+        def(
             format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
             palette: Ptr[Palette, ImmutAnyOrigin],
             r: UInt8,
@@ -1290,7 +1290,7 @@ def get_rgb(
     return _get_dylib_function[
         lib,
         "SDL_GetRGB",
-        fn(
+        def(
             pixel: UInt32,
             format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
             palette: Ptr[Palette, ImmutAnyOrigin],
@@ -1340,7 +1340,7 @@ def get_rgba(
     return _get_dylib_function[
         lib,
         "SDL_GetRGBA",
-        fn(
+        def(
             pixel: UInt32,
             format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
             palette: Ptr[Palette, ImmutAnyOrigin],

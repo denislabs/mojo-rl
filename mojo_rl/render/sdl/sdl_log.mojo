@@ -177,7 +177,7 @@ def set_log_priorities(priority: LogPriority) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_SetLogPriorities", fn(priority: LogPriority) -> None
+        lib, "SDL_SetLogPriorities", def(priority: LogPriority) -> None
     ]()(priority)
 
 
@@ -197,7 +197,7 @@ def set_log_priority(category: c_int, priority: LogPriority) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_SetLogPriority",
-        fn(category: c_int, priority: LogPriority) -> None,
+        def(category: c_int, priority: LogPriority) -> None,
     ]()(category, priority)
 
 
@@ -217,7 +217,7 @@ def get_log_priority(category: c_int) raises -> LogPriority:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetLogPriority", fn(category: c_int) -> LogPriority
+        lib, "SDL_GetLogPriority", def(category: c_int) -> LogPriority
     ]()(category)
 
 
@@ -232,7 +232,7 @@ def reset_log_priorities() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetLogPriorities.
     """
 
-    return _get_dylib_function[lib, "SDL_ResetLogPriorities", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_ResetLogPriorities", def() -> None]()()
 
 
 def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
@@ -260,13 +260,13 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetLogPriorityPrefix",
-        fn(priority: LogPriority, prefix: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(priority: LogPriority, prefix: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-comptime LogOutputFunction = fn(
+comptime LogOutputFunction = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     category: c_int,
     priority: LogPriority,
@@ -302,7 +302,7 @@ def get_default_log_output_function() raises -> LogOutputFunction:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetDefaultLogOutputFunction", fn() -> LogOutputFunction
+        lib, "SDL_GetDefaultLogOutputFunction", def() -> LogOutputFunction
     ]()()
 
 
@@ -327,7 +327,7 @@ def get_log_output_function(
     return _get_dylib_function[
         lib,
         "SDL_GetLogOutputFunction",
-        fn(
+        def(
             callback: Ptr[LogOutputFunction, MutAnyOrigin],
             userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
         ) -> None,
@@ -352,7 +352,7 @@ def set_log_output_function(
     return _get_dylib_function[
         lib,
         "SDL_SetLogOutputFunction",
-        fn(
+        def(
             callback: LogOutputFunction,
             userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> None,

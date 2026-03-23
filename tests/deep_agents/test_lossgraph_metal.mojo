@@ -629,13 +629,13 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
             "    Sample "
             + String(b)
             + ": residual="
-            + String(residual)[:6]
+            + String(residual)[byte=:6]
             + " fwd="
-            + String(cpu_out[b])[:8]
+            + String(cpu_out[b])[byte=:8]
             + " grad_pred="
-            + String(cpu_grad_in[b * HIN])[:10]
+            + String(cpu_grad_in[b * HIN])[byte=:10]
             + " grad_tgt="
-            + String(cpu_grad_in[b * HIN + 1])[:10]
+            + String(cpu_grad_in[b * HIN + 1])[byte=:10]
         )
 
     # -- GPU backward --
@@ -713,11 +713,11 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
             "    Sample "
             + String(b)
             + ": fwd="
-            + String(gpu_fwd[b])[:8]
+            + String(gpu_fwd[b])[byte=:8]
             + " grad_pred="
-            + String(gpu_grad[b * HIN])[:10]
+            + String(gpu_grad[b * HIN])[byte=:10]
             + " grad_tgt="
-            + String(gpu_grad[b * HIN + 1])[:10]
+            + String(gpu_grad[b * HIN + 1])[byte=:10]
         )
 
     # Compare
@@ -733,9 +733,9 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
                 "    MISMATCH fwd sample "
                 + String(b)
                 + ": cpu="
-                + String(cpu_out[b])[:8]
+                + String(cpu_out[b])[byte=:8]
                 + " gpu="
-                + String(gpu_fwd[b])[:8]
+                + String(gpu_fwd[b])[byte=:8]
             )
             all_ok = False
         if grad_diff > 1e-5 or grad_diff < -1e-5:
@@ -743,9 +743,9 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
                 "    MISMATCH grad sample "
                 + String(b)
                 + ": cpu="
-                + String(cpu_grad_in[b * HIN])[:10]
+                + String(cpu_grad_in[b * HIN])[byte=:10]
                 + " gpu="
-                + String(gpu_grad[b * HIN])[:10]
+                + String(gpu_grad[b * HIN])[byte=:10]
             )
             all_ok = False
     if all_ok:
@@ -828,16 +828,16 @@ def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
         cpu_grad_seed_t, cpu_grad_in_t, cpu_params_t, cpu_cache_t, cpu_grads_t
     )
 
-    print("  CPU: fwd[0]=" + String(cpu_out[0])[:8])
+    print("  CPU: fwd[0]=" + String(cpu_out[0])[byte=:8])
     print(
         "  CPU: grad_in[0] = ["
-        + String(cpu_grad_in[0])[:10]
+        + String(cpu_grad_in[0])[byte=:10]
         + ", "
-        + String(cpu_grad_in[1])[:10]
+        + String(cpu_grad_in[1])[byte=:10]
         + ", "
-        + String(cpu_grad_in[2])[:10]
+        + String(cpu_grad_in[2])[byte=:10]
         + ", "
-        + String(cpu_grad_in[3])[:10]
+        + String(cpu_grad_in[3])[byte=:10]
         + "]"
     )
 
@@ -904,16 +904,16 @@ def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     ctx.enqueue_copy(gpu_grad.unsafe_ptr(), grad_in_buf)
     ctx.synchronize()
 
-    print("  GPU: fwd[0]=" + String(gpu_out[0])[:8])
+    print("  GPU: fwd[0]=" + String(gpu_out[0])[byte=:8])
     print(
         "  GPU: grad_in[0] = ["
-        + String(gpu_grad[0])[:10]
+        + String(gpu_grad[0])[byte=:10]
         + ", "
-        + String(gpu_grad[1])[:10]
+        + String(gpu_grad[1])[byte=:10]
         + ", "
-        + String(gpu_grad[2])[:10]
+        + String(gpu_grad[2])[byte=:10]
         + ", "
-        + String(gpu_grad[3])[:10]
+        + String(gpu_grad[3])[byte=:10]
         + "]"
     )
 
@@ -933,9 +933,9 @@ def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
                     + String(c)
                     + "]:"
                     + " cpu="
-                    + String(cpu_val)[:10]
+                    + String(cpu_val)[byte=:10]
                     + " gpu="
-                    + String(gpu_val)[:10]
+                    + String(gpu_val)[byte=:10]
                 )
                 all_ok = False
     if all_ok:

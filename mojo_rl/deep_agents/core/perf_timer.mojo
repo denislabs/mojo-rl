@@ -208,12 +208,12 @@ struct PerfTimer[ENABLED: Bool]:
 
 def _fmt_ms(ms: Float64) -> String:
     """Format milliseconds with consistent width."""
-    return String(ms)[:9] + "ms"
+    return String(ms)[byte=:9] + "ms"
 
 
 def _fmt_pct(pct: Float64) -> String:
     """Format percentage."""
-    return "(" + String(pct)[:4] + "%)"
+    return "(" + String(pct)[byte=:4] + "%)"
 
 
 def _pad_to(n: Int) -> String:

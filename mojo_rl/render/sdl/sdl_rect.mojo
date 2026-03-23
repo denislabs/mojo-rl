@@ -101,7 +101,7 @@ def has_rect_intersection(
     return _get_dylib_function[
         lib,
         "SDL_HasRectIntersection",
-        fn(a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]) -> Bool,
+        def(a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]) -> Bool,
     ]()(a, b)
 
 
@@ -129,7 +129,7 @@ def get_rect_intersection(
     return _get_dylib_function[
         lib,
         "SDL_GetRectIntersection",
-        fn(
+        def(
             a: Ptr[Rect, ImmutAnyOrigin],
             b: Ptr[Rect, ImmutAnyOrigin],
             result: Ptr[Rect, MutAnyOrigin],
@@ -160,7 +160,7 @@ def get_rect_union(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRectUnion",
-        fn(
+        def(
             a: Ptr[Rect, ImmutAnyOrigin],
             b: Ptr[Rect, ImmutAnyOrigin],
             result: Ptr[Rect, MutAnyOrigin],
@@ -199,7 +199,7 @@ def get_rect_enclosing_points(
     return _get_dylib_function[
         lib,
         "SDL_GetRectEnclosingPoints",
-        fn(
+        def(
             points: Ptr[Point, ImmutAnyOrigin],
             count: c_int,
             clip: Ptr[Rect, ImmutAnyOrigin],
@@ -239,7 +239,7 @@ def get_rect_and_line_intersection(
     return _get_dylib_function[
         lib,
         "SDL_GetRectAndLineIntersection",
-        fn(
+        def(
             rect: Ptr[Rect, ImmutAnyOrigin],
             x1: Ptr[c_int, MutAnyOrigin],
             y1: Ptr[c_int, MutAnyOrigin],
@@ -269,7 +269,7 @@ def has_rect_intersection_float(
     return _get_dylib_function[
         lib,
         "SDL_HasRectIntersectionFloat",
-        fn(
+        def(
             a: Ptr[FRect, ImmutAnyOrigin], b: Ptr[FRect, ImmutAnyOrigin]
         ) -> Bool,
     ]()(a, b)
@@ -299,7 +299,7 @@ def get_rect_intersection_float(
     return _get_dylib_function[
         lib,
         "SDL_GetRectIntersectionFloat",
-        fn(
+        def(
             a: Ptr[FRect, ImmutAnyOrigin],
             b: Ptr[FRect, ImmutAnyOrigin],
             result: Ptr[FRect, MutAnyOrigin],
@@ -330,7 +330,7 @@ def get_rect_union_float(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRectUnionFloat",
-        fn(
+        def(
             a: Ptr[FRect, ImmutAnyOrigin],
             b: Ptr[FRect, ImmutAnyOrigin],
             result: Ptr[FRect, MutAnyOrigin],
@@ -370,7 +370,7 @@ def get_rect_enclosing_points_float(
     return _get_dylib_function[
         lib,
         "SDL_GetRectEnclosingPointsFloat",
-        fn(
+        def(
             points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
             clip: Ptr[FRect, ImmutAnyOrigin],
@@ -411,7 +411,7 @@ def get_rect_and_line_intersection_float(
     return _get_dylib_function[
         lib,
         "SDL_GetRectAndLineIntersectionFloat",
-        fn(
+        def(
             rect: Ptr[FRect, ImmutAnyOrigin],
             x1: Ptr[c_float, MutAnyOrigin],
             y1: Ptr[c_float, MutAnyOrigin],

@@ -53,7 +53,7 @@ def get_ticks() raises -> UInt64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTicks.
     """
 
-    return _get_dylib_function[lib, "SDL_GetTicks", fn() -> UInt64]()()
+    return _get_dylib_function[lib, "SDL_GetTicks", def() -> UInt64]()()
 
 
 def get_ticks_ns() raises -> UInt64:
@@ -69,7 +69,7 @@ def get_ticks_ns() raises -> UInt64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTicksNS.
     """
 
-    return _get_dylib_function[lib, "SDL_GetTicksNS", fn() -> UInt64]()()
+    return _get_dylib_function[lib, "SDL_GetTicksNS", def() -> UInt64]()()
 
 
 def get_performance_counter() raises -> UInt64:
@@ -91,7 +91,7 @@ def get_performance_counter() raises -> UInt64:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPerformanceCounter", fn() -> UInt64
+        lib, "SDL_GetPerformanceCounter", def() -> UInt64
     ]()()
 
 
@@ -108,7 +108,7 @@ def get_performance_frequency() raises -> UInt64:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPerformanceFrequency", fn() -> UInt64
+        lib, "SDL_GetPerformanceFrequency", def() -> UInt64
     ]()()
 
 
@@ -128,7 +128,7 @@ def delay(ms: UInt32) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Delay.
     """
 
-    return _get_dylib_function[lib, "SDL_Delay", fn(ms: UInt32) -> None]()(ms)
+    return _get_dylib_function[lib, "SDL_Delay", def(ms: UInt32) -> None]()(ms)
 
 
 def delay_ns(ns: UInt64) raises -> None:
@@ -147,7 +147,9 @@ def delay_ns(ns: UInt64) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DelayNS.
     """
 
-    return _get_dylib_function[lib, "SDL_DelayNS", fn(ns: UInt64) -> None]()(ns)
+    return _get_dylib_function[lib, "SDL_DelayNS", def(ns: UInt64) -> None]()(
+        ns
+    )
 
 
 def delay_precise(ns: UInt64) raises -> None:
@@ -167,7 +169,7 @@ def delay_precise(ns: UInt64) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_DelayPrecise", fn(ns: UInt64) -> None
+        lib, "SDL_DelayPrecise", def(ns: UInt64) -> None
     ]()(ns)
 
 
@@ -192,7 +194,7 @@ struct TimerID(Intable, TrivialRegisterPassable):
         return Self(lhs.value | rhs.value)
 
 
-comptime TimerCallback = fn(
+comptime TimerCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt32,
@@ -267,7 +269,7 @@ def add_timer(
     return _get_dylib_function[
         lib,
         "SDL_AddTimer",
-        fn(
+        def(
             interval: UInt32,
             callback: TimerCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -275,7 +277,7 @@ def add_timer(
     ]()(interval, callback, userdata)
 
 
-comptime NSTimerCallback = fn(
+comptime NSTimerCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt64,
@@ -350,7 +352,7 @@ def add_timer_ns(
     return _get_dylib_function[
         lib,
         "SDL_AddTimerNS",
-        fn(
+        def(
             interval: UInt64,
             callback: NSTimerCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -375,7 +377,7 @@ def remove_timer(id: TimerID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_RemoveTimer", fn(id: TimerID) -> Bool
+        lib, "SDL_RemoveTimer", def(id: TimerID) -> Bool
     ]()(id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

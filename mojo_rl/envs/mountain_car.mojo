@@ -550,8 +550,8 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        info_lines.append("Pos: " + String(pos_f64)[:6])
-        info_lines.append("Vel: " + String(vel_f64)[:7])
+        info_lines.append("Pos: " + String(pos_f64)[byte=:6])
+        info_lines.append("Vel: " + String(vel_f64)[byte=:7])
         renderer.draw_info_box(info_lines)
 
         # Update display

@@ -1369,7 +1369,7 @@ def pump_events() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PumpEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_PumpEvents", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_PumpEvents", def() -> None]()()
 
 
 struct EventAction(Indexer, Intable, TrivialRegisterPassable):
@@ -1456,7 +1456,7 @@ def peep_events(
     return _get_dylib_function[
         lib,
         "SDL_PeepEvents",
-        fn(
+        def(
             events: Ptr[Event, MutAnyOrigin],
             numevents: c_int,
             action: EventAction,
@@ -1485,9 +1485,9 @@ def has_event(type: UInt32) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasEvent.
     """
 
-    return _get_dylib_function[lib, "SDL_HasEvent", fn(type: UInt32) -> Bool]()(
-        type
-    )
+    return _get_dylib_function[
+        lib, "SDL_HasEvent", def(type: UInt32) -> Bool
+    ]()(type)
 
 
 def has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
@@ -1512,7 +1512,7 @@ def has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_HasEvents", fn(min_type: UInt32, max_type: UInt32) -> Bool
+        lib, "SDL_HasEvents", def(min_type: UInt32, max_type: UInt32) -> Bool
     ]()(min_type, max_type)
 
 
@@ -1544,7 +1544,7 @@ def flush_event(type: UInt32) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_FlushEvent", fn(type: UInt32) -> None
+        lib, "SDL_FlushEvent", def(type: UInt32) -> None
     ]()(type)
 
 
@@ -1575,7 +1575,7 @@ def flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_FlushEvents", fn(min_type: UInt32, max_type: UInt32) -> None
+        lib, "SDL_FlushEvents", def(min_type: UInt32, max_type: UInt32) -> None
     ]()(min_type, max_type)
 
 
@@ -1625,7 +1625,7 @@ def poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_PollEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
+        lib, "SDL_PollEvent", def(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
 
 
@@ -1653,7 +1653,7 @@ def wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_WaitEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
+        lib, "SDL_WaitEvent", def(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1693,7 +1693,7 @@ def wait_event_timeout(
     return _get_dylib_function[
         lib,
         "SDL_WaitEventTimeout",
-        fn(event: Ptr[Event, MutAnyOrigin], timeout_ms: Int32) -> Bool,
+        def(event: Ptr[Event, MutAnyOrigin], timeout_ms: Int32) -> Bool,
     ]()(event, timeout_ms)
 
 
@@ -1731,13 +1731,13 @@ def push_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_PushEvent", fn(event: Ptr[Event, MutAnyOrigin]) -> Bool
+        lib, "SDL_PushEvent", def(event: Ptr[Event, MutAnyOrigin]) -> Bool
     ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-comptime EventFilter = fn(
+comptime EventFilter = def(
     userdata: Ptr[NoneType, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) -> Bool
 """A function pointer used for callbacks that watch the event queue.
@@ -1802,7 +1802,7 @@ def set_event_filter(
     return _get_dylib_function[
         lib,
         "SDL_SetEventFilter",
-        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
+        def(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
@@ -1832,7 +1832,7 @@ def get_event_filter(
     ret = _get_dylib_function[
         lib,
         "SDL_GetEventFilter",
-        fn(
+        def(
             filter: Ptr[EventFilter, MutAnyOrigin],
             userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
         ) -> Bool,
@@ -1878,7 +1878,7 @@ def add_event_watch(
     ret = _get_dylib_function[
         lib,
         "SDL_AddEventWatch",
-        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool,
+        def(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool,
     ]()(filter, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1905,7 +1905,7 @@ def remove_event_watch(
     return _get_dylib_function[
         lib,
         "SDL_RemoveEventWatch",
-        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
+        def(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
@@ -1932,7 +1932,7 @@ def filter_events(
     return _get_dylib_function[
         lib,
         "SDL_FilterEvents",
-        fn(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
+        def(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) -> None,
     ]()(filter, userdata)
 
 
@@ -1950,7 +1950,7 @@ def set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_SetEventEnabled", fn(type: UInt32, enabled: Bool) -> None
+        lib, "SDL_SetEventEnabled", def(type: UInt32, enabled: Bool) -> None
     ]()(type, enabled)
 
 
@@ -1970,7 +1970,7 @@ def event_enabled(type: UInt32) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_EventEnabled", fn(type: UInt32) -> Bool
+        lib, "SDL_EventEnabled", def(type: UInt32) -> Bool
     ]()(type)
 
 
@@ -1992,7 +1992,7 @@ def register_events(numevents: c_int) raises -> UInt32:
     """
 
     return _get_dylib_function[
-        lib, "SDL_RegisterEvents", fn(numevents: c_int) -> UInt32
+        lib, "SDL_RegisterEvents", def(numevents: c_int) -> UInt32
     ]()(numevents)
 
 
@@ -2016,5 +2016,5 @@ def get_window_from_event(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowFromEvent",
-        fn(event: Ptr[Event, ImmutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
+        def(event: Ptr[Event, ImmutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
     ]()(event)

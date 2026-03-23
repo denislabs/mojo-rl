@@ -104,7 +104,7 @@ def run_offpolicy_continuous_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -205,7 +205,7 @@ def run_offpolicy_continuous_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -295,7 +295,7 @@ def run_offpolicy_discrete_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -383,7 +383,7 @@ def run_offpolicy_continuous_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -467,7 +467,7 @@ def run_offpolicy_continuous_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -553,7 +553,7 @@ def run_offpolicy_discrete_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -637,7 +637,7 @@ def run_offpolicy_discrete_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -728,7 +728,7 @@ def run_onpolicy_discrete_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )
@@ -817,7 +817,7 @@ def run_onpolicy_continuous_eval[
                 "Eval Episode",
                 episode + 1,
                 "| Reward:",
-                String(episode_reward)[:10],
+                String(episode_reward)[byte=:10],
                 "| Steps:",
                 episode_steps,
             )

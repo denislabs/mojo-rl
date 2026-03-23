@@ -205,9 +205,9 @@ def run_onpolicy_discrete_train[
                     "Update "
                     + String(update + 1)
                     + " | Loss: "
-                    + String(avg_loss)[:8]
+                    + String(avg_loss)[byte=:8]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                 )
 
     if logger:
@@ -296,9 +296,9 @@ def run_onpolicy_continuous_train[
                     "Update "
                     + String(update + 1)
                     + " | Loss: "
-                    + String(avg_loss)[:8]
+                    + String(avg_loss)[byte=:8]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                 )
 
     if logger:
@@ -552,9 +552,9 @@ def run_onpolicy_discrete_train[
                     "Update "
                     + String(update + 1)
                     + " | Loss: "
-                    + String(avg_loss)[:8]
+                    + String(avg_loss)[byte=:8]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                 )
 
     if logger:
@@ -646,9 +646,9 @@ def run_onpolicy_continuous_train[
                     "Update "
                     + String(update + 1)
                     + " | Loss: "
-                    + String(avg_loss)[:8]
+                    + String(avg_loss)[byte=:8]
                     + " | Explore: "
-                    + String(agent.get_explore_rate())[:5]
+                    + String(agent.get_explore_rate())[byte=:5]
                 )
 
     if logger:

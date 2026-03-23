@@ -90,10 +90,10 @@ def main() raises:
             "   updates: "
             + String(ppo.train_step_count)
             + "  time: "
-            + String(elapsed)[:5]
+            + String(elapsed)[byte=:5]
             + "s"
         )
-        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[:7])
+        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[byte=:7])
 
         if ppo.train_step_count > 0:
             print("   OK: Generic PPO GPU trained")
@@ -146,10 +146,10 @@ def main() raises:
             "   updates: "
             + String(a2c.train_step_count)
             + "  time: "
-            + String(elapsed)[:5]
+            + String(elapsed)[byte=:5]
             + "s"
         )
-        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[:7])
+        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[byte=:7])
 
         if a2c.train_step_count > 0:
             print("   OK: Generic A2C GPU trained")
@@ -165,14 +165,14 @@ def main() raises:
         print("Summary:")
         print(
             "  PPO : "
-            + String(m1.mean_reward_last_n(20))[:7]
+            + String(m1.mean_reward_last_n(20))[byte=:7]
             + " avg (last 20) in "
             + String(ppo.train_step_count)
             + " updates"
         )
         print(
             "  A2C : "
-            + String(m2.mean_reward_last_n(20))[:7]
+            + String(m2.mean_reward_last_n(20))[byte=:7]
             + " avg (last 20) in "
             + String(a2c.train_step_count)
             + " updates"

@@ -71,7 +71,7 @@ def guid_to_string(
     return _get_dylib_function[
         lib,
         "SDL_GUIDToString",
-        fn(
+        def(
             guid: GUID, psz_guid: Ptr[c_char, MutAnyOrigin], cb_guid: c_int
         ) -> None,
     ]()(guid, psz_guid, cb_guid)
@@ -99,5 +99,5 @@ def string_to_guid(var pch_guid: String) raises -> GUID:
     return _get_dylib_function[
         lib,
         "SDL_StringToGUID",
-        fn(pch_guid: Ptr[c_char, ImmutAnyOrigin]) -> GUID,
+        def(pch_guid: Ptr[c_char, ImmutAnyOrigin]) -> GUID,
     ]()(pch_guid.as_c_string_slice().unsafe_ptr())

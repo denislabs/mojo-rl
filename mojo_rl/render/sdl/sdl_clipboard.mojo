@@ -94,7 +94,7 @@ def set_clipboard_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardText",
-        fn(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -118,7 +118,7 @@ def get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GetClipboardText", fn() -> Ptr[c_char, MutAnyOrigin]
+        lib, "SDL_GetClipboardText", def() -> Ptr[c_char, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -136,7 +136,7 @@ def has_clipboard_text() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasClipboardText.
     """
 
-    return _get_dylib_function[lib, "SDL_HasClipboardText", fn() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_HasClipboardText", def() -> Bool]()()
 
 
 def set_primary_selection_text(var text: String) raises:
@@ -158,7 +158,7 @@ def set_primary_selection_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetPrimarySelectionText",
-        fn(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -182,7 +182,7 @@ def get_primary_selection_text() raises -> Ptr[c_char, MutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPrimarySelectionText", fn() -> Ptr[c_char, MutAnyOrigin]
+        lib, "SDL_GetPrimarySelectionText", def() -> Ptr[c_char, MutAnyOrigin]
     ]()()
 
 
@@ -200,12 +200,12 @@ def has_primary_selection_text() raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_HasPrimarySelectionText", fn() -> Bool
+        lib, "SDL_HasPrimarySelectionText", def() -> Bool
     ]()()
 
 
 comptime ClipboardDataCallback = Ptr[
-    fn(
+    def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         mime_type: Ptr[c_char, ImmutAnyOrigin],
         size: Ptr[c_size_t, MutAnyOrigin],
@@ -234,7 +234,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_ClipboardDataCallback.
 """
 
 
-comptime ClipboardCleanupCallback = fn(
+comptime ClipboardCleanupCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin]
 ) -> None
 """Callback function that will be called when the clipboard is cleared, or when new
@@ -287,7 +287,7 @@ def set_clipboard_data(
     ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardData",
-        fn(
+        def(
             callback: ClipboardDataCallback,
             cleanup: ClipboardCleanupCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -312,7 +312,7 @@ def clear_clipboard_data() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearClipboardData.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ClearClipboardData", fn() -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_ClearClipboardData", def() -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -345,7 +345,7 @@ def get_clipboard_data(
     ret = _get_dylib_function[
         lib,
         "SDL_GetClipboardData",
-        fn(
+        def(
             mime_type: Ptr[c_char, ImmutAnyOrigin],
             size: Ptr[c_size_t, MutAnyOrigin],
         ) -> Ptr[NoneType, MutAnyOrigin],
@@ -373,7 +373,7 @@ def has_clipboard_data(var mime_type: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasClipboardData",
-        fn(mime_type: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(mime_type: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(mime_type.as_c_string_slice().unsafe_ptr())
 
 
@@ -400,7 +400,7 @@ def get_clipboard_mime_types(
     return _get_dylib_function[
         lib,
         "SDL_GetClipboardMimeTypes",
-        fn(
+        def(
             num_mime_types: Ptr[c_size_t, MutAnyOrigin]
         ) -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(num_mime_types)

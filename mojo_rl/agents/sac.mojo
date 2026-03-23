@@ -805,9 +805,9 @@ struct SACAgent(Copyable, Movable):
                     "Episode",
                     episode + 1,
                     "| Avg Reward:",
-                    String(avg_reward)[:8],
+                    String(avg_reward)[byte=:8],
                     "| Alpha:",
-                    String(self.alpha)[:6],
+                    String(self.alpha)[byte=:6],
                     "| Buffer:",
                     buffer.len(),
                 )
@@ -822,8 +822,8 @@ struct SACAgent(Copyable, Movable):
             var final_avg = sum_reward / Float64(
                 len(metrics.episodes) - start_idx
             )
-            print("Final avg reward:", String(final_avg)[:8])
-            print("Final alpha:", String(self.alpha)[:6])
+            print("Final avg reward:", String(final_avg)[byte=:8])
+            print("Final alpha:", String(self.alpha)[byte=:6])
 
         return metrics^
 

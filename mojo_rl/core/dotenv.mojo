@@ -51,22 +51,22 @@ def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
 
         # Skip export prefix
         if line.startswith("export "):
-            line = String(line[7:])
+            line = String(line[byte=7:])
 
         # Find the = separator
         var eq_pos = line.find("=")
         if eq_pos < 0:
             continue
 
-        var key = String(line[:eq_pos])
-        var val = String(line[eq_pos + 1 :])
+        var key = String(line[byte=:eq_pos])
+        var val = String(line[byte=eq_pos + 1 :])
 
         # Strip surrounding quotes
         if len(val) >= 2:
             if (val.startswith('"') and val.endswith('"')) or (
                 val.startswith("'") and val.endswith("'")
             ):
-                val = String(val[1 : len(val) - 1])
+                val = String(val[byte=1 : len(val) - 1])
 
         result[key] = val
 

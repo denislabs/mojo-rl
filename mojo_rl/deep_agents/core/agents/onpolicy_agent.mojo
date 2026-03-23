@@ -1418,7 +1418,7 @@ struct GenericOnPolicyAgent[
                     "Eval Episode",
                     episode + 1,
                     "| Reward:",
-                    String(episode_reward)[:10],
+                    String(episode_reward)[byte=:10],
                     "| Steps:",
                     episode_steps,
                 )

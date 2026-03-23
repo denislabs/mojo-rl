@@ -682,7 +682,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
                     "Episode",
                     episode + 1,
                     "| Avg Reward:",
-                    String(avg_reward)[:8],
+                    String(avg_reward)[byte=:8],
                     "| Steps:",
                     steps,
                     "| Buffer:",
@@ -700,7 +700,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             var final_avg = sum_reward / Float64(
                 len(metrics.episodes) - start_idx
             )
-            print("Final avg reward:", String(final_avg)[:8])
+            print("Final avg reward:", String(final_avg)[byte=:8])
 
         return metrics^
 

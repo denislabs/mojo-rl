@@ -90,10 +90,10 @@ def main() raises:
             + "  episodes: "
             + String(len(m1.episodes))
             + "  time: "
-            + String(elapsed)[:5]
+            + String(elapsed)[byte=:5]
             + "s"
         )
-        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[:7])
+        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[byte=:7])
 
         if dqn.train_step_count > 0:
             print("   OK: Standard DQN GPU trained")
@@ -147,10 +147,10 @@ def main() raises:
             + "  episodes: "
             + String(len(m2.episodes))
             + "  time: "
-            + String(elapsed)[:5]
+            + String(elapsed)[byte=:5]
             + "s"
         )
-        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[:7])
+        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[byte=:7])
 
         if ddqn.train_step_count > 0:
             print("   OK: Double DQN GPU trained")
@@ -204,10 +204,10 @@ def main() raises:
             + "  episodes: "
             + String(len(m3.episodes))
             + "  time: "
-            + String(elapsed)[:5]
+            + String(elapsed)[byte=:5]
             + "s"
         )
-        print("   last-20 avg reward: " + String(m3.mean_reward_last_n(20))[:7])
+        print("   last-20 avg reward: " + String(m3.mean_reward_last_n(20))[byte=:7])
 
         if dueling.train_step_count > 0:
             print("   OK: Dueling DQN GPU trained")
@@ -223,17 +223,17 @@ def main() raises:
         print("Summary:")
         print(
             "  DQN      : "
-            + String(m1.mean_reward_last_n(20))[:7]
+            + String(m1.mean_reward_last_n(20))[byte=:7]
             + " avg (last 20)"
         )
         print(
             "  Double   : "
-            + String(m2.mean_reward_last_n(20))[:7]
+            + String(m2.mean_reward_last_n(20))[byte=:7]
             + " avg (last 20)"
         )
         print(
             "  Dueling  : "
-            + String(m3.mean_reward_last_n(20))[:7]
+            + String(m3.mean_reward_last_n(20))[byte=:7]
             + " avg (last 20)"
         )
         print("=" * 70)

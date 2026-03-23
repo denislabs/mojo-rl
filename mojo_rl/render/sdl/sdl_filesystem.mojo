@@ -83,7 +83,7 @@ def get_base_path() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetBasePath", fn() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetBasePath", def() -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
@@ -147,7 +147,7 @@ def get_pref_path(
     return _get_dylib_function[
         lib,
         "SDL_GetPrefPath",
-        fn(
+        def(
             org: Ptr[c_char, ImmutAnyOrigin],
             app: Ptr[c_char, ImmutAnyOrigin],
         ) -> Ptr[c_char, MutAnyOrigin],
@@ -259,7 +259,7 @@ def get_user_folder(folder: Folder) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetUserFolder",
-        fn(folder: Folder) -> Ptr[c_char, ImmutAnyOrigin],
+        def(folder: Folder) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(folder)
 
 
@@ -364,7 +364,7 @@ def create_directory(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CreateDirectory",
-        fn(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -402,7 +402,7 @@ struct EnumerationResult(Indexer, Intable, TrivialRegisterPassable):
     """Value that requests that enumeration stop, as a failure."""
 
 
-comptime EnumerateDirectoryCallback = fn(
+comptime EnumerateDirectoryCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     dirname: Ptr[c_char, ImmutAnyOrigin],
     fname: Ptr[c_char, ImmutAnyOrigin],
@@ -465,7 +465,7 @@ def enumerate_directory(
     ret = _get_dylib_function[
         lib,
         "SDL_EnumerateDirectory",
-        fn(
+        def(
             path: Ptr[c_char, ImmutAnyOrigin],
             callback: EnumerateDirectoryCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -492,7 +492,7 @@ def remove_path(var path: String) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_RemovePath", fn(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool
+        lib, "SDL_RemovePath", def(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -526,7 +526,7 @@ def rename_path(var oldpath: String, var newpath: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RenamePath",
-        fn(
+        def(
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -583,7 +583,7 @@ def copy_file(var oldpath: String, var newpath: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CopyFile",
-        fn(
+        def(
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -613,7 +613,7 @@ def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GetPathInfo",
-        fn(
+        def(
             path: Ptr[c_char, ImmutAnyOrigin],
             info: Ptr[PathInfo, MutAnyOrigin],
         ) -> Bool,
@@ -667,7 +667,7 @@ def glob_directory(
     ret = _get_dylib_function[
         lib,
         "SDL_GlobDirectory",
-        fn(
+        def(
             path: Ptr[c_char, ImmutAnyOrigin],
             pattern: Ptr[c_char, ImmutAnyOrigin],
             flags: GlobFlags,
@@ -705,5 +705,5 @@ def get_current_directory() raises -> Ptr[c_char, MutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCurrentDirectory", fn() -> Ptr[c_char, MutAnyOrigin]
+        lib, "SDL_GetCurrentDirectory", def() -> Ptr[c_char, MutAnyOrigin]
     ]()()

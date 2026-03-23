@@ -75,7 +75,7 @@ def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 def fd_grad_check_model[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    fwd_fn: fn(
+    fwd_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -83,7 +83,7 @@ def fd_grad_check_model[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    bwd_fn: fn(
+    bwd_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -126,8 +126,8 @@ def fd_grad_check_model[
         gp_data.unsafe_ptr()
     )
 
-    fwd_fn(inp_t, out_t, p_t, c_t)
-    bwd_fn(go_t, gi_t, p_t, c_t, gp_t)
+    fwd_def(inp_t, out_t, p_t, c_t)
+    bwd_def(go_t, gi_t, p_t, c_t, gp_t)
 
     # Numerical gradients (input)
     var max_err: Float64 = 0.0
@@ -146,7 +146,7 @@ def fd_grad_check_model[
         var c_p = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_plus.unsafe_ptr())
-        fwd_fn(inp_p, out_p, p_t, c_p)
+        fwd_def(inp_p, out_p, p_t, c_p)
 
         inp[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * OUT_DIM)
@@ -160,7 +160,7 @@ def fd_grad_check_model[
         var c_m = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_minus.unsafe_ptr())
-        fwd_fn(inp_m, out_m, p_t, c_m)
+        fwd_def(inp_m, out_m, p_t, c_m)
 
         inp[idx] = orig
 
@@ -184,7 +184,7 @@ def fd_grad_check_model[
 def fd_param_grad_check[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    fwd_fn: fn(
+    fwd_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -192,7 +192,7 @@ def fd_param_grad_check[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    bwd_fn: fn(
+    bwd_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -234,8 +234,8 @@ def fd_param_grad_check[
         gp_data.unsafe_ptr()
     )
 
-    fwd_fn(inp_t, out_t, p_t, c_t)
-    bwd_fn(go_t, gi_t, p_t, c_t, gp_t)
+    fwd_def(inp_t, out_t, p_t, c_t)
+    bwd_def(go_t, gi_t, p_t, c_t, gp_t)
 
     # Numerical param gradients
     var max_err: Float64 = 0.0
@@ -254,7 +254,7 @@ def fd_param_grad_check[
         var c_p = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_plus.unsafe_ptr())
-        fwd_fn(inp_t, out_p, p_plus, c_p)
+        fwd_def(inp_t, out_p, p_plus, c_p)
 
         params[idx] = orig - Scalar[dtype](eps)
         var out_minus = make_list(BATCH * OUT_DIM)
@@ -268,7 +268,7 @@ def fd_param_grad_check[
         var c_m = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_minus.unsafe_ptr())
-        fwd_fn(inp_t, out_m, p_minus, c_m)
+        fwd_def(inp_t, out_m, p_minus, c_m)
 
         params[idx] = orig
 

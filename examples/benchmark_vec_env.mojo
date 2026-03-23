@@ -630,37 +630,37 @@ def main():
         print("-" * 70)
         print(
             "  64 envs:  GPU="
-            + String(gpu_nt_64 / cpu_64)[:4]
+            + String(gpu_nt_64 / cpu_64)[byte=:4]
             + "x (no transfer), "
-            + String(gpu_64 / cpu_64)[:4]
+            + String(gpu_64 / cpu_64)[byte=:4]
             + "x (with transfer)"
         )
         print(
             "  128 envs: GPU="
-            + String(gpu_nt_128 / cpu_128)[:4]
+            + String(gpu_nt_128 / cpu_128)[byte=:4]
             + "x (no transfer), "
-            + String(gpu_128 / cpu_128)[:4]
+            + String(gpu_128 / cpu_128)[byte=:4]
             + "x (with transfer)"
         )
         print(
             "  256 envs: GPU="
-            + String(gpu_nt_256 / cpu_256)[:4]
+            + String(gpu_nt_256 / cpu_256)[byte=:4]
             + "x (no transfer), "
-            + String(gpu_256 / cpu_256)[:4]
+            + String(gpu_256 / cpu_256)[byte=:4]
             + "x (with transfer)"
         )
         print(
             "  512 envs: GPU="
-            + String(gpu_nt_512 / cpu_512)[:4]
+            + String(gpu_nt_512 / cpu_512)[byte=:4]
             + "x (no transfer), "
-            + String(gpu_512 / cpu_512)[:4]
+            + String(gpu_512 / cpu_512)[byte=:4]
             + "x (with transfer)"
         )
         print(
             "  1024 envs: GPU="
-            + String(gpu_nt_1024 / cpu_1024)[:4]
+            + String(gpu_nt_1024 / cpu_1024)[byte=:4]
             + "x (no transfer), "
-            + String(gpu_1024 / cpu_1024)[:4]
+            + String(gpu_1024 / cpu_1024)[byte=:4]
             + "x (with transfer)"
         )
 

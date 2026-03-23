@@ -615,10 +615,10 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
         info_lines.append(
-            "Angle: " + String(theta_f64 * 180.0 / pi)[:6] + " deg"
+            "Angle: " + String(theta_f64 * 180.0 / pi)[byte=:6] + " deg"
         )
-        info_lines.append("Vel: " + String(theta_dot_f64)[:6])
-        info_lines.append("Torque: " + String(last_torque_f64)[:5])
+        info_lines.append("Vel: " + String(theta_dot_f64)[byte=:6])
+        info_lines.append("Torque: " + String(last_torque_f64)[byte=:5])
         renderer.draw_info_box(info_lines)
 
         # Update display

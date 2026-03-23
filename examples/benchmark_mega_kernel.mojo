@@ -603,7 +603,7 @@ def main():
         print("GPU Kernel Launch Overhead")
         print("-" * 70)
         var launch_ns = benchmark_kernel_launch_overhead(ctx, num_iters)
-        print("  " + String(launch_ns / 1000)[:8] + " us per kernel launch")
+        print("  " + String(launch_ns / 1000)[byte=:8] + " us per kernel launch")
         print()
 
         print("-" * 70)
@@ -612,7 +612,7 @@ def main():
         var mega_ns = benchmark_mega_kernel[
             BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM
         ](ctx, num_iters)
-        print("  " + String(mega_ns / 1000)[:8] + " us per training step")
+        print("  " + String(mega_ns / 1000)[byte=:8] + " us per training step")
         print("  " + String(Int(1e9 / mega_ns)) + " training steps/sec")
         print()
 
@@ -620,21 +620,21 @@ def main():
         print("Summary")
         print("=" * 70)
         print(
-            "  Kernel launch overhead: " + String(launch_ns / 1000)[:8] + " us"
+            "  Kernel launch overhead: " + String(launch_ns / 1000)[byte=:8] + " us"
         )
-        print("  Mega-kernel time:       " + String(mega_ns / 1000)[:8] + " us")
+        print("  Mega-kernel time:       " + String(mega_ns / 1000)[byte=:8] + " us")
         print()
 
         # Estimate separate kernel cost
         var estimated_separate = launch_ns * 6  # 6 kernel launches minimum
         print(
             "  Estimated separate kernel cost (6 launches): "
-            + String(estimated_separate / 1000)[:8]
+            + String(estimated_separate / 1000)[byte=:8]
             + " us"
         )
         print(
             "  Speedup from fusion: "
-            + String(estimated_separate / mega_ns)[:4]
+            + String(estimated_separate / mega_ns)[byte=:4]
             + "x"
         )
         print()

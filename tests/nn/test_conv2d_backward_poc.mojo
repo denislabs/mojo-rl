@@ -155,9 +155,9 @@ def benchmark_dW[
 
     print(
         "    max_matmul:     "
-        + String(max_us)[:8]
+        + String(max_us)[byte=:8]
         + " μs  |  "
-        + String(max_gflops)[:7]
+        + String(max_gflops)[byte=:7]
         + " GFLOPS"
     )
 
@@ -302,9 +302,9 @@ def benchmark_dW[
 
     print(
         "    custom MMA:     "
-        + String(mma_us)[:8]
+        + String(mma_us)[byte=:8]
         + " μs  |  "
-        + String(mma_gflops)[:7]
+        + String(mma_gflops)[byte=:7]
         + " GFLOPS"
     )
 
@@ -312,7 +312,7 @@ def benchmark_dW[
     var speedup = mma_us / max_us
     print(
         "    >>> max_matmul is "
-        + String(speedup)[:5]
+        + String(speedup)[byte=:5]
         + "x "
         + ("faster" if speedup > 1.0 else "slower")
     )

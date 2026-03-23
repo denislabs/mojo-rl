@@ -602,7 +602,7 @@ def get_haptics(
     return _get_dylib_function[
         lib,
         "SDL_GetHaptics",
-        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[HapticID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[HapticID, MutAnyOrigin],
     ]()(count)
 
 
@@ -627,7 +627,7 @@ def get_haptic_name_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetHapticNameForID",
-        fn(instance_id: HapticID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: HapticID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -656,7 +656,7 @@ def open_haptic(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenHaptic",
-        fn(instance_id: HapticID) -> Ptr[Haptic, MutAnyOrigin],
+        def(instance_id: HapticID) -> Ptr[Haptic, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -680,7 +680,7 @@ def get_haptic_from_id(
     return _get_dylib_function[
         lib,
         "SDL_GetHapticFromID",
-        fn(instance_id: HapticID) -> Ptr[Haptic, MutAnyOrigin],
+        def(instance_id: HapticID) -> Ptr[Haptic, MutAnyOrigin],
     ]()(instance_id)
 
 
@@ -700,7 +700,7 @@ def get_haptic_id(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> HapticID:
     return _get_dylib_function[
         lib,
         "SDL_GetHapticID",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> HapticID,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> HapticID,
     ]()(haptic)
 
 
@@ -723,7 +723,7 @@ def get_haptic_name(
     return _get_dylib_function[
         lib,
         "SDL_GetHapticName",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(haptic)
 
 
@@ -736,7 +736,7 @@ def is_mouse_haptic() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IsMouseHaptic.
     """
 
-    return _get_dylib_function[lib, "SDL_IsMouseHaptic", fn() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_IsMouseHaptic", def() -> Bool]()()
 
 
 def open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
@@ -750,7 +750,7 @@ def open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_OpenHapticFromMouse", fn() -> Ptr[Haptic, MutAnyOrigin]
+        lib, "SDL_OpenHapticFromMouse", def() -> Ptr[Haptic, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -771,7 +771,7 @@ def is_joystick_haptic(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_IsJoystickHaptic",
-        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> Bool,
+        def(joystick: Ptr[Joystick, MutAnyOrigin]) -> Bool,
     ]()(joystick)
 
 
@@ -802,7 +802,7 @@ def open_haptic_from_joystick(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenHapticFromJoystick",
-        fn(joystick: Ptr[Joystick, MutAnyOrigin]) -> Ptr[Haptic, MutAnyOrigin],
+        def(joystick: Ptr[Joystick, MutAnyOrigin]) -> Ptr[Haptic, MutAnyOrigin],
     ]()(joystick)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -818,7 +818,7 @@ def close_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseHaptic", fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> None
+        lib, "SDL_CloseHaptic", def(haptic: Ptr[Haptic, MutAnyOrigin]) -> None
     ]()(haptic)
 
 
@@ -842,7 +842,7 @@ def get_max_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetMaxHapticEffects",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
     ]()(haptic)
 
 
@@ -866,7 +866,7 @@ def get_max_haptic_effects_playing(
     return _get_dylib_function[
         lib,
         "SDL_GetMaxHapticEffectsPlaying",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
     ]()(haptic)
 
 
@@ -886,7 +886,7 @@ def get_haptic_features(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> UInt32:
     return _get_dylib_function[
         lib,
         "SDL_GetHapticFeatures",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> UInt32,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> UInt32,
     ]()(haptic)
 
 
@@ -909,7 +909,7 @@ def get_num_haptic_axes(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetNumHapticAxes",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> c_int,
     ]()(haptic)
 
 
@@ -932,7 +932,7 @@ def haptic_effect_supported(
     return _get_dylib_function[
         lib,
         "SDL_HapticEffectSupported",
-        fn(
+        def(
             haptic: Ptr[Haptic, MutAnyOrigin],
             effect: Ptr[HapticEffect, ImmutAnyOrigin],
         ) -> Bool,
@@ -960,7 +960,7 @@ def create_haptic_effect(
     return _get_dylib_function[
         lib,
         "SDL_CreateHapticEffect",
-        fn(
+        def(
             haptic: Ptr[Haptic, MutAnyOrigin],
             effect: Ptr[HapticEffect, ImmutAnyOrigin],
         ) -> c_int,
@@ -995,7 +995,7 @@ def update_haptic_effect(
     ret = _get_dylib_function[
         lib,
         "SDL_UpdateHapticEffect",
-        fn(
+        def(
             haptic: Ptr[Haptic, MutAnyOrigin],
             effect: c_int,
             data: Ptr[HapticEffect, ImmutAnyOrigin],
@@ -1032,7 +1032,7 @@ def run_haptic_effect(
     ret = _get_dylib_function[
         lib,
         "SDL_RunHapticEffect",
-        fn(
+        def(
             haptic: Ptr[Haptic, MutAnyOrigin],
             effect: c_int,
             iterations: UInt32,
@@ -1059,7 +1059,7 @@ def stop_haptic_effect(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_StopHapticEffect",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> Bool,
     ]()(haptic, effect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1083,7 +1083,7 @@ def destroy_haptic_effect(
     return _get_dylib_function[
         lib,
         "SDL_DestroyHapticEffect",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> None,
+        def(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> None,
     ]()(haptic, effect)
 
 
@@ -1108,7 +1108,7 @@ def get_haptic_effect_status(
     return _get_dylib_function[
         lib,
         "SDL_GetHapticEffectStatus",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) -> Bool,
     ]()(haptic, effect)
 
 
@@ -1137,7 +1137,7 @@ def set_haptic_gain(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetHapticGain",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) -> Bool,
     ]()(haptic, gain)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1167,7 +1167,7 @@ def set_haptic_autocenter(
     ret = _get_dylib_function[
         lib,
         "SDL_SetHapticAutocenter",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin], autocenter: c_int) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin], autocenter: c_int) -> Bool,
     ]()(haptic, autocenter)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1193,7 +1193,7 @@ def pause_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_PauseHaptic", fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool
+        lib, "SDL_PauseHaptic", def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool
     ]()(haptic)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1217,7 +1217,7 @@ def resume_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ResumeHaptic",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
     ]()(haptic)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1239,7 +1239,7 @@ def stop_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_StopHapticEffects",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
     ]()(haptic)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1260,7 +1260,7 @@ def haptic_rumble_supported(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HapticRumbleSupported",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
     ]()(haptic)
 
 
@@ -1280,7 +1280,7 @@ def init_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_InitHapticRumble",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
     ]()(haptic)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1306,7 +1306,7 @@ def play_haptic_rumble(
     ret = _get_dylib_function[
         lib,
         "SDL_PlayHapticRumble",
-        fn(
+        def(
             haptic: Ptr[Haptic, MutAnyOrigin],
             strength: c_float,
             length: UInt32,
@@ -1332,7 +1332,7 @@ def stop_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_StopHapticRumble",
-        fn(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
+        def(haptic: Ptr[Haptic, MutAnyOrigin]) -> Bool,
     ]()(haptic)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

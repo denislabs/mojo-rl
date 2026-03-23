@@ -213,10 +213,10 @@ def main() raises:
         print("GPU EVALUATION SUMMARY")
         print("-" * 70)
         print("Episodes completed: " + String(num_episodes))
-        print("Average reward: " + String(avg_reward)[:8])
-        print("Min reward: " + String(min_reward)[:8])
-        print("Max reward: " + String(max_reward)[:8])
-        print("Evaluation time: " + String(elapsed_s)[:5] + " seconds")
+        print("Average reward: " + String(avg_reward)[byte=:8])
+        print("Min reward: " + String(min_reward)[byte=:8])
+        print("Max reward: " + String(max_reward)[byte=:8])
+        print("Evaluation time: " + String(elapsed_s)[byte=:5] + " seconds")
         print()
 
         if avg_reward > 200:

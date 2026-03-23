@@ -111,7 +111,7 @@ def get_global_properties() raises -> PropertiesID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetGlobalProperties", fn() -> PropertiesID
+        lib, "SDL_GetGlobalProperties", def() -> PropertiesID
     ]()()
 
 
@@ -131,7 +131,7 @@ def create_properties() raises -> PropertiesID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CreateProperties", fn() -> PropertiesID
+        lib, "SDL_CreateProperties", def() -> PropertiesID
     ]()()
 
 
@@ -160,7 +160,7 @@ def copy_properties(src: PropertiesID, dst: PropertiesID) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CopyProperties",
-        fn(src: PropertiesID, dst: PropertiesID) -> Bool,
+        def(src: PropertiesID, dst: PropertiesID) -> Bool,
     ]()(src, dst)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -192,7 +192,7 @@ def lock_properties(props: PropertiesID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_LockProperties", fn(props: PropertiesID) -> Bool
+        lib, "SDL_LockProperties", def(props: PropertiesID) -> Bool
     ]()(props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -211,11 +211,11 @@ def unlock_properties(props: PropertiesID) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_UnlockProperties", fn(props: PropertiesID) -> None
+        lib, "SDL_UnlockProperties", def(props: PropertiesID) -> None
     ]()(props)
 
 
-comptime CleanupPropertyCallback = fn(
+comptime CleanupPropertyCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     value: Ptr[NoneType, MutAnyOrigin],
 ) -> None
@@ -281,7 +281,7 @@ def set_pointer_property_with_cleanup(
     ret = _get_dylib_function[
         lib,
         "SDL_SetPointerPropertyWithCleanup",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[NoneType, MutAnyOrigin],
@@ -316,7 +316,7 @@ def set_pointer_property(
     ret = _get_dylib_function[
         lib,
         "SDL_SetPointerProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[NoneType, MutAnyOrigin],
@@ -352,7 +352,7 @@ def set_string_property(
     ret = _get_dylib_function[
         lib,
         "SDL_SetStringProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
@@ -389,7 +389,7 @@ def set_number_property(
     ret = _get_dylib_function[
         lib,
         "SDL_SetNumberProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Int64,
@@ -422,7 +422,7 @@ def set_float_property(
     ret = _get_dylib_function[
         lib,
         "SDL_SetFloatProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: c_float,
@@ -455,7 +455,7 @@ def set_boolean_property(
     ret = _get_dylib_function[
         lib,
         "SDL_SetBooleanProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Bool,
@@ -484,7 +484,7 @@ def has_property(props: PropertiesID, var name: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasProperty",
-        fn(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
@@ -510,7 +510,7 @@ def get_property_type(
     return _get_dylib_function[
         lib,
         "SDL_GetPropertyType",
-        fn(
+        def(
             props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
         ) -> PropertyType,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
@@ -551,7 +551,7 @@ def get_pointer_property(
     return _get_dylib_function[
         lib,
         "SDL_GetPointerProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Ptr[NoneType, MutAnyOrigin],
@@ -587,7 +587,7 @@ def get_string_property(
     return _get_dylib_function[
         lib,
         "SDL_GetStringProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Ptr[c_char, ImmutAnyOrigin],
@@ -625,7 +625,7 @@ def get_number_property(
     return _get_dylib_function[
         lib,
         "SDL_GetNumberProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Int64,
@@ -659,7 +659,7 @@ def get_float_property(
     return _get_dylib_function[
         lib,
         "SDL_GetFloatProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: c_float,
@@ -693,7 +693,7 @@ def get_boolean_property(
     return _get_dylib_function[
         lib,
         "SDL_GetBooleanProperty",
-        fn(
+        def(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Bool,
@@ -721,13 +721,13 @@ def clear_property(props: PropertiesID, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ClearProperty",
-        fn(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-comptime EnumeratePropertiesCallback = fn(
+comptime EnumeratePropertiesCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     props: PropertiesID,
     name: Ptr[c_char, ImmutAnyOrigin],
@@ -778,7 +778,7 @@ def enumerate_properties(
     ret = _get_dylib_function[
         lib,
         "SDL_EnumerateProperties",
-        fn(
+        def(
             props: PropertiesID,
             callback: EnumeratePropertiesCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -806,5 +806,5 @@ def destroy_properties(props: PropertiesID) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_DestroyProperties", fn(props: PropertiesID) -> None
+        lib, "SDL_DestroyProperties", def(props: PropertiesID) -> None
     ]()(props)

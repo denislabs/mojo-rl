@@ -146,7 +146,7 @@ def _strip_xml_comments(s: String) -> String:
         var end = result.find("-->", start + 4)
         if end == -1:
             break  # Malformed XML, stop stripping
-        result = result[:start] + result[end + 3 :]
+        result = result[byte=:start] + result[byte=end + 3 :]
     return result
 
 
@@ -180,7 +180,7 @@ def _extract_section(xml: String, tag: String) -> String:
     var end = xml.find(close_marker, start)
     if end == -1:
         return String("")
-    return String(xml[start : end + len(close_marker)])
+    return String(xml[byte=start : end + len(close_marker)])
 
 
 # =============================================================================
@@ -194,20 +194,20 @@ def _trim(s: String) -> String:
     var start = 0
     var end = len(s)
     while start < end:
-        var c = s[start : start + 1]
+        var c = s[byte=start : start + 1]
         if c == " " or c == "\t" or c == "\n" or c == "\r":
             start += 1
         else:
             break
     while end > start:
-        var c = s[end - 1 : end]
+        var c = s[byte=end - 1 : end]
         if c == " " or c == "\t" or c == "\n" or c == "\r":
             end -= 1
         else:
             break
     if start >= end:
         return String("")
-    return String(s[start:end])
+    return String(s[byte=start:end])
 
 
 def _extract_opening_tag(xml: String, pos: Int) -> String:
@@ -218,7 +218,7 @@ def _extract_opening_tag(xml: String, pos: Int) -> String:
     var end = xml.find(">", pos)
     if end == -1:
         return String("")
-    return String(xml[pos : end + 1])
+    return String(xml[byte=pos : end + 1])
 
 
 def _extract_attr(tag: String, attr: String) -> String:
@@ -233,7 +233,7 @@ def _extract_attr(tag: String, attr: String) -> String:
         var val_start = pos + len(search_dq)
         var val_end = tag.find('"', val_start)
         if val_end != -1:
-            return String(tag[val_start:val_end])
+            return String(tag[byte=val_start:val_end])
     # Try single-quoted form: attr='...'
     var search_sq = attr + "='"
     pos = tag.find(search_sq)
@@ -241,7 +241,7 @@ def _extract_attr(tag: String, attr: String) -> String:
         var val_start = pos + len(search_sq)
         var val_end = tag.find("'", val_start)
         if val_end != -1:
-            return String(tag[val_start:val_end])
+            return String(tag[byte=val_start:val_end])
     return String("")
 
 
@@ -264,10 +264,10 @@ def _parse_float(s: String) -> Float64:
     # Sign
     var neg = False
     var start = 0
-    if t[0:1] == "-":
+    if t[byte=0:1] == "-":
         neg = True
         start = 1
-    elif t[0:1] == "+":
+    elif t[byte=0:1] == "+":
         start = 1
 
     # Find decimal point and exponent marker
@@ -287,7 +287,7 @@ def _parse_float(s: String) -> Float64:
 
     var int_part = Float64(0)
     for i in range(start, int_end):
-        var d = _digit_value(String(t[i : i + 1]))
+        var d = _digit_value(String(t[byte=i : i + 1]))
         if d >= 0:
             int_part = int_part * 10.0 + Float64(d)
 
@@ -301,7 +301,7 @@ def _parse_float(s: String) -> Float64:
             frac_end = len(t)
         var frac_mul = Float64(0.1)
         for i in range(dot_pos + 1, frac_end):
-            var d = _digit_value(String(t[i : i + 1]))
+            var d = _digit_value(String(t[byte=i : i + 1]))
             if d >= 0:
                 frac_part += Float64(d) * frac_mul
                 frac_mul *= 0.1
@@ -313,14 +313,14 @@ def _parse_float(s: String) -> Float64:
         var exp_start = exp_pos + 1
         var exp_neg = False
         if exp_start < len(t):
-            if t[exp_start : exp_start + 1] == "-":
+            if t[byte=exp_start : exp_start + 1] == "-":
                 exp_neg = True
                 exp_start += 1
-            elif t[exp_start : exp_start + 1] == "+":
+            elif t[byte=exp_start : exp_start + 1] == "+":
                 exp_start += 1
         var exp_val = 0
         for i in range(exp_start, len(t)):
-            var d = _digit_value(String(t[i : i + 1]))
+            var d = _digit_value(String(t[byte=i : i + 1]))
             if d >= 0:
                 exp_val = exp_val * 10 + d
         var pow10 = Float64(1.0)
@@ -343,12 +343,12 @@ def _parse_int_str(s: String) -> Int:
         return 0
     var neg = False
     var start = 0
-    if t[0:1] == "-":
+    if t[byte=0:1] == "-":
         neg = True
         start = 1
     var val = 0
     for i in range(start, len(t)):
-        var d = _digit_value(String(t[i : i + 1]))
+        var d = _digit_value(String(t[byte=i : i + 1]))
         if d >= 0:
             val = val * 10 + d
     if neg:
@@ -364,7 +364,7 @@ def _split_spaces(s: String, mut parts: List[String]):
     while start < n:
         # Skip whitespace
         while start < n:
-            var c = t[start : start + 1]
+            var c = t[byte=start : start + 1]
             if c == " " or c == "\t" or c == "\n" or c == "\r":
                 start += 1
             else:
@@ -374,11 +374,11 @@ def _split_spaces(s: String, mut parts: List[String]):
         # Find end of token
         var end = start + 1
         while end < n:
-            var c = t[end : end + 1]
+            var c = t[byte=end : end + 1]
             if c == " " or c == "\t" or c == "\n" or c == "\r":
                 break
             end += 1
-        parts.append(String(t[start:end]))
+        parts.append(String(t[byte=start:end]))
         start = end
 
 
@@ -623,7 +623,7 @@ def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
         var tag_end = worldbody.find(">", joint_pos)
         if tag_end == -1:
             return -1
-        var tag = String(worldbody[joint_pos : tag_end + 1])
+        var tag = String(worldbody[byte=joint_pos : tag_end + 1])
         if tag.find(search_name) != -1:
             return count
         count += 1
@@ -648,7 +648,7 @@ def _count_joints_with_type(xml: String, joint_type: String) -> Int:
         var end_pos = xml.find(">", pos)
         if end_pos == -1:
             break
-        var tag_content = String(xml[pos : end_pos + 1])
+        var tag_content = String(xml[byte=pos : end_pos + 1])
         if tag_content.find(type_attr) != -1:
             count += 1
         start = end_pos + 1
@@ -668,7 +668,7 @@ def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     var tag_end = xml.find(">", t)
     if tag_end == -1:
         return False
-    var tag = String(xml[t : tag_end + 1])
+    var tag = String(xml[byte=t : tag_end + 1])
     var angle_val = _extract_attr(tag, "angle")
     return _trim(angle_val) == "degree"
 
@@ -682,7 +682,7 @@ def _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
     var tag_end = xml.find(">", t)
     if tag_end == -1:
         return False
-    var tag = String(xml[t : tag_end + 1])
+    var tag = String(xml[byte=t : tag_end + 1])
     var val = _extract_attr(tag, "inertiafromgeom")
     return _trim(val) == "true"
 
@@ -696,7 +696,7 @@ def _xml_compiler_settotalmass[xml: String]() -> Float64:
     var tag_end = xml.find(">", t)
     if tag_end == -1:
         return Float64(-1.0)
-    var tag = String(xml[t : tag_end + 1])
+    var tag = String(xml[byte=t : tag_end + 1])
     var val = _extract_attr(tag, "settotalmass")
     var trimmed = _trim(val)
     if len(trimmed) == 0:
@@ -775,7 +775,7 @@ def parse_xml(xml: String) -> ParsedModel:
     if compiler_t != -1:
         var compiler_end = xml_clean.find(">", compiler_t)
         if compiler_end != -1:
-            var ctag = String(xml_clean[compiler_t : compiler_end + 1])
+            var ctag = String(xml_clean[byte=compiler_t : compiler_end + 1])
             var angle_val = _extract_attr(ctag, "angle")
             if _trim(angle_val) == "degree":
                 angle_deg = True
@@ -786,7 +786,7 @@ def parse_xml(xml: String) -> ParsedModel:
     if option_t != -1:
         var option_end = xml_clean.find(">", option_t)
         if option_end != -1:
-            var otag = String(xml_clean[option_t : option_end + 1])
+            var otag = String(xml_clean[byte=option_t : option_end + 1])
             var ts_val = _extract_attr(otag, "timestep")
             if len(_trim(ts_val)) > 0:
                 timestep = _parse_float(ts_val)
@@ -906,7 +906,7 @@ def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -919,7 +919,7 @@ def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
         var tag_end = wb.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(wb[t : tag_end + 1])
+        var tag = String(wb[byte=t : tag_end + 1])
         if tag.find(search_name) != -1:
             return dof_adr
         var jtype = _extract_attr(tag, "type")
@@ -953,7 +953,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     if compiler_t != -1:
         var compiler_end = xml_clean.find(">", compiler_t)
         if compiler_end != -1:
-            var ctag = String(xml_clean[compiler_t : compiler_end + 1])
+            var ctag = String(xml_clean[byte=compiler_t : compiler_end + 1])
             var angle_val = _extract_attr(ctag, "angle")
             if _trim(angle_val) == "degree":
                 angle_deg = True
@@ -978,7 +978,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         if t == -1:
             break
         if len(act_sec) > t + 6:
-            var after = String(act_sec[t + 6 : t + 7])
+            var after = String(act_sec[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -990,7 +990,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 continue
         var tag_end = act_sec.find(">", t)
         if tag_end != -1:
-            var tag = String(act_sec[t : tag_end + 1])
+            var tag = String(act_sec[byte=t : tag_end + 1])
             var g = _extract_attr(tag, "gear")
             if len(g) > 0:
                 data.motor_gears[act_count] = _parse_float(g)
@@ -1012,7 +1012,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         if jpos != -1:
             var tag_end = def_sec.find(">", jpos)
             if tag_end != -1:
-                var tag = String(def_sec[jpos : tag_end + 1])
+                var tag = String(def_sec[byte=jpos : tag_end + 1])
                 var lim = _extract_attr(tag, "limited")
                 if lim == "true" or lim == "1":
                     def_limited = True
@@ -1027,7 +1027,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1040,7 +1040,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         data.joint_qpos_adr[jnt_count] = qpos_adr
         var tag_end = wb.find(">", t)
         if tag_end != -1:
-            var tag = String(wb[t : tag_end + 1])
+            var tag = String(wb[byte=t : tag_end + 1])
             # Limited
             var lim = _extract_attr(tag, "limited")
             if lim == "true" or lim == "1":
@@ -1086,7 +1086,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             var tag_end = custom_sec.find(">", t)
             if tag_end == -1:
                 break
-            var tag = String(custom_sec[t : tag_end + 1])
+            var tag = String(custom_sec[byte=t : tag_end + 1])
             var nname = _extract_attr(tag, "name")
             if _trim(nname) == "init_qpos":
                 var ndata = _extract_attr(tag, "data")
@@ -1123,7 +1123,7 @@ def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
             break
         # Verify valid tag (next char must be space, >, /, newline, tab)
         if len(sec) > t + 6:
-            var after = String(sec[t + 6 : t + 7])
+            var after = String(sec[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1137,7 +1137,7 @@ def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
             var tag_end = sec.find(">", t)
             if tag_end == -1:
                 return Float64(1.0)
-            var tag = String(sec[t : tag_end + 1])
+            var tag = String(sec[byte=t : tag_end + 1])
             var g = _extract_attr(tag, "gear")
             if len(g) == 0:
                 return Float64(1.0)
@@ -1163,7 +1163,7 @@ def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
         if t == -1:
             break
         if len(sec) > t + 6:
-            var after = String(sec[t + 6 : t + 7])
+            var after = String(sec[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1176,7 +1176,7 @@ def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
         if count == n:
             var tag_end = sec.find(">", t)
             if tag_end != -1:
-                var tag = String(sec[t : tag_end + 1])
+                var tag = String(sec[byte=t : tag_end + 1])
                 jname = _extract_attr(tag, "joint")
             break
         count += 1
@@ -1194,7 +1194,7 @@ def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1207,7 +1207,7 @@ def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
         var tag_end = wb.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(wb[t : tag_end + 1])
+        var tag = String(wb[byte=t : tag_end + 1])
         if tag.find(search_name) != -1:
             return dof_adr  # Found the target joint
         # Accumulate DOF count for this joint
@@ -1236,7 +1236,7 @@ def _xml_nth_joint_qpos_adr[xml: String, n: Int]() -> Int:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1251,7 +1251,7 @@ def _xml_nth_joint_qpos_adr[xml: String, n: Int]() -> Int:
         var tag_end = wb.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(wb[t : tag_end + 1])
+        var tag = String(wb[byte=t : tag_end + 1])
         var jtype = _extract_attr(tag, "type")
         if jtype == "free":
             qpos_adr += 7
@@ -1278,7 +1278,7 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
         if jpos != -1:
             var tag_end = def_sec.find(">", jpos)
             if tag_end != -1:
-                var tag = String(def_sec[jpos : tag_end + 1])
+                var tag = String(def_sec[byte=jpos : tag_end + 1])
                 var lim = _extract_attr(tag, "limited")
                 if lim == "true" or lim == "1":
                     def_limited = True
@@ -1292,7 +1292,7 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1306,7 +1306,7 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
             var tag_end = wb.find(">", t)
             if tag_end == -1:
                 return def_limited
-            var tag = String(wb[t : tag_end + 1])
+            var tag = String(wb[byte=t : tag_end + 1])
             var lim = _extract_attr(tag, "limited")
             if lim == "true" or lim == "1":
                 return True
@@ -1335,7 +1335,7 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1349,7 +1349,7 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
             var tag_end = wb.find(">", t)
             if tag_end == -1:
                 return Float64(0.0)
-            var tag = String(wb[t : tag_end + 1])
+            var tag = String(wb[byte=t : tag_end + 1])
             var range_str = _extract_attr(tag, "range")
             if len(range_str) == 0:
                 return Float64(0.0)
@@ -1380,7 +1380,7 @@ def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
         if t == -1:
             break
         if len(wb) > t + 6:
-            var after = String(wb[t + 6 : t + 7])
+            var after = String(wb[byte=t + 6 : t + 7])
             if (
                 after != " "
                 and after != ">"
@@ -1394,7 +1394,7 @@ def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
             var tag_end = wb.find(">", t)
             if tag_end == -1:
                 return Float64(0.0)
-            var tag = String(wb[t : tag_end + 1])
+            var tag = String(wb[byte=t : tag_end + 1])
             var range_str = _extract_attr(tag, "range")
             if len(range_str) == 0:
                 return Float64(0.0)

@@ -176,19 +176,19 @@ def main() raises:
             print("=" * 70)
             print()
             print("Total updates: " + String(NUM_UPDATES))
-            print("Training time: " + String(elapsed_s)[:6] + " seconds")
+            print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
             print(
                 "Updates/second: "
-                + String(Float64(NUM_UPDATES) / elapsed_s)[:7]
+                + String(Float64(NUM_UPDATES) / elapsed_s)[byte=:7]
             )
             print()
 
             # Print metrics summary
             print(
                 "Final average reward (last 100 episodes): "
-                + String(metrics.mean_reward_last_n(100))[:8]
+                + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[:8])
+            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
             print()
 
             # Check for successful training

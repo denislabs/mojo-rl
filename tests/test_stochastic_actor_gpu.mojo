@@ -107,8 +107,8 @@ def test_stochastic_actor_gpu_training() raises:
     print("  GPU Training completed!")
     print("  Final loss: " + String(result.final_loss))
     print("  Epochs: " + String(result.epochs_trained))
-    print("  Time: " + String(time_ms)[:8] + " ms")
-    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[:6] + " ms")
+    print("  Time: " + String(time_ms)[byte=:8] + " ms")
+    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms")
 
     if result.final_loss < 0.05:
         print("\n  PASS: StochasticActor GPU training converged")
@@ -206,7 +206,7 @@ def test_backbone_with_stochastic_actor() raises:
     print("  GPU Training completed!")
     print("  Final loss: " + String(result.final_loss))
     print("  Epochs: " + String(result.epochs_trained))
-    print("  Time: " + String(time_ms)[:8] + " ms")
+    print("  Time: " + String(time_ms)[byte=:8] + " ms")
 
     if result.final_loss < 0.1:
         print("\n  PASS: Full policy network training succeeded")
@@ -296,8 +296,8 @@ def test_larger_action_space() raises:
     print("  GPU Training completed!")
     print("  Final loss: " + String(result.final_loss))
     print("  Epochs: " + String(result.epochs_trained))
-    print("  Time: " + String(time_ms)[:8] + " ms")
-    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[:6] + " ms")
+    print("  Time: " + String(time_ms)[byte=:8] + " ms")
+    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms")
 
     if result.final_loss < 0.15:
         print("\n  PASS: Large action space training succeeded")

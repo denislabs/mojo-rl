@@ -50,17 +50,17 @@ def format_obs(obs: List[Scalar[dtype]]) -> String:
     """Format observation for debug printing."""
     return (
         "x="
-        + String(obs[0])[:6]
+        + String(obs[0])[byte=:6]
         + " y="
-        + String(obs[1])[:6]
+        + String(obs[1])[byte=:6]
         + " ang="
-        + String(obs[2])[:5]
+        + String(obs[2])[byte=:5]
         + " vx="
-        + String(obs[3])[:5]
+        + String(obs[3])[byte=:5]
         + " vy="
-        + String(obs[4])[:5]
+        + String(obs[4])[byte=:5]
         + " spd="
-        + String(obs[12])[:5]
+        + String(obs[12])[byte=:5]
     )
 
 
@@ -68,11 +68,11 @@ def format_action(steering: Float32, gas: Float32, brake: Float32) -> String:
     """Format action for debug printing."""
     return (
         "steer="
-        + String(steering)[:6]
+        + String(steering)[byte=:6]
         + " gas="
-        + String(gas)[:5]
+        + String(gas)[byte=:5]
         + " brake="
-        + String(brake)[:5]
+        + String(brake)[byte=:5]
     )
 
 
@@ -83,17 +83,17 @@ def format_actor_output(
     """Format actor output for debug printing."""
     return (
         "means=["
-        + String(means[0])[:6]
+        + String(means[0])[byte=:6]
         + ", "
-        + String(means[1])[:6]
+        + String(means[1])[byte=:6]
         + ", "
-        + String(means[2])[:6]
+        + String(means[2])[byte=:6]
         + "] log_stds=["
-        + String(log_stds[0])[:5]
+        + String(log_stds[0])[byte=:5]
         + ", "
-        + String(log_stds[1])[:5]
+        + String(log_stds[1])[byte=:5]
         + ", "
-        + String(log_stds[2])[:5]
+        + String(log_stds[2])[byte=:5]
         + "]"
     )
 
@@ -226,9 +226,9 @@ def main() raises:
                             Float32(steering), Float32(gas), Float32(brake)
                         )
                         + " reward="
-                        + String(reward)[:7]
+                        + String(reward)[byte=:7]
                         + " total="
-                        + String(total_reward)[:7]
+                        + String(total_reward)[byte=:7]
                     )
                     print("  obs: " + format_obs(next_obs_list))
                     print("  " + format_actor_output(means, log_stds))

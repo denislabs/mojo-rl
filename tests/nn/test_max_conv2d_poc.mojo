@@ -326,9 +326,9 @@ def main() raises:
 
         print(
             "1. conv_gpu (auto):     "
-            + String(gpu_us)[:8]
+            + String(gpu_us)[byte=:8]
             + " μs  |  "
-            + String(gpu_gflops)[:6]
+            + String(gpu_gflops)[byte=:6]
             + " GFLOPS"
         )
 
@@ -352,9 +352,9 @@ def main() raises:
 
         print(
             "2. conv2d_gpu_naive:    "
-            + String(naive_us)[:8]
+            + String(naive_us)[byte=:8]
             + " μs  |  "
-            + String(naive_gflops)[:6]
+            + String(naive_gflops)[byte=:6]
             + " GFLOPS"
         )
 
@@ -372,9 +372,9 @@ def main() raises:
 
         print(
             "3. Our Conv2D (MMA):    "
-            + String(ours_us)[:8]
+            + String(ours_us)[byte=:8]
             + " μs  |  "
-            + String(ours_gflops)[:6]
+            + String(ours_gflops)[byte=:6]
             + " GFLOPS"
         )
 
@@ -422,7 +422,7 @@ def main() raises:
 
         print(
             "Max diff (conv_gpu vs ours, first 4 batches): "
-            + String(max_diff)[:10]
+            + String(max_diff)[byte=:10]
         )
 
         # Sample values
@@ -437,9 +437,9 @@ def main() raises:
                 "  ow="
                 + String(ow)
                 + ": conv_gpu="
-                + String(Float64(out_gpu_host[nhwc_idx]))[:8]
+                + String(Float64(out_gpu_host[nhwc_idx]))[byte=:8]
                 + "  ours="
-                + String(Float64(out_ours_host[chw_idx]))[:8]
+                + String(Float64(out_ours_host[chw_idx]))[byte=:8]
             )
 
         # Summary
@@ -448,11 +448,11 @@ def main() raises:
         var fastest = min(gpu_us, min(naive_us, ours_us))
         print(
             "conv_gpu: "
-            + String(gpu_us / fastest)[:5]
+            + String(gpu_us / fastest)[byte=:5]
             + "x  |  naive: "
-            + String(naive_us / fastest)[:5]
+            + String(naive_us / fastest)[byte=:5]
             + "x  |  ours: "
-            + String(ours_us / fastest)[:5]
+            + String(ours_us / fastest)[byte=:5]
             + "x"
         )
         print("=" * 60)

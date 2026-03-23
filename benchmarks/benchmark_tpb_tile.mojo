@@ -629,13 +629,13 @@ def main() raises:
     print("-" * 70)
 
     var tile8_time = benchmark_matmul_tile[8](ctx)
-    print("  TILE=8:  " + String(tile8_time)[:8] + " ms/iter")
+    print("  TILE=8:  " + String(tile8_time)[byte=:8] + " ms/iter")
 
     var tile16_time = benchmark_matmul_tile[16](ctx)
-    print("  TILE=16: " + String(tile16_time)[:8] + " ms/iter")
+    print("  TILE=16: " + String(tile16_time)[byte=:8] + " ms/iter")
 
     var tile32_time = benchmark_matmul_tile[32](ctx)
-    print("  TILE=32: " + String(tile32_time)[:8] + " ms/iter")
+    print("  TILE=32: " + String(tile32_time)[byte=:8] + " ms/iter")
 
     var best_tile = 8
     var best_tile_time = tile8_time
@@ -651,7 +651,7 @@ def main() raises:
         "  Best TILE: "
         + String(best_tile)
         + " ("
-        + String(best_tile_time)[:8]
+        + String(best_tile_time)[byte=:8]
         + " ms)"
     )
     print()
@@ -668,19 +668,19 @@ def main() raises:
     print("-" * 70)
 
     var tpb32_time = benchmark_elementwise_tpb[32](ctx)
-    print("  TPB=32:  " + String(tpb32_time)[:8] + " ms/iter")
+    print("  TPB=32:  " + String(tpb32_time)[byte=:8] + " ms/iter")
 
     var tpb64_time = benchmark_elementwise_tpb[64](ctx)
-    print("  TPB=64:  " + String(tpb64_time)[:8] + " ms/iter")
+    print("  TPB=64:  " + String(tpb64_time)[byte=:8] + " ms/iter")
 
     var tpb128_time = benchmark_elementwise_tpb[128](ctx)
-    print("  TPB=128: " + String(tpb128_time)[:8] + " ms/iter")
+    print("  TPB=128: " + String(tpb128_time)[byte=:8] + " ms/iter")
 
     var tpb256_time = benchmark_elementwise_tpb[256](ctx)
-    print("  TPB=256: " + String(tpb256_time)[:8] + " ms/iter")
+    print("  TPB=256: " + String(tpb256_time)[byte=:8] + " ms/iter")
 
     var tpb512_time = benchmark_elementwise_tpb[512](ctx)
-    print("  TPB=512: " + String(tpb512_time)[:8] + " ms/iter")
+    print("  TPB=512: " + String(tpb512_time)[byte=:8] + " ms/iter")
 
     var best_tpb = 32
     var best_tpb_time = tpb32_time
@@ -702,7 +702,7 @@ def main() raises:
         "  Best TPB: "
         + String(best_tpb)
         + " ("
-        + String(best_tpb_time)[:8]
+        + String(best_tpb_time)[byte=:8]
         + " ms)"
     )
     print()
@@ -731,27 +731,27 @@ def main() raises:
     print("           TPB=64     TPB=128    TPB=256")
     print(
         "  TILE=8:  "
-        + String(combo_8_64)[:8]
+        + String(combo_8_64)[byte=:8]
         + "   "
-        + String(combo_8_128)[:8]
+        + String(combo_8_128)[byte=:8]
         + "   "
-        + String(combo_8_256)[:8]
+        + String(combo_8_256)[byte=:8]
     )
     print(
         "  TILE=16: "
-        + String(combo_16_64)[:8]
+        + String(combo_16_64)[byte=:8]
         + "   "
-        + String(combo_16_128)[:8]
+        + String(combo_16_128)[byte=:8]
         + "   "
-        + String(combo_16_256)[:8]
+        + String(combo_16_256)[byte=:8]
     )
     print(
         "  TILE=32: "
-        + String(combo_32_64)[:8]
+        + String(combo_32_64)[byte=:8]
         + "   "
-        + String(combo_32_128)[:8]
+        + String(combo_32_128)[byte=:8]
         + "   "
-        + String(combo_32_256)[:8]
+        + String(combo_32_256)[byte=:8]
     )
     print()
 
@@ -803,7 +803,7 @@ def main() raises:
         print("  comptime TILE = " + String(best_combo_tile))
         print("  comptime TPB = " + String(best_combo_tpb))
         var improvement = (combo_16_256 - best_combo_time) / combo_16_256 * 100
-        print("  Expected improvement: " + String(improvement)[:5] + "%")
+        print("  Expected improvement: " + String(improvement)[byte=:5] + "%")
     else:
         print("Current defaults are optimal for this configuration!")
 

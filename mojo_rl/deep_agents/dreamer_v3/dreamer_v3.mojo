@@ -4255,19 +4255,19 @@ struct DreamerV3Agent[
             #     "  [diag] step="
             #     + String(self.train_step_count)
             #     + " wm_loss="
-            #     + String(total_wm_loss)[:7]
+            #     + String(total_wm_loss)[byte=:7]
             #     + " obs="
-            #     + String(obs_loss)[:6]
+            #     + String(obs_loss)[byte=:6]
             #     + " rew="
-            #     + String(rew_loss)[:6]
+            #     + String(rew_loss)[byte=:6]
             #     + " cont="
-            #     + String(cont_loss)[:6]
+            #     + String(cont_loss)[byte=:6]
             #     + " kl="
-            #     + String(dyn_kl_total)[:6]
+            #     + String(dyn_kl_total)[byte=:6]
             #     + " adv_std="
-            #     + String(sqrt(adv_var))[:6]
+            #     + String(sqrt(adv_var))[byte=:6]
             #     + " val="
-            #     + String(avg_val)[:6]
+            #     + String(avg_val)[byte=:6]
             #     + " actor_grad="
             #     + String(actor_grad_norm)
             # )
@@ -5174,7 +5174,7 @@ struct DreamerV3Agent[
                         + " | Episodes: "
                         + String(completed_episodes)
                         + " | Avg reward: "
-                        + String(avg)[:8]
+                        + String(avg)[byte=:8]
                         + " | Train: "
                         + String(self.train_step_count)
                     )

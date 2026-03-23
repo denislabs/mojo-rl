@@ -390,7 +390,7 @@ struct EGLint(Intable, TrivialRegisterPassable):
 
 
 comptime EGLAttribArrayCallback = Ptr[
-    fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> EGLAttrib, MutAnyOrigin
+    def(userdata: Ptr[NoneType, MutAnyOrigin]) -> EGLAttrib, MutAnyOrigin
 ]
 """EGL platform attribute initialization callback.
     
@@ -418,7 +418,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EGLAttribArrayCallback.
 
 
 comptime EGLIntArrayCallback = Ptr[
-    fn(
+    def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         display: EGLDisplay,
         config: EGLConfig,
@@ -661,7 +661,9 @@ def get_num_video_drivers() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNumVideoDrivers.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNumVideoDrivers", fn() -> c_int]()()
+    return _get_dylib_function[
+        lib, "SDL_GetNumVideoDrivers", def() -> c_int
+    ]()()
 
 
 def get_video_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -689,7 +691,7 @@ def get_video_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetVideoDriver",
-        fn(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
+        def(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -711,7 +713,7 @@ def get_current_video_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCurrentVideoDriver", fn() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetCurrentVideoDriver", def() -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
@@ -728,7 +730,7 @@ def get_system_theme() raises -> SystemTheme:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetSystemTheme", fn() -> SystemTheme
+        lib, "SDL_GetSystemTheme", def() -> SystemTheme
     ]()()
 
 
@@ -755,7 +757,7 @@ def get_displays(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDisplays",
-        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[DisplayID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[DisplayID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -775,7 +777,7 @@ def get_primary_display() raises -> DisplayID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPrimaryDisplay", fn() -> DisplayID
+        lib, "SDL_GetPrimaryDisplay", def() -> DisplayID
     ]()()
 
 
@@ -813,7 +815,7 @@ def get_display_properties(display_id: DisplayID) raises -> PropertiesID:
     return _get_dylib_function[
         lib,
         "SDL_GetDisplayProperties",
-        fn(display_id: DisplayID) -> PropertiesID,
+        def(display_id: DisplayID) -> PropertiesID,
     ]()(display_id)
 
 
@@ -838,7 +840,7 @@ def get_display_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDisplayName",
-        fn(display_id: DisplayID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(display_id: DisplayID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -869,7 +871,7 @@ def get_display_bounds(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDisplayBounds",
-        fn(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) -> Bool,
+        def(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) -> Bool,
     ]()(display_id, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -906,7 +908,7 @@ def get_display_usable_bounds(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDisplayUsableBounds",
-        fn(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) -> Bool,
+        def(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) -> Bool,
     ]()(display_id, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -933,7 +935,7 @@ def get_natural_display_orientation(
     return _get_dylib_function[
         lib,
         "SDL_GetNaturalDisplayOrientation",
-        fn(display_id: DisplayID) -> DisplayOrientation,
+        def(display_id: DisplayID) -> DisplayOrientation,
     ]()(display_id)
 
 
@@ -958,7 +960,7 @@ def get_current_display_orientation(
     return _get_dylib_function[
         lib,
         "SDL_GetCurrentDisplayOrientation",
-        fn(display_id: DisplayID) -> DisplayOrientation,
+        def(display_id: DisplayID) -> DisplayOrientation,
     ]()(display_id)
 
 
@@ -990,7 +992,7 @@ def get_display_content_scale(display_id: DisplayID) raises -> c_float:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetDisplayContentScale", fn(display_id: DisplayID) -> c_float
+        lib, "SDL_GetDisplayContentScale", def(display_id: DisplayID) -> c_float
     ]()(display_id)
 
 
@@ -1028,7 +1030,7 @@ def get_fullscreen_display_modes(
     return _get_dylib_function[
         lib,
         "SDL_GetFullscreenDisplayModes",
-        fn(
+        def(
             display_id: DisplayID, count: Ptr[c_int, MutAnyOrigin]
         ) -> Ptr[Ptr[DisplayMode, MutAnyOrigin], MutAnyOrigin],
     ]()(display_id, count)
@@ -1075,7 +1077,7 @@ def get_closest_fullscreen_display_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_GetClosestFullscreenDisplayMode",
-        fn(
+        def(
             display_id: DisplayID,
             w: c_int,
             h: c_int,
@@ -1114,7 +1116,7 @@ def get_desktop_display_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDesktopDisplayMode",
-        fn(display_id: DisplayID) -> Ptr[DisplayMode, ImmutAnyOrigin],
+        def(display_id: DisplayID) -> Ptr[DisplayMode, ImmutAnyOrigin],
     ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1146,13 +1148,15 @@ def get_current_display_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_GetCurrentDisplayMode",
-        fn(display_id: DisplayID) -> Ptr[DisplayMode, ImmutAnyOrigin],
+        def(display_id: DisplayID) -> Ptr[DisplayMode, ImmutAnyOrigin],
     ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def get_display_for_point(point: Ptr[Point, ImmutAnyOrigin]) raises -> DisplayID:
+def get_display_for_point(
+    point: Ptr[Point, ImmutAnyOrigin]
+) raises -> DisplayID:
     """Get the display containing a point.
 
     Args:
@@ -1171,7 +1175,7 @@ def get_display_for_point(point: Ptr[Point, ImmutAnyOrigin]) raises -> DisplayID
     return _get_dylib_function[
         lib,
         "SDL_GetDisplayForPoint",
-        fn(point: Ptr[Point, ImmutAnyOrigin]) -> DisplayID,
+        def(point: Ptr[Point, ImmutAnyOrigin]) -> DisplayID,
     ]()(point)
 
 
@@ -1195,7 +1199,7 @@ def get_display_for_rect(rect: Ptr[Rect, ImmutAnyOrigin]) raises -> DisplayID:
     return _get_dylib_function[
         lib,
         "SDL_GetDisplayForRect",
-        fn(rect: Ptr[Rect, ImmutAnyOrigin]) -> DisplayID,
+        def(rect: Ptr[Rect, ImmutAnyOrigin]) -> DisplayID,
     ]()(rect)
 
 
@@ -1221,7 +1225,7 @@ def get_display_for_window(
     return _get_dylib_function[
         lib,
         "SDL_GetDisplayForWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> DisplayID,
+        def(window: Ptr[Window, MutAnyOrigin]) -> DisplayID,
     ]()(window)
 
 
@@ -1250,7 +1254,7 @@ def get_window_pixel_density(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowPixelDensity",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> c_float,
+        def(window: Ptr[Window, MutAnyOrigin]) -> c_float,
     ]()(window)
 
 
@@ -1286,7 +1290,7 @@ def get_window_display_scale(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowDisplayScale",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> c_float,
+        def(window: Ptr[Window, MutAnyOrigin]) -> c_float,
     ]()(window)
 
 
@@ -1330,7 +1334,7 @@ def set_window_fullscreen_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFullscreenMode",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             mode: Ptr[DisplayMode, ImmutAnyOrigin],
         ) -> Bool,
@@ -1360,7 +1364,7 @@ def get_window_fullscreen_mode(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowFullscreenMode",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin]
         ) -> Ptr[DisplayMode, ImmutAnyOrigin],
     ]()(window)
@@ -1391,7 +1395,7 @@ def get_window_icc_profile(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowICCProfile",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             size: Ptr[c_size_t, MutAnyOrigin],
         ) -> Ptr[NoneType, MutAnyOrigin],
@@ -1422,7 +1426,7 @@ def get_window_pixel_format(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowPixelFormat",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> PixelFormat,
+        def(window: Ptr[Window, MutAnyOrigin]) -> PixelFormat,
     ]()(window)
 
 
@@ -1451,7 +1455,7 @@ def get_windows(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindows",
-        fn(
+        def(
             count: Ptr[c_int, MutAnyOrigin]
         ) -> Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
     ]()(count)
@@ -1556,7 +1560,7 @@ def create_window(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateWindow",
-        fn(
+        def(
             title: Ptr[c_char, ImmutAnyOrigin],
             w: c_int,
             h: c_int,
@@ -1651,7 +1655,7 @@ def create_popup_window(
     ret = _get_dylib_function[
         lib,
         "SDL_CreatePopupWindow",
-        fn(
+        def(
             parent: Ptr[Window, MutAnyOrigin],
             offset_x: c_int,
             offset_y: c_int,
@@ -1796,7 +1800,7 @@ def create_window_with_properties(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateWindowWithProperties",
-        fn(props: PropertiesID) -> Ptr[Window, MutAnyOrigin],
+        def(props: PropertiesID) -> Ptr[Window, MutAnyOrigin],
     ]()(props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1824,7 +1828,7 @@ def get_window_id(window: Ptr[Window, MutAnyOrigin]) raises -> WindowID:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowID",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> WindowID,
+        def(window: Ptr[Window, MutAnyOrigin]) -> WindowID,
     ]()(window)
 
 
@@ -1850,7 +1854,7 @@ def get_window_from_id(id: WindowID) raises -> Ptr[Window, MutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowFromID",
-        fn(id: WindowID) -> Ptr[Window, MutAnyOrigin],
+        def(id: WindowID) -> Ptr[Window, MutAnyOrigin],
     ]()(id)
 
 
@@ -1875,7 +1879,7 @@ def get_window_parent(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowParent",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
+        def(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
     ]()(window)
 
 
@@ -2009,7 +2013,7 @@ def get_window_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowProperties",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> PropertiesID,
+        def(window: Ptr[Window, MutAnyOrigin]) -> PropertiesID,
     ]()(window)
 
 
@@ -2031,7 +2035,7 @@ def get_window_flags(window: Ptr[Window, MutAnyOrigin]) raises -> WindowFlags:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowFlags",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> WindowFlags,
+        def(window: Ptr[Window, MutAnyOrigin]) -> WindowFlags,
     ]()(window)
 
 
@@ -2059,7 +2063,7 @@ def set_window_title(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowTitle",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             title: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -2089,7 +2093,7 @@ def get_window_title(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowTitle",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(window: Ptr[Window, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(window)
 
 
@@ -2125,7 +2129,7 @@ def set_window_icon(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowIcon",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             icon: Ptr[Surface, MutAnyOrigin],
         ) -> Bool,
@@ -2180,7 +2184,7 @@ def set_window_position(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowPosition",
-        fn(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) -> Bool,
     ]()(window, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2219,7 +2223,7 @@ def get_window_position(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowPosition",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             x: Ptr[c_int, MutAnyOrigin],
             y: Ptr[c_int, MutAnyOrigin],
@@ -2270,7 +2274,7 @@ def set_window_size(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowSize",
-        fn(window: Ptr[Window, MutAnyOrigin], w: c_int, h: c_int) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], w: c_int, h: c_int) -> Bool,
     ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2305,7 +2309,7 @@ def get_window_size(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
@@ -2345,7 +2349,7 @@ def get_window_safe_area(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSafeArea",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
@@ -2402,7 +2406,7 @@ def set_window_aspect_ratio(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowAspectRatio",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             min_aspect: c_float,
             max_aspect: c_float,
@@ -2439,7 +2443,7 @@ def get_window_aspect_ratio(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowAspectRatio",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             min_aspect: Ptr[c_float, MutAnyOrigin],
             max_aspect: Ptr[c_float, MutAnyOrigin],
@@ -2496,7 +2500,7 @@ def get_window_borders_size(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowBordersSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             top: Ptr[c_int, MutAnyOrigin],
             left: Ptr[c_int, MutAnyOrigin],
@@ -2535,7 +2539,7 @@ def get_window_size_in_pixels(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSizeInPixels",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
@@ -2568,7 +2572,7 @@ def set_window_minimum_size(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMinimumSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin], min_w: c_int, min_h: c_int
         ) -> Bool,
     ]()(window, min_w, min_h)
@@ -2603,7 +2607,7 @@ def get_window_minimum_size(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowMinimumSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
@@ -2636,7 +2640,7 @@ def set_window_maximum_size(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMaximumSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin], max_w: c_int, max_h: c_int
         ) -> Bool,
     ]()(window, max_w, max_h)
@@ -2671,7 +2675,7 @@ def get_window_maximum_size(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowMaximumSize",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
@@ -2709,7 +2713,7 @@ def set_window_bordered(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowBordered",
-        fn(window: Ptr[Window, MutAnyOrigin], bordered: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], bordered: Bool) -> Bool,
     ]()(window, bordered)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2743,7 +2747,7 @@ def set_window_resizable(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowResizable",
-        fn(window: Ptr[Window, MutAnyOrigin], resizable: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], resizable: Bool) -> Bool,
     ]()(window, resizable)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2774,7 +2778,7 @@ def set_window_always_on_top(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowAlwaysOnTop",
-        fn(window: Ptr[Window, MutAnyOrigin], on_top: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], on_top: Bool) -> Bool,
     ]()(window, on_top)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2797,7 +2801,7 @@ def show_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ShowWindow", fn(window: Ptr[Window, MutAnyOrigin]) -> Bool
+        lib, "SDL_ShowWindow", def(window: Ptr[Window, MutAnyOrigin]) -> Bool
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2820,7 +2824,7 @@ def hide_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_HideWindow", fn(window: Ptr[Window, MutAnyOrigin]) -> Bool
+        lib, "SDL_HideWindow", def(window: Ptr[Window, MutAnyOrigin]) -> Bool
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2850,7 +2854,7 @@ def raise_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_RaiseWindow", fn(window: Ptr[Window, MutAnyOrigin]) -> Bool
+        lib, "SDL_RaiseWindow", def(window: Ptr[Window, MutAnyOrigin]) -> Bool
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2892,7 +2896,7 @@ def maximize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_MaximizeWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2929,7 +2933,7 @@ def minimize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_MinimizeWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2967,7 +2971,7 @@ def restore_window(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RestoreWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3008,7 +3012,7 @@ def set_window_fullscreen(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFullscreen",
-        fn(window: Ptr[Window, MutAnyOrigin], fullscreen: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], fullscreen: Bool) -> Bool,
     ]()(window, fullscreen)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3041,7 +3045,7 @@ def sync_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_SyncWindow", fn(window: Ptr[Window, MutAnyOrigin]) -> Bool
+        lib, "SDL_SyncWindow", def(window: Ptr[Window, MutAnyOrigin]) -> Bool
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3066,7 +3070,7 @@ def window_has_surface(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_WindowHasSurface",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
 
 
@@ -3102,7 +3106,7 @@ def get_window_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSurface",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
+        def(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3140,7 +3144,7 @@ def set_window_surface_vsync(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowSurfaceVSync",
-        fn(window: Ptr[Window, MutAnyOrigin], vsync: c_int) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], vsync: c_int) -> Bool,
     ]()(window, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3169,7 +3173,7 @@ def get_window_surface_vsync(
     ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSurfaceVSync",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             vsync: Ptr[c_int, MutAnyOrigin],
         ) -> Bool,
@@ -3202,7 +3206,7 @@ def update_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_UpdateWindowSurface",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3244,7 +3248,7 @@ def update_window_surface_rects(
     ret = _get_dylib_function[
         lib,
         "SDL_UpdateWindowSurfaceRects",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             rects: Ptr[Rect, ImmutAnyOrigin],
             numrects: c_int,
@@ -3273,7 +3277,7 @@ def destroy_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_DestroyWindowSurface",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3317,7 +3321,7 @@ def set_window_keyboard_grab(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowKeyboardGrab",
-        fn(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) -> Bool,
     ]()(window, grabbed)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3347,7 +3351,7 @@ def set_window_mouse_grab(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMouseGrab",
-        fn(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) -> Bool,
     ]()(window, grabbed)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3371,7 +3375,7 @@ def get_window_keyboard_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowKeyboardGrab",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
 
 
@@ -3393,7 +3397,7 @@ def get_window_mouse_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowMouseGrab",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
 
 
@@ -3410,7 +3414,7 @@ def get_grabbed_window() raises -> Ptr[Window, MutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetGrabbedWindow", fn() -> Ptr[Window, MutAnyOrigin]
+        lib, "SDL_GetGrabbedWindow", def() -> Ptr[Window, MutAnyOrigin]
     ]()()
 
 
@@ -3440,7 +3444,7 @@ def set_window_mouse_rect(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMouseRect",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
@@ -3470,7 +3474,7 @@ def get_window_mouse_rect(
     return _get_dylib_function[
         lib,
         "SDL_GetWindowMouseRect",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Rect, ImmutAnyOrigin],
+        def(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Rect, ImmutAnyOrigin],
     ]()(window)
 
 
@@ -3501,7 +3505,7 @@ def set_window_opacity(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowOpacity",
-        fn(window: Ptr[Window, MutAnyOrigin], opacity: c_float) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], opacity: c_float) -> Bool,
     ]()(window, opacity)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3529,7 +3533,7 @@ def get_window_opacity(window: Ptr[Window, MutAnyOrigin]) raises -> c_float:
     return _get_dylib_function[
         lib,
         "SDL_GetWindowOpacity",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> c_float,
+        def(window: Ptr[Window, MutAnyOrigin]) -> c_float,
     ]()(window)
 
 
@@ -3573,7 +3577,7 @@ def set_window_parent(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowParent",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             parent: Ptr[Window, MutAnyOrigin],
         ) -> Bool,
@@ -3605,7 +3609,7 @@ def set_window_modal(window: Ptr[Window, MutAnyOrigin], modal: Bool) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowModal",
-        fn(window: Ptr[Window, MutAnyOrigin], modal: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], modal: Bool) -> Bool,
     ]()(window, modal)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3633,7 +3637,7 @@ def set_window_focusable(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFocusable",
-        fn(window: Ptr[Window, MutAnyOrigin], focusable: Bool) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], focusable: Bool) -> Bool,
     ]()(window, focusable)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3672,7 +3676,7 @@ def show_window_system_menu(
     ret = _get_dylib_function[
         lib,
         "SDL_ShowWindowSystemMenu",
-        fn(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) -> Bool,
     ]()(window, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3727,7 +3731,7 @@ struct HitTestResult(Indexer, Intable, TrivialRegisterPassable):
     """Region is the resizable left border."""
 
 
-comptime HitTest = fn(
+comptime HitTest = def(
     win: Ptr[Window, MutAnyOrigin],
     area: Ptr[Point, ImmutAnyOrigin],
     data: Ptr[NoneType, MutAnyOrigin],
@@ -3800,7 +3804,7 @@ def set_window_hit_test(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowHitTest",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             callback: HitTest,
             callback_data: Ptr[NoneType, MutAnyOrigin],
@@ -3846,7 +3850,7 @@ def set_window_shape(
     ret = _get_dylib_function[
         lib,
         "SDL_SetWindowShape",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin],
             shape: Ptr[Surface, MutAnyOrigin],
         ) -> Bool,
@@ -3877,7 +3881,7 @@ def flash_window(
     ret = _get_dylib_function[
         lib,
         "SDL_FlashWindow",
-        fn(
+        def(
             window: Ptr[Window, MutAnyOrigin], operation: FlashOperation
         ) -> Bool,
     ]()(window, operation)
@@ -3907,7 +3911,7 @@ def destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> None,
+        def(window: Ptr[Window, MutAnyOrigin]) -> None,
     ]()(window)
 
 
@@ -3927,7 +3931,7 @@ def screen_saver_enabled() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ScreenSaverEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_ScreenSaverEnabled", fn() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_ScreenSaverEnabled", def() -> Bool]()()
 
 
 def enable_screen_saver() raises:
@@ -3943,7 +3947,7 @@ def enable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnableScreenSaver.
     """
 
-    ret = _get_dylib_function[lib, "SDL_EnableScreenSaver", fn() -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_EnableScreenSaver", def() -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3967,7 +3971,7 @@ def disable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DisableScreenSaver.
     """
 
-    ret = _get_dylib_function[lib, "SDL_DisableScreenSaver", fn() -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_DisableScreenSaver", def() -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3999,13 +4003,13 @@ def gl_load_library(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_LoadLibrary",
-        fn(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(path: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def gl_get_proc_address(var proc: String) raises -> fn() -> None:
+def gl_get_proc_address(var proc: String) raises -> def() -> None:
     """Get an OpenGL function by name.
 
     If the GL library is loaded at runtime with SDL_GL_LoadLibrary(), then all
@@ -4062,11 +4066,11 @@ def gl_get_proc_address(var proc: String) raises -> fn() -> None:
     return _get_dylib_function[
         lib,
         "SDL_GL_GetProcAddress",
-        fn(proc: Ptr[c_char, ImmutAnyOrigin]) -> fn() -> None,
+        def(proc: Ptr[c_char, ImmutAnyOrigin]) -> def() -> None,
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
-def egl_get_proc_address(var proc: String) raises -> fn() -> None:
+def egl_get_proc_address(var proc: String) raises -> def() -> None:
     """Get an EGL library function by name.
 
     If an EGL library is loaded, this function allows applications to get entry
@@ -4089,7 +4093,7 @@ def egl_get_proc_address(var proc: String) raises -> fn() -> None:
     return _get_dylib_function[
         lib,
         "SDL_EGL_GetProcAddress",
-        fn(proc: Ptr[c_char, ImmutAnyOrigin]) -> fn() -> None,
+        def(proc: Ptr[c_char, ImmutAnyOrigin]) -> def() -> None,
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
@@ -4102,7 +4106,7 @@ def gl_unload_library() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_UnloadLibrary.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_UnloadLibrary", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_GL_UnloadLibrary", def() -> None]()()
 
 
 def gl_extension_supported(var extension: String) raises -> Bool:
@@ -4134,7 +4138,7 @@ def gl_extension_supported(var extension: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GL_ExtensionSupported",
-        fn(extension: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(extension: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
     ]()(extension.as_c_string_slice().unsafe_ptr())
 
 
@@ -4147,7 +4151,7 @@ def gl_reset_attributes() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_ResetAttributes.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_ResetAttributes", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_GL_ResetAttributes", def() -> None]()()
 
 
 def gl_set_attribute(attr: GLAttr, value: c_int) raises:
@@ -4174,7 +4178,7 @@ def gl_set_attribute(attr: GLAttr, value: c_int) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_SetAttribute", fn(attr: GLAttr, value: c_int) -> Bool
+        lib, "SDL_GL_SetAttribute", def(attr: GLAttr, value: c_int) -> Bool
     ]()(attr, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4201,7 +4205,7 @@ def gl_get_attribute(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_GetAttribute",
-        fn(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) -> Bool,
+        def(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) -> Bool,
     ]()(attr, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4234,7 +4238,7 @@ def gl_create_context(window: Ptr[Window, MutAnyOrigin]) raises -> GLContext:
     return _get_dylib_function[
         lib,
         "SDL_GL_CreateContext",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> GLContext,
+        def(window: Ptr[Window, MutAnyOrigin]) -> GLContext,
     ]()(window)
 
 
@@ -4262,7 +4266,7 @@ def gl_make_current(
     ret = _get_dylib_function[
         lib,
         "SDL_GL_MakeCurrent",
-        fn(window: Ptr[Window, MutAnyOrigin], context: GLContext) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], context: GLContext) -> Bool,
     ]()(window, context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4282,7 +4286,7 @@ def gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_GetCurrentWindow", fn() -> Ptr[Window, MutAnyOrigin]
+        lib, "SDL_GL_GetCurrentWindow", def() -> Ptr[Window, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4302,7 +4306,7 @@ def gl_get_current_context() raises -> GLContext:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GL_GetCurrentContext", fn() -> GLContext
+        lib, "SDL_GL_GetCurrentContext", def() -> GLContext
     ]()()
 
 
@@ -4320,7 +4324,7 @@ def egl_get_current_display() raises -> EGLDisplay:
     """
 
     return _get_dylib_function[
-        lib, "SDL_EGL_GetCurrentDisplay", fn() -> EGLDisplay
+        lib, "SDL_EGL_GetCurrentDisplay", def() -> EGLDisplay
     ]()()
 
 
@@ -4338,7 +4342,7 @@ def egl_get_current_config() raises -> EGLConfig:
     """
 
     return _get_dylib_function[
-        lib, "SDL_EGL_GetCurrentConfig", fn() -> EGLConfig
+        lib, "SDL_EGL_GetCurrentConfig", def() -> EGLConfig
     ]()()
 
 
@@ -4363,7 +4367,7 @@ def egl_get_window_surface(
     return _get_dylib_function[
         lib,
         "SDL_EGL_GetWindowSurface",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> EGLSurface,
+        def(window: Ptr[Window, MutAnyOrigin]) -> EGLSurface,
     ]()(window)
 
 
@@ -4398,7 +4402,7 @@ def egl_set_attribute_callbacks(
     return _get_dylib_function[
         lib,
         "SDL_EGL_SetAttributeCallbacks",
-        fn(
+        def(
             platform_attrib_callback: EGLAttribArrayCallback,
             surface_attrib_callback: EGLIntArrayCallback,
             context_attrib_callback: EGLIntArrayCallback,
@@ -4445,7 +4449,7 @@ def gl_set_swap_interval(interval: c_int) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_SetSwapInterval", fn(interval: c_int) -> Bool
+        lib, "SDL_GL_SetSwapInterval", def(interval: c_int) -> Bool
     ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4476,7 +4480,7 @@ def gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_GetSwapInterval",
-        fn(interval: Ptr[c_int, MutAnyOrigin]) -> Bool,
+        def(interval: Ptr[c_int, MutAnyOrigin]) -> Bool,
     ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4508,7 +4512,7 @@ def gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_SwapWindow",
-        fn(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4531,7 +4535,7 @@ def gl_destroy_context(context: GLContext) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_DestroyContext", fn(context: GLContext) -> Bool
+        lib, "SDL_GL_DestroyContext", def(context: GLContext) -> Bool
     ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

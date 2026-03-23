@@ -534,7 +534,7 @@ struct Renderer3D(Movable):
         self.device = _get_dylib_function[
             lib,
             "SDL_CreateGPUDevice",
-            fn(
+            def(
                 GPUShaderFormat, Bool, Ptr[c_char, ImmutAnyOrigin]
             ) -> Ptr[GPUDevice, MutAnyOrigin],
         ]()(

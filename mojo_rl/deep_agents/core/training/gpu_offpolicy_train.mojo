@@ -699,7 +699,7 @@ def run_offpolicy_continuous_train_gpu[
                     + " | Ep: "
                     + String(completed_episodes)
                     + " | AvgR: "
-                    + String(last_avg_reward)[:7]
+                    + String(last_avg_reward)[byte=:7]
                     + " | Train: "
                     + String(total_train_steps)
                 )
@@ -746,7 +746,7 @@ def run_offpolicy_continuous_train_gpu[
             + " | Ep: "
             + String(completed_episodes)
             + " | AvgR: "
-            + String(last_avg_reward)[:7]
+            + String(last_avg_reward)[byte=:7]
             + " | Train: "
             + String(total_train_steps)
             + " [DONE]"
@@ -1140,7 +1140,7 @@ def run_offpolicy_discrete_train_gpu[
                     + " | Ep: "
                     + String(completed_episodes)
                     + " | AvgR: "
-                    + String(last_avg_reward)[:7]
+                    + String(last_avg_reward)[byte=:7]
                     + " | Train: "
                     + String(total_train_steps)
                 )
@@ -1188,7 +1188,7 @@ def run_offpolicy_discrete_train_gpu[
             + " | Ep: "
             + String(completed_episodes)
             + " | AvgR: "
-            + String(last_avg_reward)[:7]
+            + String(last_avg_reward)[byte=:7]
             + " | Train: "
             + String(total_train_steps)
             + " [DONE]"

@@ -109,7 +109,7 @@ def main() raises:
         env_easy, agent_easy, 2000, max_steps, "Q-Learning (non-slippery)"
     )
     print("")
-    print("Non-slippery success rate:", String(result_easy[1])[:5], "%")
+    print("Non-slippery success rate:", String(result_easy[1])[byte=:5], "%")
     print("")
 
     # ========================================================================
@@ -137,7 +137,7 @@ def main() raises:
         env_q, agent_q, num_episodes, max_steps, "Q-Learning (slippery)"
     )
     print("")
-    print("Q-Learning (slippery) success rate:", String(result_q[1])[:5], "%")
+    print("Q-Learning (slippery) success rate:", String(result_q[1])[byte=:5], "%")
     print("")
 
     # ========================================================================
@@ -188,7 +188,7 @@ def main() raises:
 
     var success_rate_dq = Float64(successes_dq) / Float64(eval_episodes) * 100.0
     print("")
-    print("Double Q-Learning success rate:", String(success_rate_dq)[:5], "%")
+    print("Double Q-Learning success rate:", String(success_rate_dq)[byte=:5], "%")
     print("")
 
     # ========================================================================
@@ -200,9 +200,9 @@ def main() raises:
     print("")
     print("Environment          | Success Rate")
     print("-" * 60)
-    print("Non-slippery (easy)  |", String(result_easy[1])[:5], "%")
-    print("Q-Learning (slippery)|", String(result_q[1])[:5], "%")
-    print("Double Q (slippery)  |", String(success_rate_dq)[:5], "%")
+    print("Non-slippery (easy)  |", String(result_easy[1])[byte=:5], "%")
+    print("Q-Learning (slippery)|", String(result_q[1])[byte=:5], "%")
+    print("Double Q (slippery)  |", String(success_rate_dq)[byte=:5], "%")
     print("")
     print("Note: Slippery FrozenLake is genuinely hard!")
     print("A 60-70% success rate is considered good for this environment.")

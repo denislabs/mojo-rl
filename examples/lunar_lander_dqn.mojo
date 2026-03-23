@@ -85,7 +85,7 @@ def main() raises:
         verbose=True,
         render=False,
     )
-    print("Average evaluation reward: " + String(eval_reward)[:10])
+    print("Average evaluation reward: " + String(eval_reward)[byte=:10])
 
     # Final evaluation with rendering
     print()

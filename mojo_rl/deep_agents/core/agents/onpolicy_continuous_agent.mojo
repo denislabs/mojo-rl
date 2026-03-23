@@ -1049,7 +1049,7 @@ struct GenericOnPolicyContinuousAgent[
                     "Eval Episode",
                     episode + 1,
                     "| Reward:",
-                    String(episode_reward)[:10],
+                    String(episode_reward)[byte=:10],
                     "| Steps:",
                     episode_steps,
                 )
@@ -1310,7 +1310,7 @@ struct GenericOnPolicyContinuousAgent[
                 "GPU Eval:",
                 len(episode_rewards),
                 "episodes | Avg reward:",
-                String(avg)[:10],
+                String(avg)[byte=:10],
             )
 
         return avg

@@ -59,7 +59,7 @@ def main() raises:
         max_steps_per_episode=200,
         verbose=True,
     )
-    print("\nMean evaluation reward: " + String(eval_reward)[:10])
+    print("\nMean evaluation reward: " + String(eval_reward)[byte=:10])
 
     print("\n" + "=" * 60)
     print("Deep SAC Demo Complete!")

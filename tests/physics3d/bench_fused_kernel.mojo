@@ -165,29 +165,29 @@ def bench_noop_launches[
         "    1 × 1D launch ×",
         num_launches,
         ":",
-        String(noop_1d_ms)[:8],
+        String(noop_1d_ms)[byte=:8],
         "ms (",
-        String(noop_1d_ms / Float64(num_launches) * 1000.0)[:6],
+        String(noop_1d_ms / Float64(num_launches) * 1000.0)[byte=:6],
         "us/launch)",
     )
     print(
         "    1 × 2D launch ×",
         num_launches,
         ":",
-        String(noop_2d_ms)[:8],
+        String(noop_2d_ms)[byte=:8],
         "ms (",
-        String(noop_2d_ms / Float64(num_launches) * 1000.0)[:6],
+        String(noop_2d_ms / Float64(num_launches) * 1000.0)[byte=:6],
         "us/launch)",
     )
     print(
         "    3 × launches  ×",
         num_launches,
         ":",
-        String(noop_3x_ms)[:8],
+        String(noop_3x_ms)[byte=:8],
         "ms (",
-        String(noop_3x_ms / Float64(num_launches) * 1000.0)[:6],
+        String(noop_3x_ms / Float64(num_launches) * 1000.0)[byte=:6],
         "us/iter, overhead=",
-        String((noop_3x_ms - noop_1d_ms) / Float64(num_launches) * 1000.0)[:6],
+        String((noop_3x_ms - noop_1d_ms) / Float64(num_launches) * 1000.0)[byte=:6],
         "us extra)",
     )
     print()
@@ -285,19 +285,19 @@ def bench_physics_step[
     )
     print(
         "    Total:      ",
-        String(physics_ms)[:8],
+        String(physics_ms)[byte=:8],
         "ms (",
         total_launches,
         "kernel launches)",
     )
     print(
         "    Per substep:",
-        String(per_step_us)[:7],
+        String(per_step_us)[byte=:7],
         "us (4 launches)",
     )
     print(
         "    Per launch: ",
-        String(physics_ms / Float64(total_launches) * 1000.0)[:7],
+        String(physics_ms / Float64(total_launches) * 1000.0)[byte=:7],
         "us (avg across step/solve/finalize)",
     )
     print()
@@ -505,45 +505,45 @@ def bench_physics_with_sync[
     )
     print(
         "    Step kernel:     ",
-        String(step_ms)[:8],
+        String(step_ms)[byte=:8],
         "ms (",
-        String(step_ms / Float64(num_substeps) * 1000.0)[:7],
+        String(step_ms / Float64(num_substeps) * 1000.0)[byte=:7],
         "us/call,",
-        String(step_ms / total_ms * 100.0)[:5],
+        String(step_ms / total_ms * 100.0)[byte=:5],
         "%)",
     )
     print(
         "    Contact kernel:  ",
-        String(contact_ms)[:8],
+        String(contact_ms)[byte=:8],
         "ms (",
-        String(contact_ms / Float64(num_substeps) * 1000.0)[:7],
+        String(contact_ms / Float64(num_substeps) * 1000.0)[byte=:7],
         "us/call,",
-        String(contact_ms / total_ms * 100.0)[:5],
+        String(contact_ms / total_ms * 100.0)[byte=:5],
         "%)",
     )
     print(
         "    Solve kernel:    ",
-        String(solve_ms)[:8],
+        String(solve_ms)[byte=:8],
         "ms (",
-        String(solve_ms / Float64(num_substeps) * 1000.0)[:7],
+        String(solve_ms / Float64(num_substeps) * 1000.0)[byte=:7],
         "us/call,",
-        String(solve_ms / total_ms * 100.0)[:5],
+        String(solve_ms / total_ms * 100.0)[byte=:5],
         "%)",
     )
     print(
         "    Finalize kernel: ",
-        String(finalize_ms)[:8],
+        String(finalize_ms)[byte=:8],
         "ms (",
-        String(finalize_ms / Float64(num_substeps) * 1000.0)[:7],
+        String(finalize_ms / Float64(num_substeps) * 1000.0)[byte=:7],
         "us/call,",
-        String(finalize_ms / total_ms * 100.0)[:5],
+        String(finalize_ms / total_ms * 100.0)[byte=:5],
         "%)",
     )
     print(
         "    Total:           ",
-        String(total_ms)[:8],
+        String(total_ms)[byte=:8],
         "ms (",
-        String(total_ms / Float64(num_substeps) * 1000.0)[:7],
+        String(total_ms / Float64(num_substeps) * 1000.0)[byte=:7],
         "us/substep)",
     )
     print(
@@ -696,21 +696,21 @@ def bench_physics_step_mt[
     )
     print(
         "    Single-threaded: ",
-        String(st_ms)[:8],
+        String(st_ms)[byte=:8],
         "ms (",
-        String(st_per_step)[:7],
+        String(st_per_step)[byte=:7],
         "us/substep)",
     )
     print(
         "    Multi-threaded:  ",
-        String(mt_ms)[:8],
+        String(mt_ms)[byte=:8],
         "ms (",
-        String(mt_per_step)[:7],
+        String(mt_per_step)[byte=:7],
         "us/substep)",
     )
     print(
         "    Speedup:         ",
-        String(speedup)[:5],
+        String(speedup)[byte=:5],
         "x",
     )
     print()

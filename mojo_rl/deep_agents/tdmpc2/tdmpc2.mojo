@@ -2568,19 +2568,19 @@ struct TDMPC2Agent[
                     + " / "
                     + String(num_episodes)
                     + " | AvgR: "
-                    + String(last_avg_reward)[:7]
+                    + String(last_avg_reward)[byte=:7]
                     + " | Train: "
                     + String(self.train_step_count)
                 )
                 # print(
                 #     "  diag: |act|="
-                #     + String(diag_mean_abs_act)[:6]
+                #     + String(diag_mean_abs_act)[byte=:6]
                 #     + " act²="
-                #     + String(diag_mean_sq_act)[:6]
+                #     + String(diag_mean_sq_act)[byte=:6]
                 #     + " max|act|="
-                #     + String(diag_act_max)[:6]
+                #     + String(diag_act_max)[byte=:6]
                 #     + " step_rew="
-                #     + String(diag_mean_rew)[:7]
+                #     + String(diag_mean_rew)[byte=:7]
                 # )
                 recent_reward_sum = 0.0
                 recent_episode_count = 0
@@ -3707,7 +3707,7 @@ struct TDMPC2Agent[
                     + " / "
                     + String(num_episodes)
                     + " | AvgR: "
-                    + String(avg_r)[:7]
+                    + String(avg_r)[byte=:7]
                     + " | Steps: "
                     + String(self.total_steps)
                     + " | Train: "

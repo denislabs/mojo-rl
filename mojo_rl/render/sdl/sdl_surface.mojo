@@ -209,7 +209,7 @@ def create_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateSurface",
-        fn(
+        def(
             width: c_int, height: c_int, format: PixelFormat
         ) -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format)
@@ -257,7 +257,7 @@ def create_surface_from(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateSurfaceFrom",
-        fn(
+        def(
             width: c_int,
             height: c_int,
             format: PixelFormat,
@@ -286,7 +286,7 @@ def destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroySurface",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
@@ -332,7 +332,7 @@ def get_surface_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceProperties",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> PropertiesID,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> PropertiesID,
     ]()(surface)
 
 
@@ -362,7 +362,9 @@ def set_surface_colorspace(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorspace",
-        fn(surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace) -> Bool,
+        def(
+            surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace
+        ) -> Bool,
     ]()(surface, colorspace)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -393,7 +395,7 @@ def get_surface_colorspace(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorspace",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Colorspace,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Colorspace,
     ]()(surface)
 
 
@@ -433,7 +435,7 @@ def create_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_CreateSurfacePalette",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
@@ -462,7 +464,7 @@ def set_surface_palette(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfacePalette",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             palette: Ptr[Palette, MutAnyOrigin],
         ) -> Bool,
@@ -492,7 +494,7 @@ def get_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfacePalette",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
@@ -527,7 +529,7 @@ def add_surface_alternate_image(
     ret = _get_dylib_function[
         lib,
         "SDL_AddSurfaceAlternateImage",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             image: Ptr[Surface, MutAnyOrigin],
         ) -> Bool,
@@ -556,7 +558,7 @@ def surface_has_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasAlternateImages",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
@@ -591,7 +593,7 @@ def get_surface_images(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceImages",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             count: Ptr[c_int, MutAnyOrigin],
         ) -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
@@ -618,7 +620,7 @@ def remove_surface_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_RemoveSurfaceAlternateImages",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
@@ -652,7 +654,7 @@ def lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LockSurface",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -675,7 +677,7 @@ def unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnlockSurface",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
     ]()(surface)
 
 
@@ -707,7 +709,7 @@ def load_bmp_io(
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP_IO",
-        fn(
+        def(
             src: Ptr[IOStream, MutAnyOrigin], closeio: Bool
         ) -> Ptr[Surface, MutAnyOrigin],
     ]()(src, closeio)
@@ -737,7 +739,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        fn(file: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
+        def(file: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -775,7 +777,7 @@ def save_bmp_io(
     ret = _get_dylib_function[
         lib,
         "SDL_SaveBMP_IO",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             dst: Ptr[IOStream, MutAnyOrigin],
             closeio: Bool,
@@ -811,7 +813,7 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SaveBMP",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             file: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -843,7 +845,7 @@ def set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceRLE",
-        fn(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) -> Bool,
     ]()(surface, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -869,7 +871,7 @@ def surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasRLE",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
@@ -903,7 +905,7 @@ def set_surface_color_key(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorKey",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin], enabled: Bool, key: UInt32
         ) -> Bool,
     ]()(surface, enabled, key)
@@ -931,7 +933,7 @@ def surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasColorKey",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
     ]()(surface)
 
 
@@ -962,7 +964,7 @@ def get_surface_color_key(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorKey",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             key: Ptr[UInt32, MutAnyOrigin],
         ) -> Bool,
@@ -1001,7 +1003,7 @@ def set_surface_color_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorMod",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
         ) -> Bool,
     ]()(surface, r, g, b)
@@ -1036,7 +1038,7 @@ def get_surface_color_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorMod",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             r: Ptr[UInt8, MutAnyOrigin],
             g: Ptr[UInt8, MutAnyOrigin],
@@ -1074,7 +1076,7 @@ def set_surface_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceAlphaMod",
-        fn(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) -> Bool,
     ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1102,7 +1104,7 @@ def get_surface_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceAlphaMod",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             alpha: Ptr[UInt8, MutAnyOrigin],
         ) -> Bool,
@@ -1137,7 +1139,7 @@ def set_surface_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceBlendMode",
-        fn(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
     ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1166,7 +1168,7 @@ def get_surface_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceBlendMode",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             blend_mode: Ptr[BlendMode, MutAnyOrigin],
         ) -> Bool,
@@ -1204,7 +1206,7 @@ def set_surface_clip_rect(
     return _get_dylib_function[
         lib,
         "SDL_SetSurfaceClipRect",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
         ) -> Bool,
@@ -1238,7 +1240,7 @@ def get_surface_clip_rect(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceClipRect",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
         ) -> Bool,
@@ -1267,7 +1269,7 @@ def flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlipSurface",
-        fn(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) -> Bool,
     ]()(surface, flip)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1300,7 +1302,7 @@ def duplicate_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_DuplicateSurface",
-        fn(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1337,7 +1339,7 @@ def scale_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_ScaleSurface",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             width: c_int,
             height: c_int,
@@ -1383,7 +1385,7 @@ def convert_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_ConvertSurface",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin], format: PixelFormat
         ) -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format)
@@ -1429,7 +1431,7 @@ def convert_surface_and_colorspace(
     ret = _get_dylib_function[
         lib,
         "SDL_ConvertSurfaceAndColorspace",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             format: PixelFormat,
             palette: Ptr[Palette, MutAnyOrigin],
@@ -1478,7 +1480,7 @@ def convert_pixels(
     ret = _get_dylib_function[
         lib,
         "SDL_ConvertPixels",
-        fn(
+        def(
             width: c_int,
             height: c_int,
             src_format: PixelFormat,
@@ -1543,7 +1545,7 @@ def convert_pixels_and_colorspace(
     ret = _get_dylib_function[
         lib,
         "SDL_ConvertPixelsAndColorspace",
-        fn(
+        def(
             width: c_int,
             height: c_int,
             src_format: PixelFormat,
@@ -1617,7 +1619,7 @@ def premultiply_alpha(
     ret = _get_dylib_function[
         lib,
         "SDL_PremultiplyAlpha",
-        fn(
+        def(
             width: c_int,
             height: c_int,
             src_format: PixelFormat,
@@ -1668,7 +1670,7 @@ def premultiply_surface_alpha(
     ret = _get_dylib_function[
         lib,
         "SDL_PremultiplySurfaceAlpha",
-        fn(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) -> Bool,
     ]()(surface, linear)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1708,7 +1710,7 @@ def clear_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_ClearSurface",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             r: c_float,
             g: c_float,
@@ -1755,7 +1757,7 @@ def fill_surface_rect(
     ret = _get_dylib_function[
         lib,
         "SDL_FillSurfaceRect",
-        fn(
+        def(
             dst: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
             color: UInt32,
@@ -1801,7 +1803,7 @@ def fill_surface_rects(
     ret = _get_dylib_function[
         lib,
         "SDL_FillSurfaceRects",
-        fn(
+        def(
             dst: Ptr[Surface, MutAnyOrigin],
             rects: Ptr[Rect, ImmutAnyOrigin],
             count: c_int,
@@ -1894,7 +1896,7 @@ def blit_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurface",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -1938,7 +1940,7 @@ def blit_surface_unchecked(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceUnchecked",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -1983,7 +1985,7 @@ def blit_surface_scaled(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceScaled",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -2030,7 +2032,7 @@ def blit_surface_unchecked_scaled(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceUncheckedScaled",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -2075,7 +2077,7 @@ def stretch_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_StretchSurface",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -2121,7 +2123,7 @@ def blit_surface_tiled(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceTiled",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
@@ -2172,7 +2174,7 @@ def blit_surface_tiled_with_scale(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceTiledWithScale",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             scale: c_float,
@@ -2236,7 +2238,7 @@ def blit_surface_9grid(
     ret = _get_dylib_function[
         lib,
         "SDL_BlitSurface9Grid",
-        fn(
+        def(
             src: Ptr[Surface, MutAnyOrigin],
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             left_width: c_int,
@@ -2302,7 +2304,7 @@ def map_surface_rgb(
     return _get_dylib_function[
         lib,
         "SDL_MapSurfaceRGB",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
         ) -> UInt32,
     ]()(surface, r, g, b)
@@ -2351,7 +2353,7 @@ def map_surface_rgba(
     return _get_dylib_function[
         lib,
         "SDL_MapSurfaceRGBA",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             r: UInt8,
             g: UInt8,
@@ -2404,7 +2406,7 @@ def read_surface_pixel(
     ret = _get_dylib_function[
         lib,
         "SDL_ReadSurfacePixel",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
@@ -2458,7 +2460,7 @@ def read_surface_pixel_float(
     ret = _get_dylib_function[
         lib,
         "SDL_ReadSurfacePixelFloat",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
@@ -2511,7 +2513,7 @@ def write_surface_pixel(
     ret = _get_dylib_function[
         lib,
         "SDL_WriteSurfacePixel",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,
@@ -2561,7 +2563,7 @@ def write_surface_pixel_float(
     ret = _get_dylib_function[
         lib,
         "SDL_WriteSurfacePixelFloat",
-        fn(
+        def(
             surface: Ptr[Surface, MutAnyOrigin],
             x: c_int,
             y: c_int,

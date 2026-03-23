@@ -255,7 +255,7 @@ def compose_custom_blend_mode(
     return _get_dylib_function[
         lib,
         "SDL_ComposeCustomBlendMode",
-        fn(
+        def(
             src_color_factor: BlendFactor,
             dst_color_factor: BlendFactor,
             color_operation: BlendOperation,

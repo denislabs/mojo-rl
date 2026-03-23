@@ -117,7 +117,7 @@ def get_power_info(
     return _get_dylib_function[
         lib,
         "SDL_GetPowerInfo",
-        fn(
+        def(
             seconds: Ptr[c_int, MutAnyOrigin],
             percent: Ptr[c_int, MutAnyOrigin],
         ) -> PowerState,

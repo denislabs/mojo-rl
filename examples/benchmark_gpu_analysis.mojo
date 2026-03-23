@@ -257,44 +257,44 @@ def main():
         var gpu_h64 = benchmark_gpu[OBS_DIM, 64, OUT_DIM, 64](ctx, num_iters)
         print(
             "  64   | "
-            + String(cpu_h64 / 1000)[:8]
+            + String(cpu_h64 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h64 / 1000)[:8]
+            + String(gpu_h64 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h64 / cpu_h64)[:5]
+            + String(gpu_h64 / cpu_h64)[byte=:5]
         )
 
         var cpu_h128 = benchmark_cpu[OBS_DIM, 128, OUT_DIM, 64](num_iters)
         var gpu_h128 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 64](ctx, num_iters)
         print(
             " 128   | "
-            + String(cpu_h128 / 1000)[:8]
+            + String(cpu_h128 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h128 / 1000)[:8]
+            + String(gpu_h128 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h128 / cpu_h128)[:5]
+            + String(gpu_h128 / cpu_h128)[byte=:5]
         )
 
         var cpu_h256 = benchmark_cpu[OBS_DIM, 256, OUT_DIM, 64](num_iters)
         var gpu_h256 = benchmark_gpu[OBS_DIM, 256, OUT_DIM, 64](ctx, num_iters)
         print(
             " 256   | "
-            + String(cpu_h256 / 1000)[:8]
+            + String(cpu_h256 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h256 / 1000)[:8]
+            + String(gpu_h256 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h256 / cpu_h256)[:5]
+            + String(gpu_h256 / cpu_h256)[byte=:5]
         )
 
         var cpu_h512 = benchmark_cpu[OBS_DIM, 512, OUT_DIM, 64](num_iters)
         var gpu_h512 = benchmark_gpu[OBS_DIM, 512, OUT_DIM, 64](ctx, num_iters)
         print(
             " 512   | "
-            + String(cpu_h512 / 1000)[:8]
+            + String(cpu_h512 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h512 / 1000)[:8]
+            + String(gpu_h512 / 1000)[byte=:8]
             + " | "
-            + String(gpu_h512 / cpu_h512)[:5]
+            + String(gpu_h512 / cpu_h512)[byte=:5]
         )
 
         print()
@@ -315,11 +315,11 @@ def main():
         var gpu_b32 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 32](ctx, num_iters)
         print(
             "   32  | "
-            + String(cpu_b32 / 1000)[:8]
+            + String(cpu_b32 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b32 / 1000)[:8]
+            + String(gpu_b32 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b32 / cpu_b32)[:5]
+            + String(gpu_b32 / cpu_b32)[byte=:5]
             + " | "
             + String(Int(32 * 1e9 / gpu_b32))
             + " obs/s"
@@ -329,11 +329,11 @@ def main():
         var gpu_b64 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 64](ctx, num_iters)
         print(
             "   64  | "
-            + String(cpu_b64 / 1000)[:8]
+            + String(cpu_b64 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b64 / 1000)[:8]
+            + String(gpu_b64 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b64 / cpu_b64)[:5]
+            + String(gpu_b64 / cpu_b64)[byte=:5]
             + " | "
             + String(Int(64 * 1e9 / gpu_b64))
             + " obs/s"
@@ -343,11 +343,11 @@ def main():
         var gpu_b128 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 128](ctx, num_iters)
         print(
             "  128  | "
-            + String(cpu_b128 / 1000)[:8]
+            + String(cpu_b128 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b128 / 1000)[:8]
+            + String(gpu_b128 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b128 / cpu_b128)[:5]
+            + String(gpu_b128 / cpu_b128)[byte=:5]
             + " | "
             + String(Int(128 * 1e9 / gpu_b128))
             + " obs/s"
@@ -357,11 +357,11 @@ def main():
         var gpu_b256 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 256](ctx, num_iters)
         print(
             "  256  | "
-            + String(cpu_b256 / 1000)[:8]
+            + String(cpu_b256 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b256 / 1000)[:8]
+            + String(gpu_b256 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b256 / cpu_b256)[:5]
+            + String(gpu_b256 / cpu_b256)[byte=:5]
             + " | "
             + String(Int(256 * 1e9 / gpu_b256))
             + " obs/s"
@@ -371,11 +371,11 @@ def main():
         var gpu_b512 = benchmark_gpu[OBS_DIM, 128, OUT_DIM, 512](ctx, num_iters)
         print(
             "  512  | "
-            + String(cpu_b512 / 1000)[:8]
+            + String(cpu_b512 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b512 / 1000)[:8]
+            + String(gpu_b512 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b512 / cpu_b512)[:5]
+            + String(gpu_b512 / cpu_b512)[byte=:5]
             + " | "
             + String(Int(512 * 1e9 / gpu_b512))
             + " obs/s"
@@ -387,11 +387,11 @@ def main():
         )
         print(
             " 1024  | "
-            + String(cpu_b1024 / 1000)[:8]
+            + String(cpu_b1024 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b1024 / 1000)[:8]
+            + String(gpu_b1024 / 1000)[byte=:8]
             + " | "
-            + String(gpu_b1024 / cpu_b1024)[:5]
+            + String(gpu_b1024 / cpu_b1024)[byte=:5]
             + " | "
             + String(Int(1024 * 1e9 / gpu_b1024))
             + " obs/s"

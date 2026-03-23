@@ -301,13 +301,13 @@ def main() raises:
     print("Initial state (both same):")
     print(
         "  x="
-        + String(cpu_obs[0])[:7]
+        + String(cpu_obs[0])[byte=:7]
         + " y="
-        + String(cpu_obs[1])[:7]
+        + String(cpu_obs[1])[byte=:7]
         + " vx="
-        + String(cpu_obs[2])[:7]
+        + String(cpu_obs[2])[byte=:7]
         + " vy="
-        + String(cpu_obs[3])[:7]
+        + String(cpu_obs[3])[byte=:7]
     )
     print("")
 
@@ -379,15 +379,15 @@ def main() raises:
                 action_name = "right"
 
             print(
-                String(step)[:5]
+                String(step)[byte=:5]
                 + "  | "
                 + action_name
                 + "  | "
-                + String(step_max_diff)[:8]
+                + String(step_max_diff)[byte=:8]
                 + " | "
                 + state_names2[worst_state_idx]
                 + "  | "
-                + String(cpu_reward)[:10]
+                + String(cpu_reward)[byte=:10]
             )
 
         # Update states for next step
@@ -420,7 +420,7 @@ def main() raises:
         elif drift > 0.5:
             status = "MODERATE"
         print(
-            "  " + state_names2[j] + ": " + String(drift)[:10] + "  " + status
+            "  " + state_names2[j] + ": " + String(drift)[byte=:10] + "  " + status
         )
 
     print("")
@@ -440,11 +440,11 @@ def main() raises:
             "  "
             + state_names2[j]
             + " | "
-            + String(cpu_obs[j])[:10]
+            + String(cpu_obs[j])[byte=:10]
             + " | "
-            + String(gpu_obs[j])[:10]
+            + String(gpu_obs[j])[byte=:10]
             + " | "
-            + String(diff)[:8]
+            + String(diff)[byte=:8]
         )
 
     print("\n" + "=" * 60)

@@ -82,7 +82,7 @@ def main() raises:
 
     var eval_q = agent_q.evaluate(env_q, num_episodes=10)
     print("")
-    print("Q-Learning evaluation avg reward:", String(eval_q)[:8])
+    print("Q-Learning evaluation avg reward:", String(eval_q)[byte=:8])
     print("(Lower is better - fewer steps to goal)")
     print("")
 
@@ -118,7 +118,7 @@ def main() raises:
 
     var eval_sl = agent_sl.evaluate(env_sl, num_episodes=10)
     print("")
-    print("SARSA(lambda) evaluation avg reward:", String(eval_sl)[:8])
+    print("SARSA(lambda) evaluation avg reward:", String(eval_sl)[byte=:8])
     print("")
 
     # ========================================================================
@@ -137,19 +137,19 @@ def main() raises:
 
     print(
         "Q-Learning      |",
-        String(metrics_q.mean_reward())[:8],
+        String(metrics_q.mean_reward())[byte=:8],
         "   |",
-        String(metrics_q.max_reward())[:8],
+        String(metrics_q.max_reward())[byte=:8],
         "  |",
-        String(eval_q)[:8],
+        String(eval_q)[byte=:8],
     )
     print(
         "SARSA(lambda)   |",
-        String(metrics_sl.mean_reward())[:8],
+        String(metrics_sl.mean_reward())[byte=:8],
         "   |",
-        String(metrics_sl.max_reward())[:8],
+        String(metrics_sl.max_reward())[byte=:8],
         "  |",
-        String(eval_sl)[:8],
+        String(eval_sl)[byte=:8],
     )
     print("")
     print("Best Q-Learning episode:", Int(best_steps_q), "steps")

@@ -233,18 +233,20 @@ def parse_checkpoint_header(content: String) raises -> CheckpointHeader:
         var line = lines[i]
         if line.startswith("# mojo-rl checkpoint v"):
             # Parse version
-            var version_str = String(line[len("# mojo-rl checkpoint v") :])
+            var version_str = String(
+                line[byte = len("# mojo-rl checkpoint v") :]
+            )
             header.version = Int(atol(version_str))
         elif line.startswith("# type: "):
-            header.checkpoint_type = String(line[len("# type: ") :])
+            header.checkpoint_type = String(line[byte = len("# type: ") :])
         elif line.startswith("# param_size: "):
-            var size_str = String(line[len("# param_size: ") :])
+            var size_str = String(line[byte = len("# param_size: ") :])
             header.param_size = Int(atol(size_str))
         elif line.startswith("# state_size: "):
-            var size_str = String(line[len("# state_size: ") :])
+            var size_str = String(line[byte = len("# state_size: ") :])
             header.state_size = Int(atol(size_str))
         elif line.startswith("# dtype: "):
-            header.dtype_str = String(line[len("# dtype: ") :])
+            header.dtype_str = String(line[byte = len("# dtype: ") :])
         elif line == "params:":
             # End of header
             break
@@ -387,7 +389,7 @@ def get_metadata_value(metadata: List[String], key: String) -> String:
     var prefix = key + "="
     for i in range(len(metadata)):
         if metadata[i].startswith(prefix):
-            return String(metadata[i][len(prefix) :])
+            return String(metadata[i][byte = len(prefix) :])
     return String("")
 
 

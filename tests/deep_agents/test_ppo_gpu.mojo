@@ -119,15 +119,15 @@ def main() raises:
         print("=" * 70)
         print()
         print("Total episodes: " + String(NUM_EPISODES))
-        print("Training time: " + String(elapsed_s)[:6] + " seconds")
+        print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
         print()
 
         # Print metrics summary
         print(
             "Final average reward (last 20 episodes): "
-            + String(metrics.mean_reward_last_n(20))[:7]
+            + String(metrics.mean_reward_last_n(20))[byte=:7]
         )
-        print("Best episode reward: " + String(metrics.max_reward())[:7])
+        print("Best episode reward: " + String(metrics.max_reward())[byte=:7])
         print()
 
         # =====================================================================
@@ -139,7 +139,7 @@ def main() raises:
         var eval_avg = agent.evaluate(
             env, num_episodes=10, max_steps_per_episode=500, verbose=False
         )
-        print("Evaluation average: " + String(eval_avg)[:7])
+        print("Evaluation average: " + String(eval_avg)[byte=:7])
 
         _ = agent.evaluate(
             env, num_episodes=1, max_steps_per_episode=500, verbose=False

@@ -423,7 +423,7 @@ def make_cross(size: Float64, thickness: Float64) -> List[Vec2]:
 
 
 def make_terrain_line(
-    func: fn(Float64) -> Float64,
+    func: def(Float64) -> Float64,
     x_min: Float64,
     x_max: Float64,
     num_points: Int,

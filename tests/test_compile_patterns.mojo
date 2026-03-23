@@ -235,7 +235,7 @@ def main() raises:
         var time_a = (
             Float64(perf_counter_ns() - start_a) / Float64(bench_iters) / 1e3
         )
-        print("  Batch 256: ", String(time_a)[:8], " μs/iter")
+        print("  Batch 256: ", String(time_a)[byte=:8], " μs/iter")
 
         print()
         print("-" * 70)
@@ -264,7 +264,7 @@ def main() raises:
                 / Float64(bench_iters)
                 / 1e3
             )
-            print("  Batch", batch, ":", String(time_b)[:8], " μs/iter")
+            print("  Batch", batch, ":", String(time_b)[byte=:8], " μs/iter")
 
         print()
         print("=" * 70)

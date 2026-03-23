@@ -102,11 +102,11 @@ def main() raises:
 
         var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
         print()
-        print("Profiling run done in " + String(elapsed_s)[:6] + "s")
+        print("Profiling run done in " + String(elapsed_s)[byte=:6] + "s")
         print("Episodes:", NUM_EPISODES)
         print(
             "Final avg reward (last 5): "
-            + String(metrics.mean_reward_last_n(5))[:8]
+            + String(metrics.mean_reward_last_n(5))[byte=:8]
         )
 
     print(">>> profiling main() done <<<")

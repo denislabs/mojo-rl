@@ -178,15 +178,15 @@ def main() raises:
             print("=" * 70)
             print()
             print("Total steps: " + String(NUM_STEPS))
-            print("Training time: " + String(elapsed_s)[:6] + " seconds")
+            print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
             print()
 
             # Print metrics summary
             print(
                 "Final average reward (last 100 episodes): "
-                + String(metrics.mean_reward_last_n(100))[:8]
+                + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[:8])
+            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
             print()
 
             # Check for successful training

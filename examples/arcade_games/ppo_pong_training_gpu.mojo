@@ -156,19 +156,19 @@ def main() raises:
             print()
             print("Total updates:", NUM_UPDATES)
             print("Total transitions:", total_transitions)
-            print("Training time:", String(elapsed_s)[:6], "seconds")
+            print("Training time:", String(elapsed_s)[byte=:6], "seconds")
             print(
                 "Transitions/second:",
-                String(Float64(total_transitions) / elapsed_s)[:9],
+                String(Float64(total_transitions) / elapsed_s)[byte=:9],
             )
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
             print(
                 "Final average reward (last 100 episodes):",
-                String(final_avg)[:8],
+                String(final_avg)[byte=:8],
             )
-            print("Best episode reward:", String(metrics.max_reward())[:8])
+            print("Best episode reward:", String(metrics.max_reward())[byte=:8])
             print()
 
             if final_avg > 10.0:

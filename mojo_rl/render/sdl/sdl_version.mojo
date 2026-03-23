@@ -44,7 +44,7 @@ def get_version() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetVersion.
     """
 
-    return _get_dylib_function[lib, "SDL_GetVersion", fn() -> c_int]()()
+    return _get_dylib_function[lib, "SDL_GetVersion", def() -> c_int]()()
 
 
 def get_revision() raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -72,5 +72,5 @@ def get_revision() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetRevision", fn() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetRevision", def() -> Ptr[c_char, ImmutAnyOrigin]
     ]()()

@@ -92,7 +92,7 @@ def main() raises:
         num_episodes=10,
         max_steps_per_episode=200,
     )
-    print("Evaluation average reward:", String(eval_reward)[:8])
+    print("Evaluation average reward:", String(eval_reward)[byte=:8])
 
     # Demo with rendering (if SDL2 available)
     print("\nRunning visual demo (close window to exit)...")
@@ -119,7 +119,7 @@ def main() raises:
             if result[2]:
                 break
 
-        print("Demo episode", demo_ep + 1, "reward:", String(demo_reward)[:8])
+        print("Demo episode", demo_ep + 1, "reward:", String(demo_reward)[byte=:8])
 
     renderer.close()
     print("\nDemo complete!")

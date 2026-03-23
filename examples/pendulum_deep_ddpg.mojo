@@ -63,7 +63,7 @@ def main() raises:
     print("=" * 60)
     var eval_reward = agent.evaluate(env, num_episodes=10, verbose=True)
     print("")
-    print("Average evaluation reward: " + String(eval_reward)[:10])
+    print("Average evaluation reward: " + String(eval_reward)[byte=:10])
 
     # Performance check
     if eval_reward > -200.0:

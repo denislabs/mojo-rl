@@ -82,9 +82,9 @@ def main() raises:
     var eval_q = agent_q.evaluate(env_q, num_episodes=10)
     print("")
     print(
-        "Q-Learning training mean reward:", String(metrics_q.mean_reward())[:8]
+        "Q-Learning training mean reward:", String(metrics_q.mean_reward())[byte=:8]
     )
-    print("Q-Learning evaluation reward:", String(eval_q)[:8])
+    print("Q-Learning evaluation reward:", String(eval_q)[byte=:8])
     print("")
 
     # ========================================================================
@@ -119,8 +119,8 @@ def main() raises:
 
     var eval_s = agent_s.evaluate(env_s, num_episodes=10)
     print("")
-    print("SARSA training mean reward:", String(metrics_s.mean_reward())[:8])
-    print("SARSA evaluation reward:", String(eval_s)[:8])
+    print("SARSA training mean reward:", String(metrics_s.mean_reward())[byte=:8])
+    print("SARSA evaluation reward:", String(eval_s)[byte=:8])
     print("")
 
     # ========================================================================
@@ -157,9 +157,9 @@ def main() raises:
     print("")
     print(
         "SARSA(lambda) training mean reward:",
-        String(metrics_sl.mean_reward())[:8],
+        String(metrics_sl.mean_reward())[byte=:8],
     )
-    print("SARSA(lambda) evaluation reward:", String(eval_sl)[:8])
+    print("SARSA(lambda) evaluation reward:", String(eval_sl)[byte=:8])
     print("")
 
     # ========================================================================
@@ -173,23 +173,23 @@ def main() raises:
     print("-" * 60)
     print(
         "Q-Learning    |",
-        String(metrics_q.mean_reward())[:8],
+        String(metrics_q.mean_reward())[byte=:8],
         "    |",
-        String(eval_q)[:8],
+        String(eval_q)[byte=:8],
         "   | Optimal (risky)",
     )
     print(
         "SARSA         |",
-        String(metrics_s.mean_reward())[:8],
+        String(metrics_s.mean_reward())[byte=:8],
         "    |",
-        String(eval_s)[:8],
+        String(eval_s)[byte=:8],
         "   | Safe (suboptimal)",
     )
     print(
         "SARSA(lambda) |",
-        String(metrics_sl.mean_reward())[:8],
+        String(metrics_sl.mean_reward())[byte=:8],
         "    |",
-        String(eval_sl)[:8],
+        String(eval_sl)[byte=:8],
         "   | Safe (suboptimal)",
     )
     print("")

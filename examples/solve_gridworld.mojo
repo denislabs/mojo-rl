@@ -144,27 +144,27 @@ def main() raises:
     print("-" * 60)
     print(
         "Q-Learning        |",
-        String(metrics_q.mean_reward())[:8],
+        String(metrics_q.mean_reward())[byte=:8],
         "  |",
-        String(metrics_q.max_reward())[:8],
+        String(metrics_q.max_reward())[byte=:8],
         " |",
-        String(eval_q)[:8],
+        String(eval_q)[byte=:8],
     )
     print(
         "SARSA             |",
-        String(metrics_s.mean_reward())[:8],
+        String(metrics_s.mean_reward())[byte=:8],
         "  |",
-        String(metrics_s.max_reward())[:8],
+        String(metrics_s.max_reward())[byte=:8],
         " |",
-        String(eval_s)[:8],
+        String(eval_s)[byte=:8],
     )
     print(
         "SARSA(lambda)     |",
-        String(metrics_sl.mean_reward())[:8],
+        String(metrics_sl.mean_reward())[byte=:8],
         "  |",
-        String(metrics_sl.max_reward())[:8],
+        String(metrics_sl.max_reward())[byte=:8],
         " |",
-        String(eval_sl)[:8],
+        String(eval_sl)[byte=:8],
     )
     print("")
 

@@ -134,7 +134,7 @@ struct AppResult(Indexer, Intable, TrivialRegisterPassable):
     """Value that requests termination with error from the main callbacks."""
 
 
-comptime AppInit_func = fn(
+comptime AppInit_func = def(
     appstate: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
     argc: c_int,
     argv: Ptr[c_char, MutAnyOrigin],
@@ -160,7 +160,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppInit_func.
 """
 
 
-comptime AppIterate_func = fn(
+comptime AppIterate_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin]
 ) -> AppResult
 """Function pointer typedef for SDL_AppIterate.
@@ -180,7 +180,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppIterate_func.
 """
 
 
-comptime AppEvent_func = fn(
+comptime AppEvent_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) -> AppResult
 """Function pointer typedef for SDL_AppEvent.
@@ -201,7 +201,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppEvent_func.
 """
 
 
-comptime AppQuit_func = fn(
+comptime AppQuit_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin], result: AppResult
 ) -> None
 """Function pointer typedef for SDL_AppQuit.
@@ -270,7 +270,7 @@ def init(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Init.
     """
 
-    ret = _get_dylib_function[lib, "SDL_Init", fn(flags: InitFlags) -> Bool]()(
+    ret = _get_dylib_function[lib, "SDL_Init", def(flags: InitFlags) -> Bool]()(
         flags
     )
     if not ret:
@@ -293,7 +293,7 @@ def init_sub_system(flags: InitFlags) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_InitSubSystem", fn(flags: InitFlags) -> Bool
+        lib, "SDL_InitSubSystem", def(flags: InitFlags) -> Bool
     ]()(flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -312,7 +312,7 @@ def quit_sub_system(flags: InitFlags) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_QuitSubSystem", fn(flags: InitFlags) -> None
+        lib, "SDL_QuitSubSystem", def(flags: InitFlags) -> None
     ]()(flags)
 
 
@@ -330,7 +330,7 @@ def was_init(flags: InitFlags) raises -> InitFlags:
     """
 
     return _get_dylib_function[
-        lib, "SDL_WasInit", fn(flags: InitFlags) -> InitFlags
+        lib, "SDL_WasInit", def(flags: InitFlags) -> InitFlags
     ]()(flags)
 
 
@@ -348,7 +348,7 @@ def quit() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Quit.
     """
 
-    return _get_dylib_function[lib, "SDL_Quit", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_Quit", def() -> None]()()
 
 
 def is_main_thread() raises -> Bool:
@@ -370,10 +370,10 @@ def is_main_thread() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IsMainThread.
     """
 
-    return _get_dylib_function[lib, "SDL_IsMainThread", fn() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_IsMainThread", def() -> Bool]()()
 
 
-comptime MainThreadCallback = fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
+comptime MainThreadCallback = def(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
 """Callback run on the main thread.
     
     Args:
@@ -417,7 +417,7 @@ def run_on_main_thread(
     ret = _get_dylib_function[
         lib,
         "SDL_RunOnMainThread",
-        fn(
+        def(
             callback: MainThreadCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
             wait_complete: Bool,
@@ -471,7 +471,7 @@ def set_app_metadata(
     ret = _get_dylib_function[
         lib,
         "SDL_SetAppMetadata",
-        fn(
+        def(
             appname: Ptr[c_char, ImmutAnyOrigin],
             appversion: Ptr[c_char, ImmutAnyOrigin],
             appidentifier: Ptr[c_char, ImmutAnyOrigin],
@@ -551,7 +551,7 @@ def set_app_metadata_property(var name: String, var value: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetAppMetadataProperty",
-        fn(
+        def(
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -591,5 +591,5 @@ def get_app_metadata_property(
     return _get_dylib_function[
         lib,
         "SDL_GetAppMetadataProperty",
-        fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())

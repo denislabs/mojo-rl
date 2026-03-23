@@ -99,7 +99,7 @@ def main() raises:
         num_episodes=10,
         max_steps_per_episode=200,
     )
-    print("Evaluation average reward:", String(eval_reward)[:8])
+    print("Evaluation average reward:", String(eval_reward)[byte=:8])
 
     # Demo with rendering (if SDL2 available)
     print("\nRunning visual demo (close window to exit)...")

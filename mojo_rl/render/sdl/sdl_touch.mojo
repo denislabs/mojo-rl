@@ -170,7 +170,7 @@ def get_touch_devices(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDevices",
-        fn(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[TouchID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[TouchID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -194,7 +194,7 @@ def get_touch_device_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDeviceName",
-        fn(touch_id: TouchID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(touch_id: TouchID) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(touch_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -213,7 +213,7 @@ def get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetTouchDeviceType", fn(touch_id: TouchID) -> TouchDeviceType
+        lib, "SDL_GetTouchDeviceType", def(touch_id: TouchID) -> TouchDeviceType
     ]()(touch_id)
 
 
@@ -241,7 +241,7 @@ def get_touch_fingers(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchFingers",
-        fn(
+        def(
             touch_id: TouchID, count: Ptr[c_int, MutAnyOrigin]
         ) -> Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
     ]()(touch_id, count)

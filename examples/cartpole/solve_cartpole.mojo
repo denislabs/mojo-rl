@@ -85,8 +85,8 @@ def main() raises:
 
     print("")
     print("Tiled Q-Learning results:")
-    print("  Mean reward:", String(metrics_q.mean_reward())[:8])
-    print("  Max reward:", String(metrics_q.max_reward())[:8])
+    print("  Mean reward:", String(metrics_q.mean_reward())[byte=:8])
+    print("  Max reward:", String(metrics_q.max_reward())[byte=:8])
     print("")
 
     # ========================================================================
@@ -125,8 +125,8 @@ def main() raises:
 
     print("")
     print("Tiled SARSA(lambda) results:")
-    print("  Mean reward:", String(metrics_sl.mean_reward())[:8])
-    print("  Max reward:", String(metrics_sl.max_reward())[:8])
+    print("  Mean reward:", String(metrics_sl.mean_reward())[byte=:8])
+    print("  Max reward:", String(metrics_sl.max_reward())[byte=:8])
     print("")
 
     # ========================================================================
@@ -140,15 +140,15 @@ def main() raises:
     print("-" * 60)
     print(
         "Tiled Q-Learning   |",
-        String(metrics_q.mean_reward())[:8],
+        String(metrics_q.mean_reward())[byte=:8],
         "   |",
-        String(metrics_q.max_reward())[:8],
+        String(metrics_q.max_reward())[byte=:8],
     )
     print(
         "Tiled SARSA(lambda)|",
-        String(metrics_sl.mean_reward())[:8],
+        String(metrics_sl.mean_reward())[byte=:8],
         "   |",
-        String(metrics_sl.max_reward())[:8],
+        String(metrics_sl.max_reward())[byte=:8],
     )
     print("")
     print("Solved: Max reward = 500 (balanced for full episode)")
@@ -166,8 +166,8 @@ def main() raises:
         env_sl, tc_sl, num_episodes=100, render=False
     )
 
-    print("Tiled Q-Learning avg reward:", String(eval_q)[:8])
-    print("Tiled SARSA(lambda) avg reward:", String(eval_sl)[:8])
+    print("Tiled Q-Learning avg reward:", String(eval_q)[byte=:8])
+    print("Tiled SARSA(lambda) avg reward:", String(eval_sl)[byte=:8])
     print("")
 
     if eval_q >= 475 or eval_sl >= 475:

@@ -102,9 +102,9 @@ def main() raises:
 
         print(
             "1. vendor BLAS (cuBLAS):      "
-            + String(blas_us)[:8]
+            + String(blas_us)[byte=:8]
             + " μs  |  "
-            + String(blas_tflops)[:6]
+            + String(blas_tflops)[byte=:6]
             + " TFLOPS"
         )
 
@@ -120,9 +120,9 @@ def main() raises:
 
         print(
             "2. linalg.matmul (GPU GEMM):  "
-            + String(gemm_us)[:8]
+            + String(gemm_us)[byte=:8]
             + " μs  |  "
-            + String(gemm_tflops)[:6]
+            + String(gemm_tflops)[byte=:6]
             + " TFLOPS"
         )
 
@@ -133,17 +133,17 @@ def main() raises:
 
         print()
         print(
-            "Speedup BLAS vs custom MMA: " + String(308.0 / blas_us)[:4] + "x"
+            "Speedup BLAS vs custom MMA: " + String(308.0 / blas_us)[byte=:4] + "x"
         )
         print(
-            "Speedup GEMM vs custom MMA: " + String(308.0 / gemm_us)[:4] + "x"
+            "Speedup GEMM vs custom MMA: " + String(308.0 / gemm_us)[byte=:4] + "x"
         )
         if gemm_us < blas_us:
             print(">>> multistage GEMM is FASTER than cuBLAS! <<<")
         else:
             print(
                 ">>> cuBLAS is faster (GEMM/BLAS ratio: "
-                + String(gemm_us / blas_us)[:4]
+                + String(gemm_us / blas_us)[byte=:4]
                 + "x) <<<"
             )
 
@@ -161,7 +161,7 @@ def main() raises:
             var diff = abs(Float64(c1_host[i]) - Float64(c2_host[i]))
             if diff > max_diff:
                 max_diff = diff
-        print("Max abs diff (first 1000 elements): " + String(max_diff)[:10])
+        print("Max abs diff (first 1000 elements): " + String(max_diff)[byte=:10])
 
         print()
         print("=" * 60)

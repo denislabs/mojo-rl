@@ -2640,7 +2640,7 @@ def gpu_supports_shader_formats(
     return _get_dylib_function[
         lib,
         "SDL_GPUSupportsShaderFormats",
-        fn(
+        def(
             format_flags: GPUShaderFormat, name: Ptr[c_char, ImmutAnyOrigin]
         ) -> Bool,
     ]()(format_flags, name.as_c_string_slice().unsafe_ptr())
@@ -2659,7 +2659,7 @@ def gpu_supports_properties(props: PropertiesID) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GPUSupportsProperties", fn(props: PropertiesID) -> Bool
+        lib, "SDL_GPUSupportsProperties", def(props: PropertiesID) -> Bool
     ]()(props)
 
 
@@ -2688,7 +2688,7 @@ def create_gpu_device(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUDevice",
-        fn(
+        def(
             format_flags: GPUShaderFormat,
             debug_mode: Bool,
             name: Ptr[c_char, ImmutAnyOrigin],
@@ -2745,7 +2745,7 @@ def create_gpu_device_with_properties(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUDeviceWithProperties",
-        fn(props: PropertiesID) -> Ptr[GPUDevice, MutAnyOrigin],
+        def(props: PropertiesID) -> Ptr[GPUDevice, MutAnyOrigin],
     ]()(props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2763,7 +2763,7 @@ def destroy_gpu_device(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyGPUDevice",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
+        def(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
     ]()(device)
 
 
@@ -2776,7 +2776,7 @@ def get_num_gpu_drivers() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNumGPUDrivers.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNumGPUDrivers", fn() -> c_int]()()
+    return _get_dylib_function[lib, "SDL_GetNumGPUDrivers", def() -> c_int]()()
 
 
 def get_gpu_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -2801,7 +2801,7 @@ def get_gpu_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetGPUDriver",
-        fn(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
+        def(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -2822,7 +2822,9 @@ def get_gpu_device_driver(
     return _get_dylib_function[
         lib,
         "SDL_GetGPUDeviceDriver",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(
+            device: Ptr[GPUDevice, MutAnyOrigin]
+        ) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(device)
 
 
@@ -2844,7 +2846,7 @@ def get_gpu_shader_formats(
     return _get_dylib_function[
         lib,
         "SDL_GetGPUShaderFormats",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> GPUShaderFormat,
+        def(device: Ptr[GPUDevice, MutAnyOrigin]) -> GPUShaderFormat,
     ]()(device)
 
 
@@ -2901,7 +2903,7 @@ def create_gpu_compute_pipeline(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUComputePipeline",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUComputePipelineCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUComputePipeline, MutAnyOrigin],
@@ -2938,7 +2940,7 @@ def create_gpu_graphics_pipeline(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUGraphicsPipeline",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUGraphicsPipelineCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUGraphicsPipeline, MutAnyOrigin],
@@ -2975,7 +2977,7 @@ def create_gpu_sampler(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUSampler",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUSamplerCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUSampler, MutAnyOrigin],
@@ -3065,7 +3067,7 @@ def create_gpu_shader(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUShader",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUShaderCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUShader, MutAnyOrigin],
@@ -3129,7 +3131,7 @@ def create_gpu_texture(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUTexture",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUTextureCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUTexture, MutAnyOrigin],
@@ -3180,7 +3182,7 @@ def create_gpu_buffer(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUBufferCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUBuffer, MutAnyOrigin],
@@ -3221,7 +3223,7 @@ def create_gpu_transfer_buffer(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateGPUTransferBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             createinfo: Ptr[GPUTransferBufferCreateInfo, ImmutAnyOrigin],
         ) -> Ptr[GPUTransferBuffer, MutAnyOrigin],
@@ -3255,7 +3257,7 @@ def set_gpu_buffer_name(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUBufferName",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             buffer: Ptr[GPUBuffer, MutAnyOrigin],
             text: Ptr[c_char, ImmutAnyOrigin],
@@ -3289,7 +3291,7 @@ def set_gpu_texture_name(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUTextureName",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             texture: Ptr[GPUTexture, MutAnyOrigin],
             text: Ptr[c_char, ImmutAnyOrigin],
@@ -3314,7 +3316,7 @@ def insert_gpu_debug_label(
     return _get_dylib_function[
         lib,
         "SDL_InsertGPUDebugLabel",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             text: Ptr[c_char, ImmutAnyOrigin],
         ) -> None,
@@ -3347,7 +3349,7 @@ def push_gpu_debug_group(
     return _get_dylib_function[
         lib,
         "SDL_PushGPUDebugGroup",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             name: Ptr[c_char, ImmutAnyOrigin],
         ) -> None,
@@ -3368,7 +3370,7 @@ def pop_gpu_debug_group(
     return _get_dylib_function[
         lib,
         "SDL_PopGPUDebugGroup",
-        fn(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> None,
+        def(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> None,
     ]()(command_buffer)
 
 
@@ -3390,7 +3392,7 @@ def release_gpu_texture(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUTexture",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             texture: Ptr[GPUTexture, MutAnyOrigin],
         ) -> None,
@@ -3415,7 +3417,7 @@ def release_gpu_sampler(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUSampler",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             sampler: Ptr[GPUSampler, MutAnyOrigin],
         ) -> None,
@@ -3440,7 +3442,7 @@ def release_gpu_buffer(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             buffer: Ptr[GPUBuffer, MutAnyOrigin],
         ) -> None,
@@ -3465,7 +3467,7 @@ def release_gpu_transfer_buffer(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUTransferBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
         ) -> None,
@@ -3490,7 +3492,7 @@ def release_gpu_compute_pipeline(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUComputePipeline",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             compute_pipeline: Ptr[GPUComputePipeline, MutAnyOrigin],
         ) -> None,
@@ -3515,7 +3517,7 @@ def release_gpu_shader(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUShader",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             shader: Ptr[GPUShader, MutAnyOrigin],
         ) -> None,
@@ -3540,7 +3542,7 @@ def release_gpu_graphics_pipeline(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUGraphicsPipeline",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             graphics_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
         ) -> None,
@@ -3578,7 +3580,7 @@ def acquire_gpu_command_buffer(
     ret = _get_dylib_function[
         lib,
         "SDL_AcquireGPUCommandBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin]
         ) -> Ptr[GPUCommandBuffer, MutAnyOrigin],
     ]()(device)
@@ -3612,7 +3614,7 @@ def push_gpu_vertex_uniform_data(
     return _get_dylib_function[
         lib,
         "SDL_PushGPUVertexUniformData",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             slot_index: UInt32,
             data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3647,7 +3649,7 @@ def push_gpu_fragment_uniform_data(
     return _get_dylib_function[
         lib,
         "SDL_PushGPUFragmentUniformData",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             slot_index: UInt32,
             data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3682,7 +3684,7 @@ def push_gpu_compute_uniform_data(
     return _get_dylib_function[
         lib,
         "SDL_PushGPUComputeUniformData",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             slot_index: UInt32,
             data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3726,7 +3728,7 @@ def begin_gpu_render_pass(
     return _get_dylib_function[
         lib,
         "SDL_BeginGPURenderPass",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             color_target_infos: Ptr[GPUColorTargetInfo, ImmutAnyOrigin],
             num_color_targets: UInt32,
@@ -3760,7 +3762,7 @@ def bind_gpu_graphics_pipeline(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUGraphicsPipeline",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             graphics_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
         ) -> None,
@@ -3783,7 +3785,7 @@ def set_gpu_viewport(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUViewport",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             viewport: Ptr[GPUViewport, ImmutAnyOrigin],
         ) -> None,
@@ -3806,7 +3808,7 @@ def set_gpu_scissor(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUScissor",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             scissor: Ptr[Rect, ImmutAnyOrigin],
         ) -> None,
@@ -3828,7 +3830,7 @@ def set_gpu_blend_constants(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUBlendConstants",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             blend_constants: FColor,
         ) -> None,
@@ -3850,7 +3852,7 @@ def set_gpu_stencil_reference(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUStencilReference",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin], reference: UInt8
         ) -> None,
     ]()(render_pass, reference)
@@ -3878,7 +3880,7 @@ def bind_gpu_vertex_buffers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUVertexBuffers",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             bindings: Ptr[GPUBufferBinding, ImmutAnyOrigin],
@@ -3907,7 +3909,7 @@ def bind_gpu_index_buffer(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUIndexBuffer",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             binding: Ptr[GPUBufferBinding, ImmutAnyOrigin],
             index_element_size: GPUIndexElementSize,
@@ -3942,7 +3944,7 @@ def bind_gpu_vertex_samplers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUVertexSamplers",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             texture_sampler_bindings: Ptr[
@@ -3979,7 +3981,7 @@ def bind_gpu_vertex_storage_textures(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUVertexStorageTextures",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -4014,7 +4016,7 @@ def bind_gpu_vertex_storage_buffers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUVertexStorageBuffers",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4050,7 +4052,7 @@ def bind_gpu_fragment_samplers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUFragmentSamplers",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             texture_sampler_bindings: Ptr[
@@ -4087,7 +4089,7 @@ def bind_gpu_fragment_storage_textures(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUFragmentStorageTextures",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -4122,7 +4124,7 @@ def bind_gpu_fragment_storage_buffers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUFragmentStorageBuffers",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             first_slot: UInt32,
             storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4166,7 +4168,7 @@ def draw_gpu_indexed_primitives(
     return _get_dylib_function[
         lib,
         "SDL_DrawGPUIndexedPrimitives",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             num_indices: UInt32,
             num_instances: UInt32,
@@ -4215,7 +4217,7 @@ def draw_gpu_primitives(
     return _get_dylib_function[
         lib,
         "SDL_DrawGPUPrimitives",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             num_vertices: UInt32,
             num_instances: UInt32,
@@ -4251,7 +4253,7 @@ def draw_gpu_primitives_indirect(
     return _get_dylib_function[
         lib,
         "SDL_DrawGPUPrimitivesIndirect",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             buffer: Ptr[GPUBuffer, MutAnyOrigin],
             offset: UInt32,
@@ -4286,7 +4288,7 @@ def draw_gpu_indexed_primitives_indirect(
     return _get_dylib_function[
         lib,
         "SDL_DrawGPUIndexedPrimitivesIndirect",
-        fn(
+        def(
             render_pass: Ptr[GPURenderPass, MutAnyOrigin],
             buffer: Ptr[GPUBuffer, MutAnyOrigin],
             offset: UInt32,
@@ -4312,7 +4314,7 @@ def end_gpu_render_pass(
     return _get_dylib_function[
         lib,
         "SDL_EndGPURenderPass",
-        fn(render_pass: Ptr[GPURenderPass, MutAnyOrigin]) -> None,
+        def(render_pass: Ptr[GPURenderPass, MutAnyOrigin]) -> None,
     ]()(render_pass)
 
 
@@ -4368,7 +4370,7 @@ def begin_gpu_compute_pass(
     return _get_dylib_function[
         lib,
         "SDL_BeginGPUComputePass",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             storage_texture_bindings: Ptr[
                 GPUStorageTextureReadWriteBinding, ImmutAnyOrigin
@@ -4404,7 +4406,7 @@ def bind_gpu_compute_pipeline(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUComputePipeline",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             compute_pipeline: Ptr[GPUComputePipeline, MutAnyOrigin],
         ) -> None,
@@ -4438,7 +4440,7 @@ def bind_gpu_compute_samplers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUComputeSamplers",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             first_slot: UInt32,
             texture_sampler_bindings: Ptr[
@@ -4475,7 +4477,7 @@ def bind_gpu_compute_storage_textures(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUComputeStorageTextures",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             first_slot: UInt32,
             storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -4510,7 +4512,7 @@ def bind_gpu_compute_storage_buffers(
     return _get_dylib_function[
         lib,
         "SDL_BindGPUComputeStorageBuffers",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             first_slot: UInt32,
             storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4549,7 +4551,7 @@ def dispatch_gpu_compute(
     return _get_dylib_function[
         lib,
         "SDL_DispatchGPUCompute",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             groupcount_x: UInt32,
             groupcount_y: UInt32,
@@ -4585,7 +4587,7 @@ def dispatch_gpu_compute_indirect(
     return _get_dylib_function[
         lib,
         "SDL_DispatchGPUComputeIndirect",
-        fn(
+        def(
             compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
             buffer: Ptr[GPUBuffer, MutAnyOrigin],
             offset: UInt32,
@@ -4610,7 +4612,7 @@ def end_gpu_compute_pass(
     return _get_dylib_function[
         lib,
         "SDL_EndGPUComputePass",
-        fn(compute_pass: Ptr[GPUComputePass, MutAnyOrigin]) -> None,
+        def(compute_pass: Ptr[GPUComputePass, MutAnyOrigin]) -> None,
     ]()(compute_pass)
 
 
@@ -4640,7 +4642,7 @@ def map_gpu_transfer_buffer(
     return _get_dylib_function[
         lib,
         "SDL_MapGPUTransferBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
             cycle: Bool,
@@ -4664,7 +4666,7 @@ def unmap_gpu_transfer_buffer(
     return _get_dylib_function[
         lib,
         "SDL_UnmapGPUTransferBuffer",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
         ) -> None,
@@ -4692,7 +4694,7 @@ def begin_gpu_copy_pass(
     return _get_dylib_function[
         lib,
         "SDL_BeginGPUCopyPass",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
         ) -> Ptr[GPUCopyPass, MutAnyOrigin],
     ]()(command_buffer)
@@ -4725,7 +4727,7 @@ def upload_to_gpu_texture(
     return _get_dylib_function[
         lib,
         "SDL_UploadToGPUTexture",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
             destination: Ptr[GPUTextureRegion, ImmutAnyOrigin],
@@ -4758,7 +4760,7 @@ def upload_to_gpu_buffer(
     return _get_dylib_function[
         lib,
         "SDL_UploadToGPUBuffer",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
             destination: Ptr[GPUBufferRegion, ImmutAnyOrigin],
@@ -4797,7 +4799,7 @@ def copy_gpu_texture_to_texture(
     return _get_dylib_function[
         lib,
         "SDL_CopyGPUTextureToTexture",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUTextureLocation, ImmutAnyOrigin],
             destination: Ptr[GPUTextureLocation, ImmutAnyOrigin],
@@ -4835,7 +4837,7 @@ def copy_gpu_buffer_to_buffer(
     return _get_dylib_function[
         lib,
         "SDL_CopyGPUBufferToBuffer",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUBufferLocation, ImmutAnyOrigin],
             destination: Ptr[GPUBufferLocation, ImmutAnyOrigin],
@@ -4867,7 +4869,7 @@ def download_from_gpu_texture(
     return _get_dylib_function[
         lib,
         "SDL_DownloadFromGPUTexture",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUTextureRegion, ImmutAnyOrigin],
             destination: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
@@ -4896,7 +4898,7 @@ def download_from_gpu_buffer(
     return _get_dylib_function[
         lib,
         "SDL_DownloadFromGPUBuffer",
-        fn(
+        def(
             copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
             source: Ptr[GPUBufferRegion, ImmutAnyOrigin],
             destination: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
@@ -4916,7 +4918,7 @@ def end_gpu_copy_pass(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_EndGPUCopyPass",
-        fn(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) -> None,
+        def(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) -> None,
     ]()(copy_pass)
 
 
@@ -4938,7 +4940,7 @@ def generate_mipmaps_for_gpu_texture(
     return _get_dylib_function[
         lib,
         "SDL_GenerateMipmapsForGPUTexture",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             texture: Ptr[GPUTexture, MutAnyOrigin],
         ) -> None,
@@ -4963,7 +4965,7 @@ def blit_gpu_texture(
     return _get_dylib_function[
         lib,
         "SDL_BlitGPUTexture",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             info: Ptr[GPUBlitInfo, ImmutAnyOrigin],
         ) -> None,
@@ -4993,7 +4995,7 @@ def window_supports_gpu_swapchain_composition(
     return _get_dylib_function[
         lib,
         "SDL_WindowSupportsGPUSwapchainComposition",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
             swapchain_composition: GPUSwapchainComposition,
@@ -5024,7 +5026,7 @@ def window_supports_gpu_present_mode(
     return _get_dylib_function[
         lib,
         "SDL_WindowSupportsGPUPresentMode",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
             present_mode: GPUPresentMode,
@@ -5065,7 +5067,7 @@ def claim_window_for_gpu_device(
     ret = _get_dylib_function[
         lib,
         "SDL_ClaimWindowForGPUDevice",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
         ) -> Bool,
@@ -5090,7 +5092,7 @@ def release_window_from_gpu_device(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseWindowFromGPUDevice",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
         ) -> None,
@@ -5129,7 +5131,7 @@ def set_gpu_swapchain_parameters(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUSwapchainParameters",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
             swapchain_composition: GPUSwapchainComposition,
@@ -5172,7 +5174,7 @@ def set_gpu_allowed_frames_in_flight(
     return _get_dylib_function[
         lib,
         "SDL_SetGPUAllowedFramesInFlight",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             allowed_frames_in_flight: UInt32,
         ) -> Bool,
@@ -5200,7 +5202,7 @@ def get_gpu_swapchain_texture_format(
     return _get_dylib_function[
         lib,
         "SDL_GetGPUSwapchainTextureFormat",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
         ) -> GPUTextureFormat,
@@ -5258,7 +5260,7 @@ def acquire_gpu_swapchain_texture(
     ret = _get_dylib_function[
         lib,
         "SDL_AcquireGPUSwapchainTexture",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
             swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
@@ -5300,7 +5302,7 @@ def wait_for_gpu_swapchain(
     ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUSwapchain",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
         ) -> Bool,
@@ -5361,7 +5363,7 @@ def wait_and_acquire_gpu_swapchain_texture(
     ret = _get_dylib_function[
         lib,
         "SDL_WaitAndAcquireGPUSwapchainTexture",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
             window: Ptr[Window, MutAnyOrigin],
             swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
@@ -5404,7 +5406,7 @@ def submit_gpu_command_buffer(
     ret = _get_dylib_function[
         lib,
         "SDL_SubmitGPUCommandBuffer",
-        fn(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> Bool,
+        def(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> Bool,
     ]()(command_buffer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -5438,7 +5440,7 @@ def submit_gpu_command_buffer_and_acquire_fence(
     ret = _get_dylib_function[
         lib,
         "SDL_SubmitGPUCommandBufferAndAcquireFence",
-        fn(
+        def(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
         ) -> Ptr[GPUFence, MutAnyOrigin],
     ]()(command_buffer)
@@ -5473,7 +5475,7 @@ def cancel_gpu_command_buffer(
     ret = _get_dylib_function[
         lib,
         "SDL_CancelGPUCommandBuffer",
-        fn(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> Bool,
+        def(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) -> Bool,
     ]()(command_buffer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -5495,7 +5497,7 @@ def wait_for_gpu_idle(device: Ptr[GPUDevice, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUIdle",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> Bool,
+        def(device: Ptr[GPUDevice, MutAnyOrigin]) -> Bool,
     ]()(device)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -5526,7 +5528,7 @@ def wait_for_gpu_fences(
     ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUFences",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             wait_all: Bool,
             fences: Ptr[GPUFence, MutAnyOrigin],
@@ -5556,7 +5558,7 @@ def query_gpu_fence(
     return _get_dylib_function[
         lib,
         "SDL_QueryGPUFence",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             fence: Ptr[GPUFence, MutAnyOrigin],
         ) -> Bool,
@@ -5581,7 +5583,7 @@ def release_gpu_fence(
     return _get_dylib_function[
         lib,
         "SDL_ReleaseGPUFence",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             fence: Ptr[GPUFence, MutAnyOrigin],
         ) -> None,
@@ -5605,7 +5607,7 @@ def gpu_texture_format_texel_block_size(
     return _get_dylib_function[
         lib,
         "SDL_GPUTextureFormatTexelBlockSize",
-        fn(format: GPUTextureFormat) -> UInt32,
+        def(format: GPUTextureFormat) -> UInt32,
     ]()(format)
 
 
@@ -5633,7 +5635,7 @@ def gpu_texture_supports_format(
     return _get_dylib_function[
         lib,
         "SDL_GPUTextureSupportsFormat",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             format: GPUTextureFormat,
             type: GPUTextureType,
@@ -5663,7 +5665,7 @@ def gpu_texture_supports_sample_count(
     return _get_dylib_function[
         lib,
         "SDL_GPUTextureSupportsSampleCount",
-        fn(
+        def(
             device: Ptr[GPUDevice, MutAnyOrigin],
             format: GPUTextureFormat,
             sample_count: GPUSampleCount,
@@ -5694,7 +5696,7 @@ def calculate_gpu_texture_format_size(
     return _get_dylib_function[
         lib,
         "SDL_CalculateGPUTextureFormatSize",
-        fn(
+        def(
             format: GPUTextureFormat,
             width: UInt32,
             height: UInt32,
@@ -5719,7 +5721,7 @@ def gdk_suspend_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_GDKSuspendGPU",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
+        def(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
     ]()(device)
 
 
@@ -5739,5 +5741,5 @@ def gdk_resume_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_GDKResumeGPU",
-        fn(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
+        def(device: Ptr[GPUDevice, MutAnyOrigin]) -> None,
     ]()(device)

@@ -152,7 +152,7 @@ def get_date_time_locale_preferences(
     ret = _get_dylib_function[
         lib,
         "SDL_GetDateTimeLocalePreferences",
-        fn(
+        def(
             date_format: Ptr[DateFormat, MutAnyOrigin],
             time_format: Ptr[TimeFormat, MutAnyOrigin],
         ) -> Bool,
@@ -178,7 +178,7 @@ def get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GetCurrentTime",
-        fn(ticks: Ptr[Int64, MutAnyOrigin]) -> Bool,
+        def(ticks: Ptr[Int64, MutAnyOrigin]) -> Bool,
     ]()(ticks)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -207,7 +207,7 @@ def time_to_date_time(
     ret = _get_dylib_function[
         lib,
         "SDL_TimeToDateTime",
-        fn(
+        def(
             ticks: Int64, dt: Ptr[DateTime, MutAnyOrigin], local_time: Bool
         ) -> Bool,
     ]()(ticks, dt, local_time)
@@ -237,7 +237,7 @@ def date_time_to_time(
     ret = _get_dylib_function[
         lib,
         "SDL_DateTimeToTime",
-        fn(
+        def(
             dt: Ptr[DateTime, ImmutAnyOrigin],
             ticks: Ptr[Int64, MutAnyOrigin],
         ) -> Bool,
@@ -269,7 +269,7 @@ def time_to_windows(
     return _get_dylib_function[
         lib,
         "SDL_TimeToWindows",
-        fn(
+        def(
             ticks: Int64,
             dw_low_date_time: Ptr[UInt32, MutAnyOrigin],
             dw_high_date_time: Ptr[UInt32, MutAnyOrigin],
@@ -299,7 +299,7 @@ def time_from_windows(
     return _get_dylib_function[
         lib,
         "SDL_TimeFromWindows",
-        fn(dw_low_date_time: UInt32, dw_high_date_time: UInt32) -> Int64,
+        def(dw_low_date_time: UInt32, dw_high_date_time: UInt32) -> Int64,
     ]()(dw_low_date_time, dw_high_date_time)
 
 
@@ -318,7 +318,7 @@ def get_days_in_month(year: c_int, month: c_int) raises -> c_int:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetDaysInMonth", fn(year: c_int, month: c_int) -> c_int
+        lib, "SDL_GetDaysInMonth", def(year: c_int, month: c_int) -> c_int
     ]()(year, month)
 
 
@@ -340,7 +340,7 @@ def get_day_of_year(year: c_int, month: c_int, day: c_int) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetDayOfYear",
-        fn(year: c_int, month: c_int, day: c_int) -> c_int,
+        def(year: c_int, month: c_int, day: c_int) -> c_int,
     ]()(year, month, day)
 
 
@@ -362,5 +362,5 @@ def get_day_of_week(year: c_int, month: c_int, day: c_int) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetDayOfWeek",
-        fn(year: c_int, month: c_int, day: c_int) -> c_int,
+        def(year: c_int, month: c_int, day: c_int) -> c_int,
     ]()(year, month, day)

@@ -261,13 +261,13 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     var version: UInt32
     """The version of this interface."""
 
-    var close: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
+    var close: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
     """Called when the storage is closed."""
 
-    var ready: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
+    var ready: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
     """Optional, returns whether the storage is currently ready for access."""
 
-    var enumerate: fn(
+    var enumerate: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
         callback: EnumerateDirectoryCallback,
@@ -275,14 +275,14 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     ) -> Bool
     """Enumerate a directory, optional for write-only storage."""
 
-    var info: fn(
+    var info: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
         info: Ptr[PathInfo, MutAnyOrigin],
     ) -> Bool
     """Get path information, optional for write-only storage."""
 
-    var read_file: fn(
+    var read_file: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
         destination: Ptr[NoneType, MutAnyOrigin],
@@ -290,7 +290,7 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     ) -> Bool
     """Read a file from storage, optional for write-only storage."""
 
-    var write_file: fn(
+    var write_file: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
         source: Ptr[NoneType, ImmutAnyOrigin],
@@ -298,33 +298,33 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     ) -> Bool
     """Write a file to storage, optional for read-only storage."""
 
-    var mkdir: fn(
+    var mkdir: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
     ) -> Bool
     """Create a directory, optional for read-only storage."""
 
-    var remove: fn(
+    var remove: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
     ) -> Bool
     """Remove a file or empty directory, optional for read-only storage."""
 
-    var rename: fn(
+    var rename: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         oldpath: Ptr[c_char, ImmutAnyOrigin],
         newpath: Ptr[c_char, ImmutAnyOrigin],
     ) -> Bool
     """Rename a path, optional for read-only storage."""
 
-    var copy_file: fn(
+    var copy_file: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         oldpath: Ptr[c_char, ImmutAnyOrigin],
         newpath: Ptr[c_char, ImmutAnyOrigin],
     ) -> Bool
     """Copy a file, optional for read-only storage."""
 
-    var space_remaining: fn(userdata: Ptr[NoneType, MutAnyOrigin]) -> UInt64
+    var space_remaining: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> UInt64
     """Get the space remaining, optional for read-only storage."""
 
 
@@ -363,7 +363,7 @@ def open_title_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenTitleStorage",
-        fn(
+        def(
             override: Ptr[c_char, ImmutAnyOrigin], props: PropertiesID
         ) -> Ptr[Storage, MutAnyOrigin],
     ]()(override.as_c_string_slice().unsafe_ptr(), props)
@@ -399,7 +399,7 @@ def open_user_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenUserStorage",
-        fn(
+        def(
             org: Ptr[c_char, ImmutAnyOrigin],
             app: Ptr[c_char, ImmutAnyOrigin],
             props: PropertiesID,
@@ -436,7 +436,7 @@ def open_file_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenFileStorage",
-        fn(path: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Storage, MutAnyOrigin],
+        def(path: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Storage, MutAnyOrigin],
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -472,7 +472,7 @@ def open_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenStorage",
-        fn(
+        def(
             iface: Ptr[StorageInterface, ImmutAnyOrigin],
             userdata: Ptr[NoneType, MutAnyOrigin],
         ) -> Ptr[Storage, MutAnyOrigin],
@@ -497,7 +497,9 @@ def close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseStorage", fn(storage: Ptr[Storage, MutAnyOrigin]) -> Bool
+        lib,
+        "SDL_CloseStorage",
+        def(storage: Ptr[Storage, MutAnyOrigin]) -> Bool,
     ]()(storage)
 
 
@@ -519,7 +521,9 @@ def storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_StorageReady", fn(storage: Ptr[Storage, MutAnyOrigin]) -> Bool
+        lib,
+        "SDL_StorageReady",
+        def(storage: Ptr[Storage, MutAnyOrigin]) -> Bool,
     ]()(storage)
 
 
@@ -545,7 +549,7 @@ def get_storage_file_size(
     return _get_dylib_function[
         lib,
         "SDL_GetStorageFileSize",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             length: Ptr[UInt64, MutAnyOrigin],
@@ -582,7 +586,7 @@ def read_storage_file(
     return _get_dylib_function[
         lib,
         "SDL_ReadStorageFile",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             destination: Ptr[NoneType, MutAnyOrigin],
@@ -615,7 +619,7 @@ def write_storage_file(
     return _get_dylib_function[
         lib,
         "SDL_WriteStorageFile",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             source: Ptr[NoneType, ImmutAnyOrigin],
@@ -643,7 +647,7 @@ def create_storage_directory(
     ret = _get_dylib_function[
         lib,
         "SDL_CreateStorageDirectory",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -689,7 +693,7 @@ def enumerate_storage_directory(
     ret = _get_dylib_function[
         lib,
         "SDL_EnumerateStorageDirectory",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             callback: EnumerateDirectoryCallback,
@@ -719,7 +723,7 @@ def remove_storage_path(
     ret = _get_dylib_function[
         lib,
         "SDL_RemoveStoragePath",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -750,7 +754,7 @@ def rename_storage_path(
     ret = _get_dylib_function[
         lib,
         "SDL_RenameStoragePath",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
@@ -786,7 +790,7 @@ def copy_storage_file(
     ret = _get_dylib_function[
         lib,
         "SDL_CopyStorageFile",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
@@ -823,7 +827,7 @@ def get_storage_path_info(
     ret = _get_dylib_function[
         lib,
         "SDL_GetStoragePathInfo",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             info: Ptr[PathInfo, MutAnyOrigin],
@@ -850,7 +854,7 @@ def get_storage_space_remaining(
     return _get_dylib_function[
         lib,
         "SDL_GetStorageSpaceRemaining",
-        fn(storage: Ptr[Storage, MutAnyOrigin]) -> UInt64,
+        def(storage: Ptr[Storage, MutAnyOrigin]) -> UInt64,
     ]()(storage)
 
 
@@ -907,7 +911,7 @@ def glob_storage_directory(
     ret = _get_dylib_function[
         lib,
         "SDL_GlobStorageDirectory",
-        fn(
+        def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             pattern: Ptr[c_char, ImmutAnyOrigin],

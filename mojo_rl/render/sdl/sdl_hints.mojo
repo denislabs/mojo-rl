@@ -92,7 +92,7 @@ def set_hint_with_priority(
     ret = _get_dylib_function[
         lib,
         "SDL_SetHintWithPriority",
-        fn(
+        def(
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
             priority: HintPriority,
@@ -130,7 +130,7 @@ def set_hint(var name: String, var value: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetHint",
-        fn(
+        def(
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
         ) -> Bool,
@@ -163,7 +163,7 @@ def reset_hint(var name: String) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ResetHint", fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Bool
+        lib, "SDL_ResetHint", def(name: Ptr[c_char, ImmutAnyOrigin]) -> Bool
     ]()(name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -182,7 +182,7 @@ def reset_hints() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetHints.
     """
 
-    return _get_dylib_function[lib, "SDL_ResetHints", fn() -> None]()()
+    return _get_dylib_function[lib, "SDL_ResetHints", def() -> None]()()
 
 
 def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -208,7 +208,7 @@ def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetHint",
-        fn(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -232,11 +232,11 @@ def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetHintBoolean",
-        fn(name: Ptr[c_char, ImmutAnyOrigin], default_value: Bool) -> Bool,
+        def(name: Ptr[c_char, ImmutAnyOrigin], default_value: Bool) -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
-comptime HintCallback = fn(
+comptime HintCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     name: Ptr[c_char, ImmutAnyOrigin],
     old_value: Ptr[c_char, ImmutAnyOrigin],
@@ -291,7 +291,7 @@ def add_hint_callback(
     ret = _get_dylib_function[
         lib,
         "SDL_AddHintCallback",
-        fn(
+        def(
             name: Ptr[c_char, ImmutAnyOrigin],
             callback: HintCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
@@ -323,7 +323,7 @@ def remove_hint_callback(
     return _get_dylib_function[
         lib,
         "SDL_RemoveHintCallback",
-        fn(
+        def(
             name: Ptr[c_char, ImmutAnyOrigin],
             callback: HintCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],

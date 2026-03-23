@@ -379,7 +379,7 @@ def main() raises:
         ctx.synchronize()
         var t1 = perf_counter_ns()
         var fk_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("1. FK (forward kinematics):  " + String(fk_us)[:8] + " μs")
+        print("1. FK (forward kinematics):  " + String(fk_us)[byte=:8] + " μs")
 
         # Phase 2: Body Velocities
         ctx.synchronize()
@@ -394,7 +394,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var vel_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("2. Body velocities:          " + String(vel_us)[:8] + " μs")
+        print("2. Body velocities:          " + String(vel_us)[byte=:8] + " μs")
 
         # Phase 3: CDOF
         ctx.synchronize()
@@ -410,7 +410,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var cdof_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("3. CDOF (motion axes):       " + String(cdof_us)[:8] + " μs")
+        print("3. CDOF (motion axes):       " + String(cdof_us)[byte=:8] + " μs")
 
         # Phase 4: CRB
         ctx.synchronize()
@@ -426,7 +426,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var crb_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("4. CRB (composite inertia):  " + String(crb_us)[:8] + " μs")
+        print("4. CRB (composite inertia):  " + String(crb_us)[byte=:8] + " μs")
 
         # Phase 5: Mass Matrix (multi-threaded)
         ctx.synchronize()
@@ -442,7 +442,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var mm_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("5. Mass matrix (MT):         " + String(mm_us)[:8] + " μs")
+        print("5. Mass matrix (MT):         " + String(mm_us)[byte=:8] + " μs")
 
         # Phase 6: LDL
         ctx.synchronize()
@@ -456,7 +456,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var ldl_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("6. LDL factorization:        " + String(ldl_us)[:8] + " μs")
+        print("6. LDL factorization:        " + String(ldl_us)[byte=:8] + " μs")
 
         # Phase 7: M_inv
         ctx.synchronize()
@@ -470,7 +470,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var minv_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("7. M_inv from LDL:           " + String(minv_us)[:8] + " μs")
+        print("7. M_inv from LDL:           " + String(minv_us)[byte=:8] + " μs")
 
         # Phase 8: RNE
         ctx.synchronize()
@@ -486,7 +486,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var rne_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("8. RNE (bias forces):        " + String(rne_us)[:8] + " μs")
+        print("8. RNE (bias forces):        " + String(rne_us)[byte=:8] + " μs")
 
         # Phase 9: LDL Solve
         ctx.synchronize()
@@ -500,7 +500,7 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var solve_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("9. LDL solve:                " + String(solve_us)[:8] + " μs")
+        print("9. LDL solve:                " + String(solve_us)[byte=:8] + " μs")
 
         # ── Reference: full monolithic step ──
         ctx.synchronize()
@@ -535,27 +535,27 @@ def main() raises:
             + solve_us
         )
         print(
-            "Sum of phases:               " + String(phases_total)[:8] + " μs"
+            "Sum of phases:               " + String(phases_total)[byte=:8] + " μs"
         )
-        print("Full step (monolithic):      " + String(full_us)[:8] + " μs")
+        print("Full step (monolithic):      " + String(full_us)[byte=:8] + " μs")
         print("  (includes solver + finalize + contact detection)")
         print()
 
         # Percentages
         print("Phase breakdown:")
-        print("  FK:          " + String(fk_us / phases_total * 100)[:5] + "%")
-        print("  Velocities:  " + String(vel_us / phases_total * 100)[:5] + "%")
+        print("  FK:          " + String(fk_us / phases_total * 100)[byte=:5] + "%")
+        print("  Velocities:  " + String(vel_us / phases_total * 100)[byte=:5] + "%")
         print(
-            "  CDOF:        " + String(cdof_us / phases_total * 100)[:5] + "%"
+            "  CDOF:        " + String(cdof_us / phases_total * 100)[byte=:5] + "%"
         )
-        print("  CRB:         " + String(crb_us / phases_total * 100)[:5] + "%")
-        print("  Mass Matrix: " + String(mm_us / phases_total * 100)[:5] + "%")
-        print("  LDL Factor:  " + String(ldl_us / phases_total * 100)[:5] + "%")
+        print("  CRB:         " + String(crb_us / phases_total * 100)[byte=:5] + "%")
+        print("  Mass Matrix: " + String(mm_us / phases_total * 100)[byte=:5] + "%")
+        print("  LDL Factor:  " + String(ldl_us / phases_total * 100)[byte=:5] + "%")
         print(
-            "  M_inv:       " + String(minv_us / phases_total * 100)[:5] + "%"
+            "  M_inv:       " + String(minv_us / phases_total * 100)[byte=:5] + "%"
         )
-        print("  RNE:         " + String(rne_us / phases_total * 100)[:5] + "%")
+        print("  RNE:         " + String(rne_us / phases_total * 100)[byte=:5] + "%")
         print(
-            "  LDL Solve:   " + String(solve_us / phases_total * 100)[:5] + "%"
+            "  LDL Solve:   " + String(solve_us / phases_total * 100)[byte=:5] + "%"
         )
         print("=" * 60)

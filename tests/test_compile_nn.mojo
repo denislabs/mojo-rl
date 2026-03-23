@@ -118,7 +118,7 @@ def main():
         print()
         print(
             "  Total time (including compilation): "
-            + String(elapsed_ms)[:8]
+            + String(elapsed_ms)[byte=:8]
             + " ms"
         )
 
@@ -187,7 +187,7 @@ def main():
         print()
         print(
             "  Backward time (including compilation): "
-            + String(backward_ms)[:8]
+            + String(backward_ms)[byte=:8]
             + " ms"
         )
 

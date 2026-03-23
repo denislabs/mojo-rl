@@ -48,17 +48,17 @@ def format_obs(obs: List[Float32]) -> String:
     """Format observation for debug printing."""
     return (
         "x="
-        + String(obs[0])[:6]
+        + String(obs[0])[byte=:6]
         + " y="
-        + String(obs[1])[:6]
+        + String(obs[1])[byte=:6]
         + " vx="
-        + String(obs[2])[:6]
+        + String(obs[2])[byte=:6]
         + " vy="
-        + String(obs[3])[:6]
+        + String(obs[3])[byte=:6]
         + " ang="
-        + String(obs[4])[:6]
+        + String(obs[4])[byte=:6]
         + " angv="
-        + String(obs[5])[:6]
+        + String(obs[5])[byte=:6]
         + " L="
         + String(Int(obs[6]))
         + " R="
@@ -83,13 +83,13 @@ def format_probs(probs: InlineArray[Scalar[DType.float32], 4]) -> String:
     """Format action probabilities for debug printing."""
     return (
         "nop="
-        + String(probs[0])[:5]
+        + String(probs[0])[byte=:5]
         + " left="
-        + String(probs[1])[:5]
+        + String(probs[1])[byte=:5]
         + " main="
-        + String(probs[2])[:5]
+        + String(probs[2])[byte=:5]
         + " right="
-        + String(probs[3])[:5]
+        + String(probs[3])[byte=:5]
     )
 
 
@@ -210,21 +210,21 @@ def main() raises:
                         + ": action="
                         + action_name(action)
                         + " reward="
-                        + String(reward)[:7]
+                        + String(reward)[byte=:7]
                         + " total="
-                        + String(total_reward)[:7]
+                        + String(total_reward)[byte=:7]
                     )
                     print("  obs: " + format_obs(next_obs_list))
                     print("  probs: " + format_probs(probs))
                     print(
                         "  logits: ["
-                        + String(logits[0])[:7]
+                        + String(logits[0])[byte=:7]
                         + ", "
-                        + String(logits[1])[:7]
+                        + String(logits[1])[byte=:7]
                         + ", "
-                        + String(logits[2])[:7]
+                        + String(logits[2])[byte=:7]
                         + ", "
-                        + String(logits[3])[:7]
+                        + String(logits[3])[byte=:7]
                         + "]"
                     )
 

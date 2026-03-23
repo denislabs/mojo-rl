@@ -67,7 +67,7 @@ def main() raises:
 
     print()
     print("Training complete!")
-    print("Mean reward: " + String(metrics.mean_reward())[:10])
+    print("Mean reward: " + String(metrics.mean_reward())[byte=:10])
     print("Metrics saved to: logs/dqn_lunar_lander.csv")
 
     env.close()

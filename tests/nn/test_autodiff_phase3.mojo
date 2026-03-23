@@ -93,7 +93,7 @@ def finite_diff_check[
 def fd_grad_check_generic[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
-    eval_fn: fn(
+    eval_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -101,7 +101,7 @@ def fd_grad_check_generic[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ],
     ) -> None,
-    vjp_fn: fn(
+    vjp_fn: def(
         LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
         mut LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
         LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -147,8 +147,8 @@ def fd_grad_check_generic[
         gp_data.unsafe_ptr()
     )
 
-    eval_fn(inp_t, out_t, p_t, c_t)
-    vjp_fn(go_t, gi_t, p_t, c_t, gp_t)
+    eval_def(inp_t, out_t, p_t, c_t)
+    vjp_def(go_t, gi_t, p_t, c_t, gp_t)
 
     # --- Numerical gradients (input) ---
     var max_err: Float64 = 0.0
@@ -168,7 +168,7 @@ def fd_grad_check_generic[
         var c_p = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_plus.unsafe_ptr())
-        eval_fn(inp_p, out_p, p_t, c_p)
+        eval_def(inp_p, out_p, p_t, c_p)
 
         # f(x - eps)
         inp[idx] = orig - Scalar[dtype](eps)
@@ -183,7 +183,7 @@ def fd_grad_check_generic[
         var c_m = LayoutTensor[
             dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
         ](cache_minus.unsafe_ptr())
-        eval_fn(inp_m, out_m, p_t, c_m)
+        eval_def(inp_m, out_m, p_t, c_m)
 
         inp[idx] = orig
 
