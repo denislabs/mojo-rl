@@ -24,7 +24,8 @@ struct TTTConfig(AlphaZeroConfig):
     ]
     comptime OptType = AdamW[LR=0.002, WEIGHT_DECAY=0.01]
     comptime batch_size: Int = 128
-    comptime buffer_capacity: Int = 200000
+    comptime buffer_capacity: Int = 50000
+    comptime history_window: Int = 3     # Keep last 3 iterations
     comptime num_simulations: Int = 25    # Like alpha-zero-general
     comptime max_nodes: Int = 64
     comptime Noise = DirichletNoise[0.25, 0.25]

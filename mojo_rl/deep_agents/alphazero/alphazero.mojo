@@ -296,6 +296,14 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
         if len(s2) > 0:
             self.total_steps = Int(atol(s2))
 
+    fn start_new_iteration(mut self):
+        """Mark the start of a new self-play iteration.
+
+        Evicts oldest iteration data when history_window is exceeded.
+        Call this before each self-play collection phase.
+        """
+        self.state.start_new_iteration()
+
     # ══════════════════════════════════════════════════════════════
     # GPU Training Step (simple supervised learning)
     # ══════════════════════════════════════════════════════════════
@@ -848,9 +856,10 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                     if self.train_step_count % lr_decay_every == 0:
                         gpu.prediction.lr_scale *= lr_decay_factor
 
-            # ── 7b. Arena comparison ─────────────────────────────
+            # ── 7b. Arena comparison + new iteration ──────────────
             if arena_every > 0 and total_steps >= next_arena:
                 gpu.download_to(self.state, ctx)
+                self.state.start_new_iteration()
                 var accepted = self.arena_compare[ArenaEnv](
                     arena_env, best_params,
                     num_games=arena_games, threshold=arena_threshold,

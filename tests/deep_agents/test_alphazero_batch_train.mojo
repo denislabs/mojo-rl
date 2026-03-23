@@ -33,7 +33,8 @@ struct TTTBatchConfig(AlphaZeroConfig):
     ]
     comptime OptType = Adam[LR=0.001]   # Standard Adam, LR=0.001
     comptime batch_size: Int = 64
-    comptime buffer_capacity: Int = 200000
+    comptime buffer_capacity: Int = 50000
+    comptime history_window: Int = 3    # Keep last 3 iterations for small game
     comptime num_simulations: Int = 25  # Like alpha-zero-general
     comptime max_nodes: Int = 64
     comptime Noise = DirichletNoise[0.25, 0.25]
@@ -65,6 +66,9 @@ fn main() raises:
 
     # Iteration-based training (like alpha-zero-general)
     for iter in range(20):
+        # Mark new iteration — evicts old data beyond history_window
+        agent.start_new_iteration()
+
         # 1. Collect ~100 games via self-play (with 8x symmetries → ~4000 samples)
         # 64 envs × ~7 steps/game ≈ ~450 steps for 64 games
         # Run 1000 env steps to get ~130 games

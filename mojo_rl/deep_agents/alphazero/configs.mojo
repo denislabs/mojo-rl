@@ -45,6 +45,7 @@ trait AlphaZeroConfig:
     # ── Training ──────────────────────────────────────────────────
     comptime batch_size: Int
     comptime buffer_capacity: Int
+    comptime history_window: Int   # Keep last K iterations of self-play data
 
     # ── MCTS ──────────────────────────────────────────────────────
     comptime num_simulations: Int
@@ -88,6 +89,7 @@ struct AlphaZeroTicTacToeConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 3   # Keep last 3 iterations (small game)
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
 
@@ -128,6 +130,7 @@ struct AlphaZeroConnectFourConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 10  # Keep last 10 iterations (medium game)
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
 
@@ -168,6 +171,7 @@ struct AlphaZeroChessConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20  # Keep last 20 iterations (large game)
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
 

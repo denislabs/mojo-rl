@@ -19,27 +19,40 @@ from .configs import AlphaZeroConfig
 
 
 struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
-    """CPU state: one prediction network + circular replay buffer.
+    """CPU state: one prediction network + sliding window replay buffer.
 
     Replay stores (obs, mcts_policy, game_outcome) tuples.
-    No dynamics, no representation, no hidden states.
+    The buffer keeps only the last K iterations of self-play data,
+    where K = Config.history_window. Old iterations are discarded
+    to prevent stale data from dominating training.
+
+    Internally uses a flat array with compaction: when a new iteration
+    starts and we exceed K iterations, the oldest iteration's data is
+    removed by shifting remaining data forward.
     """
 
     comptime OBS: Int = Self.Config.obs_dim
     comptime ACT: Int = Self.Config.action_dim
     comptime CAPACITY: Int = Self.Config.buffer_capacity
+    comptime WINDOW: Int = Self.Config.history_window
     comptime PredModel = Self.Config.PredModel
     comptime OptType = Self.Config.OptType
 
     # Network
     var prediction: NetworkState[Self.PredModel, Self.OptType]
 
-    # Circular replay buffer
+    # Flat replay buffer (active region: [0, buf_size))
     var buf_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]       # [CAP * OBS]
     var buf_policy: UnsafePointer[Scalar[dtype], MutAnyOrigin]    # [CAP * ACT]
     var buf_value: UnsafePointer[Scalar[dtype], MutAnyOrigin]     # [CAP]
-    var buf_ptr: Int
     var buf_size: Int
+
+    # Iteration tracking: iter_boundaries[i] = start index of iteration i
+    # Number of stored iterations = num_iters
+    # Iteration i spans [iter_boundaries[i], iter_boundaries[i+1])
+    # Last iteration spans [iter_boundaries[num_iters-1], buf_size)
+    var iter_boundaries: List[Int]
+    var num_iters: Int
 
     fn __init__(out self):
         self.prediction = NetworkState[Self.PredModel, Self.OptType]()
@@ -56,16 +69,19 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.buf_value = alloc[Scalar[dtype]](Self.CAPACITY)
         memset(self.buf_value, 0, Self.CAPACITY)
 
-        self.buf_ptr = 0
         self.buf_size = 0
+        self.iter_boundaries = List[Int]()
+        self.iter_boundaries.append(0)  # First iteration starts at 0
+        self.num_iters = 1
 
     fn __init__(out self, *, deinit take: Self):
         self.prediction = take.prediction^
         self.buf_obs = take.buf_obs
         self.buf_policy = take.buf_policy
         self.buf_value = take.buf_value
-        self.buf_ptr = take.buf_ptr
         self.buf_size = take.buf_size
+        self.iter_boundaries = take.iter_boundaries^
+        self.num_iters = take.num_iters
 
     fn __del__(deinit self):
         self.buf_obs.free()
@@ -78,16 +94,68 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         policy: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         value: Scalar[dtype],
     ):
-        """Store one training sample in the circular buffer."""
-        var idx = self.buf_ptr
+        """Store one training sample. Drops oldest iteration if at capacity."""
+        # If buffer is full, force eviction of oldest iteration
+        if self.buf_size >= Self.CAPACITY:
+            if self.num_iters > 1:
+                self._evict_oldest()
+            else:
+                # Single iteration fills entire buffer — overwrite from start
+                self.buf_size = 0
+                self.iter_boundaries[0] = 0
+
+        var idx = self.buf_size
         for i in range(Self.OBS):
             self.buf_obs[idx * Self.OBS + i] = obs[i]
         for i in range(Self.ACT):
             self.buf_policy[idx * Self.ACT + i] = policy[i]
         self.buf_value[idx] = value
-        self.buf_ptr = (self.buf_ptr + 1) % Self.CAPACITY
-        if self.buf_size < Self.CAPACITY:
-            self.buf_size += 1
+        self.buf_size += 1
+
+    fn start_new_iteration(mut self):
+        """Mark the start of a new self-play iteration.
+
+        If we already have history_window iterations, evict the oldest
+        before starting a new one. This keeps the buffer fresh.
+        """
+        # Evict oldest iterations until we have room for one more
+        while self.num_iters >= Self.WINDOW:
+            self._evict_oldest()
+
+        # Mark new iteration boundary at current write position
+        self.iter_boundaries.append(self.buf_size)
+        self.num_iters += 1
+
+    fn _evict_oldest(mut self):
+        """Remove the oldest iteration by shifting data forward."""
+        if self.num_iters <= 1:
+            return
+
+        # Oldest iteration spans [iter_boundaries[0], iter_boundaries[1])
+        var drop_count = self.iter_boundaries[1] - self.iter_boundaries[0]
+        if drop_count <= 0:
+            # Empty iteration — just remove the boundary
+            _ = self.iter_boundaries.pop(0)
+            self.num_iters -= 1
+            return
+
+        var keep_count = self.buf_size - drop_count
+
+        # Shift data left by drop_count
+        for i in range(keep_count * Self.OBS):
+            self.buf_obs[i] = self.buf_obs[drop_count * Self.OBS + i]
+        for i in range(keep_count * Self.ACT):
+            self.buf_policy[i] = self.buf_policy[drop_count * Self.ACT + i]
+        for i in range(keep_count):
+            self.buf_value[i] = self.buf_value[drop_count + i]
+
+        # Update boundaries — shift all by -drop_count and remove first
+        _ = self.iter_boundaries.pop(0)
+        for i in range(len(self.iter_boundaries)):
+            self.iter_boundaries[i] -= drop_count
+
+        self.buf_size = keep_count
+        self.num_iters -= 1
 
     fn is_ready(self, batch_size: Int) -> Bool:
         return self.buf_size >= batch_size * 2
