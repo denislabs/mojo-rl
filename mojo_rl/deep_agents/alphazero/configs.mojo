@@ -10,15 +10,25 @@ Reuses strategies from muzero/strategies.mojo for composability.
 """
 
 from mojo_rl.nn.model import (
-    Model, Linear, LinearReLU, LinearMish, Sequential, Parallel,
-    Conv2DReLU, FlattenLayer,
+    Model,
+    Linear,
+    LinearReLU,
+    LinearMish,
+    Sequential,
+    Parallel,
+    Conv2DReLU,
+    FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
 from mojo_rl.deep_agents.muzero.strategies import (
-    ExplorationNoise, DirichletNoise,
-    PUCTFormula, AlphaGoPUCT, MuZeroPUCT,
-    PlayerMode, SelfPlay,
+    ExplorationNoise,
+    DirichletNoise,
+    PUCTFormula,
+    AlphaGoPUCT,
+    MuZeroPUCT,
+    PlayerMode,
+    SelfPlay,
 )
 
 
@@ -36,22 +46,22 @@ trait AlphaZeroConfig:
     comptime NAME: String
 
     # ── Dimensions ────────────────────────────────────────────────
-    comptime obs_dim: Int         # Observation dimension (canonical)
-    comptime action_dim: Int      # Number of discrete actions
+    comptime obs_dim: Int  # Observation dimension (canonical)
+    comptime action_dim: Int  # Number of discrete actions
 
     # ── Network ───────────────────────────────────────────────────
-    comptime PredModel: Model     # f(obs) → (policy_logits[action_dim], value[1])
+    comptime PredModel: Model  # f(obs) → (policy_logits[action_dim], value[1])
     comptime OptType: Optimizer
 
     # ── Training ──────────────────────────────────────────────────
     comptime batch_size: Int
     comptime buffer_capacity: Int
-    comptime history_window: Int   # Keep last K iterations of self-play data
+    comptime history_window: Int  # Keep last K iterations of self-play data
 
     # ── MCTS ──────────────────────────────────────────────────────
     comptime num_simulations: Int
     comptime max_nodes: Int
-    comptime temp_threshold: Int   # Use temp=1 for first N moves, temp=0 after
+    comptime temp_threshold: Int  # Use temp=1 for first N moves, temp=0 after
 
     # ── Strategies (shared with MuZero) ───────────────────────────
     comptime Noise: ExplorationNoise
@@ -83,8 +93,8 @@ struct AlphaZeroTicTacToeConfig[
         LinearReLU[27, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
         Parallel[
-            Linear[Self.HIDDEN, 9],   # Policy head
-            Linear[Self.HIDDEN, 1],   # Scalar value head
+            Linear[Self.HIDDEN, 9],  # Policy head
+            Linear[Self.HIDDEN, 1],  # Scalar value head
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]
@@ -110,7 +120,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     FILTERS: Int = 128,
     LR: Float64 = 1e-3,
     BS: Int = 64,
-    CAP: Int = 50000,
+    CAP: Int = 100_000,
     SIMS: Int = 25,
     NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
@@ -130,16 +140,16 @@ struct AlphaZeroTicTacToeCNNConfig[
     # After 3× same-padding convs: still 3×3
     # After valid conv (p=0): (3+0-3)/1+1 = 1×1
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],       # 3ch→F, 3×3→3×3
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # 3ch→F, 3×3→3×3
         Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
         Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
         Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # F→F, 3×3→1×1
-        FlattenLayer[Self.FILTERS],                               # F×1×1 → F
-        LinearReLU[Self.FILTERS, Self.FILTERS * 2],               # F → 2F
-        LinearReLU[Self.FILTERS * 2, Self.FILTERS],               # 2F → F
+        FlattenLayer[Self.FILTERS],  # F×1×1 → F
+        LinearReLU[Self.FILTERS, Self.FILTERS * 2],  # F → 2F
+        LinearReLU[Self.FILTERS * 2, Self.FILTERS],  # 2F → F
         Parallel[
-            Linear[Self.FILTERS, 9],   # Policy head
-            Linear[Self.FILTERS, 1],   # Value head
+            Linear[Self.FILTERS, 9],  # Policy head
+            Linear[Self.FILTERS, 1],  # Value head
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]
@@ -235,6 +245,8 @@ struct AlphaZeroChessConfig[
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 30
 
-    comptime Noise = DirichletNoise[0.25, 0.03]  # Small alpha for large action space
+    comptime Noise = DirichletNoise[
+        0.25, 0.03
+    ]  # Small alpha for large action space
     comptime PUCT = AlphaGoPUCT[2.5]
     comptime Players = SelfPlay
