@@ -66,7 +66,9 @@ def _cell_idx(col: Int, row: Int) -> Int:
 
 
 struct ConnectFourEnv[DTYPE: DType = DType.float64](
-    TwoPlayerDiscreteEnv & GPUTwoPlayerDiscreteEnv & RenderableEnv
+    TwoPlayerDiscreteEnv
+    & GPUTwoPlayerDiscreteEnv
+    & RenderableEnv
     & DataAugmentable
 ):
     """ConnectFour environment — CPU+GPU dual path."""
@@ -85,14 +87,15 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     comptime NUM_SYMMETRIES: Int = 2
 
     @staticmethod
-    fn augment_obs[
+    def augment_obs[
         OBS_DIM: Int,
     ](
         obs: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
         sym_idx: Int,
         mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
     ):
-        """Apply symmetry to 126D obs. sym_idx=0: identity, sym_idx=1: horizontal flip."""
+        """Apply symmetry to 126D obs. sym_idx=0: identity, sym_idx=1: horizontal flip.
+        """
         if sym_idx == 0:
             for i in range(OBS_DIM):
                 out[i] = obs[i]
@@ -110,14 +113,15 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
                     ]
 
     @staticmethod
-    fn augment_policy[
+    def augment_policy[
         ACT: Int,
     ](
         policy: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
         sym_idx: Int,
         mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
     ):
-        """Apply symmetry to 7D policy. sym_idx=0: identity, sym_idx=1: flip columns."""
+        """Apply symmetry to 7D policy. sym_idx=0: identity, sym_idx=1: flip columns.
+        """
         if sym_idx == 0:
             for i in range(ACT):
                 out[i] = policy[i]
