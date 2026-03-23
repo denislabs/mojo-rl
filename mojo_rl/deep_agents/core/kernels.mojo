@@ -1126,6 +1126,60 @@ def uniform_random_discrete_actions_kernel[
     )
 
 
+def uniform_random_legal_actions_kernel[
+    dtype: DType,
+    BATCH: Int,
+    NUM_ACTIONS: Int,
+](
+    actions_out: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(BATCH * NUM_ACTIONS), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Pick a uniform random LEGAL action using the legal mask.
+
+    For board games where illegal moves end the game with -1 reward.
+    Falls back to action 0 if no legal actions (shouldn't happen).
+    One thread per environment.
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH:
+        return
+
+    # Count legal actions
+    var n_legal = 0
+    for a in range(NUM_ACTIONS):
+        if rebind[Scalar[dtype]](legal_masks[tid * NUM_ACTIONS + a]) > Scalar[
+            dtype
+        ](0.5):
+            n_legal += 1
+
+    if n_legal == 0:
+        actions_out[tid] = Scalar[dtype](0)
+        return
+
+    # Pick random index among legal actions
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(tid) * UInt64(2654435761),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var target = Int(Float32(rand_vals[0]) * Float32(n_legal)) % n_legal
+
+    var count = 0
+    for a in range(NUM_ACTIONS):
+        if rebind[Scalar[dtype]](legal_masks[tid * NUM_ACTIONS + a]) > Scalar[
+            dtype
+        ](0.5):
+            if count == target:
+                actions_out[tid] = Scalar[dtype](a)
+                return
+            count += 1
+
+    actions_out[tid] = Scalar[dtype](0)
+
+
 # =============================================================================
 # Extract Observations from State (after selective reset)
 # =============================================================================
