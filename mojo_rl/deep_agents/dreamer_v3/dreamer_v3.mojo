@@ -4181,8 +4181,6 @@ struct DreamerV3Agent[
             ctx,
         )
 
-        ctx.synchronize()
-
         # ── Diagnostics ──────────────────────────────────────────────────
         if self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
             # Download a few diagnostic values

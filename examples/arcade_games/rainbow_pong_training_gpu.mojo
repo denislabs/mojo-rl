@@ -36,12 +36,12 @@ comptime HIDDEN_DIM = 128
 comptime STREAM_HIDDEN = 128
 comptime NUM_ATOMS = 51
 comptime N_STEP = 3
-comptime BUFFER_CAPACITY = 100_000
+comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 64
 comptime N_ENVS = 256
 
 # Training duration
-comptime NUM_STEPS = 200_000
+comptime NUM_STEPS = 2_000_000
 
 comptime dtype = DType.float32
 
@@ -63,15 +63,15 @@ fn main() raises:
             RainbowConfig[
                 OBS_DIM,
                 NUM_ACTIONS,
-                NUM_ATOMS,         # 51 atoms
-                -21.0,             # v_min (Pong score range)
-                21.0,              # v_max
+                NUM_ATOMS,  # 51 atoms
+                -21.0,  # v_min (Pong score range)
+                21.0,  # v_max
                 HIDDEN_DIM,
                 STREAM_HIDDEN,
-                N_STEP,            # 3-step returns
+                N_STEP,  # 3-step returns
                 BUFFER_CAPACITY,
                 BATCH_SIZE,
-                6.25e-5,           # lr (Rainbow paper default)
+                6.25e-5,  # lr (Rainbow paper default)
             ],
             N_ENVS,
             RemoteLogger,
