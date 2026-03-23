@@ -39,10 +39,12 @@ def main() raises:
     for chunk in range(3):
         _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            num_steps=100000,
-            warmup_steps=500 if chunk == 0 else 0,
-            gradient_steps=16,
-            print_every=100000,
+            num_iters=1,
+            steps_per_iter=100000,
+            train_epochs=16,
+            warmup_iters=1 if chunk == 0 else 0,
+            do_eval=False,
+            do_arena=False,
         )
         var step = (chunk + 1) * 100000
         print("[", step, "]")

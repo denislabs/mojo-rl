@@ -1,24 +1,28 @@
-"""MuZero Evaluators — Opponent strategies for measuring agent strength.
+"""Evaluators — Opponent strategies for measuring agent strength.
 
-Each evaluator implements select_action given a legal mask and game state info.
-Multiple evaluators can run during training to track progress against
-different baselines simultaneously.
+CPU evaluators: Evaluator trait — select_action called per game on CPU.
+GPU evaluators: GPUEvaluator trait — select_action_gpu enqueues a GPU kernel
+  for batched action selection across all environments.
 
-Design: Evaluators maintain their own internal game state by tracking
-every move played. This avoids needing to access the env's internal state
-through the generic trait.
+Design: CPU evaluators maintain internal game state by tracking moves.
+GPU evaluators are stateless (static kernels), suitable for simple strategies
+like random play that don't need game history.
 """
 
 from std.random import random_float64
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.constants import dtype
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Evaluator Trait
+# CPU Evaluator Trait
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 trait Evaluator(Movable):
-    """An opponent strategy for evaluating agent strength."""
+    """An opponent strategy for evaluating agent strength (CPU)."""
 
     def name(self) -> String:
         """Human-readable name."""
@@ -41,17 +45,55 @@ trait Evaluator(Movable):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Random Opponent
+# GPU Evaluator Trait
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-struct RandomOpponent(Evaluator):
-    """Uniformly random legal action selection. Weakest baseline."""
+trait GPUEvaluator(RegisterPassable):
+    """GPU-compatible opponent for batched evaluation.
+
+    Selects actions for all N_ENVS environments in one GPU kernel launch.
+    Has access to game states for state-based evaluators (e.g., minimax).
+    """
+
+    comptime NAME: String
+
+    @staticmethod
+    def select_action_gpu[
+        N_ENVS: Int, ACT: Int, STATE_SIZE: Int
+    ](
+        ctx: DeviceContext,
+        actions_out: DeviceBuffer[dtype],
+        legal_masks: DeviceBuffer[dtype],
+        game_states: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        """Select actions for all envs on GPU.
+
+        Args:
+            ctx: GPU device context.
+            actions_out: Output buffer [N_ENVS] for selected actions.
+            legal_masks: Legal action masks [N_ENVS * ACT].
+            game_states: Env state buffer [N_ENVS * STATE_SIZE].
+            rng_seed: Random seed for stochastic evaluators.
+        """
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Random Opponent (CPU + GPU)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct RandomOpponent(Evaluator & GPUEvaluator):
+    """Uniformly random legal action selection. Weakest baseline.
+
+    Conforms to both CPU (Evaluator) and GPU (GPUEvaluator) traits.
+    """
+
+    comptime NAME: String = "Random"
 
     def __init__(out self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
         pass
 
     def name(self) -> String:
@@ -82,6 +124,39 @@ struct RandomOpponent(Evaluator):
 
     def observe_action(mut self, action: Int, player: Int):
         pass
+
+    @staticmethod
+    def select_action_gpu[
+        N_ENVS: Int, ACT: Int, STATE_SIZE: Int
+    ](
+        ctx: DeviceContext,
+        actions_out: DeviceBuffer[dtype],
+        legal_masks: DeviceBuffer[dtype],
+        game_states: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        """Pick uniform random legal actions for all envs on GPU."""
+        from mojo_rl.deep_agents.core.kernels import (
+            uniform_random_legal_actions_kernel,
+        )
+
+        _ = game_states  # Not used by random
+        comptime TPB = 256
+        comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
+        comptime run = uniform_random_legal_actions_kernel[dtype, N_ENVS, ACT]
+        var act_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            actions_out.unsafe_ptr()
+        )
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+        ](legal_masks.unsafe_ptr())
+        ctx.enqueue_function[run, run](
+            act_t,
+            lm_t,
+            Scalar[DType.uint32](UInt32(rng_seed)),
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -221,3 +296,171 @@ struct MinimaxTicTacToe(Evaluator):
         if board[2] != 0 and board[2] == board[4] and board[4] == board[6]:
             return board[2]
         return 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GPU Minimax TicTacToe
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _gpu_minimax_ttt_kernel[
+    N_ENVS: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+):
+    """GPU minimax for TicTacToe. One thread per environment.
+
+    Reads board from game_states[env * STATE_SIZE + 0..8].
+    Board values: 0=empty, 1=P0, 2=P1.
+    Current player from game_states[env * STATE_SIZE + 9]: 0=P0, 1=P1.
+    Computes perfect minimax action.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var s_off = e * STATE_SIZE
+
+    # Read board into local array
+    var board = InlineArray[Int, 9](fill=0)
+    for i in range(9):
+        board[i] = Int(rebind[Scalar[dtype]](game_states[s_off + i]))
+
+    var current_player = Int(rebind[Scalar[dtype]](game_states[s_off + 9]))
+    var my_mark = current_player + 1  # 1 or 2
+    var opp_mark = 2 - current_player  # 2 or 1
+
+    # Minimax: current player is maximizing
+    var best_action = -1
+    var best_score = -2
+
+    for a in range(9):
+        if board[a] != 0:
+            continue
+
+        # Make move
+        board[a] = my_mark
+
+        # Evaluate from opponent's perspective (minimizing)
+        var score = _gpu_minimax_eval(board, opp_mark, my_mark, False)
+
+        # Undo
+        board[a] = 0
+
+        if score > best_score:
+            best_score = score
+            best_action = a
+
+    if best_action < 0:
+        best_action = 0  # Fallback
+    actions_out[e] = Scalar[dtype](best_action)
+
+
+def _gpu_minimax_eval(
+    mut board: InlineArray[Int, 9],
+    next_mark: Int,
+    my_mark: Int,
+    is_maximizing: Bool,
+) -> Int:
+    """Recursive minimax evaluation. Runs on GPU (bounded depth ≤ 9)."""
+    # Check winner
+    # Rows
+    for r in range(3):
+        var i = r * 3
+        if (
+            board[i] != 0
+            and board[i] == board[i + 1]
+            and board[i + 1] == board[i + 2]
+        ):
+            return 1 if board[i] == my_mark else -1
+    # Columns
+    for c in range(3):
+        if (
+            board[c] != 0
+            and board[c] == board[c + 3]
+            and board[c + 3] == board[c + 6]
+        ):
+            return 1 if board[c] == my_mark else -1
+    # Diagonals
+    if board[0] != 0 and board[0] == board[4] and board[4] == board[8]:
+        return 1 if board[0] == my_mark else -1
+    if board[2] != 0 and board[2] == board[4] and board[4] == board[6]:
+        return 1 if board[2] == my_mark else -1
+
+    # Check draw
+    var has_empty = False
+    for i in range(9):
+        if board[i] == 0:
+            has_empty = True
+            break
+    if not has_empty:
+        return 0
+
+    var other_mark = my_mark if next_mark != my_mark else (3 - my_mark)
+
+    if is_maximizing:
+        var best = -2
+        for a in range(9):
+            if board[a] != 0:
+                continue
+            board[a] = next_mark
+            var score = _gpu_minimax_eval(board, other_mark, my_mark, False)
+            board[a] = 0
+            if score > best:
+                best = score
+        return best
+    else:
+        var best = 2
+        for a in range(9):
+            if board[a] != 0:
+                continue
+            board[a] = next_mark
+            var score = _gpu_minimax_eval(board, other_mark, my_mark, True)
+            board[a] = 0
+            if score < best:
+                best = score
+        return best
+
+
+struct GPUMinimaxTicTacToe(GPUEvaluator):
+    """Perfect minimax solver for TicTacToe on GPU.
+
+    Reads the board directly from the env state buffer.
+    Each thread runs full minimax search (bounded depth 9).
+    """
+
+    comptime NAME: String = "Minimax"
+
+    @staticmethod
+    def select_action_gpu[
+        N_ENVS: Int, ACT: Int, STATE_SIZE: Int
+    ](
+        ctx: DeviceContext,
+        actions_out: DeviceBuffer[dtype],
+        legal_masks: DeviceBuffer[dtype],
+        game_states: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        _ = legal_masks  # Not needed — minimax computes from board state
+        _ = rng_seed  # Deterministic
+
+        comptime TPB = 256
+        comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
+        comptime run = _gpu_minimax_ttt_kernel[N_ENVS, STATE_SIZE, dtype]
+        var act_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            actions_out.unsafe_ptr()
+        )
+        var gs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+        ](game_states.unsafe_ptr())
+        ctx.enqueue_function[run, run](
+            act_t,
+            gs_t,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )

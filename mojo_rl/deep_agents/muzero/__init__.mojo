@@ -29,4 +29,7 @@ from .muzero import GenericMuZeroAgent
 from .mcts import MCTS, MCTSNode
 from .gpu_mcts import GPUMCTSState
 from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats
-from .evaluators import Evaluator, RandomOpponent, MinimaxTicTacToe
+from .evaluators import (
+    Evaluator, GPUEvaluator,
+    RandomOpponent, MinimaxTicTacToe, GPUMinimaxTicTacToe,
+)

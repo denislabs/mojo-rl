@@ -57,10 +57,12 @@ def main() raises:
     print("\nTraining 100K steps...")
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=100000,
-        warmup_steps=2000,
-        gradient_steps=4,
-        print_every=50000,
+        num_iters=1,
+        steps_per_iter=100000,
+        train_epochs=4,
+        warmup_iters=1,
+        do_eval=False,
+        do_arena=False,
     )
 
     # Check replay buffer

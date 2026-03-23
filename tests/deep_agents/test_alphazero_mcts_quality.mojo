@@ -47,14 +47,16 @@ def main() raises:
     agent.print_eval[TTTCPU](eval_env, random_eval, num_games=100)
     agent.print_eval[TTTCPU](eval_env, minimax_eval, num_games=100)
 
-    # Train in 25K chunks with 4 gradient steps per collection
+    # Train in 25K chunks with 8 train epochs per collection
     for chunk in range(10):
         _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            num_steps=25000,
-            warmup_steps=500 if chunk == 0 else 0,
-            gradient_steps=8,  # More training per data
-            print_every=25000,
+            num_iters=1,
+            steps_per_iter=25000,
+            train_epochs=8,
+            warmup_iters=1 if chunk == 0 else 0,
+            do_eval=False,
+            do_arena=False,
         )
 
         var step = (chunk + 1) * 25000

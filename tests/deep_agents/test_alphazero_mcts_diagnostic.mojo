@@ -78,10 +78,11 @@ def test_mcts_policy_quality() raises:
     agent.start_new_iteration()
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=500,
-        warmup_steps=0,
-        gradient_steps=0,
-        print_every=100000,
+        num_iters=1,
+        steps_per_iter=500,
+        train_epochs=0,
+        do_eval=False,
+        do_arena=False,
     )
 
     print("  Buffer size:", agent.state.buf_size)
@@ -158,10 +159,11 @@ def test_training_improves_play() raises:
         agent.start_new_iteration()
         _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            num_steps=1000,
-            warmup_steps=0,
-            gradient_steps=0,
-            print_every=100000,
+            num_iters=1,
+            steps_per_iter=1000,
+            train_epochs=0,
+            do_eval=False,
+            do_arena=False,
         )
         var num_train = 10 * agent.state.buf_size // 32
         if num_train > 3000:
@@ -206,10 +208,11 @@ def test_mcts_finds_winning_move() raises:
     agent.start_new_iteration()
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=500,
-        warmup_steps=0,
-        gradient_steps=0,
-        print_every=100000,
+        num_iters=1,
+        steps_per_iter=500,
+        train_epochs=0,
+        do_eval=False,
+        do_arena=False,
     )
 
     var early_buf_size = agent.state.buf_size
@@ -238,10 +241,11 @@ def test_mcts_finds_winning_move() raises:
     agent.start_new_iteration()
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=500,
-        warmup_steps=0,
-        gradient_steps=0,
-        print_every=100000,
+        num_iters=1,
+        steps_per_iter=500,
+        train_epochs=0,
+        do_eval=False,
+        do_arena=False,
     )
 
     # Compute entropy of new policies (skip old data)
@@ -296,10 +300,11 @@ def test_policy_targets_nondegenerate() raises:
     agent.start_new_iteration()
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=500,
-        warmup_steps=0,
-        gradient_steps=0,
-        print_every=100000,
+        num_iters=1,
+        steps_per_iter=500,
+        train_epochs=0,
+        do_eval=False,
+        do_arena=False,
     )
 
     var n = agent.state.buf_size

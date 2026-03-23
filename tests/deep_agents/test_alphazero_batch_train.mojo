@@ -78,10 +78,11 @@ def main() raises:
         # Run 1000 env steps to get ~130 games
         _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            num_steps=1000,
-            warmup_steps=0,
-            gradient_steps=0,  # No training during collection
-            print_every=100000,  # Don't print
+            num_iters=1,
+            steps_per_iter=1000,
+            train_epochs=0,
+            do_eval=False,
+            do_arena=False,
         )
 
         # 2. Train for multiple epochs on collected data

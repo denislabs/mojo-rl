@@ -34,10 +34,12 @@ def main() raises:
     # Train 50K steps
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=50000,
-        warmup_steps=1000,
-        gradient_steps=2,
-        print_every=25000,
+        num_iters=1,
+        steps_per_iter=50000,
+        train_epochs=2,
+        warmup_iters=1,
+        do_eval=False,
+        do_arena=False,
     )
 
     print("\nAfter 50K steps:")
@@ -47,9 +49,11 @@ def main() raises:
     # Train 50K more
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=50000,
-        gradient_steps=2,
-        print_every=50000,
+        num_iters=1,
+        steps_per_iter=50000,
+        train_epochs=2,
+        do_eval=False,
+        do_arena=False,
     )
 
     print("\nAfter 100K steps:")

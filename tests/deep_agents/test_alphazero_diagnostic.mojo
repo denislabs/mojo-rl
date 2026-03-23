@@ -390,10 +390,11 @@ def test_selfplay_data_quality() raises:
     agent.start_new_iteration()
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=500,
-        warmup_steps=0,
-        gradient_steps=0,
-        print_every=100000,
+        num_iters=1,
+        steps_per_iter=500,
+        train_epochs=0,
+        do_eval=False,
+        do_arena=False,
     )
 
     print("  Buffer size:", agent.state.buf_size)
