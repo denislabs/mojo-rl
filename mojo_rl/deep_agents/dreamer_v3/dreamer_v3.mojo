@@ -2567,14 +2567,51 @@ struct DreamerV3Agent[
             gpu_state.continue_head.grads_buf.unsafe_ptr(),
         )
 
+        # ── Compute diagnostic losses (single sync) ────────────────────────
+        # Download dec_out, dec_target, kl probs from GPU → CPU for diagnostics.
+        # This is the only synchronization in the BPTT path.
+        comptime IB_OBS_SZ = IB_ * OBS
+        comptime IB_STOCH_SZ = IB_ * STOCH
+        var host_dec_out = ctx.enqueue_create_host_buffer[dtype](IB_OBS_SZ)
+        var host_dec_tgt = ctx.enqueue_create_host_buffer[dtype](IB_OBS_SZ)
+        var host_post_p = ctx.enqueue_create_host_buffer[dtype](IB_STOCH_SZ)
+        var host_prior_p = ctx.enqueue_create_host_buffer[dtype](IB_STOCH_SZ)
+        var dec_out_db = DeviceBuffer[dtype](
+            ctx, gpu_state.dec_out_buf.unsafe_ptr(), IB_OBS_SZ, owning=False,
+        )
+        var dec_tgt_db = DeviceBuffer[dtype](
+            ctx, gpu_state.dec_target_buf.unsafe_ptr(), IB_OBS_SZ, owning=False,
+        )
+        ctx.enqueue_copy(host_dec_out, dec_out_db)
+        ctx.enqueue_copy(host_dec_tgt, dec_tgt_db)
+        ctx.enqueue_copy(host_post_p, gpu_state.all_post_probs_buf)
+        ctx.enqueue_copy(host_prior_p, gpu_state.all_prior_probs_buf)
+        ctx.synchronize()
+
+        # Obs loss: MSE(dec_out, dec_target)
+        for i in range(IB_OBS_SZ):
+            var diff = Float64(host_dec_out[i]) - Float64(host_dec_tgt[i])
+            obs_loss += diff * diff
+
+        # KL: per-sample sum over stoch dims
+        var eps = Float64(1e-8)
+        for s in range(IB_):
+            var kl_s = Float64(0.0)
+            for k in range(STOCH):
+                var p = Float64(host_post_p[s * STOCH + k])
+                var q = Float64(host_prior_p[s * STOCH + k])
+                if p > eps:
+                    kl_s += p * (log(p + eps) - log(q + eps))
+            dyn_kl_total += kl_s
+        rep_kl_total = dyn_kl_total
+
         # ── Normalize losses ─────────────────────────────────────────────
-        var inv_bl = 1.0 / Float64(BL)
         var inv_bl_b = 1.0 / Float64(BL * B)
         obs_loss *= inv_bl_b
         rew_loss *= inv_bl_b
         cont_loss *= inv_bl_b
-        dyn_kl_total *= inv_bl
-        rep_kl_total *= inv_bl
+        dyn_kl_total *= inv_bl_b
+        rep_kl_total *= inv_bl_b
 
         var total = (
             obs_loss

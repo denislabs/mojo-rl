@@ -15,7 +15,9 @@ from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.deep_agents.muzero.strategies import (
-    DirichletNoise, AlphaGoPUCT, SelfPlay,
+    DirichletNoise,
+    AlphaGoPUCT,
+    SelfPlay,
 )
 from mojo_rl.deep_agents.muzero.gpu_mcts import (
     GPUMCTSState,
@@ -52,7 +54,7 @@ struct InspectConfig(AlphaZeroConfig):
 
 
 def main() raises:
-    print("=== MCTS State Inspector ===")
+    print("=== MCTS State Inspector (SharedMemory) ===")
     print()
 
     var ctx = DeviceContext()
@@ -76,6 +78,7 @@ def main() raises:
     # Initialize network
     var net_state = NetworkState[PredModel, OptType]()
     from mojo_rl.nn.initializer import Kaiming
+
     net_state.initialize[Kaiming[]]()
     var gpu_net = GPUNetworkState[PredModel, OptType](ctx)
     gpu_net.upload_from(net_state, ctx)
@@ -88,7 +91,9 @@ def main() raises:
 
     # Reset all envs to initial state
     E.reset_kernel_gpu[N_ENVS, GS](ctx, states_buf, rng_seed=42)
-    E.extract_obs_kernel_gpu[N_ENVS, GS, OBS](ctx, states_buf, obs_buf, legal_masks_buf)
+    E.extract_obs_kernel_gpu[N_ENVS, GS, OBS](
+        ctx, states_buf, obs_buf, legal_masks_buf
+    )
     ctx.synchronize()
 
     # Verify obs
@@ -110,9 +115,15 @@ def main() raises:
     var mcts_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
 
     # Run prediction on initial obs
-    var pred_obs = LayoutTensor[dtype, Layout.row_major(N_ENVS, PRED_IN), MutAnyOrigin](obs_buf.unsafe_ptr())
-    var pred_out = LayoutTensor[dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-    PredNet.forward_gpu[N_ENVS](ctx, pred_obs, pred_out, gpu_net.params_view(), mcts_ws)
+    var pred_obs = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, PRED_IN), MutAnyOrigin
+    ](obs_buf.unsafe_ptr())
+    var pred_out = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin
+    ](gpu_mcts.pred_output.unsafe_ptr())
+    PredNet.forward_gpu[N_ENVS](
+        ctx, pred_obs, pred_out, gpu_net.params_view(), mcts_ws
+    )
 
     # Download and print raw prediction
     var pred_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * PRED_OUT_DIM)
@@ -128,38 +139,86 @@ def main() raises:
     print("  Value raw:", pred_host[ACT])
 
     # Init root
-    var vc = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](gpu_mcts.visit_count.unsafe_ptr())
-    var tv = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](gpu_mcts.total_value.unsafe_ptr())
-    var pr = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](gpu_mcts.prior.unsafe_ptr())
-    var rw = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](gpu_mcts.reward.unsafe_ptr())
-    var ci = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](gpu_mcts.child_idx.unsafe_ptr())
-    var tvis = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin](gpu_mcts.total_visits.unsafe_ptr())
-    var nc = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](gpu_mcts.node_count.unsafe_ptr())
-    var po = LayoutTensor[dtype, Layout.row_major(N_ENVS * MCTS_PRED_OUT), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-    var miq = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](gpu_mcts.min_q.unsafe_ptr())
-    var mxq = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](gpu_mcts.max_q.unsafe_ptr())
+    var vc = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ](gpu_mcts.visit_count.unsafe_ptr())
+    var tv = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ](gpu_mcts.total_value.unsafe_ptr())
+    var pr = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ](gpu_mcts.prior.unsafe_ptr())
+    var rw = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ](gpu_mcts.reward.unsafe_ptr())
+    var ci = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ](gpu_mcts.child_idx.unsafe_ptr())
+    var tvis = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ](gpu_mcts.total_visits.unsafe_ptr())
+    var nc = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+        gpu_mcts.node_count.unsafe_ptr()
+    )
+    var po = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MCTS_PRED_OUT), MutAnyOrigin
+    ](gpu_mcts.pred_output.unsafe_ptr())
+    var miq = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+        gpu_mcts.min_q.unsafe_ptr()
+    )
+    var mxq = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+        gpu_mcts.max_q.unsafe_ptr()
+    )
 
-    comptime run_init = gpu_mcts_init_root_kernel[N_ENVS, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype]
+    comptime run_init = gpu_mcts_init_root_kernel[
+        N_ENVS, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
+    ]
     ctx.enqueue_function[run_init, run_init](
-        vc, tv, pr, rw, ci, tvis, nc, po, miq, mxq,
+        vc,
+        tv,
+        pr,
+        rw,
+        ci,
+        tvis,
+        nc,
+        po,
+        miq,
+        mxq,
         Scalar[dtype](0.25),  # noise fraction
         Scalar[DType.uint32](UInt32(42)),
-        grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        grid_dim=(ENV_BLOCKS,),
+        block_dim=(TPB,),
     )
 
     # Apply legal mask
-    var lm = LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin](legal_masks_buf.unsafe_ptr())
-    comptime run_mask = gpu_mcts_apply_legal_mask_kernel[N_ENVS, MAX_NODES, ACT, dtype]
-    ctx.enqueue_function[run_mask, run_mask](pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,))
+    var lm = LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin](
+        legal_masks_buf.unsafe_ptr()
+    )
+    comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
+        N_ENVS, MAX_NODES, ACT, dtype
+    ]
+    ctx.enqueue_function[run_mask, run_mask](
+        pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+    )
 
     # Copy root game states
-    var gs = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * GS), MutAnyOrigin](gpu_mcts.game_states.unsafe_ptr())
-    var es = LayoutTensor[dtype, Layout.row_major(N_ENVS * GS), MutAnyOrigin](states_buf.unsafe_ptr())
-    comptime run_rs = gpu_mcts_copy_root_state_kernel[N_ENVS, MAX_NODES, GS, dtype]
-    ctx.enqueue_function[run_rs, run_rs](gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,))
+    var gs = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * GS), MutAnyOrigin
+    ](gpu_mcts.game_states.unsafe_ptr())
+    var es = LayoutTensor[dtype, Layout.row_major(N_ENVS * GS), MutAnyOrigin](
+        states_buf.unsafe_ptr()
+    )
+    comptime run_rs = gpu_mcts_copy_root_state_kernel[
+        N_ENVS, MAX_NODES, GS, dtype
+    ]
+    ctx.enqueue_function[run_rs, run_rs](
+        gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+    )
 
     # Download and print root prior after masking + noise
-    var prior_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * MAX_NODES * ACT)
+    var prior_host = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * MAX_NODES * ACT
+    )
     ctx.enqueue_copy(prior_host, gpu_mcts.prior)
     ctx.synchronize()
 
@@ -184,23 +243,51 @@ def main() raises:
     var exp_obs = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND * OBS)
 
     # Batched MCTS buffers
-    var b_pp = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin](gpu_mcts.pending_parent.unsafe_ptr())
-    var b_pa = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin](gpu_mcts.pending_action.unsafe_ptr())
-    var b_sp = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND * MAX_DEPTH), MutAnyOrigin](gpu_mcts.search_paths.unsafe_ptr())
-    var b_ap = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND * MAX_DEPTH), MutAnyOrigin](gpu_mcts.action_paths.unsafe_ptr())
-    var b_pl = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin](gpu_mcts.path_lengths.unsafe_ptr())
-    var b_exp_st = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin](gpu_mcts.expansion_states.unsafe_ptr())
+    var b_pp = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+    ](gpu_mcts.pending_parent.unsafe_ptr())
+    var b_pa = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+    ](gpu_mcts.pending_action.unsafe_ptr())
+    var b_sp = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND * MAX_DEPTH), MutAnyOrigin
+    ](gpu_mcts.search_paths.unsafe_ptr())
+    var b_ap = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND * MAX_DEPTH), MutAnyOrigin
+    ](gpu_mcts.action_paths.unsafe_ptr())
+    var b_pl = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+    ](gpu_mcts.path_lengths.unsafe_ptr())
+    var b_exp_st = LayoutTensor[
+        dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin
+    ](gpu_mcts.expansion_states.unsafe_ptr())
 
     # Run MCTS rounds
     for round_idx in range(NUM_ROUNDS):
         # 1. Select + copy
-        comptime run_sel = gpu_mcts_batched_select_and_copy_kernel[N_ENVS, MAX_NODES, ACT, BATCH_SIMS, GS, dtype]
+        comptime run_sel = gpu_mcts_batched_select_and_copy_kernel[
+            N_ENVS, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
+        ]
         ctx.enqueue_function[run_sel, run_sel](
-            vc, tv, pr, ci, tvis, nc, miq, mxq, gs,
-            b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+            vc,
+            tv,
+            pr,
+            ci,
+            tvis,
+            nc,
+            miq,
+            mxq,
+            gs,
+            b_pp,
+            b_pa,
+            b_exp_st,
+            b_sp,
+            b_ap,
+            b_pl,
             Scalar[dtype](InspectConfig.PUCT.C_BASE),
             Scalar[dtype](InspectConfig.PUCT.C_INIT),
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # 2. Env step
@@ -217,23 +304,54 @@ def main() raises:
         )
 
         # 3. Prediction on expanded states
-        var p_in = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND, PRED_IN), MutAnyOrigin](exp_obs.unsafe_ptr())
-        var p_out = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND, PRED_OUT_DIM), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-        PredNet.forward_gpu[TOTAL_EXPAND](ctx, p_in, p_out, gpu_net.params_view(), mcts_ws)
+        var p_in = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND, PRED_IN), MutAnyOrigin
+        ](exp_obs.unsafe_ptr())
+        var p_out = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND, PRED_OUT_DIM), MutAnyOrigin
+        ](gpu_mcts.pred_output.unsafe_ptr())
+        PredNet.forward_gpu[TOTAL_EXPAND](
+            ctx, p_in, p_out, gpu_net.params_view(), mcts_ws
+        )
 
         # 4. Expand + backup
-        var b_po = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND * MCTS_PRED_OUT), MutAnyOrigin](gpu_mcts.pred_output.unsafe_ptr())
-        var b_rew = LayoutTensor[dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin](exp_rewards.unsafe_ptr())
-        comptime run_exp = gpu_mcts_batched_expand_backup_kernel[N_ENVS, MAX_NODES, ACT, BATCH_SIMS, MCTS_PRED_OUT, GS, dtype]
+        var b_po = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND * MCTS_PRED_OUT), MutAnyOrigin
+        ](gpu_mcts.pred_output.unsafe_ptr())
+        var b_rew = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+        ](exp_rewards.unsafe_ptr())
+        comptime run_exp = gpu_mcts_batched_expand_backup_kernel[
+            N_ENVS, MAX_NODES, ACT, BATCH_SIMS, MCTS_PRED_OUT, GS, dtype
+        ]
         ctx.enqueue_function[run_exp, run_exp](
-            vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs, b_exp_st,
-            b_pp, b_pa, b_po, b_rew, b_sp, b_ap, b_pl,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            vc,
+            tv,
+            pr,
+            rw,
+            ci,
+            tvis,
+            nc,
+            miq,
+            mxq,
+            gs,
+            b_exp_st,
+            b_pp,
+            b_pa,
+            b_po,
+            b_rew,
+            b_sp,
+            b_ap,
+            b_pl,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # Download after each round to inspect
         ctx.enqueue_copy(nc_host, gpu_mcts.node_count)
-        var vc_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * MAX_NODES * ACT)
+        var vc_host = ctx.enqueue_create_host_buffer[dtype](
+            N_ENVS * MAX_NODES * ACT
+        )
         ctx.enqueue_copy(vc_host, gpu_mcts.visit_count)
         ctx.synchronize()
 
@@ -250,9 +368,13 @@ def main() raises:
         print("  Total root visits:", Int(total_visits_root))
 
     # Final state
-    var vc_final = ctx.enqueue_create_host_buffer[dtype](N_ENVS * MAX_NODES * ACT)
+    var vc_final = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * MAX_NODES * ACT
+    )
     ctx.enqueue_copy(vc_final, gpu_mcts.visit_count)
-    var tv_final = ctx.enqueue_create_host_buffer[dtype](N_ENVS * MAX_NODES * ACT)
+    var tv_final = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * MAX_NODES * ACT
+    )
     ctx.enqueue_copy(tv_final, gpu_mcts.total_value)
     ctx.synchronize()
 
@@ -270,7 +392,9 @@ def main() raises:
     print("  Total:", Int(total_v))
 
     # Check child nodes of root
-    var ci_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * MAX_NODES * ACT)
+    var ci_host = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * MAX_NODES * ACT
+    )
     ctx.enqueue_copy(ci_host, gpu_mcts.child_idx)
     ctx.synchronize()
 
